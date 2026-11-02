@@ -45,7 +45,7 @@ def test_password_hmac_is_what_cores_rpcauth_script_writes() -> None:
 
     The expected value is `password_to_hmac("00" * 16, "pytest")` of
     `share/rpcauth/rpcauth.py`, run at
-    bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+    bitcoin/bitcoin@f0de87f040 -- v32.1, the release
     `integration-bitcoind.yml` pins.
     """
     expected = b"0902338bb5203e7438a3b150acc15cfb8aea3f8881b65ebf6e2fd36cb5a53529"

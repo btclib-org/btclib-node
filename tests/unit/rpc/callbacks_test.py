@@ -18,13 +18,14 @@ import time
 from collections import Counter
 from collections.abc import Callable, Generator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
+from bip32_descriptors.descriptors import add_checksum, from_address
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT, HeadersSyncParams
@@ -46,11 +47,10 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
-from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
-from btclib_node import clock
+from btclib_node import clock, main
 from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import (
     Chain,
@@ -2000,6 +2000,26 @@ def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
     assert "confirmations" not in out
 
 
+@pytest.mark.parametrize("verbosity", [1, 2])
+def test_a_mempool_transaction_opens_with_its_sigop_adjusted_size(
+    verbosity: int,
+) -> None:
+    """`vsize_adjusted` is the mempool's size for it, and the first key.
+
+    `vsize` stays the BIP141 size, as Core's `TxToUniv` writes it
+    (`src/rpc/rawtransaction.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
+    """
+    tx = a_tx()
+    node = a_tx_lookup_node()
+    node.mempool.add_tx(tx, 0, tx.vsize + 7)
+    out = get_raw_transaction(node, _CONN, [tx.id.hex(), verbosity])
+    assert isinstance(out, dict)
+    assert list(out)[:2] == ["vsize_adjusted", "txid"]
+    assert out["vsize_adjusted"] == tx.vsize + 7
+    assert out["vsize"] == tx.vsize
+
+
 def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
     """`getrawtransaction` refuses a txid in neither the mempool nor a block.
 
@@ -2128,6 +2148,7 @@ def test_getrawtransaction_verbosity_1_answers_neither_fee_nor_prevout(
     assert isinstance(answer, dict)
     assert "fee" not in answer
     assert "prevout" not in answer["vin"][0]
+    assert "vsize_adjusted" not in answer
 
 
 def test_getrawtransaction_verbosity_2_of_a_coinbase_has_no_fee(
@@ -3433,7 +3454,8 @@ def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
     """The top-level keys are `TxToUniv`'s, in its order, `hex` last.
 
     `decoderawtransaction` passes `include_hex=false`; `getrawtransaction`
-    adds the block fields after.
+    puts `vsize_adjusted` before them for a mempool transaction, and the
+    block fields after them for a block's.
     """
     tx = a_tx()
     keys = ["txid", "hash", "version", "size", "vsize", "weight", "locktime"]
@@ -3453,7 +3475,7 @@ def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
         a_tx_lookup_node(mempool_txs=[tx]), _CONN, [tx.id.hex(), True]
     )
     assert isinstance(verbose, dict)
-    assert list(verbose) == [*keys, "hex"]
+    assert list(verbose) == ["vsize_adjusted", *keys, "hex"]
 
 
 def test_decoderawtransaction_renders_a_negative_output_value() -> None:
@@ -8188,42 +8210,183 @@ def test_submit_block_answers_a_contextual_failure_for_a_block_extending_the_tip
     assert bad.header.hash not in node.chainstate.block_index.active_chain
     block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
     assert block_info.status == BlockStatus.invalid
-    assert node.block_db.get_block(bad.header.hash) is not None
+    assert node.block_db.get_block(bad.header.hash) is None
 
 
-def test_submit_block_answers_finality_before_the_witness_of_a_mutated_body(
-    regtest_node: Callable[..., Node],
+def a_mutated_body_failing(node: Node, chain: list[Block], phrase: str) -> Block:
+    """Return a mutated body extending `node`'s `chain` that fails `phrase`.
+
+    `phrase` is `bad-txns-nonfinal` or `bad-cb-height`. The body is
+    mutated by a 31-byte witness nonce, Core's `bad-witness-nonce-size`
+    on its own.
+    """
+    block_index = node.chainstate.block_index
+    funding = chain[0].transactions[0]
+    spend = locked_spend(
+        funding,
+        funding.vout[0].value,
+        lock_time=2_000_000_000 if phrase == "bad-txns-nonfinal" else 0,
+        sequence=0,
+    )
+    height = len(block_index.active_chain)
+    coinbase = generate_coinbase(
+        height=height if phrase == "bad-txns-nonfinal" else height + 1
+    )
+    nonce = bytes(32)
+    coinbase.vout = [
+        *coinbase.vout,
+        witness_commitment_output([coinbase, spend], nonce),
+    ]
+    coinbase.vin[0].script_witness = Witness([bytes(31)])
+    return build_block(block_index.active_chain[-1], [coinbase, spend], height - 1)
+
+
+@pytest.mark.parametrize("phrase", ["bad-txns-nonfinal", "bad-cb-height"])
+def test_submit_block_marks_a_mutated_body_refused_before_its_witness(
+    regtest_node: Callable[..., Node], phrase: str
 ) -> None:
-    """A mutated body that is also non-final is `bad-txns-nonfinal`.
+    """A mutated body failing an earlier rule marks its header failed.
 
     Core's `AcceptBlock` asks `ContextualCheckBlock`, which refuses a
-    non-final transaction before it asks `CheckWitnessMalleation`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    non-final transaction and a wrong coinbase height before it asks
+    `CheckWitnessMalleation`. Both are `BLOCK_CONSENSUS`, which
+    `InvalidBlockFound` marks (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
     connect(node, chain)
-
-    funding = chain[0].transactions[0]
-    nonfinal = locked_spend(
-        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
-    )
-    coinbase = generate_coinbase(height=len(chain) + 1)
-    nonce = bytes(32)
-    coinbase.vout = [
-        *coinbase.vout,
-        witness_commitment_output([coinbase, nonfinal], nonce),
-    ]
-    # a 31-byte nonce: Core's `bad-witness-nonce-size` on its own
-    coinbase.vin[0].script_witness = Witness([bytes(31)])
-    bad = build_block(
-        node.chainstate.block_index.active_chain[-1], [coinbase, nonfinal], len(chain)
-    )
+    bad = a_mutated_body_failing(node, chain, phrase)
 
     result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
 
-    assert result == "bad-txns-nonfinal"
+    assert result == phrase
     assert node.block_db.get_block(bad.header.hash) is None
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+
+
+def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad signet solution is refused first, and marks nothing.
+
+    Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
+    `ProcessNewBlock` does not reach `AcceptBlock`, which marks, for a
+    body failing it (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). `main.SigNet` is `RegTest` here, so the real BIP325
+    check runs on a regtest block: mining a block at signet's target takes
+    millions of hashes.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, chain)
+    bad = a_mutated_body_failing(node, chain, "bad-txns-nonfinal")
+    monkeypatch.setattr(main, "SigNet", RegTest)
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result.startswith("bad-signet-blksig")
+    assert node.block_db.get_block(bad.header.hash) is None
+    assert bad.header.hash not in node.chainstate.block_index.header_dict
+
+
+@pytest.mark.parametrize("signet", [False, True])
+def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    signet: bool,
+) -> None:
+    """ISS 2079: a body failing only its signet solution leaves no header.
+
+    Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
+    `ProcessNewBlock` does not reach `AcceptBlock`, which indexes the
+    header, for a body failing it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: `submitblock` answers
+    `bad-signet-blksig` and `getblockheader` answers `Block not found`.
+    Off signet, the test's block is accepted.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    if signet:
+        monkeypatch.setattr(main, "SigNet", RegTest)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    header_dict = node.chainstate.block_index.header_dict
+    if signet:
+        assert isinstance(result, str)
+        assert result.startswith("bad-signet-blksig")
+        assert block.header.hash not in header_dict
+    else:
+        assert result is None
+        assert block.header.hash in header_dict
+
+
+def unmined(block: Block, pow_limit_bits: bytes) -> Block:
+    """Return `block` with the next nonce whose hash misses its target."""
+    while True:
+        block.header.nonce += 1
+        try:
+            block.header.assert_valid_pow(pow_limit_bits)
+        except BTClibValueError:
+            return block
+
+
+@pytest.mark.parametrize("body", ["bad-signet-blksig", "bad-cb-multiple"])
+def test_submit_block_answers_high_hash_before_check_block_s_body_rules(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """ISS 2079: a header failing its proof of work is `high-hash`.
+
+    Core's `CheckBlock` asks `CheckBlockHeader` before the signet solution
+    and the coinbase, and `ProcessNewBlock` indexes no header for a block
+    failing `CheckBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: a block at height 1 whose
+    hash misses its target is answered `high-hash`, and `getblockheader`
+    answers `Block not found`.
+    """
+    node = regtest_node()
+    if body == "bad-signet-blksig":
+        (block,) = generate_random_chain(1, node.chain.genesis.hash)
+        monkeypatch.setattr(main, "SigNet", RegTest)
+    else:
+        block = generate_segwit_block(generate_coinbase(height=1))
+    block = unmined(block, node.chain.pow_limit_bits)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    assert result == "high-hash"
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert node.block_db.get_block(block.header.hash) is None
+
+
+def test_submit_block_marks_a_contextual_failure_off_the_active_chain(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A body off the active chain failing `bad-cb-height` is marked.
+
+    Core's `AcceptBlock` asks `ContextualCheckBlock` of every new block it
+    stores, on the active chain or not, and `submitblock` answers its
+    reason (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag).
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    # a sibling of the tip, its coinbase committing to no height
+    bad = build_block(chain[0].header.hash, [generate_coinbase()], 1)
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert result == "bad-cb-height"
+    assert node.block_db.get_block(bad.header.hash) is None
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
 
 
 def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
@@ -8323,18 +8486,46 @@ def test_submit_block_stops_the_node_where_update_chain_finds_storage_unsafe(
     assert node.terminate_flag.is_set()
 
 
-@pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])
+def an_over_weight_block(coinbase_height: int, time: datetime | None = None) -> Block:
+    """Return a block at height 1 over the weight, its witness committed to.
+
+    Its coinbase commits to `coinbase_height`; `time` dates its header.
+    """
+    coinbase = generate_coinbase(height=coinbase_height)
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([bytes(MAX_BLOCK_WEIGHT)])
+    nonce = bytes(32)
+    coinbase.vout = [
+        *coinbase.vout,
+        witness_commitment_output([coinbase, spend], nonce),
+    ]
+    coinbase.vin[0].script_witness = Witness([nonce])
+    return build_block(RegTest().genesis.hash, [coinbase, spend], 0, time=time)
+
+
+@pytest.mark.parametrize(
+    ("segwit_height", "coinbase_height", "phrase"),
+    [
+        (1, 1, "bad-blk-weight"),
+        (1, 2, "bad-cb-height"),
+        (2, 1, "unexpected-witness"),
+    ],
+)
 def test_submit_block_invalidates_a_committed_body_over_the_weight(
     regtest_node: Callable[..., Node],
     monkeypatch: pytest.MonkeyPatch,
     segwit_height: int,
-    invalid: bool,  # noqa: FBT001
+    coinbase_height: int,
+    phrase: str,
 ) -> None:
     """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
 
-    Where segwit binds only after the block's own height, its witness makes
-    the body mutated: Core's `unexpected-witness`, ahead of the weight, and
-    the header is left alone.
+    Core asks the weight last in `ContextualCheckBlock`, so a wrong coinbase
+    height is `bad-cb-height` first (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where segwit binds only
+    after the block's own height, its witness makes the body mutated:
+    Core's `unexpected-witness`, ahead of the weight, and the header is
+    left alone.
     """
     node = regtest_node()
     consensus = replace(node.chain.consensus, segwit_height=segwit_height)
@@ -8343,14 +8534,40 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
         "chain",
         SimpleNamespace(pow_limit_bits=node.chain.pow_limit_bits, consensus=consensus),
     )
-    over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
+    over = an_over_weight_block(coinbase_height)
+
+    result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
+
+    assert result == phrase
+    block_info = node.chainstate.block_index.get_block_info(over.header.hash)
+    invalid = phrase != "unexpected-witness"
+    assert (block_info.status == BlockStatus.invalid) is invalid
+
+
+def test_submit_block_marks_a_body_over_the_weight_behind_time_too_new(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A body over the weight whose header the clock has fallen behind.
+
+    The header was indexed while the clock read a day later, so
+    `contextual_check_block` refuses `time-too-new` first, which Core does
+    not ask again of a header it holds (btclib-org/btclib#2836). The body
+    is refused in btclib's weight text and marked, as Core marks its
+    `bad-blk-weight`.
+    """
+    node = regtest_node()
+    later = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
+    over = an_over_weight_block(1, time=later)
+    clock.set_mock_time(int(later.timestamp()))
+    node.chainstate.block_index.add_headers([over.header])
+    clock.set_mock_time(0)
 
     result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
 
     assert isinstance(result, str)
-    assert result.startswith("invalid weight" if invalid else "unexpected-witness")
+    assert result.startswith("invalid weight")
     block_info = node.chainstate.block_index.get_block_info(over.header.hash)
-    assert (block_info.status == BlockStatus.invalid) is invalid
+    assert block_info.status == BlockStatus.invalid
 
 
 # A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
@@ -8934,7 +9151,7 @@ def test_get_mempool_entry_answers_core_s_own_shape() -> None:
     assert entry["fees"]["descendant"].text == "0.00005000"
     assert entry["depends"] == [parent.id]
     assert entry["spentby"] == [child.id]
-    assert entry["bip125-replaceable"] is False
+    assert "bip125-replaceable" not in entry
     assert entry["unbroadcast"] is False
 
 

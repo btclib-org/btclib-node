@@ -465,15 +465,16 @@ def test_the_full_consensus_set_contains_every_height_gated_one() -> None:
 
 
 def test_every_script_flag_is_decided_one_way_or_the_other() -> None:
-    """`SIGPUSHONLY` is the one `ScriptFlag` member `STANDARD_FLAGS` omits.
+    """`SIGPUSHONLY` and `MINIMALIF_ALL` are the members `STANDARD_FLAGS` omits.
 
-    Core's `STANDARD_SCRIPT_VERIFY_FLAGS` omits it too
-    (`src/policy/policy.h:118-131`, at bitcoin/bitcoin@4519933391). What
-    this pins is that a member btclib adds later cannot be left out of
-    the set in silence: it is either relayed against or named here.
+    The comment above `interpreter.STANDARD_FLAGS` says why each is left
+    out. What this pins is that a member btclib adds later cannot be left
+    out of the set in silence: it is either relayed against or named here.
     """
-    omitted = [x for x in ScriptFlag if x & STANDARD_FLAGS == NO_FLAGS]
-    assert omitted == [ScriptFlag.SIGPUSHONLY]
+    omitted = {x.name for x in ScriptFlag if x & STANDARD_FLAGS == NO_FLAGS}
+    # by name: btclib releases before 2026.10.30 lack the member
+    minimalif_all = {"MINIMALIF_ALL"} & ScriptFlag.__members__.keys()
+    assert omitted == {ScriptFlag.SIGPUSHONLY.name, *minimalif_all}
 
 
 def _spend(script_pub_key: bytes, script_sig: bytes = b"") -> tuple[list[TxOut], Tx]:

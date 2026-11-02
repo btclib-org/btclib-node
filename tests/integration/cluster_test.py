@@ -71,8 +71,6 @@ def _agree(
             ours = _answer(client.call, method, [tx.id.hex()])
             theirs = _answer(bitcoind.rpc, method, [tx.id.hex()])
             if method == "getmempoolentry":
-                # Core 32's fields, which bitcoind v31.1 does not answer
-                del ours[1]["vsize_adjusted"], ours[1]["vsize_bip141"]
                 for answer in (ours, theirs):
                     assert answer[1].pop("time") in sent[tx.id.hex()], answer
             assert ours == theirs, (method, tx.id.hex())

@@ -133,7 +133,7 @@ jobs:
   # release
   wait-for-index:
     if: ${{ !github.event.pull_request.draft }}
-    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@eb3b0c28476b98694ab3a3c3a9dce7e8e26ab4f5 # v2026.10.26
+    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@ed616d71c43cd4c8bded40d1182befccd99e6ee7 # v2026.10.29
     with:
       package: btclib-node
       version: ${{ inputs.version }}
@@ -206,7 +206,7 @@ jobs:
       # this file does not reach this matrix, windows-11-arm not being
       # one of the images above
       - name: Setup uv with Python 3.14
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: "3.14"
       # the install runs through btclib-org/.github's

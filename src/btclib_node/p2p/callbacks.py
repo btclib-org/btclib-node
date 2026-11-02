@@ -112,9 +112,11 @@ from btclib_node.main import (
     activate_best_chain,
     assert_valid_block,
     check_fork_warning_conditions,
+    contextual_check_block,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    mark_contextual_failure,
     new_pow_valid_block,
     passes_check_block,
     pre_verify_mempool_acceptance,
@@ -484,6 +486,31 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     )
 
 
+def _over_tx_relay_capacity(node: Node, conn: Connection, version_msg: Version) -> bool:
+    """Answer whether `version` drops an inbound peer for the relay share.
+
+    Core's `MaybeDisconnectForTxRelayCapacity`, ahead of `VERACK`
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1,
+    the release `integration-bitcoind.yml` pins): an inbound peer that
+    asks for transactions has `P2pManager.evict_tx_peer_if_full` evict
+    another such peer where they are past their share, itself
+    protected, and is dropped only where none can go. Core checks again
+    on `filterload` and `filterclear`, which `manager._relays_txs` says
+    this node has no counterpart for.
+    """
+    if not conn.inbound or not version_msg.is_relay_requested:
+        return False
+    if node.p2p_manager.evict_tx_peer_if_full(protect_peer=conn.id):
+        return False
+    node.logger.log_debug(
+        "net",
+        "failed to find a tx-relaying eviction candidate - connection dropped"
+        " after version message, peer=%d",
+        conn.id,
+    )
+    return True
+
+
 def _see_local(node: Node, conn: Connection, version_msg: Version) -> None:
     """Raise the score of the address an inbound peer says it reached us at.
 
@@ -510,16 +537,20 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
     btclib-org/btclib-node#482
 
+    An inbound peer that `_over_tx_relay_capacity` drops is sent no
+    `verack`.
+
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; recording a peer
-    this node dialled as answered, block-relay-only peers and feelers
-    included, right where Core calls `AddrMan::Good` -- not waiting for
-    its own `verack`, which may never come (#1169); and recording whether
-    the peer asked to have transactions relayed. A feeler is then dropped
-    once those are written, as Core's `VERSION` handler ends one
+    this node dialled, and asking it for addresses, unless
+    `_refuses_addr_relay` holds; recording a peer this node dialled as
+    answered, block-relay-only peers and feelers included, right where
+    Core calls `AddrMan::Good` -- not waiting for its own `verack`,
+    which may never come (#1169); and recording whether the peer asked
+    to have transactions relayed. A feeler is then dropped once those
+    are written, as Core's `VERSION` handler ends one
     (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag).
     """
@@ -550,17 +581,20 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     if common_version(conn) >= WTXID_RELAY_VERSION:
         conn.send(WtxidRelay())
         conn.send(SendAddrV2())
+    if _over_tx_relay_capacity(node, conn, version_msg):
+        conn.stop()
+        return
     conn.send(Verack())
 
     # Core's `VERSION` handler, right after `VERACK`, calls
-    # `SetupAddressRelay` for a peer this node dialled, and sends it a
-    # `getaddr` with room for the answer past
+    # `SetupAddressRelay` for a peer this node dialled, and where it
+    # holds sends a `getaddr` with room for the answer past
     # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
-    # the one token it started with, and waits for its own first `addr`,
-    # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
-    # sends no `getaddr`, for a block-relay-only peer.
-    if not conn.inbound and not conn.block_relay:
+    # at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    # `integration-bitcoind.yml` pins). An inbound peer keeps the one
+    # token it started with, and waits for its own first `addr`, `addrv2`
+    # or `getaddr`.
+    if not conn.inbound and not _refuses_addr_relay(conn):
         conn.addr_relay_enabled = True
         conn.send(GetAddr())
         conn.getaddr_sent = True
@@ -615,15 +649,27 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 def _end_if_feeler(node: Node, conn: Connection) -> None:
     """Drop a feeler once its `version` is handled, as Core's handler ends one.
 
-    Any other connection is left as it is. `SetupAddressRelay` holds
-    for a feeler, so `version` has asked it for addresses already, and
-    has recorded its address as answered. Split out of `version` for
+    Any other connection is left as it is. `version` has recorded the
+    feeler's address as answered already. Split out of `version` for
     ruff's complexity ceiling.
     """
     if not conn.feeler:
         return
     node.logger.log_debug("net", "feeler connection completed, peer=%s", conn.id)
     conn.stop_when_sent()
+
+
+def _refuses_addr_relay(conn: Connection) -> bool:
+    """Answer whether Core's `SetupAddressRelay` returns false for `conn`.
+
+    It does for a block-relay-only peer, so as not to give away the link
+    through address traffic, and for a feeler, which is dropped before an
+    answer to `getaddr` could arrive (`net_processing.cpp`,
+    at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    `integration-bitcoind.yml` pins). Such a peer is sent no `getaddr`,
+    and its `addr` and `addrv2` are ignored.
+    """
+    return conn.block_relay or conn.feeler
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
@@ -718,22 +764,15 @@ _SENDCMPCT_SIZE = 9
 def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     """Record whether the peer wants new blocks announced as `cmpctblock`.
 
-    Core's `SENDCMPCT` handler (`src/net_processing.cpp`) on master,
-    at bitcoin/bitcoin@ba8fdb9717: the announce octet is read as a
-    `uint8_t`, not a `bool`, so a value above one is refused as
-    "invalid sendcmpct announce field" before a version other than
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`), at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag: the announce octet is
+    read as a `uint8_t`, not a `bool`, so a value above one is refused
+    as "invalid sendcmpct announce field" before a version other than
     `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
     the peer's choice of this node as a BIP152 high-bandwidth peer,
     which a later `sendcmpct` can take back. Either way the peer is one
     that provides compact blocks, which `cmpctblock` below and
     `DownloadManager.headers_direct_fetch` read.
-
-    v31.1, at bitcoin/bitcoin@9be056a8a7, the release
-    `.github/workflows/integration-bitcoind.yml` pins and the
-    integration tests run against, still reads the octet as a plain
-    `bool` and never refuses one above one: the `uint8_t` read and the
-    `Misbehaving` call are Core commit 2d0dce0af5, on master and in
-    `v32.0rc1`, not yet in a release.
     """
     # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
     # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
@@ -753,20 +792,27 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     conn.requested_hb_cmpctblocks = announce != 0
 
 
+# the octets of a `ping`'s or a `pong`'s nonce, Core's `sizeof(nonce)`
+_NONCE_SIZE = 8
+
+
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a `ping` with a `pong` carrying the same nonce.
 
     Unanswered at a common version of `BIP0031_VERSION` or below, whose
     `ping` carries no nonce and which Core does not answer either.
+
+    Core's `PING` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) reads the nonce off the payload's first eight octets
+    and answers whatever follows them. A payload too short to hold a
+    nonce goes unanswered: Core's read throws, as `Ping.parse` raises.
     """
     if common_version(conn) <= BIP0031_VERSION:
         return
-    nonce = Ping.parse(msg).nonce
+    # btclib's `Ping.parse` refuses octets past the nonce, so it is given
+    # the nonce's octets alone
+    nonce = Ping.parse(msg[:_NONCE_SIZE]).nonce
     conn.send(Pong(nonce))
-
-
-# the octets of a `pong`'s nonce, Core's `sizeof(nonce)`
-_PONG_NONCE_SIZE = 8
 
 
 def pong(node: Node, msg: bytes, conn: Connection) -> None:
@@ -781,8 +827,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
     """
     # Core reads the nonce off the payload's first octets and ignores
     # the rest. A shorter payload finishes the ping as a zero nonce does.
-    head = msg[:_PONG_NONCE_SIZE]
-    nonce = Pong.parse(head).nonce if len(head) == _PONG_NONCE_SIZE else 0
+    head = msg[:_NONCE_SIZE]
+    nonce = Pong.parse(head).nonce if len(head) == _NONCE_SIZE else 0
     # The read that decides which of ping_sent/ping_nonce apply and the
     # clear that answers it are one step under conn._ping_lock, against
     # Connection.send_ping's own pair of writes on the other thread:
@@ -937,14 +983,14 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
     """Merge the addr-version-1 entries a peer gossiped into the table.
 
-    Ignored from a block-relay-only peer once parsed, as Core's `ADDR`
-    handler (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) ignores it, `SetupAddressRelay` refusing the peer ahead
-    of the `MAX_ADDR_TO_SEND` check. A payload the parse refuses is
-    logged by `main.handle_p2p` and costs the peer nothing, as in Core,
-    whose parse reads a count past that bound where btclib's refuses it.
+    Ignored once parsed where `_refuses_addr_relay` holds, as Core's
+    `ADDR` handler ignores it at the sha that predicate's docstring
+    cites, `SetupAddressRelay` refusing the peer ahead of the
+    `MAX_ADDR_TO_SEND` check. A payload the parse refuses is logged by
+    `main.handle_p2p` and costs the peer nothing, as in Core, whose parse
+    reads a count past that bound where btclib's refuses it.
     """
-    if conn.block_relay:
+    if _refuses_addr_relay(conn):
         Addr.parse(BytesIO(msg))
         return
     # Addr.parse(msg) would refuse an octet past the last address
@@ -971,10 +1017,9 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     """Merge the BIP155 entries a peer gossiped into the address table.
 
-    Ignored from a block-relay-only peer once parsed, as `addr` above
-    ignores it.
+    Ignored once parsed where `addr` above ignores it.
     """
-    if conn.block_relay:
+    if _refuses_addr_relay(conn):
         AddrV2.parse(BytesIO(msg))
         return
     # the same leniency as addr above, and the same reason: BIP155
@@ -1575,11 +1620,10 @@ def _check_block(
     # body failing it is refused, and its peer punished, before its header
     # is indexed or its being unrequested is looked at; Core never marks
     # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7).
-    # `assert_valid_block`, not `passes_check_block`'s own `Block.assert_valid`,
-    # so a signet block failing both this and the signet solution answers
-    # `bad-signet-blksig` first, `CheckSignetBlockSolution` running ahead of
-    # the merkle root in Core's own `CheckBlock` too.
-    if not passes_check_block(block):
+    # The refusal is `assert_valid_block`'s text, which asks the header's
+    # proof of work and, on signet, the solution before the merkle root, in
+    # the order of Core's own `CheckBlock`.
+    if not passes_check_block(block, node.chain):
         try:
             assert_valid_block(block, node.chain)
         except BTClibException as e:
@@ -1587,7 +1631,7 @@ def _check_block(
     # Core's `duplicate-invalid`, before the stored block is looked at:
     # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
     # outbound peer alone, so an inbound one is refused and kept
-    if is_cached_invalid(node.chainstate.block_index, block):
+    if is_cached_invalid(node.chainstate.block_index, block, node.chain):
         err_msg = f"duplicate-invalid: {block_hash.hex()}"
         raise _block_refusal(err_msg, punish=not (via_compact_block or conn.inbound))
 
@@ -1619,7 +1663,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     (`main.is_cached_invalid`). Past that, a no-op if this block is
     already marked downloaded. A body failing a check is refused, and
     the block asked of another peer, with the index left alone except
-    where Core marks the block failed (`main.is_block_failed`).
+    where Core marks the block failed (`main.is_block_failed`,
+    `main.mark_contextual_failure`).
 
     An unsolicited block whose own header this node has never indexed is not
     read as though `getdata` or `headers` already vouched for it:
@@ -1746,12 +1791,22 @@ def _accept_block(
         assert_valid_block(block, node.chain)
     except BTClibException as e:
         segwit = _segwit_after_parent(node, block.header)
-        if is_block_failed(block, check_witness_root=segwit):
+        if is_block_failed(block, node.chain, check_witness_root=segwit):
             block_index.invalidate(block_hash)
             # Core's own `InvalidChainFound` call, same citation as
             # `main.check_fork_warning_conditions`'s own docstring
             check_fork_warning_conditions(node)
         raise _block_refusal(str(e), punish=not via_compact_block) from e
+    # Core's `AcceptBlock` asks `ContextualCheckBlock` before it stores the
+    # block, and marks the block failed as `main.mark_contextual_failure`
+    # says; `MaybePunishNodeForBlock` punishes that `BLOCK_CONSENSUS`
+    # outside BIP152. A refusal Core does not mark here is left to
+    # `update_chain`.
+    try:
+        contextual_check_block(node, block, block_info.index)
+    except BTClibValueError as e:
+        if mark_contextual_failure(node, block_hash, str(e)):
+            raise _block_refusal(str(e), punish=not via_compact_block) from e
     node.block_db.add_block(block)
     node.download_manager.block_source.setdefault(
         block_hash, (conn.id, not via_compact_block)
@@ -2085,18 +2140,13 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     `BlockRequestAllowed` refuses -- off the active chain and not
     recently valid -- before the prune threshold.
 
-    A `MSG_FILTERED_BLOCK` drops the peer ahead of all that. Core master,
-    at bitcoin/bitcoin@cce32b1687, opens `ProcessGetBlockData` with "A
-    filtered-block can only ever be requested if we offer NODE_BLOOM",
-    and sets `fDisconnect` where it does not. This node offers
-    `NODE_BLOOM` to no peer (`connection.local_services`), a
-    `bloomfilter` permission included (`permissions.py`). The check is
-    bitcoin/bitcoin@9871fb726c, merged by bitcoin/bitcoin#35832: in
-    v32.0rc1, not in v31.1, the release `integration-bitcoind.yml` pins.
-    v31.1, at bitcoin/bitcoin@9be056a8a7, refuses every `filterload`
-    without `NODE_BLOOM`, so the item finds no bloom filter and gets no
-    answer. *Following Bitcoin Core* in `CONTRIBUTING.md` lets a
-    peer-refusal rule follow master ahead of a release.
+    A `MSG_FILTERED_BLOCK` drops the peer ahead of all that. Core, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag, opens
+    `ProcessGetBlockData` with "A filtered-block can only ever be
+    requested if we offer NODE_BLOOM", and sets `fDisconnect` where it
+    does not. This node offers `NODE_BLOOM` to no peer
+    (`connection.local_services`), a `bloomfilter` permission included
+    (`permissions.py`).
     """
     if item.type_code == InventoryType.MSG_FILTERED_BLOCK:
         node.logger.log_debug(
@@ -3128,15 +3178,11 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     so a block it keeps was checked once, and a refusal ends the node.
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
-    Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
-    empty getblocktxn requests"), on master and not yet in a release,
-    at bitcoin/bitcoin@28641fd195db -- "No legitimate reason to send
-    indexes empty" -- sets `fDisconnect` rather than calling
-    `Misbehaving`, so this raises no `MisbehavingError` and instead
-    drops the peer directly, matching `tx`'s own block-relay-only
-    refusal above. v31.1, at bitcoin/bitcoin@9be056a8a7, answers an
-    empty request the same as any other and keeps the peer, as this
-    node did before this check.
+    Core, at bitcoin/bitcoin@f0de87f040, the v32.1 tag -- "No legitimate
+    reason to send indexes empty" -- sets `fDisconnect` rather than
+    calling `Misbehaving`, so this raises no `MisbehavingError` and
+    instead drops the peer directly, matching `tx`'s own block-relay-only
+    refusal above.
     """
     request = GetBlockTxn.parse(msg)
     if not request.indexes:

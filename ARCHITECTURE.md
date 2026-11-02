@@ -75,10 +75,10 @@ fixes there; a thread of the call's own hashes them, reading no state of
 it, as the others are. `stop` ends the scan at its next coin.
 
 `dumptxoutset` is not: it writes the snapshot on `Node`'s thread, a step of
-coins at a time. A rollback dump invalidates the block after its target,
-writes, and reconsiders it, with the network off meanwhile. The invalidate
-and the reconsider run without yielding, so a deep rollback holds `Node`'s
-loop, where Core does it on an HTTP worker thread.
+coins at a time. A rollback dump leaves the chain as it is, and first reads
+the undo data of the blocks above its target into a temporary store. That
+runs without yielding, so a deep rollback holds `Node`'s loop, where Core
+does it on an HTTP worker thread.
 
 `scantxoutset` is not either: it walks the same cursor on `Node`'s thread,
 a step of coins at a time, and yields between steps. `status` and `abort` are
@@ -158,7 +158,13 @@ a filter — and its serialization come from btclib, and so does the
 consensus rule that decides whether a transaction or a block is valid.
 btclib-node does not reimplement any of that: it is the loop above, the
 threads and the locking that loop needs, the store, and the two surfaces
-a peer and a caller reach it through. `tests/unit/` mirrors the layout
-above, `tests/functional/` builds a node and speaks to it over a socket,
-and `tests/integration/` runs one against a real `bitcoind`
-(`.github/workflows/integration-bitcoind.yml`).
+a peer and a caller reach it through. Descriptors and miniscript come
+from [bip32-descriptors](https://github.com/btclib-org/bip32-descriptors),
+the `desc` of every scriptPubKey answer included. The `test` group keeps
+btclib-wallet for `tests/functional/rpc/chain_test.py` and `tx_test.py`,
+which check its `BitcoinCoreFetcher` against this node, until they move
+to btclib-functional-tests
+([ISS btclib-org/btclib-functional-tests#544](https://github.com/btclib-org/btclib-functional-tests/issues/544)).
+`tests/unit/` mirrors the layout above, `tests/functional/` builds a
+node and speaks to it over a socket, and `tests/integration/` runs one
+against a real `bitcoind` (`.github/workflows/integration-bitcoind.yml`).

@@ -7,7 +7,7 @@ name = "btclib-node"
 # one cycle takes and what each means. The release's own pull request
 # replaces it by hand with the date the release is cut, YYYY.M.D, whose
 # month need not be this one.
-version = "2026.10.25"
+version = "2026.11"
 description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
@@ -84,40 +84,24 @@ dependencies = [
     # `btclib.p2p.headers_sync` and `HEADERS_SYNC_PARAMS`
     # (btclib-org/btclib#2718), which `p2p/callbacks.py` and `chains.py`
     # import.
-    "btclib[secp256k1,bip324]>=2026.10.24",
-    # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
-    # `btclib_wallet.descriptors`, where btclib's own `descriptors`
-    # moved (btclib-org/btclib#2129): a runtime dependency now, not the
-    # `test` group's own it used to be, carried there only for
-    # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
-    # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.25, the first release that asks for
-    # `btclib>=2026.10.24` and `ecc>=2026.10.23`: an earlier one imports
-    # btclib names that 2026.10.24 renames, such as
-    # `taproot.output_pubkey_from_merkle_root`, and fails at import beside
-    # it (btclib-org/btclib-node#2008).
-    #
-    # 2026.10.9 is the first release carrying `Descriptor.expand`,
-    # which returns the scripts and the provider from one derivation of each
-    # key and which `scantxoutset` expands with (btclib-org/btclib-wallet#303,
-    # btclib-org/btclib-node#1850).
-    #
-    # 2026.10.8 is the release fixing GHSA-62jf-v327-86h5: 2026.10.7 quotes
-    # a private key in a refusal that `scantxoutset` answers with.
-    # 2026.10.7 is the first release carrying `infer_descriptor` and
-    # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
-    # 2026.10.4 is the first whose `parse` refuses a key of another
-    # network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.25",
+    # 2026.10.28 is the first release whose `BlockContext.min_version`
+    # sets no version floor below the BIP34, BIP66 and BIP65 heights, as
+    # Core does: an earlier one refuses a block of version 0 or below
+    # there, which `add_headers` accepts (btclib-org/btclib#2833). The
+    # floor is the maintainer's decision.
+    "btclib[secp256k1,bip324]>=2026.10.28",
+    # Descriptors and miniscript, as ARCHITECTURE.md's *What is delegated,
+    # and what is not* says. The floor is 2026.10.31, the first release.
+    "bip32-descriptors>=2026.10.31",
     # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
     # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
     # its signatures through the same package.
     #
-    # The floor is 2026.10.23, the release btclib 2026.10.24 asks for.
+    # The floor is 2026.10.28, the release btclib 2026.10.28 asks for.
     # 2026.10.2 fixed GHSA-r5pw-9wrg-m3mj and GHSA-m38m-987v-j55h.
-    "ecc>=2026.10.23",
+    "ecc>=2026.10.28",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -353,6 +337,12 @@ test = [
     # The floor is 0.8.0.10, the release fixing GHSA-8h6f-34jj-7p6c.
     # `ecc[secp256k1]`, which `btclib[secp256k1]` brings, asks for 0.8.0.12.
     "btclib-secp256k1>=0.8.0.10",
+    # For `tests/functional/rpc/chain_test.py` and `tx_test.py`, as
+    # ARCHITECTURE.md's *What is delegated, and what is not* says. The
+    # floor is 2026.10.25, the first release that asks for
+    # `btclib>=2026.10.24` and `ecc>=2026.10.23`
+    # (btclib-org/btclib-node#2008).
+    "btclib-wallet>=2026.10.25",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
@@ -689,8 +679,8 @@ package = ["src/btclib_node"]
 # `git ls-files`, `tests/pragma_test.py` runs `git grep` over every
 # tracked .py file, `tests/secret_free_test.py` tests the helper copied
 # verbatim from btclib-org/.github, and the rest load a script under
-# .github/scripts/ by path -- so each mirrors no module of the package
-# and drives no node.
+# .github/scripts/ or scripts/ by path -- so each mirrors no module of
+# the package and drives no node.
 # Naming one is what collects it -- and [tool.coverage.run]'s `source`
 # takes all of tests/, so a module no run collects is a file the floor
 # reports at zero.
@@ -717,6 +707,7 @@ testpaths = [
     "tests/check_vendored_pin_test.py",
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
+    "tests/openrpc_test.py",
     "tests/pragma_test.py",
     "tests/property_test.py",
     "tests/release_digests_test.py",
@@ -750,10 +741,11 @@ addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
 markers = [
     "slow: too slow for every run; skipped unless --run-slow is given",
 ]
-# This suite has no `xfail` today (`grep -rn xfail tests/` matches only
-# a comment in tests/_data/README.md, not a call), so turning it on costs
-# nothing, where waiting for the first one risks that nobody notices it
-# stopped meaning anything.
+# An `xfail` here is a known divergence, and its reason cites the issue
+# tracking it. Strict, so a case that starts passing fails the run until
+# its mark goes, instead of the mark going on meaning nothing. Where the
+# divergence raises one known exception type, the mark names it
+# (`raises=`), so that a timeout or a crash still fails the run.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the

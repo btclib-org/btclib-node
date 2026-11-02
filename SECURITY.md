@@ -51,6 +51,11 @@ The latest security review is dated 2026-09-30.
 [assurance case](./ASSURANCE_CASE.md), and
 [issue 1559](https://github.com/btclib-org/btclib-node/issues/1559) records it.
 
+The review's scope is the tree at commit `02b2ed6effd2`, and release v2026.9.24
+where its RPC code differs.
+[What changed since](https://github.com/btclib-org/btclib-node/compare/02b2ed6effd25567c6e17c4adf53276f514a7fa5...main)
+is that commit's comparison with `main`.
+
 ## Supported versions
 
 Only the latest release is supported: a fix is published as a new
@@ -150,14 +155,22 @@ fails to parse, and a command-line argument refused as an invalid parameter,
 are quoted as ASSURANCE_CASE.md's CWE-209 entry says. So are the key of an
 unknown configuration value, which is also given its file and line, and a
 section name, in the unrecognized-section warning and in the log of the
-configuration. Bitcoin Core quotes each of these whole, at
+configuration, and a `settings.json` name, in the unknown-name warning and in
+the log of the settings. Bitcoin Core quotes each of these whole, at
 bitcoin/bitcoin@db0bde16b9: the descriptor at `rpc/util.cpp:1370`, the line
 in `GetConfigOptions` (`src/common/config.cpp`), the argument in
 `ParseParameters` (`src/common/args.cpp:234`), the key in `ReadConfigStream`
-(`src/common/config.cpp:110`), and the section in
+(`src/common/config.cpp:110`), the section in
 `AppInitParameterInteraction` (`src/init.cpp:992`) and `logArgsPrefix`
-(`src/common/args.cpp:988`). A refusal reaches stderr, logs and the RPC
+(`src/common/args.cpp:988`), and the `settings.json` name in
+`ReadSettingsFile`'s warning (`src/common/args.cpp:479`) and in `LogArgs`
+(`src/common/args.cpp:1007`). A refusal reaches stderr, logs and the RPC
 caller.
+
+Core's log of the settings also writes each `settings.json` value in clear,
+a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
+`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7). This node masks some
+of them, as ASSURANCE_CASE.md's CWE-209 entry says.
 
 What a refusal may print about a secret is the organization's rule, section 7's
 *A refusal carries no secret* in
@@ -172,6 +185,25 @@ This node writes it again as it connects each block, and wipes it because
 the wipe a corrupt record would survive the rebuild. A stop between the
 chainstate wipe and the undo wipe keeps the old patches until a start with
 the option wipes them.
+
+The log escapes C1 controls, U+0080 to U+009F, as `\x` and two hex digits,
+beside the C0 controls and DEL that Bitcoin Core escapes too
+(btclib-org/btclib-node#1952). Core's `BCLog::LogEscapeMessage` escapes bytes
+below 0x20 and 0x7f (`src/logging.cpp`, at bitcoin/bitcoin@aa76bd266d). A C1
+control's UTF-8 is 0xc2 and a byte from 0x80 to 0x9f, so Core writes it as it
+is, and a terminal that decodes UTF-8 and honours C1 controls acts on it in a
+log it shows, as it would on an ESC. The cost is a log line that differs from
+Core's where a message holds such a character.
+
+Where the reader of a named pipe goes during `dumptxoutset`, this node answers
+`AutoFile::write`'s failure (btclib-org/btclib-node#2187). Bitcoin Core
+answers that where a write fails, and `Error closing`'s message where the
+bytes left fit its `FILE` buffer and only the close fails
+(`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@f0de87f040, v32.1). The two
+cases split on a buffer size in Core's C library, so no client can rely on
+which text it gets. The failure and its RPC code, `RPC_MISC_ERROR`, are the
+same. The cost is a message that differs from Core's where the reader goes
+near the end of a dump.
 
 ## Limitations, not vulnerabilities
 

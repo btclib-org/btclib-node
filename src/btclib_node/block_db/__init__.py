@@ -69,12 +69,7 @@ class Coin(_BtclibCoin):
     bitcoin/bitcoin@204256c73f) except for one thing -- Core additionally
     runs the output through `TxOutCompression`, a space optimisation not
     reproduced here, so the two do not agree byte for byte and are not
-    meant to. `KeyValueStore`'s own store is measured write-dominated
-    rather than read-dominated -- a modern block's own reads costing on
-    the order of 3us each against 17us for a delete or a put at eight
-    million rows (btclib-org/btclib-node#586) -- which argues for a
-    varint kept as tight as `var_int` already makes it, not for folding
-    in a second space optimisation on top of it.
+    meant to.
 
     `UtxoIndex.add_block` sets `height` and `is_coinbase` when an output
     is first created; `UtxoIndex.apply_rev_block` restores a `Coin`

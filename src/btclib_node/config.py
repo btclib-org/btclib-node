@@ -11,8 +11,8 @@ Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
-`listen_port` read an address Core's `Lookup` reads, for `-externalip`
-and `-bind`, `parse_whitebind` that of `-whitebind`.
+`listen_port` read an address Core's `Lookup` reads, for `-externalip`,
+`-bind` and `-rpcbind`, `parse_whitebind` that of `-whitebind`.
 `get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
 `-blocksdir`. All of these are public here because other modules read
 them.
@@ -58,13 +58,14 @@ from btclib_node.rpc.auth import (
     cookie_perms,
     parse_whitelist,
 )
-from btclib_node.rpc.connection import REQUEST_TIMEOUT
+from btclib_node.rpc.connection import IDLE_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = [
     "DEFAULT_DUST_RELAY_FEERATE",
+    "DEFAULT_FULL_RELAY_INBOUND_PCT",
     "DEFAULT_INCREMENTAL_RELAY_FEERATE",
     "DEFAULT_MAX_DATACARRIER_BYTES",
     "DEFAULT_MAX_HTTP_CONNECTIONS",
@@ -104,21 +105,16 @@ DEFAULT_DUST_RELAY_FEERATE = FeeRate(sats_per_kvbyte=3000)
 # `MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR`: the default of
 # `-datacarriersize`, in bytes.
 DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
-# Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
-# (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
-# v31.1 at bitcoin/bitcoin@9be056a8a7. Core's `master` sets 200 (at
-# bitcoin/bitcoin@e8e7e91a11) beside `-inboundrelaypercent`, which by
-# default holds transaction-relaying inbound peers to half of the
-# inbound slots; this node has no such split, so it takes the value the
-# pinned release pairs with no split either.
-DEFAULT_MAX_PEER_CONNECTIONS = 125
+# Core's own `-maxconnections` and `-inboundrelaypercent` defaults,
+# `DEFAULT_MAX_PEER_CONNECTIONS` and `DEFAULT_FULL_RELAY_INBOUND_PCT`
+# (`src/net.h`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins): the automatic connections, and the
+# percentage of the inbound slots transaction-relaying peers may hold.
+DEFAULT_MAX_PEER_CONNECTIONS = 200
+DEFAULT_FULL_RELAY_INBOUND_PCT = 50
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
-# (`src/httpserver.h`, at bitcoin/bitcoin@649bc0a645, in v32.0rc4 too):
-# the most RPC clients connected at once. The release
-# `integration-bitcoind.yml` pins, v31.1, has no such option and sets no
-# limit. This node takes `master`'s, since without a limit any client
-# that reaches the port can use up the descriptors the peers and the
-# store need (btclib-org/btclib-node#1953).
+# (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# the most RPC clients connected at once.
 DEFAULT_MAX_HTTP_CONNECTIONS = 16
 # A named module-level singleton rather than `Main()` written straight
 # into __init__'s own signature below: a call there is made once, at
@@ -561,8 +557,8 @@ class Config:
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
     # interface this names. `None` is Core's own default, `::1` and
-    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
+    # `127.0.0.1` both (`GetBindAddresses`, `src/httpserver.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); a host a Python
     # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
     # are not both given. P2pManager binds every interface unless
     # `bind` below names some, and is right to, since a peer listener is
@@ -570,7 +566,7 @@ class Config:
     rpc_host: str | None
     # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
     # them where `rpcallowip` below names something, and warns over them
-    # where it does not, as `HTTPBindAddresses` does.
+    # where it does not, as `GetBindAddresses` does.
     rpcbind: tuple[str, ...]
     # Core's `-rpcallowip` values, which `RpcManager` parses when it
     # starts, as `InitHTTPServer` parses them, and closes a connection
@@ -583,13 +579,8 @@ class Config:
     whitelist: tuple[str, ...]
     whitelist_relay: bool
     whitelist_force_relay: bool
-    # Core's own `-rpcservertimeout`, in seconds: how long
-    # `RpcConnection.run` may take reading one request, and the idle gap
-    # a kept-alive connection may sit in between two of them, both
-    # matched to `REQUEST_TIMEOUT` by default. `RpcManager.__init__` is
-    # where `0` and `-1` both read as no bound at all, as they do for
-    # Core's own `evhttp_set_timeout` (`rpc.manager._request_timeout`'s
-    # own docstring).
+    # Core's own `-rpcservertimeout`, in seconds: how long an RPC
+    # connection may sit idle (`rpc.manager._idle_timeout`).
     rpcservertimeout: int
     # Core's own `-rpcmaxconnections`: how many RPC clients
     # `RpcManager` holds at once. `rpc.manager`'s module docstring has
@@ -665,6 +656,9 @@ class Config:
     # no chain (`cli._warn_unrecognized_sections`), logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str
+    # `SetLoggingCategories`'s warnings, one per deprecated category it
+    # reads (`cli._resolve_debug`), logged after `section_warning`
+    debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
     # `section_warning`
@@ -727,7 +721,7 @@ class Config:
     # a tip's age against this, in seconds, rather than building a
     # `timedelta` from it.
     max_tip_age: int
-    # Core's own `-acceptstalefeeestimates`: read `fee_estimates.dat`
+    # Core's own `-acceptstalefeeestimates`: read `block_policy_estimates.dat`
     # however old it is, on regtest alone (`FeeEstimator`)
     accept_stale_fee_estimates: bool
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
@@ -857,6 +851,12 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-inboundrelaypercent`: the percentage of the inbound
+    # slots that transaction-relaying peers may hold. `cli` clamps it to
+    # 0 to 100, as `AppInitMain` does (`src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040), and `P2pManager.__init__` turns it
+    # into a count.
+    inbound_relay_percent: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
     # soft-sets it off under `-connect` or a `-maxconnections` whose
@@ -944,7 +944,7 @@ class Config:
         whitelist: Sequence[str] = (),
         whitelist_relay: bool = True,
         whitelist_force_relay: bool = False,
-        rpcservertimeout: int = int(REQUEST_TIMEOUT),
+        rpcservertimeout: int = int(IDLE_TIMEOUT),
         rpcmaxconnections: int = DEFAULT_MAX_HTTP_CONNECTIONS,
         allow_p2p: bool = True,
         allow_rpc: bool = True,
@@ -981,6 +981,7 @@ class Config:
         v2transport: bool = True,
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -1000,6 +1001,7 @@ class Config:
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
         section_warning: str = "",
+        debug_warnings: Sequence[str] = (),
         config_args: Sequence[str] = (),
         config_file_line: str = "",
     ) -> None:
@@ -1086,6 +1088,7 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.inbound_relay_percent = inbound_relay_percent
         _refuse_rpcmaxconnections(rpcmaxconnections)
         self.rpcmaxconnections = rpcmaxconnections
         self.fixed_seeds = fixed_seeds
@@ -1158,6 +1161,7 @@ class Config:
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
         self.section_warning = section_warning
+        self.debug_warnings = tuple(debug_warnings)
         self.config_args = tuple(config_args)
         self.config_file_line = config_file_line
         self.min_relay_feerate = min_relay_feerate

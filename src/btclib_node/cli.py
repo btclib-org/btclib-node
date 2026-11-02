@@ -21,27 +21,29 @@ Each option is registered with the flags `SetupServerArgs`
 (`src/init.cpp`, same sha), `SetupChainParamsBaseOptions`
 (`src/chainparamsbase.cpp`) and `AddLoggingArgs` (`src/init/common.cpp`)
 give it, and each is read the way Core's own code reads it --
-`build_config` below names the reader at each one. `-maxconnections`'s
-default is the pinned release's rather than Core `master`'s,
-`config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` saying why.
+`build_config` below names the reader at each one. An option v32.1
+added, `-inboundrelaypercent` and `-rpcmaxconnections` among them, is
+registered in `src/init.cpp` at bitcoin/bitcoin@f0de87f040 -- v32.1, the
+release `integration-bitcoind.yml` pins, rather than at that sha.
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and `-dustrelayfee`
-are BTC/kvB, as Core's, and `Config`'s `min_relay_feerate`,
-`incremental_relay_feerate` and `dust_relay_feerate` the same rates in
-sat/kvB. Two `Config` fields
-have no option here: `log_path` (this command always takes
-`Config`'s own default -- a file under the data directory -- an operator
-who wants console output can read it from there), and `allow_p2p` (the
-P2P listener is always requested; `-listen=0` is what keeps it from
+init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and
+`-dustrelayfee` are BTC/kvB, as Core's, and `Config`'s
+`min_relay_feerate`, `incremental_relay_feerate` and
+`dust_relay_feerate` the same rates in sat/kvB. Two `Config` fields have
+no option here: `log_path` (this command always takes `Config`'s own
+default -- a file under the data directory -- an operator who wants
+console output can read it from there), and `allow_p2p` (the P2P
+listener is always requested; `-listen=0` is what keeps it from
 accepting connections).
 
 `-debug=<category>` takes Core's logging category names
-(`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, same sha) and refuses any
-other with Core's own "Unsupported logging category" message
-(`SetLoggingCategories`, `src/init/common.cpp`), and `0` or `none`
-discards the categories before it. Each debug line is written under
+(`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag), and `libevent` with Core's warning that it does nothing.
+It refuses any other with Core's own "Unsupported logging category"
+message (`SetLoggingCategories`, `src/init/common.cpp`), and `0` or
+`none` discards the categories before it. Each debug line is written under
 Core's category for it (`Logger.log_debug`), and `-debug` with no
 category, `1` or `all` selects every one. `-debugexclude=<category>` takes
 a category out after `-debug`'s, refused the same way.
@@ -111,12 +113,11 @@ the active chain's section over the default section; within the command
 line the last value, within a file the first, the chain selectors
 aside; and a negation discarding every value named before it at its own
 level.
-`-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
-`-rpcbind`, `-rpcallowip`, `-whitelist`, `-whitebind`, `-debug` and
-`-shutdownnotify` are lists, every value from every level applying --
-`-shutdownnotify` alone among the four notify options below, Core reading
-it with `GetArgs` rather than the `GetArg` the other three are read with
-(`notify.py`'s own module docstring).
+An option Core reads with `GetArgs`, which `_get_args` below ports, is a
+list, every value from every level applying: `-connect` and `-debug`
+among them, and `-shutdownnotify` alone among the four notify options
+below, Core reading it with `GetArgs` rather than the `GetArg` the other
+three are read with (`notify.py`'s own module docstring).
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -205,9 +206,10 @@ from btclib.fee import FeeRate
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
-from btclib_node.chains import Main, SigNet, TestNet, TestNet4
+from btclib_node.chains import BURIED_DEPLOYMENTS, Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_DUST_RELAY_FEERATE,
+    DEFAULT_FULL_RELAY_INBOUND_PCT,
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
     DEFAULT_MAX_DATACARRIER_BYTES,
     DEFAULT_MAX_HTTP_CONNECTIONS,
@@ -241,7 +243,7 @@ from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
-from btclib_node.rpc.connection import REQUEST_TIMEOUT
+from btclib_node.rpc.connection import IDLE_TIMEOUT
 from btclib_node.settings_file import (
     SETTINGS_FILENAME,
     Json,
@@ -254,6 +256,8 @@ from btclib_node.settings_file import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from btclib_node.chains import Chain
 
 __all__ = ["build_config", "main"]
 
@@ -287,6 +291,10 @@ _LEADING_INTEGER = re.compile(r"-?[0-9]+")
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 _INT_MIN = -(2**31)
 _INT_MAX = 2**31 - 1
+# `ToIntegral<int32_t>`'s grammar, an optional `-` and ASCII digits and
+# nothing else, its leading zeros matched apart so that `int` reads at
+# most ten digits
+_ACTIVATION_HEIGHT = re.compile(r"(-?)0*([0-9]{1,10})")
 # the MiB a `uint64_t` byte count wraps at
 _PRUNE_MIB_WRAP = 2**64 // 2**20
 
@@ -299,8 +307,9 @@ _CHAIN_ALIASES = {
 }
 
 # `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`,
-# at bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
-# it out, it being compiled in only under `DEBUG_LOCKCONTENTION`.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), `lock` left out as a
+# release build leaves it out, it being compiled in only under
+# `DEBUG_LOCKCONTENTION`.
 _LOG_CATEGORIES = frozenset(
     {
         "net",
@@ -320,7 +329,6 @@ _LOG_CATEGORIES = frozenset(
         "prune",
         "proxy",
         "mempoolrej",
-        "libevent",
         "coindb",
         "qt",
         "leveldb",
@@ -333,8 +341,13 @@ _LOG_CATEGORIES = frozenset(
         "txpackages",
         "kernel",
         "privatebroadcast",
+        "mining",
     }
 )
+
+# what `GetLogCategory` accepts outside `LOG_CATEGORIES_BY_STR`, warning
+# that it does nothing (same file, same tag)
+_DEPRECATED_CATEGORY = "libevent"
 
 # `GetLogCategory`'s own spellings of every category at once, and the two
 # `SetLoggingCategories` reads as discarding the categories before them.
@@ -609,6 +622,13 @@ _OPTIONS: dict[str, _Option] = {
         "Print help message with debugging options and exit",
         _DEBUG_TEST_TITLE,
     ),
+    "inboundrelaypercent": _Option(
+        "=<n>",
+        "Permit a maximum percent of inbound connections to relay transactions, "
+        "to limit memory utilization (0 to 100, default: "
+        f"{DEFAULT_FULL_RELAY_INBOUND_PCT}).",
+        _CONNECTION_TITLE,
+    ),
     "includeconf": _Option(
         "=<file>",
         "Specify additional configuration file, relative to the -datadir path "
@@ -654,7 +674,8 @@ _OPTIONS: dict[str, _Option] = {
         "=<n>",
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
-        "-connect or -addnode",
+        "-connect or -addnode. See -inboundrelaypercent for more information "
+        "about limits applied to transaction relay inbound peers.",
         _CONNECTION_TITLE,
     ),
     "maxreceivebuffer": _Option(
@@ -796,7 +817,7 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "rpcservertimeout": _Option(
         "=<n>",
-        f"Timeout during HTTP requests (default: {int(REQUEST_TIMEOUT)})",
+        f"Timeout during HTTP requests (default: {int(IDLE_TIMEOUT)})",
         _RPC_TITLE,
         debug_only=True,
     ),
@@ -850,6 +871,16 @@ _OPTIONS: dict[str, _Option] = {
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
     "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
+    # Core's registration (`src/chainparamsbase.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
+    # parameter included
+    "testactivationheight": _Option(
+        "=name@height.",
+        "Set the activation height of 'name' (segwit, bip34, dersig, cltv, "
+        "csv). (test-only)",
+        _DEBUG_TEST_TITLE,
+        debug_only=True,
+    ),
     "testnet": _Option(
         "",
         "Use the testnet3 chain. Equivalent to -chain=test. Support for "
@@ -962,6 +993,8 @@ class _Settings:
     # `_warn_unrecognized_sections`'s one warning, logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str = field(default="", repr=False)
+    # `_resolve_debug`'s warnings, logged after `section_warning`
+    debug_warnings: list[str] = field(default_factory=list, repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
     config_file_line: str = ""
@@ -1500,14 +1533,21 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
     name inside it, each sorted, and each value in the order it was
     read -- masked to `****` where `_Option.sensitive` is Core's own
-    `SENSITIVE` flag. Every name reaching this is already in `_OPTIONS`:
-    `_parse_conf_text` drops an unknown config key with its own warning,
-    and `_parse_parameters` refuses an unknown command-line one outright,
-    so Core's own `if (flags)` guard around this has nothing left here to
-    be false for. `LogArgs`'s middle category, "Setting file arg:", is
-    `settings.json`'s: every name it holds, known or not, in key order,
-    its value as `write_json` writes it. A section is quoted by
-    `_quoted_line`, which Core's is not: its name may hold a password.
+    `SENSITIVE` flag. Every config-file and command-line name reaching this
+    is already in `_OPTIONS`: `_parse_conf_text` drops an unknown config
+    key with its own warning, and `_parse_parameters` refuses an unknown
+    command-line one outright, so Core's own `if (flags)` guard around this
+    has nothing left here to be false for. `LogArgs`'s middle category,
+    "Setting file arg:", is `settings.json`'s: every name it holds, known
+    or not, in key order.
+
+    This tree departs from Core on purpose where a log line may hold a
+    secret (ASSURANCE_CASE.md, "Common implementation weaknesses"). A
+    section and a `settings.json` name are quoted by `_quoted_line`, which
+    Core's are not: either may hold a password. A `settings.json` value is
+    written as `write_json` writes it only where its name is a known option
+    that is not `sensitive`; Core writes every one in clear. An unknown name
+    may be a sensitive option misspelled, so its value is `****`.
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
@@ -1517,10 +1557,10 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
             for value in values:
                 shown = "****" if sensitive else _setting_to_write_str(value)
                 lines.append(f"Config file arg: {prefix}{name}={shown}")
-    lines.extend(
-        f"Setting file arg: {name} = {write_json(value)}"
-        for name, value in settings.rw_settings.items()
-    )
+    for name, setting in settings.rw_settings.items():
+        option = _OPTIONS.get(_interpret_key(name).name)
+        shown = "****" if option is None or option.sensitive else write_json(setting)
+        lines.append(f"Setting file arg: {_quoted_line(name)} = {shown}")
     for name, values in sorted(settings.command_line.items()):
         sensitive = _OPTIONS[name].sensitive
         for value in values:
@@ -1637,6 +1677,20 @@ def _get_rpcmaxconnections(settings: _Settings) -> int:
         err_msg = "JSON integer out of range"
         raise ValueError(err_msg)
     return min(max(value, _INT_MIN), _INT_MAX)
+
+
+def _get_inboundrelaypercent(settings: _Settings) -> int:
+    """Return `-inboundrelaypercent` as `AppInitMain` reads it.
+
+    `std::clamp<int>` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040 --
+    v32.1, the release `integration-bitcoind.yml` pins) narrows the
+    `int64_t` to an `int` first, as `_to_int` does, then clamps it to 0
+    to 100.
+    """
+    value = _get_int(settings, "inboundrelaypercent")
+    if value is None:
+        value = DEFAULT_FULL_RELAY_INBOUND_PCT
+    return min(max(_to_int(value), 0), 100)
 
 
 def _get_thousands(settings: _Settings, name: str, default: int) -> int:
@@ -1775,38 +1829,83 @@ def _chain_section(settings: _Settings) -> str:
     )
 
 
+def _warn_deprecated_category(settings: _Settings) -> None:
+    """Append `GetLogCategory`'s warning over `libevent` to `settings`."""
+    settings.debug_warnings.append(
+        f"The logging category `{_DEPRECATED_CATEGORY}` is deprecated, does "
+        "nothing, and will be removed in a future version"
+    )
+
+
 def _resolve_debug(
     settings: _Settings,
 ) -> tuple[bool, frozenset[str], frozenset[str]]:
     """Return whether `-debug` is on, for which categories, and but for which.
 
     `SetLoggingCategories` (`src/init/common.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): the categories after the last `0` or
-    `none`, each refused unless `GetLogCategory` (`src/logging.cpp`)
-    knows it. The first set is empty where every category is on, `-debug`,
-    `-debug=1` or `-debug=all` being among them. The second is
-    `-debugexclude`'s, applied after `-debug`'s and refused the same way
-    for a category Core does not know; `all` excludes every one.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the categories after the
+    last `0` or `none`, each refused unless `GetLogCategory`
+    (`src/logging.cpp`) knows it. The first set is empty where every
+    category is on, `-debug`, `-debug=1` or `-debug=all` being among
+    them. The second is `-debugexclude`'s, applied after `-debug`'s and
+    refused the same way for a category Core does not know; `all`
+    excludes every one. `libevent`, in either, selects nothing and
+    appends `GetLogCategory`'s warning to `settings.debug_warnings`.
     """
     categories = _get_args(settings, "debug")
     discard = [i for i, category in enumerate(categories) if category in _DEBUG_NONE]
     enabled = categories[discard[-1] + 1 :] if discard else categories
     for category in enabled:
-        if category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
+        if category == _DEPRECATED_CATEGORY:
+            _warn_deprecated_category(settings)
+        elif category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
             err_msg = f"Unsupported logging category -debug={category}."
             raise ValueError(err_msg)
+    enabled = [category for category in enabled if category != _DEPRECATED_CATEGORY]
     excluded: set[str] = set()
     for category in _get_args(settings, "debugexclude"):
         if category in _DEBUG_ALL:
             excluded |= _LOG_CATEGORIES
         elif category in _LOG_CATEGORIES:
             excluded.add(category)
+        elif category == _DEPRECATED_CATEGORY:
+            _warn_deprecated_category(settings)
         else:
             err_msg = f"Unsupported logging category -debugexclude={category}."
             raise ValueError(err_msg)
     if any(category in _DEBUG_ALL for category in enabled):
         return True, frozenset(), frozenset(excluded)
     return bool(enabled), frozenset(enabled), frozenset(excluded)
+
+
+def _get_activation_heights(settings: _Settings) -> dict[str, int]:
+    """Return `-testactivationheight`'s heights by deployment name.
+
+    Core's `HandleDeploymentArgs` (`src/chainparams.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), on every chain: each
+    value is split at its first `@`, the height after it is
+    `ToIntegral<int32_t>`'s, refused below zero and from `INT_MAX` up,
+    and the name before it is a key of `BURIED_DEPLOYMENTS`. A later
+    value for the same name wins.
+    """
+    heights: dict[str, int] = {}
+    for arg in _get_args(settings, "testactivationheight"):
+        name, found, value = arg.partition("@")
+        if not found:
+            err_msg = f"Invalid format ({arg}) for -testactivationheight=name@height."
+            raise ValueError(err_msg)
+        match = _ACTIVATION_HEIGHT.fullmatch(value)
+        # `-0` is zero, and any other negative refused
+        if match is None or (match[1] and int(match[2])) or int(match[2]) >= _INT_MAX:
+            err_msg = (
+                f"Invalid height value ({arg}) for -testactivationheight=name@height."
+            )
+            raise ValueError(err_msg)
+        if name not in BURIED_DEPLOYMENTS:
+            err_msg = f"Invalid name ({arg}) for -testactivationheight=name@height."
+            raise ValueError(err_msg)
+        heights[name] = int(match[2])
+    return heights
 
 
 def _help_message(*, show_debug: bool) -> str:
@@ -1964,9 +2063,10 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     over `ArgsManager::ReadSettingsFile` and `WriteSettingsFile`
     (`src/common/args.cpp`), each failure refused in Core's words: "Settings
     file could not be read", or "written", and what `settings_file.py` says.
-    A name no option has is warned of in the log alone. The path is asked
-    for again by the write, as `WriteSettingsFile` does, after the file's
-    own `settings` key has had its say.
+    A name no option has is warned of in the log alone, quoted by
+    `_quoted_line`, which Core's warning is not: the name may be a secret.
+    The path is asked for again by the write, as `WriteSettingsFile` does,
+    after the file's own `settings` key has had its say.
     """
     path = _settings_path(settings, net_dir)
     if path is None:
@@ -1983,7 +2083,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
         err_msg = f"Settings file could not be read:\n- {error}"
         raise ValueError(err_msg) from None
     settings.log_warnings.extend(
-        f"Ignoring unknown rw_settings value {name}"
+        f"Ignoring unknown rw_settings value {_quoted_line(name)}"
         for name in settings.rw_settings
         if _interpret_key(name).name not in _OPTIONS
     )
@@ -2200,13 +2300,19 @@ def _prune_target_mib(prune: int) -> int:
     return target_mib
 
 
-def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
+def _read_settings(
+    argv: Sequence[str],
+) -> tuple[_Settings, Path, str, dict[str, int]]:
     """Return `argv`'s settings, file included, data directory and chain.
 
     `ParseArgs` (`src/bitcoind.cpp`, at bitcoin/bitcoin@9be056a8a7) in
     its order: the command line, then the file and the chain it selects,
     then the refusal of an argument that is not an option; and after it
     `ProcessInitCommands`'s help, printed to stdout with exit `0`.
+    The fourth value is `-testactivationheight`'s, read where
+    `InitConfig`'s `SelectParams` reads it (`src/common/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): once the chain is
+    known, before `settings.json` is.
     """
     warnings: list[str] = []
     options, token = _parse_parameters(argv, warnings)
@@ -2275,6 +2381,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
+    activation_heights = _get_activation_heights(settings)
     net_dir = os.path.join(base_display, chain_name)  # noqa: PTH118
     _make_data_dirs(net_dir)
     _check_ignored_conf(settings, base_dir, conf_path)
@@ -2293,7 +2400,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
             _help_message(show_debug=bool(_get_bool(settings, "help-debug")))
         )
         raise SystemExit(0)
-    return settings, base_dir, chain_name
+    return settings, base_dir, chain_name, activation_heights
 
 
 @dataclass(frozen=True)
@@ -2312,6 +2419,8 @@ class _BeforeLock:
     settings: _Settings
     base_dir: Path
     chain_name: str
+    # `directories.chain` with `-testactivationheight`'s heights applied
+    chain: Chain
     blocksdir: str | None
     # `-maxconnections` as `GetIntArg` reads it, which the soft-set of
     # `-listen` compares with zero, and as the `int` the limit is
@@ -2440,20 +2549,21 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
-    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY` option set
-    only in the default section off `main`, the warning about a section
-    naming no chain, a missing blocks directory, `-prune` beside
-    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
-    off, a negative `-maxconnections`, a `-rpcmaxconnections` below one
-    (where Core's `master` refuses it, at bitcoin/bitcoin@649bc0a645),
-    `-debug`'s categories, `-minimumchainwork`, `-assumevalid`,
-    `-maxtipage` (the order `node::ApplyArgsManOptions`'s own
-    chainstate-manager options are read in,
-    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7),
-    `-prune`, the mempool's options.
+    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY`
+    option set only in the default section off `main`, the warning
+    about a section naming no chain, a missing blocks directory,
+    `-prune` beside `-reindex-chainstate`, `-forcednsseed` beside
+    a `-dnsseed` that is off, a negative `-maxconnections`, a
+    `-rpcmaxconnections` below one (where Core's `master` refuses
+    it, at bitcoin/bitcoin@649bc0a645), `-debug`'s categories,
+    `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage`
+    (the order `node::ApplyArgsManOptions`'s own chainstate-manager
+    options are read in, `src/node/chainstatemanager_args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), `-prune`, the mempool's options.
     """
-    settings, base_dir, chain_name = _read_settings(argv)
+    settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
     _warn_unrecognized_sections(settings)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
@@ -2496,6 +2606,12 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
+    # `IsArgSet`, so a negation is refused too and `settings.json` is
+    # read, unlike `_read_settings`'s read of the heights themselves
+    if chain_name == "mainnet" and _is_set(settings, "testactivationheight"):
+        err_msg = "The -testactivationheight option may not be used on mainnet."
+        raise ValueError(err_msg)
+    chain = directories.chain.with_activation_heights(activation_heights)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
     # applies the chainstate manager's options, ahead of the blockmanager's
     # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
@@ -2508,6 +2624,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         settings,
         base_dir,
         chain_name,
+        chain,
         blocksdir,
         max_connections_arg,
         max_connections,
@@ -2702,18 +2819,15 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
-    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
-    # `evhttp_set_timeout` as a 32-bit `int`
-    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
-    # above takes through `_to_int`.
+    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
+    # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag)
     rpcservertimeout = _get_int(settings, "rpcservertimeout")
-    rpcservertimeout = (
-        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
-    )
+    if rpcservertimeout is None:
+        rpcservertimeout = int(IDLE_TIMEOUT)
 
     return Config(
-        chain=before.chain_name,
+        chain=before.chain,
         data_dir=before.base_dir,
         blocks_dir=before.blocksdir,
         p2p_port=p2p_port,
@@ -2745,6 +2859,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         v2transport=v2transport,
         v1transport=v1transport,
         max_connections=before.max_connections,
+        inbound_relay_percent=_get_inboundrelaypercent(settings),
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,
@@ -2781,6 +2896,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
         log_warnings=settings.log_warnings,
         section_warning=settings.section_warning,
+        debug_warnings=settings.debug_warnings,
         config_args=_log_args(settings),
         config_file_line=settings.config_file_line,
     )
@@ -2873,6 +2989,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_file_line=before.settings.config_file_line,
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
+                debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )

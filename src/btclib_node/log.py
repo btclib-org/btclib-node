@@ -7,20 +7,25 @@
 A file handler where a caller names a path -- `Node.__init__` resolves
 one under `Config.data_dir` when `Config.log_path` is set -- a stream
 handler otherwise, and `close` to release whichever one it opened.
-Each line opens as Core's `debug.log` line does: `LogTimestampStr`'s
+Each record opens as Core's `debug.log` line does: `LogTimestampStr`'s
 time, in UTC and to the second, then what `GetLogPrefix` writes: the
 category of a debug line, as in `[net]`, or the level of any other line.
+The message follows on the same line, its control characters escaped as
+`_escape` says. A traceback or a stack the record carries follows on
+lines of its own, each starting with two spaces, so that none reads as a
+record; `_escape` escapes every control character in them except the
+newlines that end those lines (btclib-org/btclib-node#2092).
 
 A debug line is written through `Logger.log_debug` with Core's category
 for it, and only where `-debug` selects that category.
 
-A `Logger` writing to a file limits each source location's info,
-warning and error lines as Core's `LogRateLimiter` does (`-logratelimit`,
-on by default): `RATELIMIT_MAX_BYTES` per `RATELIMIT_WINDOW`, then one
-warning and silence until the window ends, then one more warning for
-what was dropped. Every line written while a location is silenced starts
-with `[*]` and a space. A debug line is never limited: Core's `LogDebug`
-is not, "because users specifying -debug are assumed to be developers or
+A `Logger` writing to a file limits each source location's info, warning
+and error lines as Core's `LogRateLimiter` does (`-logratelimit`, on by
+default): `RATELIMIT_MAX_BYTES` per `RATELIMIT_WINDOW`, then one warning
+and silence until the window ends, then one more warning for what was
+dropped. Every record written while a location is silenced opens with
+`[*]` and a space. A debug line is never limited: Core's `LogDebug` is
+not, "because users specifying -debug are assumed to be developers or
 power users" (`src/util/log.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 tag).
 
@@ -33,6 +38,7 @@ warning, then the data directory and configuration file lines, then
 """
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable  # noqa: TC003 -- the docs build resolves it
@@ -171,6 +177,28 @@ def _prefix(record: logging.LogRecord) -> str:
     return "[debug] "
 
 
+# C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape(text: str) -> str:
+    r"""Escape every C0 control, DEL and C1 control as `\x` and two hex digits.
+
+    It follows Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`,
+    at bitcoin/bitcoin@aa76bd266d), which escapes a newline too; the v31.1
+    tag's, at bitcoin/bitcoin@9be056a8a7, leaves it as it is. Core escapes
+    bytes, so it writes a C1 control's UTF-8 as it is; this escapes it too,
+    because a terminal reading the log can act on it, and SECURITY.md's
+    *Where this node departs from Bitcoin Core* lists the departure
+    (btclib-org/btclib-node#1952).
+    """
+    return _CONTROL_CHARS.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
+
+
+# a record's own line starts with its time or `[*] `, never with a space
+_CONTINUATION = "  "
+
+
 class _LevelFormatter(logging.Formatter):
     """A `Formatter` writing Core's time, `_prefix`, then the message.
 
@@ -186,11 +214,22 @@ class _LevelFormatter(logging.Formatter):
 
     @override
     def formatMessage(self, record: logging.LogRecord) -> str:
-        return f"{record.asctime} {_prefix(record)}{record.message}"
+        # Strip one trailing newline a caller may pass, as Core master's
+        # `Logger::Format` does before `LogEscapeMessage` (`src/logging.cpp`,
+        # at bitcoin/bitcoin@aa76bd266d), so only embedded newlines are escaped
+        message = record.message.removesuffix("\n")
+        return f"{record.asctime} {_prefix(record)}{_escape(message)}"
 
     @override
     def format(self, record: logging.LogRecord) -> str:
-        line = super().format(record)
+        # `formatMessage` escapes the message's newlines, so whatever follows
+        # the first newline is the traceback and the stack that
+        # `logging.Formatter.format` appends
+        line, newline, rest = super().format(record).partition("\n")
+        if newline:
+            line += "".join(
+                f"\n{_CONTINUATION}{_escape(part)}" for part in rest.split("\n")
+            )
         # `[*] ` ahead of the time, as `Logger::LogPrintStr_` puts it
         return f"[*] {line}" if getattr(record, "suppressing", False) else line
 
@@ -372,6 +411,7 @@ def open_history_log(  # noqa: PLR0913
     config_file_line: str = "",
     log_warnings: Sequence[str] = (),
     section_warning: str = "",
+    debug_warnings: Sequence[str] = (),
     config_args: Sequence[str] = (),
     rate_limit: bool = True,
 ) -> Logger:
@@ -405,6 +445,8 @@ def open_history_log(  # noqa: PLR0913
     logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
     if section_warning:
         logger.warning(section_warning)
+    for warning in debug_warnings:
+        logger.warning(warning)
     logger.info("Default data directory %s", default_data_dir())
     logger.info("Using data directory %s", data_dir)
     if config_file_line:

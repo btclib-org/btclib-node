@@ -43,15 +43,19 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   drains, as in Core, and one that stops reading is dropped by the ping
   timeout; the comment beside `Connection.send_buffer_max_size`
   (`src/btclib_node/p2p/connection.py`) argues what the two leave it
-  able to cost, closed as btclib-org/btclib-node#1805. Past `Config.max_connections`'s
-  inbound share, `P2pManager.server` evicts an inbound peer by Core's
-  own rules and closes the new one, before building anything for it,
-  only where every peer held is protected. A peer from a host this node
-  has discouraged is closed where it would take the last inbound slot or
+  able to cost, closed as btclib-org/btclib-node#1805. Past
+  `Config.max_connections`'s inbound share, `P2pManager.server` evicts
+  an inbound peer by Core's own rules and closes the new one, before
+  building anything for it, only where every peer held is protected.
+  Past the share `-inboundrelaypercent` gives transaction-relaying
+  inbound peers, the `version` of one more evicts one of them by the
+  same rules, the new peer protected, and closes the new one where none
+  can go (btclib-org/btclib-node#1769). A peer from a host this node has
+  discouraged is closed where it would take the last inbound slot or
   none is left, unless `-whitelist` grants it `noban`, and is otherwise
   preferred for eviction, as in Core (`src/btclib_node/p2p/manager.py`,
-  `src/btclib_node/p2p/eviction.py`),
-  closed as btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
+  `src/btclib_node/p2p/eviction.py`), closed as
+  btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
   btclib-org/btclib-node#1078.
 - **Inbound connections do not stop this node dialling.** The outbound
   dial target counts only the connections `P2pManager` dialled off its
@@ -73,9 +77,9 @@ btclib-node is an application, not a library: it opens sockets of its
 own, on both surfaces ARCHITECTURE.md's *The protocol and the RPC
 surface* describes, and it writes to a datadir on disk. The command
 below lists the top-level name of every module `src/` imports, at any
-depth and in any spelling of the statement — `bitcoin_core_rpc`,
-`btclib_wallet` and `rocksdict` beside btclib itself, and otherwise the
-standard library.
+depth and in any spelling of the statement — `bip32_descriptors`,
+`bitcoin_core_rpc`, `ecc` and `rocksdict` beside btclib itself, and
+otherwise the standard library.
 
 ```shell
 python3 - <<'EOF'
@@ -92,19 +96,21 @@ EOF
 ```
 
 `bitcoin_core_rpc` is a required dependency, and `src/` imports only
-`RPCErrorCode` and `chain_from_network` from it — its error-code and
-chain vocabulary, eagerly loaded by the package's own `__init__` — never
+`RPCErrorCode`, `chain_from_network` and `rpc_port_from_chain` from it —
+its error-code and chain vocabulary and Core's RPC ports, eagerly loaded
+by the package's own `__init__` — never
 `BitcoinCoreRpcClient` or a transport, which the package loads lazily
 and only `tests/` (never shipped) asks for. `asyncio` and `socket` are
 what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
 
-`btclib_wallet` is a required dependency: `rpc/callbacks.py` and
+`bip32_descriptors` is a required dependency: `rpc/callbacks.py` and
 `rpc/utxo_set.py` take `infer_descriptor` from its `descriptors` to write
-a script's descriptor, and `rpc/utxo_set.py` parses with its `parse` the
-descriptors a `scantxoutset` caller sends, so what it returns reaches a
-caller's answer.
+a script's descriptor, `rpc/mining.py` and `rpc/utxo_set.py` parse with
+its `parse` the descriptors a caller sends, and `signing.py` satisfies a
+miniscript with its `miniscript`, so what it returns reaches a caller's
+answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library
 with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
@@ -145,8 +151,8 @@ what is read is this machine's own interface table, never a peer's.
 - Whoever can reach the RPC port: a request's credential is checked
   before its body is decoded, and a caller without an accepted one gets
   a closed connection for a request the listener does not read whole;
-  for one it does, a 501, a 405 or a 404 for a method or a path it
-  refuses, as from `bitcoind`, and otherwise a 401.
+  for one it does, a 405 or a 404 for a method or a path it refuses, as
+  from `bitcoind`, and otherwise a 401.
 - A party on the path of a p2p connection, reading or rewriting its
   traffic.
 - A party tampering with the medium the datadir sits on, or opening the
@@ -232,14 +238,35 @@ CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
 equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
-`fee_estimates.dat`, the log file and the RPC cookie `.cookie`;
-`-blocksdir` moves the block files, `-rpccookiefile` the cookie, and
-`-conf` and `-includeconf` name the files read for options. Beside these,
-`dirlock.py` creates a `.lock`
-file in the datadir and in the blocks directory, `rpc/auth.py` writes the
-cookie through a `.tmp` file beside it, and `p2p/anchors.py` writes
-`anchors.dat` through a temporary file beside it. Nothing under `src/`
-opens a file outside those.
+`mempool.dat`, `settings.json`, the fee estimator files under `fees/` (a
+`fee_estimates.dat` an older node left is moved there), the log file and
+the RPC cookie `.cookie`; `-blocksdir` moves the block files and their
+store, `-rpccookiefile` the cookie, `-settings` the settings file, and
+`-conf` and `-includeconf` name the files read for options. Beside
+these, `dirlock.py` creates a `.lock` file in the datadir and in the
+blocks directory, `rpc/auth.py` and `settings_file.py` write the cookie
+and `settings.json` through a `.tmp` file beside each,
+`mempool_persist.py` writes `mempool.dat` through a `.new` file beside
+it, and `p2p/anchors.py` writes `anchors.dat` through a temporary file
+beside it.
+
+A caller holding an accepted credential can name a file too, where
+`-rpcwhitelist` leaves it the method. `importmempool` reads the regular
+file its `filepath` argument names. `dumptxoutset` writes the file its
+`path` argument names: a relative path is joined to the datadir, and an
+absolute one stands as it is. It writes a named pipe directly, and any
+other file through a `.incomplete` file beside it. For a block below the
+tip it also builds the temporary store `temp_utxo_<height>` beside it,
+unless `in_memory` is set.
+
+These two paragraphs name every file `src/` opens. This lists the calls
+that open one:
+
+```shell
+git grep -nP -e '(?<![\w`])(os\.|\.)?open\(' \
+  -e '\.(read|write)_(bytes|text)\(' \
+  -e '(FileHandler|KeyValueStore|Rdict)\(' -- 'src/*.py'
+```
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
@@ -289,10 +316,9 @@ describes.
   transport, the census under *Threat model* shows. The only sockets
   this process opens are the p2p and RPC listeners and the outbound
   peer connections `P2pManager.connect` makes. Names are resolved by
-  `getaddrinfo`, for the DNS seeds (`p2p/address.py`), for `-connect`
-  and `-addnode` hosts (`p2p/manager.py`) and for `-rpcbind` hosts
-  (`rpc/manager.py`). The only files it opens are the ones *The
-  environment and the files* names.
+  `getaddrinfo`, for example for the DNS seeds (`p2p/address.py`) and
+  for `-connect` and `-addnode` hosts (`p2p/manager.py`). The only files
+  it opens are the ones *The environment and the files* names.
 - **Psychological acceptability.** A malformed RPC request answers
   the HTTP status and the error `bitcoind` answers it with rather than
   closing the socket with nothing said, so a caller can tell its own
@@ -368,29 +394,28 @@ and what counters each.
   7's *A refusal carries no secret* in btclib-org/.github's README.md.
   `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
   rule's tests call. A configuration line that fails to parse, a refused
-  command-line argument, an unknown configuration key, and a section name
-  in its warning and in the configuration log are quoted up to the first
-  sensitive option's name and the first `=`, and only where that is at most
-  16 characters, a longer one being given by its length (`cli.py`'s
-  `_quoted_line`). A malformed RPC header field is named by its index and
-  its length (`rpc/connection.py`'s `_FieldReader`), and the reprs of
-  `RequestHead` and `_Settings` leave out the fields that hold a
-  credential. `tests/unit/cli_test.py`'s
+  command-line argument, an unknown configuration key, a section name in
+  its warning and in the configuration log, and a `settings.json` name in
+  its unknown-name warning and in the settings log are quoted up to the
+  first sensitive option's name and the first `=`, and only where that is
+  at most 16 characters, a longer one being given by its length (`cli.py`'s
+  `_quoted_line`). The settings log writes a `settings.json` value only
+  where its name is a known option that is not sensitive, and `****` for
+  any other (`cli.py`'s `_log_args`). A malformed RPC header field is
+  named by its index and its length (`rpc/connection.py`'s
+  `_FieldReader`), and the reprs of `RequestHead` and `_Settings` leave out
+  the fields that hold a credential. `tests/unit/cli_test.py`'s
   `test_parse_parameters_leaves_a_value_out_of_a_refusal`,
   `test_parse_conf_text_leaves_a_value_out_of_a_refusal`,
   `test_an_unknown_key_is_warned_about_by_its_name_alone`,
   `test_parse_conf_text_gives_a_long_unknown_key_by_length_and_line`,
   `test_load_conf_tree_names_the_included_file_in_an_unknown_key_warning`,
-  `test_an_unrecognized_section_is_warned_about_by_its_name_alone` and
-  `test_log_args_quotes_a_section_by_its_name_alone`, and
+  `test_an_unrecognized_section_is_warned_about_by_its_name_alone`,
+  `test_log_args_quotes_a_section_by_its_name_alone`,
+  `test_a_settings_value_is_logged_by_its_name_and_never_as_written`, and
   `tests/unit/rpc/connection_test.py`'s
   `test_a_malformed_header_is_named_by_index_not_by_its_text`, call it on
-  those refusals, warnings and log lines. This tree does not keep the rule
-  yet: `_log_args` writes each `settings.json` value as read, a sensitive
-  option's included, and btclib-org/btclib-node#1967 owes the fix with its
-  test. `_log_args` and `_init_settings_file`'s warning write each
-  `settings.json` name whole, and btclib-org/btclib-node#1986 owes the fix
-  with its test.
+  those refusals, warnings and log lines.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

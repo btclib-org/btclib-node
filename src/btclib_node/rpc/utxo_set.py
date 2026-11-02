@@ -5,8 +5,8 @@
 """The RPCs that read the UTXO set whole: `scantxoutset`.
 
 Core's `scantxoutset` is in `src/rpc/blockchain.cpp`, with the descriptor
-arguments in `src/rpc/util.cpp`, both at bitcoin/bitcoin@9be056a8a7, the
-v31.1 tag. Its `InferDescriptor` is btclib_wallet's `infer_descriptor`.
+arguments in `src/rpc/util.cpp`, both at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag. Its `InferDescriptor` is bip32_descriptors' `infer_descriptor`.
 Each handler has `rpc.callbacks`' signature and runs on `Node`'s
 thread (`ARCHITECTURE.md`).
 
@@ -24,16 +24,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
-from bitcoin_core_rpc import RPCErrorCode
-from btclib.exceptions import BTClibException, BTClibValueError
-from btclib_wallet.descriptors import (
+from bip32_descriptors.descriptors import (
     Descriptor,
     Provider,
     infer_descriptor,
     multipath_descriptors,
     strip_checksum,
 )
-from btclib_wallet.descriptors import parse as parse_descriptor
+from bip32_descriptors.descriptors import parse as parse_descriptor
+from bitcoin_core_rpc import RPCErrorCode
+from btclib.exceptions import BTClibException, BTClibValueError
 
 from btclib_node.block_db import Coin
 from btclib_node.rpc.connection import btc_amount
@@ -139,7 +139,7 @@ def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
     Core's `Parse`. Its message names what it found wrong and is
-    btclib_wallet's here, which words it differently.
+    bip32_descriptors' here, which words it differently.
     """
     prv_keys: dict[str, str] = {}
     try:
@@ -207,7 +207,14 @@ def scan_tx_out_set(
     its range. Core infers every script before the walk; here only a
     script a coin has is inferred, which answers the same.
 
-    A descriptor parse error has Core's code and btclib_wallet's message.
+    Where one fragment spells a key twice, bip32_descriptors' provider
+    puts the later origin in front of the earlier one, as Core v31.1 does.
+    v32.1 replaces the earlier origin (bitcoin/bitcoin@b42f7fade0), so its
+    `desc` names the later origin, where this node's names the later
+    fingerprint over both paths (btclib-org/btclib-node#2104,
+    btclib-org/btclib-wallet#616).
+
+    A descriptor parse error has Core's code and bip32_descriptors' message.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["scantxoutset"])
@@ -379,15 +386,11 @@ def _scan(
     node: Node, scan: _Scan, params: list[Any]
 ) -> Generator[bool, None, dict[str, Any]]:
     """Expand the scan objects, walk the coins and answer, as `start` does."""
-    if len(params) < 2:  # noqa: PLR2004
+    # Core's `MaybeArg` answers a null as it answers an argument not given
+    if len(params) < 2 or params[1] is None:  # noqa: PLR2004
         raise RpcError(
             RPCErrorCode.MISC_ERROR,
             "scanobjects argument is required for the start action",
-        )
-    if params[1] is None:
-        raise RpcError(
-            RPCErrorCode.TYPE_ERROR,
-            "JSON value of type null is not of expected type array",
         )
     needles, providers = yield from _expand(node, scan, params[1])
     # `g_should_abort_scan = false`: an abort during the expansion is lost

@@ -210,9 +210,10 @@ def _pong_nonces(peer: socket.socket) -> Iterator[int]:
 def test_a_message_at_the_bound_keeps_the_peer(node: tuple[Node, list[Any]]) -> None:
     """The control: at the bound the message is read whole, and the peer kept.
 
-    A `ping` payload with octets past its nonce does not parse, which is
-    logged and keeps the peer, so the hang-up above is the length's. The
-    `ping` behind it is answered, which is the node reading on.
+    The `ping` at the bound is answered with the zero nonce its first
+    eight octets carry, and the peer kept, so the hang-up above is the
+    length's. The `ping` behind it is answered too, which is the node
+    reading on.
     """
     started, judged = node
     nonce = secrets.randbelow(2**64)
@@ -220,6 +221,8 @@ def test_a_message_at_the_bound_keeps_the_peer(node: tuple[Node, list[Any]]) -> 
         conn = _set_up(started, peer, "ping")
         peer.sendall(_octets(started, "ping", bytes(MAX_PROTOCOL_MESSAGE_LENGTH)))
         peer.sendall(_framed(started, Ping(nonce)))
-        assert nonce in _pong_nonces(peer)
+        pongs = _pong_nonces(peer)
+        assert next(pongs) == 0
+        assert next(pongs) == nonce
         assert _conn_of(started, conn.address.port) is conn
     assert not judged

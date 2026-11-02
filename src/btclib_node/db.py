@@ -853,3 +853,13 @@ class KeyValueStore:
     def closed(self) -> bool:
         """Whether `close` has already been called."""
         return self._closed
+
+    @staticmethod
+    def destroy(path: str | Path) -> None:
+        """Remove the store at `path`, and the directory once it is empty.
+
+        RocksDB's `DestroyDB`, as Core's `DestroyDB` is LevelDB's. A path
+        that does not exist is left as it is.
+        """
+        if Path(path).exists():
+            Rdict.destroy(str(path), _make_options())

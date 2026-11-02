@@ -23,6 +23,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from bip32_descriptors.descriptors import Provider, infer_descriptor
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
 from btclib.block import Block, BlockHeader, median_time_past
@@ -39,22 +40,26 @@ from btclib.script.spendability import is_unspendable
 from btclib.script.witness import Witness
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
-from btclib_wallet.descriptors import Provider, infer_descriptor
 
 from btclib_node import clock
 from btclib_node.block_db import Coin
-from btclib_node.chainstate.block_index import BlockStatus, block_time
+from btclib_node.chainstate.block_index import (
+    BlockStatus,
+    block_time,
+    check_headers_pow,
+)
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import (
     already_confirmed,
-    assert_valid_block,
+    assert_valid_block_proof,
     check_fork_warning_conditions,
     invalidate_chain,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    mark_contextual_failure,
     new_pow_valid_block,
     parent_lookup,
     passes_check_block,
@@ -83,6 +88,7 @@ from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
     bool_param,
+    check_object,
     is_hex,
     json_type_name,
     parse_hash_v,
@@ -120,6 +126,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
 
     from btclib_node import Node
+    from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex, BlockInfo
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.mempool import Mempool
@@ -303,7 +310,7 @@ def get_blockchain_info(
     answering this member under Core's own name would answer a number
     carrying none of Core's meaning behind it, rather than a truthful
     one; `signet_challenge`, `SigNet` here carrying no configurable
-    challenge (chains.py's own genesis is the one public signet);
+    challenge (`SigNet`'s genesis is the one public signet);
     `backgroundvalidation`, present on Core's own side only behind an
     assumeutxo snapshot this node has no counterpart to.
     """
@@ -1061,7 +1068,9 @@ def get_block(
     return out
 
 
-def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None:
+def _index_submitted_header(
+    block_index: BlockIndex, block: Block, chain: Chain
+) -> str | None:
     """Index a submitted block's header if new; answer why to stop, or None.
 
     `"duplicate"` for a block already downloaded whose body passes
@@ -1085,10 +1094,10 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
         # a stored hash is refused for that reason, and a stored block left
         # as it is (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
         if block_index.get_block_info(block_hash).downloaded and passes_check_block(
-            block
+            block, chain
         ):
             return "duplicate"
-    elif passes_check_block(block):
+    elif passes_check_block(block, chain):
         try:
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
@@ -1132,42 +1141,54 @@ def _submitted_body_refusal(
 ) -> str | None:
     """Answer why a submitted body is refused, marking its header if Core does.
 
-    A body failing `assert_valid_block` where `main.is_block_failed` holds
-    marks its header invalid. A body that passes `CheckBlock` and is still
-    mutated (`main.is_block_mutated`) is answered with the first rule of
-    Core's `ContextualCheckBlock` it fails (`mining.contextual_block_reason`),
-    which may come before the witness, and its header is left alone:
-    Core's `AcceptBlock` refuses it, and `InvalidBlockFound` leaves a
-    `BLOCK_MUTATED` block unmarked (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the same header may
-    still arrive with the right body. Any other refusal is btclib's text.
-
-    Where that first rule is not a witness rule, such as
-    `bad-txns-nonfinal` or `bad-cb-height`, Core's result is
-    `BLOCK_CONSENSUS` and `InvalidBlockFound` marks the header failed.
-    This node leaves it unmarked (btclib-org/btclib-node#2075).
+    A header failing its proof of work is refused as `high-hash`, the reason
+    `block_index.check_headers_pow` gives it: Core's `CheckBlock` asks
+    `CheckBlockHeader` before anything of the body. A body failing
+    `main.assert_valid_block_proof` (on signet, its solution) is refused for
+    it, and nothing is marked: Core asks it in `CheckBlock`, and
+    `ProcessNewBlock` marks nothing for a body failing that. A body that
+    passes `CheckBlock` (`main.passes_check_block`) is then asked Core's
+    `ContextualCheckBlock` (`mining.contextual_block_reason`), weight
+    included, as Core's `AcceptBlock` asks it before storing the block
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    Where `main.mark_contextual_failure` marks its header, the body is
+    refused with that rule's word. A mutated body (`main.is_block_mutated`)
+    is refused with the first rule it fails, whichever it is, which may come
+    before the witness. A witness rule leaves its header alone
+    (`main.mark_contextual_failure`). A body over the weight behind a header
+    rule `contextual_check_block` asks again is refused in btclib's text and
+    marked (`main.is_block_failed`). Any other refusal is btclib's text.
     """
-    block_index = node.chainstate.block_index
+    try:
+        check_headers_pow([block.header], node.chain.pow_limit_bits)
+        assert_valid_block_proof(block, node.chain)
+    except BTClibException as error:
+        return str(error)
     error_text = None
     try:
-        assert_valid_block(block, node.chain)
+        block.assert_valid_structure()
     except BTClibException as error:
         error_text = str(error)
-        # is_block_failed requires passes_check_block itself, so a body
-        # that never got this far indexed (ISS 1339) has nothing here to
-        # invalidate
-        if is_block_failed(block, check_witness_root=segwit):
-            block_index.invalidate(block.header.hash)
-            # Core's own `InvalidChainFound` call, same citation as
-            # `main.check_fork_warning_conditions`'s own docstring
-            check_fork_warning_conditions(node)
     # `passes_check_block` first: a body that was never indexed has no
     # parent here to read a height from
-    if passes_check_block(block) and is_block_mutated(block, check_witness_root=segwit):
-        assert parent is not None  # noqa: S101
-        reason = contextual_block_reason(node, block, parent.index + 1)
-        assert reason is not None  # noqa: S101
+    if not passes_check_block(block, node.chain):
+        return error_text
+    mutated = is_block_mutated(block, check_witness_root=segwit)
+    assert parent is not None  # noqa: S101
+    reason = contextual_block_reason(node, block, parent.index + 1)
+    # what `is_block_mutated` finds past `CheckBlock` is a witness rule
+    assert reason is not None or not mutated  # noqa: S101
+    if reason is not None and (
+        mark_contextual_failure(node, block.header.hash, reason) or mutated
+    ):
         return reason
+    if error_text is not None and is_block_failed(
+        block, node.chain, check_witness_root=segwit
+    ):
+        node.chainstate.block_index.invalidate(block.header.hash)
+        # Core's own `InvalidChainFound` call, same citation as
+        # `main.check_fork_warning_conditions`'s own docstring
+        check_fork_warning_conditions(node)
     return error_text
 
 
@@ -1199,26 +1220,28 @@ def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
 def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | None:
     """Answer `submitblock`, Core's own two arguments, the second ignored.
 
-    Core's own `submitblock` (`rpc/mining.cpp:1089-1136`, at
-    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new, and
-    hands the block to `ProcessNewBlock`: `None` for one accepted,
-    `"duplicate"` for one already held, and a reject reason for one refused.
-    Some reasons are Core's literally: `"duplicate-invalid"` for one whose
-    header is marked invalid (`main.is_cached_invalid`),
+    Core's own `submitblock` (`src/rpc/mining.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) decodes the block, calls
+    `UpdateUncommittedBlockStructures` where its parent is indexed, and
+    hands it to `ProcessNewBlock`, whose `AcceptBlock` indexes the header
+    only once `CheckBlock` passes (`src/validation.cpp`, same sha): `None`
+    for one accepted, `"duplicate"` for one already held, and a reject
+    reason for one refused. Some reasons are Core's literally:
+    `"duplicate-invalid"` for one whose header is marked invalid
+    (`main.is_cached_invalid`),
     `BlockValidationResult::BLOCK_MISSING_PREV`'s own `"prev-blk-not-found"`
-    (`validation.cpp:4225`, same sha), which this node's own
+    (`src/validation.cpp`, same sha), which this node's own
     `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
     `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
     `ContextualCheckBlockHeader`'s `bad-diffbits`, `time-too-old`,
-    `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`,
-    and `CheckBlockHeader`'s `high-hash`, which `add_headers` raises in
-    Core's words (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
-    answered with btclib's own exception message instead of one of Core's:
-    `BlockValidationResult` names dozens of distinct single-word reasons
-    across `validation.cpp`, and this tree does not reproduce that
-    vocabulary.
+    `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`, and
+    `CheckBlockHeader`'s `high-hash`, which `block_index.check_headers_pow`
+    raises in Core's words whether or not the body passes `CheckBlock`. Any
+    other invalid block is answered with btclib's own exception message
+    instead of one of Core's: `BlockValidationResult` names dozens of
+    distinct single-word reasons across `validation.cpp`, and this tree does
+    not reproduce that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -1249,11 +1272,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     that is refused as `_submitted_body_refusal` says. The same block,
     whole, is accepted afterwards where no other rule refuses it.
 
-    `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
-    are Core's literal reasons already; `interpreter.check_scripts`
-    wraps a script failure into `BlockScriptVerifyError`, whose own
-    `str()` is Core's `block-script-verify-flag-failed (%s)`
-    (`CheckInputScripts`, same file and sha) with `ScriptErrorString`.
+    `interpreter.check_scripts` wraps a script failure into
+    `BlockScriptVerifyError`, whose own `str()` is Core's
+    `block-script-verify-flag-failed (%s)` (`CheckInputScripts`, same
+    file and sha) with `ScriptErrorString`.
     A spend of an immature coinbase and one over its inputs are Core's
     `bad-txns-premature-spend-of-coinbase` and `bad-txns-in-belowout`,
     the reason alone as `GetRejectReason` gives it, and so are
@@ -1278,7 +1300,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block = Block.parse(params[0], check_validity=False)
     except BTClibException as error:
-        # src/rpc/mining.cpp:1111-1113, same text
+        # Core's "Block decode failed" (src/rpc/mining.cpp,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR, "Block decode failed"
         ) from error
@@ -1291,9 +1314,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     )
     _add_witness_nonce(block, segwit=segwit)
 
-    if is_cached_invalid(block_index, block):
+    if is_cached_invalid(block_index, block, node.chain):
         return "duplicate-invalid"
-    refusal = _index_submitted_header(block_index, block)
+    refusal = _index_submitted_header(block_index, block, node.chain)
     if refusal is not None:
         return refusal
 
@@ -1815,29 +1838,13 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
     empty-`node` refusal is master's own fix
     (`rpc: reject empty node argument in addnode`,
-    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
-    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
-    `integration-bitcoind.yml` pins, answers an empty `node` with a
-    silent, do-nothing success instead, measured directly against a
-    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
-    commit and is confirmed on `bb529657`'s own ancestry via
-    `git merge-base --is-ancestor`.
-
-    Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CONTRIBUTING.md`'s own
-    *Following Bitcoin Core* names matching Core's behaviour as the
-    default, and reserves a release-pinned citation for a claim about
-    the behaviour of the bitcoind this tree is tested against rather
-    than for what this node implements. Master's own code comment names
-    why the fix exists -- "Such a node would never resolve, but would
-    be retried indefinitely" -- and nothing under `tests/integration/`
-    drives `addnode ""`, so this tree's own integration suite, run
-    against v31.1, never exercises the one call shape the two
-    disagree on. Matching the release instead would mean knowingly
-    carrying a defect Core itself already fixed, only to undo that the
-    moment the pin advances past it -- issue #1010 is closed on this
-    reasoning. `v2transport` is Core's own optional third argument, kept
-    with an added peer and passed to a `onetry` dial.
+    at bitcoin/bitcoin@90ce21e21d), and the bitcoind this tree is tested
+    against has it too (`rpc/net.cpp:372-376`, at
+    bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    `integration-bitcoind.yml` pins): "Such a node would never resolve,
+    but would be retried indefinitely". `v2transport` is Core's own
+    optional third argument, kept with an added peer and passed to a
+    `onetry` dial.
     """
     node_arg, command, use_v2transport = _parsed_addnode_args(node, params)
 
@@ -1941,10 +1948,10 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     manager.remove_connection(found[0])
 
 
-# Core's own four names (`rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag) -- `manual` is v31.1's own fifth `addconnection`
-# connection type, past this pinned release (issue #1465's own
-# citation), so it is not one of these.
+# Core's own four names, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins (`rpc/net.cpp:423`). `manual` is master's
+# alone, in no release yet (`rpc/net.cpp:456`, at bitcoin/bitcoin@aa76bd266d),
+# so it is not one of these (btclib-org/btclib-node#1465).
 _ADDCONNECTION_TYPES = (
     "outbound-full-relay",
     "block-relay-only",
@@ -2418,7 +2425,9 @@ def import_mempool(
     is refused. The file is read as the load goes, a transaction a step,
     as the load at start is, so peers and other calls are served between
     steps. The load ends refused where the node stops meanwhile, as
-    Core's ends on `m_interrupt`.
+    Core's ends on `m_interrupt`. The refusal of a load that fails is
+    v32.1's, which names no `debug.log` (same file, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["importmempool"])
@@ -2460,7 +2469,7 @@ def import_mempool(
     if not loaded:
         raise RpcError(
             RPCErrorCode.MISC_ERROR,
-            "Unable to import mempool file, see debug.log for details.",
+            "Unable to import mempool file, see debug log for details.",
         )
     return {}
 
@@ -2981,13 +2990,15 @@ def get_orphan_txs(
 ) -> list[str] | list[dict[str, Any]]:
     """Answer `getorphantxs`: the orphanage, in Core's three verbosities.
 
-    Core's hidden RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): the txids at verbosity 0, an object each with its
-    `txid`, `wtxid`, `bytes`, `vsize`, `weight` and the ids of the peers it
-    is `from` at 1, and the `hex` too at 2, in the order of the wtxids as
-    Core holds them. Any other number is `RPC_INVALID_PARAMETER`, and a bool
-    is refused (`_parse_verbosity`). `vsize` is `GetVirtualTransactionSize`
-    without sigops, as `getrawmempool`'s is not.
+    Core's hidden RPC (`OrphanToJSON`, `src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the txids at verbosity 0,
+    an object each with its `txid`, `wtxid`, `bytes`, `vsize`,
+    `vsize_bip141`, `weight` and the ids of the peers it is `from` at 1,
+    and the `hex` too at 2, in the order of the wtxids as Core holds them.
+    Any other number is `RPC_INVALID_PARAMETER`, and a bool is refused
+    (`_parse_verbosity`). `vsize` and `vsize_bip141` are both
+    `GetVirtualTransactionSize` without sigops, as `getrawmempool`'s
+    `vsize` is not.
     """
     verbosity = _parse_verbosity(params, 0, default=0, allow_bool=False)
     orphans = node.download_manager.orphanage.get_orphan_transactions()
@@ -3004,6 +3015,7 @@ def get_orphan_txs(
             "wtxid": tx.hash.hex(),
             "bytes": tx.size,
             "vsize": tx.vsize,
+            "vsize_bip141": tx.vsize,
             "weight": tx.weight,
             "from": announcers,
         }
@@ -3018,6 +3030,11 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
 
     The shape `getmempoolancestors` and `getmempooldescendants` give each
     transaction when `verbose` is true, too.
+
+    It has no `bip125-replaceable`: Core v32.1 answers it only under
+    `-deprecatedrpc=bip125` (`entryToJSON`, `src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this node has no
+    `-deprecatedrpc`.
     """
     entry = mempool.entry(wtxid)
     return {
@@ -3044,7 +3061,6 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
         },
         "depends": entry.depends,
         "spentby": entry.spent_by,
-        "bip125-replaceable": entry.bip125_replaceable,
         "unbroadcast": entry.unbroadcast,
     }
 
@@ -3055,11 +3071,11 @@ def get_mempool_entry(
     """Answer `getmempoolentry`: one held transaction's own accounting.
 
     Core's own shape (`entryToJSON`, `src/rpc/mempool.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), with Core 32's
-    `vsize_adjusted` and `vsize_bip141` (at bitcoin/bitcoin@aef8a04966,
-    btclib-org/btclib-node#1757). A `txid` this mempool does not hold is Core's
-    own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in mempool".
-    btclib-org/btclib-node#1397
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) with no `-deprecatedrpc`,
+    as `_mempool_entry_json` says, `vsize_adjusted` and `vsize_bip141`
+    included (btclib-org/btclib-node#1757). A `txid` this mempool does not
+    hold is Core's own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in
+    mempool". btclib-org/btclib-node#1397
     """
     if not params:
         # the whole help, as get_block_header's own missing-argument case
@@ -3262,34 +3278,6 @@ def get_prioritised_transactions(
     return answer
 
 
-def _check_object(
-    obj: dict[str, Any], fields: dict[str, str], *, allow_null: bool
-) -> None:
-    """Core's `RPCTypeCheckObj` with `fStrict`: each named field, then no other.
-
-    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
-    `fields` maps a name to the JSON type it must have, named as univalue
-    does. A missing field is null: refused as "Missing" unless
-    `allow_null`, where it and an explicit null pass. Every error is
-    `RPC_TYPE_ERROR`.
-    """
-    for key, expected in fields.items():
-        value = obj.get(key)
-        if value is None:
-            if allow_null:
-                continue
-            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Missing {key}")
-        if json_type_name(value) != expected:
-            raise RpcError(
-                RPCErrorCode.TYPE_ERROR,
-                f"JSON value of type {json_type_name(value)} for field {key} "
-                f"is not of expected type {expected}",
-            )
-    for key in obj:
-        if key not in fields:
-            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Unexpected key {key}")
-
-
 def _bool_option(options: dict[str, Any], key: str, *, default: bool) -> bool:
     """Read `key` as `get_bool` does: absent is `default`, null is refused."""
     if key not in options:
@@ -3319,7 +3307,7 @@ def _spending_prevout(output: object) -> tuple[bytes, int]:
             f"JSON value of type {json_type_name(output)} "
             "is not of expected type object",
         )
-    _check_object(output, {"txid": "string", "vout": "number"}, allow_null=False)
+    check_object(output, {"txid": "string", "vout": "number"}, allow_null=False)
     txid = parse_hash_v("txid", output["txid"])
     vout = output["vout"]
     if isinstance(vout, float) or not -_INT_MAX - 1 <= vout <= _INT_MAX:
@@ -3362,7 +3350,7 @@ def get_tx_spending_prevout(
             RPCErrorCode.INVALID_PARAMETER, "Invalid parameter, outputs are missing"
         )
     options = {} if options is None else options
-    _check_object(
+    check_object(
         options,
         {"mempool_only": "bool", "return_spending_tx": "bool"},
         allow_null=True,
@@ -3499,11 +3487,14 @@ def _raw_transaction_json(
 
     Core's key order is `in_active_chain` first, then `TxToUniv`'s keys,
     then the block's (`src/rpc/rawtransaction.cpp`, at
-    bitcoin/bitcoin@9be056a8a7). Verbosity 2 adds `fee` and each input's
-    `prevout` from the block's undo data; a coinbase has none, and for
-    any other transaction in a block Core answers a patch it cannot read
-    as an error, not as no `fee`. A block off the active chain is 0
-    confirmations and names no time.
+    bitcoin/bitcoin@9be056a8a7). A mempool transaction has no block and
+    opens with `vsize_adjusted` instead, its sigop-adjusted size, as Core
+    answers one looked up with no block hash (same file, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Verbosity 2 adds `fee`
+    and each input's `prevout` from the block's undo data; a coinbase has
+    none, and for any other transaction in a block Core answers a patch it
+    cannot read as an error, not as no `fee`. A block off the active chain
+    is 0 confirmations and names no time.
     """
     tx, block_height, block, position = found
     out: dict[str, Any] = {}
@@ -3515,6 +3506,8 @@ def _raw_transaction_json(
             and active_chain[block_height] == block.header.hash
         )
         out["in_active_chain"] = on_active_chain
+    else:
+        out["vsize_adjusted"] = node.mempool.vsizes[tx.hash]
     undo: list[Coin] | None = None
     if verbosity >= 2 and block is not None and not tx.is_coinbase:  # noqa: PLR2004
         block_undo = _block_undo(node, block.header.hash, block)
@@ -4689,7 +4682,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
-    "dumptxoutset": ("path", "type", "options|rollback"),
+    "dumptxoutset": ("path", "type", "options|rollback|in_memory"),
     "scantxoutset": ("action", "scanobjects"),
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
@@ -4699,7 +4692,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "signrawtransactionwithkey": ("hexstring", "privkeys", "prevtxs", "sighashtype"),
     "combinerawtransaction": ("txs",),
     "submitpackage": ("package", "maxfeerate", "maxburnamount"),
-    "estimatesmartfee": ("conf_target", "estimate_mode"),
+    "estimatesmartfee": ("conf_target", "estimate_mode", "options"),
     "estimaterawfee": ("conf_target", "threshold"),
     "ping": (),
     "setmocktime": ("timestamp",),
@@ -4711,7 +4704,7 @@ arg_names: dict[str, tuple[str, ...]] = {
 # The names of each method's `OBJ_NAMED_PARAMS` options, which
 # `transform_named_arguments` gathers into the options object.
 named_only: dict[str, tuple[str, ...]] = {
-    "dumptxoutset": ("rollback",),
+    "dumptxoutset": ("rollback", "in_memory"),
     "gettxspendingprevout": ("mempool_only", "return_spending_tx"),
     "importmempool": (
         "use_current_time",

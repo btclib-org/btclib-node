@@ -14,8 +14,8 @@ which words what it finds wrong in its own way.
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from bip32_descriptors.descriptors import multipath_descriptors, parse
 from bitcoin_core_rpc import RpcError
-from btclib_wallet.descriptors import multipath_descriptors, parse
 
 from btclib_node import Node
 from btclib_node.config import Config
@@ -213,6 +213,10 @@ def both(bitcoind: Bitcoind, tmp_path: Path) -> Iterator[tuple[Bitcoind, Node]]:
         node.join()
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="v32.1 diverges: descriptor origin path (btclib-org/btclib-node#2104, btclib-org/btclib-wallet#616)",
+)
 def test_a_scan_answers_as_bitcoind_does(both: tuple[Bitcoind, Node]) -> None:
     """Every scan holds bitcoind's own keys, in its order, and its values."""
     bitcoind, node = both

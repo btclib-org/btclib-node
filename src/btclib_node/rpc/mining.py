@@ -25,6 +25,7 @@ import re
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+from bip32_descriptors.descriptors import parse as parse_descriptor
 from bitcoin_core_rpc import RPCErrorCode
 from btclib import b32
 from btclib.block import Block
@@ -33,7 +34,6 @@ from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR
 from btclib.exceptions import BTClibException
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.tx import Tx
-from btclib_wallet.descriptors import parse as parse_descriptor
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.mining import (
@@ -132,7 +132,7 @@ _EXTENDED_KEY = re.compile(r"[a-zA-Z]{4}[1-9A-HJ-NP-Za-km-z]{100,}")
 def _has_key_of_another_chain(node: Node, text: str) -> bool:
     """Say whether `text` holds an extended key that is not this chain's.
 
-    Core refuses it in `Parse`, before any other check; btclib_wallet's
+    Core refuses it in `Parse`, before any other check; bip32_descriptors'
     `parse` refuses a multipath expression first.
     """
     for key in _EXTENDED_KEY.findall(text):

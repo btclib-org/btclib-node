@@ -64,6 +64,8 @@ from tests import get_random_port
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from btclib_node.chains import Chain
+
 
 # Which test's own execution a thread was started during. Keyed on the
 # thread itself, weakly: a thread this suite joins and drops is not kept
@@ -656,7 +658,7 @@ def rpc_node(tmp_path: Path) -> Iterator[Node]:
 def unstarted_node_context(
     tmp_path: Path,
     *,
-    chain: str = "regtest",
+    chain: Chain | str = "regtest",
     pruned: bool = False,
     prune_target_mib: int | None = None,
     incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,

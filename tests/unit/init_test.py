@@ -2616,9 +2616,44 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     assert log_text.startswith("\n\n\n\n\n")
     warning_at = log_text.index("Ignoring unknown configuration value foo")
     version_at = log_text.index(f"{CLIENT_NAME} version {CLIENT_VERSION}")
-    section_at = log_text.index(sections)
+    section_at = log_text.index(
+        "a.conf:1 Section [x] is not recognized.\\x0a"
+        "b:2 Section [y] is not recognized.\n"
+    )
     loop_at = log_text.index("Starting main loop")
     assert warning_at < version_at < section_at < loop_at
+
+
+def test_a_node_logs_the_debug_warnings_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 2152: `SetLoggingCategories` runs after the section warning.
+
+    `AppInitParameterInteraction` warns over the sections, then sets the
+    categories, both ahead of `init::StartLogging`'s "Default data
+    directory" (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), the order bitcoind v32.1.0's `debug.log` shows.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            debug_warnings=["first", "second"],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    first_at = log_text.index("[warning] first")
+    second_at = log_text.index("[warning] second")
+    data_dir_at = log_text.index("Default data directory")
+    assert section_at < first_at < second_at < data_dir_at
 
 
 def test_a_node_logs_its_config_args_after_the_section_warning(
@@ -2681,8 +2716,8 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
     assert peer_db.closed
-    # Core's `Shutdown` writes the fee estimates whatever step failed
-    assert (node.data_dir / "fee_estimates.dat").exists()
+    # Core builds its fee estimators once the chainstate is loaded
+    assert not (node.data_dir / "fees").exists()
     reopened = Node(config=config)
     try:
         reopened.start()
@@ -2806,8 +2841,32 @@ def test_a_node_hands_its_whitelist_to_the_p2p_manager(tmp_path: Path) -> None:
     assert node.init_errors == []
 
 
+def test_a_start_that_fails_once_the_estimators_are_built_writes_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `Shutdown` writes the fee estimates whatever later step failed."""
+    message = "the mempool cannot be built"
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError(message)
+
+    config = Config(
+        chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(btclib_node, "Mempool", refuse)
+        node = Node(config=config)
+        node.start()
+        wait_until(lambda: not node.is_alive())
+        node.stop()
+    assert node.init_errors == [message]
+    fees = node.data_dir / "fees"
+    assert (fees / "block_policy_estimates.dat").exists()
+    assert (fees / "mempool_policy_estimator.dat").exists()
+
+
 def test_a_stopped_node_writes_the_fee_estimates_core_writes(tmp_path: Path) -> None:
-    """A fresh node's `fee_estimates.dat` is a fresh bitcoind's, to the byte."""
+    """A fresh node's `block_policy_estimates.dat` is a fresh bitcoind's."""
     node = Node(
         config=Config(
             chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
@@ -2815,7 +2874,7 @@ def test_a_stopped_node_writes_the_fee_estimates_core_writes(tmp_path: Path) -> 
     )
     node.start()
     node.stop()
-    data = (node.data_dir / "fee_estimates.dat").read_bytes()
+    data = (node.data_dir / "fees" / "block_policy_estimates.dat").read_bytes()
     assert hashlib.sha256(data).hexdigest() == _CORE_EMPTY_FILE_SHA256
 
 
@@ -2826,32 +2885,37 @@ def test_a_running_node_writes_its_fee_estimates_once_due(tmp_path: Path) -> Non
             chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
         )
     )
-    path = node.data_dir / "fee_estimates.dat"
+    path = node.data_dir / "fees" / "block_policy_estimates.dat"
+    mined = node.data_dir / "fees" / "mempool_policy_estimator.dat"
     node.start()
     try:
         wait_until(lambda: node.loaded)
         assert not path.exists()
         node.fee_estimator._next_flush = 0
-        wait_until(path.exists)
+        wait_until(mined.exists)
+        assert path.exists()
     finally:
         node.stop()
 
 
 def test_a_node_starts_from_the_fee_estimates_it_finds(tmp_path: Path) -> None:
-    """The file in the chain's directory is read, and told of removals."""
+    """The chain's legacy file is read, and the estimator told of removals."""
     written = _busy(tmp_path).write()
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "fee_estimates.dat").write_bytes(written)
     with unstarted_node_context(tmp_path) as node:
         assert node.fee_estimator.write() == written
         assert node.mempool.removal_listener == node.fee_estimator.remove_tx
+    # moved to v32.1's path, as Core moves it
+    assert not (tmp_path / "regtest" / "fee_estimates.dat").exists()
+    assert node.fee_estimator.path.read_bytes() == written
 
 
 @pytest.mark.parametrize(("chain", "name"), [("mainnet", "main"), ("signet", "signet")])
 def test_stale_fee_estimates_are_refused_off_regtest(
     tmp_path: Path, chain: str, name: str
 ) -> None:
-    """Core's `InitError`, in its words, before the block index is read."""
+    """Core's `InitError`, in its words, before any estimator is built."""
     node = Node(
         config=Config(
             chain=chain,
@@ -2869,7 +2933,7 @@ def test_stale_fee_estimates_are_refused_off_regtest(
     assert node.init_errors == [
         f"acceptstalefeeestimates is not supported on {name} chain."
     ]
-    assert not (node.data_dir / "chainstate").exists()
+    assert not (node.data_dir / "fees").exists()
 
 
 def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(

@@ -184,7 +184,7 @@ from tests import (
 from tests.conftest import unstarted_node_context
 from tests.unit.download_test import a_conn, a_hash, make_manager, only
 from tests.unit.download_test import a_version as a_services_version
-from tests.unit.main_test import a_dusty_spend
+from tests.unit.main_test import a_dusty_spend, locked_spend
 from tests.unit.rolling_bloom_test import a_small_filter
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 from tests.unit.signet_test import _SIGNET_BLOCKS
@@ -846,6 +846,7 @@ def a_handshake_node(
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     discouraged_hosts: Sequence[str] = (),
     banned: Sequence[str] = (),
+    evicts: bool = True,
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write.
 
@@ -855,9 +856,16 @@ def a_handshake_node(
     another. `config.block_notify`/`config.alert_notify` are `""` and
     `warnings` an empty `notify.Warnings` -- `check_fork_warning_conditions`
     reaches both wherever a callback built on this double invalidates a
-    block (btclib-org/btclib-node#1522).
+    block (btclib-org/btclib-node#1522). `evict_tx_peer_if_full` answers
+    `evicts`, recording each `protect_peer` in `eviction_asks`.
     """
     discouraged, record = discourage_recorder()
+    eviction_asks: list[int | None] = []
+
+    def evict_tx_peer_if_full(protect_peer: int | None = None) -> bool:
+        eviction_asks.append(protect_peer)
+        return evicts
+
     seen: list[Any] = []
     relayed: list[Any] = []
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -887,6 +895,8 @@ def a_handshake_node(
             seen_local=seen.append,
             relay_address=lambda conn, address, now: relayed.append((conn, address)),
             relayed=relayed,
+            evict_tx_peer_if_full=evict_tx_peer_if_full,
+            eviction_asks=eviction_asks,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
@@ -922,6 +932,53 @@ def commands(peer: Any) -> list[str]:
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
     ]
+
+
+@pytest.mark.parametrize("evicts", [True, False])
+def test_an_inbound_tx_relay_peer_asks_for_an_eviction_ahead_of_verack(
+    *, evicts: bool
+) -> None:
+    """ISS 1769: Core's `MaybeDisconnectForTxRelayCapacity`, the peer protected.
+
+    Where another peer can go, the handshake goes on; where none can,
+    the peer is dropped ahead of `verack`, after the three messages
+    Core also sends it first, with Core's own log line.
+    """
+    node = a_handshake_node(evicts=evicts)
+    logged: list[str] = []
+    node.logger.log_debug = lambda _category, msg, *args: logged.append(msg % args)
+    peer = a_peer(id=7, inbound=True)
+    version(node, a_version(relay=True), peer)
+    assert node.p2p_manager.eviction_asks == [7]
+    assert bool(peer.stopped) is not evicts
+    dropped = (
+        "failed to find a tx-relaying eviction candidate - connection dropped"
+        " after version message, peer=7"
+    )
+    assert (dropped in logged) is not evicts
+    if evicts:
+        assert commands(peer)[:4] == ["version", "WtxidRelay", "SendAddrV2", "Verack"]
+    else:
+        assert commands(peer) == ["version", "WtxidRelay", "SendAddrV2"]
+
+
+@pytest.mark.parametrize(
+    ("inbound", "relay"), [(True, False), (False, True)], ids=["inbound", "outbound"]
+)
+def test_a_peer_that_takes_no_inbound_relay_slot_asks_for_no_eviction(
+    *, inbound: bool, relay: bool
+) -> None:
+    """ISS 1769: a block-relay-only inbound peer, or one this node dialled.
+
+    Neither is held to the relay share, so neither asks
+    `evict_tx_peer_if_full`, and each is sent `verack`.
+    """
+    node = a_handshake_node(evicts=False)
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(relay=relay), peer)
+    assert node.p2p_manager.eviction_asks == []
+    assert not peer.stopped
+    assert "Verack" in commands(peer)
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
@@ -1832,6 +1889,15 @@ def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     """A `ping` is answered with a `pong` carrying the same nonce back."""
     peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION + 1))
     ping(a_handshake_node(), Ping(1234).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, Pong)
+    assert answer.nonce == 1234
+
+
+def test_a_ping_reads_its_nonce_off_the_first_eight_octets() -> None:
+    """ISS 2086: octets past the nonce are ignored, as Core's `PING` does."""
+    peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION + 1))
+    ping(a_handshake_node(), Ping(1234).serialize() + b"\xff", peer)
     (answer,) = peer.sent
     assert isinstance(answer, Pong)
     assert answer.nonce == 1234
@@ -3444,6 +3510,33 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+@pytest.mark.parametrize("signet", [False, True])
+def test_a_body_failing_its_signet_solution_leaves_no_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, signet: bool
+) -> None:
+    """ISS 2079: Core's `CheckBlock` asks the signet solution.
+
+    `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock` indexes the
+    header (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a body failing its solution leaves no header. `main.SigNet`
+    is `RegTest` here: mining a block at signet's target takes millions of
+    hashes. The same block, off signet, has its header indexed.
+    """
+    node = a_chainstate_node(tmp_path)
+    node.chain = node.config.chain = RegTest()
+    block = generate_segwit_block()
+    header_dict = node.chainstate.block_index.header_dict
+    if signet:
+        monkeypatch.setattr("btclib_node.main.SigNet", RegTest)
+        with pytest.raises(MisbehavingError, match="bad-signet-blksig"):
+            block_callback(node, a_block_payload(block), a_peer())
+        assert block.header.hash not in header_dict
+    else:
+        block_callback(node, a_block_payload(block), a_peer())
+        assert block.header.hash in header_dict
+    node.chainstate.close()
+
+
 def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3455,8 +3548,8 @@ def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
     merkle root in Core's own `CheckBlock` (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- proven here, as
     `main_test.py`'s own isolated gating test is, by a stub standing in
-    for `assert_valid_block` rather than a real signet-difficulty block,
-    which this test's chain (regtest) could not mine in reasonable time.
+    for `assert_valid_block` rather than a real block at signet's target,
+    whose mining takes millions of hashes.
     """
     node = a_chainstate_node(tmp_path)
     twice = generate_segwit_block(generate_coinbase(height=1))
@@ -3509,6 +3602,82 @@ def test_a_committed_body_over_the_weight_invalidates_the_header(
     block_info = node.chainstate.block_index.get_block_info(over.header.hash)
     assert block_info.status == BlockStatus.invalid
     assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("phrase", ["bad-txns-nonfinal", "bad-cb-height"])
+def test_a_block_failing_a_contextual_consensus_rule_invalidates_the_header(
+    tmp_path: Path, phrase: str
+) -> None:
+    """ISS 2075: Core's `AcceptBlock` marks such a block before storing it.
+
+    `bad-txns-nonfinal` and `bad-cb-height` are `ContextualCheckBlock`'s
+    `BLOCK_CONSENSUS`, which `InvalidBlockFound` marks and
+    `MaybePunishNodeForBlock` punishes (`src/validation.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). The body is not mutated, so Core's `BLOCK` arm reaches them.
+    """
+    node = a_chainstate_node(tmp_path)
+    nonfinal = phrase == "bad-txns-nonfinal"
+    spend = locked_spend(
+        generate_random_transaction(),
+        1,
+        lock_time=2_000_000_000 if nonfinal else 0,
+        sequence=0,
+    )
+    coinbase = generate_coinbase(height=1 if nonfinal else 2)
+    bad = build_block(RegTest().genesis.hash, [coinbase, spend], 0)
+    with pytest.raises(MisbehavingError, match=f"^{phrase}$"):
+        block_callback(node, a_block_payload(bad), a_peer())
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_compact_block_failing_a_contextual_consensus_rule_keeps_the_peer(
+    tmp_path: Path,
+) -> None:
+    """ISS 2075: through BIP152 the header is marked and the peer kept.
+
+    Core's `MaybePunishNodeForBlock` punishes no `BLOCK_CONSENSUS` block
+    that came through `cmpctblock` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    node = a_chainstate_node(tmp_path)
+    bad = build_block(RegTest().genesis.hash, [generate_coinbase()], 0)
+    node.chainstate.block_index.add_headers([bad.header])
+    with pytest.raises(BTClibValueError, match=r"^bad-cb-height$") as refused:
+        cb._accept_block(node, bad, a_peer(), requested=True, via_compact_block=True)
+    assert not isinstance(refused.value, MisbehavingError)
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
+    tmp_path: Path,
+) -> None:
+    """A contextual refusal Core does not mark is left to `update_chain`.
+
+    The header was indexed while the clock read a day later, so the block
+    is `time-too-new` now, which Core does not ask again of a header it
+    holds (`main.contextual_check_block`). The block is stored, its
+    header left valid.
+    """
+    node = a_chainstate_node(tmp_path)
+    later = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
+    block = build_block(
+        RegTest().genesis.hash, [generate_coinbase(height=1)], 0, time=later
+    )
+    clock.set_mock_time(int(later.timestamp()))
+    node.chainstate.block_index.add_headers([block.header])
+    clock.set_mock_time(0)
+    block_callback(node, a_block_payload(block), a_peer())
+    assert node.added == [block]
+    block_info = node.chainstate.block_index.get_block_info(block.header.hash)
+    assert block_info.status != BlockStatus.invalid
     node.chainstate.close()
 
 
@@ -7107,15 +7276,19 @@ def test_a_block_relay_only_peer_is_asked_for_no_addresses_but_recorded(
     assert known.timestamp == heard
 
 
-@pytest.mark.parametrize("block_relay", [True, False])
-def test_a_block_relay_only_peer_s_gossip_is_ignored_once_parsed(
-    *, block_relay: bool
+@pytest.mark.parametrize(
+    ("kind", "ignored"),
+    [("block_relay", True), ("feeler", True), ("automatic", False)],
+)
+def test_gossip_from_a_block_relay_only_peer_or_a_feeler_is_ignored_once_parsed(
+    *, kind: str, ignored: bool
 ) -> None:
-    """ISS 1095: `addr` and `addrv2` from it are parsed, then dropped.
+    """ISS 1095, ISS 1770: their `addr` and `addrv2` are parsed, then dropped.
 
     Core parses them and ignores them ahead of its `MAX_ADDR_TO_SEND`
-    check, so a payload that does not parse is refused as from any peer,
-    and one past the bound is no `MisbehavingError`, where the control's
+    check, `SetupAddressRelay` refusing both kinds, so a payload that
+    does not parse is refused as from any peer, and one past the bound
+    is no `MisbehavingError`, where the control's, a full-relay peer's,
     is.
     """
     given = [a_gossiped_address("1.2.3.4")]
@@ -7125,16 +7298,17 @@ def test_a_block_relay_only_peer_s_gossip_is_ignored_once_parsed(
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
-        peer = a_gossiping_peer(block_relay=block_relay)
+        peer = a_gossiping_peer(**{"automatic": True, kind: True})
         callback(node, message.serialize(), peer)
-        assert bool(peer_db.addresses) is not block_relay
-        assert peer.stats.addr_processed == (0 if block_relay else 1)
+        assert bool(peer_db.addresses) is not ignored
+        assert peer.addr_relay_enabled is not ignored
+        assert peer.stats.addr_processed == (0 if ignored else 1)
         with pytest.raises(BTClibException):
             callback(node, b"\xff" * 9, peer)
         past = var_int.serialize(MAX_ADDR_TO_SEND + 1) + entry * (MAX_ADDR_TO_SEND + 1)
         with pytest.raises(BTClibException) as refused:
             callback(node, past, peer)
-        assert isinstance(refused.value, MisbehavingError) is not block_relay
+        assert isinstance(refused.value, MisbehavingError) is not ignored
 
 
 @pytest.mark.parametrize("ibd", [True, False])
@@ -7230,14 +7404,15 @@ def test_a_transaction_announced_by_a_full_relay_peer_drops_nobody() -> None:
 
 
 @pytest.mark.parametrize("feeler", [True, False])
-def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
+def test_a_feeler_is_recorded_and_dropped_at_its_version_unasked_for_addresses(
     *, feeler: bool
 ) -> None:
     """ISS 1096: Core's `VERSION` handler ends a feeler once it has answered.
 
-    `getaddr` after the three answers, as to a full-relay peer, then the
-    address recorded as answered with the services the `version` names,
-    same as a full-relay peer, the control, and only then the drop,
+    The three answers and no `getaddr`, where a full-relay peer, the
+    control, is sent one (ISS 1770: v32.1's `SetupAddressRelay` refuses
+    a feeler). Then the address recorded as answered with the services
+    the `version` names, same as the control, and only then the drop,
     after what was sent. ISS 1226: Core's `FinalizeNode` never calls
     `Connected` for a feeler, so the time of the address is the one
     gossip gave it.
@@ -7251,6 +7426,9 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     version(a_handshake_node(peer_db=peer_db), a_version(), peer)
     assert not peer.stopped
     assert peer.relay_tx is not feeler
+    assert peer.addr_relay_enabled is not feeler
+    assert peer.getaddr_sent is not feeler
+    assert peer.addr_token_bucket == (1.0 if feeler else 1.0 + MAX_ADDR_TO_SEND)
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
     assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
@@ -7261,7 +7439,6 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
             "WtxidRelay",
             "SendAddrV2",
             "Verack",
-            "GetAddr",
             "stop_when_sent",
         ]
     else:

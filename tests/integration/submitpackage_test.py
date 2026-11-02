@@ -665,12 +665,33 @@ SCENARIOS: list[Callable[[Ctx], None]] = [
 def test_submitpackage_answers_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
-    """Each scenario is answered alike, and leaves the mempools alike."""
+    """Each scenario is answered alike, and leaves the mempools alike.
+
+    Each transaction left in the mempools is then answered alike by
+    `getrawtransaction`, `vsize_adjusted` first. `vin` and `vout` are left
+    to `rawtx_test.py`, which sets their `asm` aside.
+    """
     coins = fund(bitcoind)
     node = a_node(tmp_path)
     try:
         sync(node, bitcoind)
-        run(bitcoind, rpc_client(node), coins, SCENARIOS)
+        client = rpc_client(node)
+        run(bitcoind, client, coins, SCENARIOS)
+        for txid in cast("list[str]", bitcoind.rpc("getrawmempool", [])):
+            for verbosity in (1, 2):
+                answers = (
+                    client.call("getrawtransaction", [txid, verbosity]),
+                    bitcoind.rpc("getrawtransaction", [txid, verbosity]),
+                )
+                ours, theirs = (
+                    [
+                        (k, v)
+                        for k, v in cast("dict[str, Any]", a).items()
+                        if k not in {"vin", "vout"}
+                    ]
+                    for a in answers
+                )
+                assert ours == theirs, txid
     finally:
         node.stop()
         node.join()

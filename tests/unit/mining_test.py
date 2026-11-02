@@ -33,12 +33,14 @@ from btclib.tx import OutPoint, Tx, TxIn, TxOut
 
 from btclib_node import Node, mining
 from btclib_node.chains import RegTest, SigNet
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.mining import (
     DEFAULT_MAX_TRIES,
     TemplateError,
     accept_block,
     block_with_transactions,
     check_block_validity,
+    chunk_feerates,
     create_new_block,
     solve_block,
 )
@@ -246,6 +248,17 @@ def test_the_chunk_with_the_best_feerate_goes_in_first(funded: Node) -> None:
     assert template.block.transactions[0].vout[0].value == SUBSIDY + 16_000
     mine_template(funded, template.block)
     assert funded.mempool.size == 0
+
+
+def test_the_chunk_feerates_are_those_a_template_takes(funded: Node) -> None:
+    """`m_package_feerates`: each chunk taken, best first, fee over vbytes."""
+    cbs = coinbases(funded, 2)
+    low = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 2_000]), 2_000)
+    high = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 9_000]), 9_000)
+    assert chunk_feerates(funded) == [
+        FeeFrac(9_000, high.vsize),
+        FeeFrac(2_000, low.vsize),
+    ]
 
 
 def test_a_delta_ranks_a_transaction_but_the_coinbase_takes_what_it_paid(

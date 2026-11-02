@@ -16,31 +16,38 @@ import errno
 import inspect
 import json
 import os
+import re
 import select
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import Future
 from contextlib import suppress
+from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 
 import pytest
+from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
-from btclib_node.config import Config
+from btclib_node.config import Config, lookup_service, service_text
+from btclib_node.constants import CLIENT_NAME
 from btclib_node.log import Logger
+from btclib_node.p2p.banman import SpecialAddress
 from btclib_node.rpc import manager as manager_module
-from btclib_node.rpc.connection import REQUEST_TIMEOUT, parse_request_head
+from btclib_node.rpc.connection import IDLE_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
+    BIND_FAILED,
     LOOPBACKS,
     RPCAUTH,
     RPCAUTH_LINE,
+    bindable,
     cookie_path,
     get_random_port,
-    resolvable,
     taken_loopbacks,
     wait_until,
     wait_until_listening,
@@ -66,7 +73,7 @@ class AManagerFactory(Protocol):
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
-        rpcservertimeout: int = int(REQUEST_TIMEOUT),
+        rpcservertimeout: int = int(IDLE_TIMEOUT),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -86,7 +93,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
-        rpcservertimeout: int = int(REQUEST_TIMEOUT),
+        rpcservertimeout: int = int(IDLE_TIMEOUT),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
@@ -206,20 +213,26 @@ def test_warnings_into_passes_over_a_loopback_the_host_cannot_bind() -> None:
     """
     logged: list[tuple[object, ...]] = []
     warning = warnings_into(logged)
-    warning("Binding RPC on address %s port %s failed.", "::2", 1)
-    warning("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)
-    assert logged == [("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)]
+    recorded = f"[{LOOPBACKS[0]}]:1" if ":" in LOOPBACKS[0] else f"{LOOPBACKS[0]}:1"
+    warning(BIND_FAILED, "[::2]:1", "refused")
+    warning(BIND_FAILED, recorded, "refused")
+    assert logged == [(BIND_FAILED, recorded, "refused")]
 
 
-def test_resolvable_refuses_what_the_lookup_does_not_answer() -> None:
-    """The control for `LOOPBACKS`: a name is not an address it answers."""
-    assert not resolvable("localhost")
+def test_bindable_refuses_a_name() -> None:
+    """The control for `LOOPBACKS`: a name is not an address it binds."""
+    assert not bindable("localhost")
+
+
+def test_bindable_refuses_an_address_of_no_interface_here() -> None:
+    """The control for `LOOPBACKS`: `192.0.2.1`, TEST-NET-1, fails its bind."""
+    assert not bindable("192.0.2.1")
 
 
 def test_bind_uses_both_loopbacks_not_every_interface(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1269: `::1` and `127.0.0.1`, as `HTTPBindAddresses` binds (#27).
+    """ISS 1269: `::1` and `127.0.0.1`, as `GetBindAddresses` binds (#27).
 
     The sockets themselves are asked what they bound, rather than only
     asking whether some interface can still reach them.
@@ -229,18 +242,18 @@ def test_bind_uses_both_loopbacks_not_every_interface(
 
 
 def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -> None:
-    """ISS 1269: `::1` before `127.0.0.1`, `HTTPBindAddresses`'s own order.
+    """ISS 1269: `::1` before `127.0.0.1`, `GetBindAddresses`'s own order.
 
     Independent of `LOOPBACKS` and of `_LOOPBACK_HOSTS`: the expected
     order is this test's own literal, Core's (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only which of the two
-    a host without IPv6 answers -- never their order -- comes from
-    `resolvable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and only which of the two
+    a host without IPv6 binds -- never their order -- comes from
+    `bindable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
     itself would catch, both sides of that assertion reading the same
     constant; this one reads the sockets `_bind` actually returned.
     """
     manager = a_manager(get_random_port())
-    expected = [host for host in ("::1", "127.0.0.1") if resolvable(host)]
+    expected = [host for host in ("::1", "127.0.0.1") if bindable(host)]
     assert bound_hosts(manager._bind()) == expected
 
 
@@ -248,11 +261,13 @@ def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -
 def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, taken: str
 ) -> None:
-    """ISS 1269: `bitcoind` v31.1.0 binds the other loopback and starts.
+    """ISS 2152: `bitcoind` v32.1.0 binds the other loopback and starts.
 
     Measured with the one address held by another process: it logs
-    "Binding RPC on address <host> port <port> failed." and listens on
-    the other. A loopback the lookup refuses here fails its bind too.
+    "Binding RPC on address 127.0.0.1:<port> failed: Unable to bind to
+    127.0.0.1:<port> on this computer. Bitcoin Core is probably already
+    running." and listens on the other. A loopback this host cannot bind
+    fails its bind too.
     """
     with taken_loopbacks([taken]) as port:
         manager = a_manager(port)
@@ -262,11 +277,14 @@ def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
         )
         hosts = bound_hosts(manager._bind())
     assert hosts == [host for host in LOOPBACKS if host != taken]
-    assert warnings == [
-        ("Binding RPC on address %s port %s failed.", host, port)
-        for host in ("::1", "127.0.0.1")
-        if host == taken or host not in LOOPBACKS
-    ]
+    address = f"[{taken}]:{port}" if ":" in taken else f"{taken}:{port}"
+    held = [args for args in warnings if args[1] == address]
+    refusal = (
+        f"Unable to bind to {address} on this computer. "
+        f"{CLIENT_NAME} is probably already running."
+    )
+    assert [(args[0], str(args[2])) for args in held] == [(BIND_FAILED, refusal)]
+    assert all(args[0] == BIND_FAILED for args in warnings)
 
 
 @pytest.mark.parametrize("host", LOOPBACKS)
@@ -288,164 +306,229 @@ def test_a_request_is_answered_on_either_loopback(
         manager.join(timeout=10)
 
 
-def test_a_listening_socket_carries_libevent_s_options(
+def test_a_listening_socket_carries_cores_options(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1269: `SO_KEEPALIVE`, and `SO_REUSEADDR` off Windows alone.
+    """ISS 2152: `HTTPServer::BindAndStartListening`'s options.
 
-    `TCP_NODELAY` is Core's own, set once the socket is bound.
+    `SO_EXCLUSIVEADDRUSE` on Windows and `SO_REUSEADDR` elsewhere, and
+    `IPV6_V6ONLY` on the `::1` socket (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     manager = a_manager(get_random_port())
     server_sockets = manager._bind()
     try:
         for server_socket in server_sockets:
-            options = socket.SOL_SOCKET
-            assert server_socket.getsockopt(options, socket.SO_KEEPALIVE)
-            nodelay = server_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-            assert nodelay
-            reuse = server_socket.getsockopt(options, socket.SO_REUSEADDR)
-            assert bool(reuse) is (os.name != "nt")
+            if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+                exclusive = socket.SO_EXCLUSIVEADDRUSE
+                assert server_socket.getsockopt(socket.SOL_SOCKET, exclusive)
+            else:
+                reuse = socket.SO_REUSEADDR
+                assert server_socket.getsockopt(socket.SOL_SOCKET, reuse)
+            if server_socket.family == socket.AF_INET6:
+                v6only = socket.IPV6_V6ONLY
+                assert server_socket.getsockopt(socket.IPPROTO_IPV6, v6only)
     finally:
         bound_hosts(server_sockets)
 
 
-def test_a_socket_refusing_tcp_nodelay_is_kept(
+@pytest.mark.parametrize("loopback", LOOPBACKS)
+def test_an_option_core_passes_over_is_logged_at_debug(
+    monkeypatch: pytest.MonkeyPatch, loopback: str
+) -> None:
+    """ISS 2152: `SO_REUSEADDR` or `IPV6_V6ONLY` refused, and the socket bound.
+
+    `HTTPServer::BindAndStartListening` logs either at debug and goes on.
+    """
+    debugged: list[tuple[object, ...]] = []
+    logger = Logger(debug=True)
+    monkeypatch.setattr(logger, "log_debug", lambda *args: debugged.append(args))
+    refused = {
+        (socket.SOL_SOCKET, socket.SO_REUSEADDR),
+        (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+    }
+
+    class Refusing(socket.socket):
+        """A socket refusing the two options Core passes over."""
+
+        @override
+        def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
+            # `SO_EXCLUSIVEADDRUSE`, the one option set and not refused
+            if (level, optname) not in refused:  # pragma: no cover -- Windows alone
+                super().setsockopt(level, optname, value, *rest)
+                return
+            raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+    monkeypatch.setattr(socket, "socket", Refusing)
+    service = lookup_service(loopback, 0)
+    assert service is not None
+    host = service[0]
+    with manager_module._bind_and_listen(host, 0, logger) as server_socket:
+        assert server_socket.getsockname()[1]
+    names = [] if sys.platform == "win32" else ["SO_REUSEADDR"]
+    if isinstance(host, IPv6Address):
+        names.append("IPV6_V6ONLY")
+    text = f"Protocol not available ({errno.ENOPROTOOPT})"
+    line = "Cannot set %s on %s listen socket: %s, continuing anyway"
+    address = service_text(host, 0)
+    assert debugged == [("http", line, name, address, text) for name in names]
+
+
+class _Unlistening(socket.socket):
+    """A socket whose `listen` fails."""
+
+    @override
+    def listen(self, *_: int) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+
+def test_a_bind_core_refuses_is_refused_in_its_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2152: `BindAndStartListening`'s refusals, in its words.
+
+    An address of no local interface, `192.0.2.1`, fails its `bind`
+    with an error other than `EADDRINUSE`; then `socket` and `listen`
+    are made to fail.
+    """
+    logger = Logger(debug=True)
+    test_net = IPv4Address("192.0.2.1")
+    with pytest.raises(
+        OSError,
+        match=r"^Unable to bind to 192\.0\.2\.1:0 on this "
+        r"computer \(bind returned error .+ \(\d+\)\)$",
+    ):
+        manager_module._bind_and_listen(test_net, 0, logger)
+    loopback = IPv4Address("127.0.0.1")
+    monkeypatch.setattr(socket, "socket", _Unlistening)
+    unsupported = f"Operation not supported ({errno.EOPNOTSUPP})"
+    with pytest.raises(
+        OSError, match=re.escape(f"Cannot listen on 127.0.0.1:0: {unsupported}")
+    ):
+        manager_module._bind_and_listen(loopback, 0, logger)
+
+    def no_socket(*_: object) -> NoReturn:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", no_socket)
+    text = f"Too many open files ({errno.EMFILE})"
+    with pytest.raises(
+        OSError, match=re.escape(f"Cannot create 127.0.0.1:0 listen socket: {text}")
+    ):
+        manager_module._bind_and_listen(loopback, 0, logger)
+
+
+_LOOKUP_FAILED = "Could not bind RPC on address %s port %s: Address lookup failed."
+
+
+@pytest.mark.parametrize("host", ["localhost", "a..b", "\uff11\uff12\uff17.0.0.1", ""])
+def test_a_host_that_is_no_address_is_not_looked_up(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """ISS 2135: `Lookup(address, port, false)` reads a numeric address alone.
+
+    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and each
+    host as `-rpcbind`: it logs "Could not bind RPC on address <host>
+    port <port>: Address lookup failed." and binds nothing there. Here
+    the system's lookup answers every name with `127.0.0.1`, as a
+    machine's resolver may answer the fullwidth digits of 127, and is
+    asked with `AI_NUMERICHOST` alone, so it never resolves one.
+    """
+    lookup = socket.getaddrinfo
+    flags_asked: list[int] = []
+
+    def answering_every_name(
+        name: bytes | str | None, port: bytes | str | int | None, **kw: Any
+    ) -> list[Any]:
+        flags_asked.append(kw.get("flags", 0))
+        numeric = flags_asked[-1] & socket.AI_NUMERICHOST
+        return lookup(name if numeric else "127.0.0.1", port, **kw)
+
+    monkeypatch.setattr(socket, "getaddrinfo", answering_every_name)
+    port = get_random_port()
+    manager = a_manager(port, rpc_host=host)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    assert manager._bind() == []
+    assert warnings == [(_LOOKUP_FAILED, host, port)]
+    assert all(flags & socket.AI_NUMERICHOST for flags in flags_asked)
+
+
+def test_a_host_of_no_ip_network_is_warned_over(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1269: Core logs the refusal and keeps the socket bound."""
-    real_bind_endpoint = manager_module._bind_endpoint
+    """ISS 2152: an onion name is looked up, its bind refused in Core's words.
 
-    def refuses(*args: object) -> None:
-        raise OSError(args)
-
-    def refusing(host: str, port: int | None) -> Any:
-        bound = real_bind_endpoint(host, port)
-        return SimpleNamespace(
-            setsockopt=refuses, getsockname=bound.getsockname, close=bound.close
-        )
-
-    monkeypatch.setattr(manager_module, "_bind_endpoint", refusing)
-    manager = a_manager(get_random_port())
-    logged: list[tuple[object, ...]] = []
-    monkeypatch.setattr(manager.logger, "info", lambda *args: logged.append(args))
-    assert bound_hosts(manager._bind()) == LOOPBACKS
-    refusal = (
-        "WARNING: Unable to set TCP_NODELAY on RPC server socket, continuing anyway",
-    )
-    assert logged.count(refusal) == len(LOOPBACKS)
-
-
-@pytest.mark.parametrize("host", ["a..b", "\uff11\uff12\uff17.0.0.1"])
-def test_a_host_is_looked_up_as_its_bytes(host: str) -> None:
-    """ISS 1269: no IDNA, as libevent hands `getaddrinfo` the bytes.
-
-    `a..b` fails as a lookup rather than as a `UnicodeError`, and
-    fullwidth digits are not read as `127.0.0.1`.
+    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and the
+    onion name as `-rpcbind`: "Binding RPC on address <onion>:<port>
+    failed: Bind address family for <onion>:<port> not supported".
     """
-    with pytest.raises(socket.gaierror):
-        manager_module._first_address(host, 0)
-
-
-PASSIVE = socket.AI_PASSIVE
-ADDRCONFIG = socket.AI_PASSIVE | socket.AI_ADDRCONFIG
-
-
-@pytest.mark.parametrize(
-    ("host", "windows", "flags"),
-    [
-        ("localhost", True, ADDRCONFIG),
-        ("localhost", False, ADDRCONFIG),
-        ("127.0.0.1", True, PASSIVE),
-        ("127.0.0.1", False, ADDRCONFIG),
-        ("::1", True, PASSIVE),
-        ("::1", False, ADDRCONFIG),
-        ("fe80::1%1", True, PASSIVE),
-        ("fe80::1% +1", True, PASSIVE),
-        ("fe80::1%", True, PASSIVE),
-        ("fe80::1%1x", True, ADDRCONFIG),
-        ("fe80::1%no-such-interface", True, ADDRCONFIG),
-        ("1.2.3", True, ADDRCONFIG),
-        ("::1\0x", True, PASSIVE),
-        ("127.0.0.1\0", True, PASSIVE),
-        ("fe80::1%1\0x", True, PASSIVE),
-        ("localhost\0::1", True, ADDRCONFIG),
-        ("\0::1", True, ADDRCONFIG),
-        ("", False, ADDRCONFIG),
-    ],
-)
-def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
-    monkeypatch: pytest.MonkeyPatch,
-    host: str,
-    windows: bool,  # noqa: FBT001
-    flags: int,
-) -> None:
-    """ISS 1269: a literal libevent parses itself on Windows is not held to it.
-
-    Every other lookup is the system's, asked with `make_addrinfo`'s flags.
-    """
-    monkeypatch.setattr(manager_module, "_WINDOWS", windows)
-    assert manager_module._address_flags(host) == flags
-
-
-def test_a_zone_naming_an_interface_is_a_literal_libevent_parses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `evutil_inet_pton_scope` takes a zone naming an interface."""
-    monkeypatch.setattr(manager_module, "_WINDOWS", True)
-    name = socket.if_nameindex()[0][1]
-    assert manager_module._address_flags(f"fe80::1%{name}") == PASSIVE
-
-
-def test_the_empty_host_is_0_0_0_0_first_on_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
-    monkeypatch.setattr(manager_module, "_WINDOWS", True)
-    asked: list[object] = []
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **_: asked.append(args))
-    family, _, _, sockaddr = manager_module._first_address("", 8332)
-    assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
-    assert not asked
-
-
-def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows.
-
-    The system's first answer is bound, whichever family it is.
-    """
-    monkeypatch.setattr(manager_module, "_WINDOWS", False)
-    asked: list[tuple[object, ...]] = []
-    answers: list[tuple[object, ...]] = [
-        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8332, 0, 0)),
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8332)),  # noqa: S104
+    onion = str(SpecialAddress(BIP155Network.TORV3, bytes(range(32))))
+    port = get_random_port()
+    manager = a_manager(port, rpc_host=onion)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    assert manager._bind() == []
+    address = f"{onion}:{port}"
+    assert [(args[0], args[1], str(args[2])) for args in warnings] == [
+        (BIND_FAILED, address, f"Bind address family for {address} not supported")
     ]
 
-    def getaddrinfo(
-        host: bytes | None,
-        port: int | None,
-        *,
-        type: int,  # noqa: A002
-        flags: int,
-    ) -> list[tuple[object, ...]]:
-        asked.append((host, port, type, flags))
-        return answers
 
-    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
-    first = manager_module._first_address("", 8332)
-    assert first == (socket.AF_INET6, socket.SOCK_STREAM, 6, ("::", 8332, 0, 0))
-    assert asked == [(None, 8332, socket.SOCK_STREAM, ADDRCONFIG)]
+def test_an_ipv6_host_is_bound_with_its_scope() -> None:
+    """ISS 2152: the 4-tuple `bind` reads a scope from, the scope apart.
+
+    CPython reads `fe80::1%3` in a 2-tuple at scope 0, and the bind of a
+    link-local address there fails.
+    """
+    scoped = IPv6Address("fe80::1%3")
+    assert manager_module._sockaddr(scoped, 5) == ("fe80::1", 5, 0, 3)
+    assert manager_module._sockaddr(IPv6Address("::1"), 5) == ("::1", 5, 0, 0)
+    assert manager_module._sockaddr(IPv4Address("127.0.0.1"), 5) == ("127.0.0.1", 5)
 
 
-def test_bind_warns_of_a_host_idna_would_refuse(a_manager: AManagerFactory) -> None:
-    """ISS 1269: `a..b` is a bind that failed, not an exception out of it."""
-    port = get_random_port()
-    manager = a_manager(port, rpc_host="a..b")
-    logged: list[tuple[object, ...]] = []
-    manager.logger.warning = lambda *args: logged.append(args)  # type: ignore[method-assign]
-    assert manager._bind() == []
-    assert logged == [("Binding RPC on address %s port %s failed.", "a..b", port)]
+def test_bind_and_listen_binds_an_ipv6_host_with_its_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2152: `bind` receives `_sockaddr`'s 4-tuple, on every platform.
+
+    The socket records its address and refuses it, so no interface here
+    has to hold `fe80::1`.
+    """
+    bound: list[object] = []
+
+    class Recording(socket.socket):
+        """A socket recording what it is asked to bind, and refusing it."""
+
+        @override
+        def bind(self, address: Any, /) -> None:
+            bound.append(address)
+            raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+
+    monkeypatch.setattr(socket, "socket", Recording)
+    host = IPv6Address("fe80::1%3")
+    with pytest.raises(OSError, match=r"^Unable to bind to \[fe80::1%3\]:7 "):
+        manager_module._bind_and_listen(host, 7, Logger(debug=True))
+    assert bound == [("fe80::1", 7, 0, 3)]
+
+
+@pytest.mark.skipif(  # pragma: no cover -- macOS alone, whose lo0 holds fe80::1
+    sys.platform != "darwin", reason="macOS's lo0 holds fe80::1, Linux's lo does not"
+)
+def test_a_scoped_ipv6_host_binds_at_its_scope(a_manager: AManagerFactory) -> None:
+    """ISS 2152: `fe80::1%<lo0's index>` binds on lo0, its scope kept.
+
+    Measured on bitcoind v32.1.0 on macOS: `-rpcbind=[fe80::1%1]
+    -rpcallowip=fe80::/10` binds, and a client reaches it at
+    `fe80::1%lo0`.
+    """
+    scope = socket.if_nametoindex("lo0")
+    manager = a_manager(get_random_port(), rpc_host=f"fe80::1%{scope}")
+    server_sockets = manager._bind()
+    try:
+        assert [sock.getsockname()[3] for sock in server_sockets] == [scope]
+    finally:
+        bound_hosts(server_sockets)
 
 
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
@@ -471,23 +554,26 @@ _EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
     ("rpc_host", "rpcbind", "warned"),
     [
         pytest.param("127.0.0.1", (), [], id="loopback"),
-        pytest.param(None, (_EVERY_INTERFACE,), [_IGNORED], id="ignored"),
-        pytest.param(_EVERY_INTERFACE, (), [_EXPOSED], id="every interface"),
-        pytest.param("localhost", (), [], id="a name, not looked up"),
+        pytest.param(None, (_EVERY_INTERFACE,), [(_IGNORED,)], id="ignored"),
+        pytest.param(_EVERY_INTERFACE, (), [(_EXPOSED,)], id="every interface"),
+        pytest.param(
+            "localhost", (), [(_LOOKUP_FAILED, "localhost")], id="a name, not looked up"
+        ),
     ],
 )
-def test_bind_warns_as_cores_http_bind_addresses(
+def test_bind_warns_as_cores_init_http_server(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,
     rpc_host: str | None,
     rpcbind: tuple[str, ...],
-    warned: list[str],
+    warned: list[tuple[str, ...]],
 ) -> None:
-    """ISS 1211: `HTTPBindAddresses`'s warnings, and its "Binding RPC" line.
+    """ISS 1211: `InitHTTPServer`'s warnings, and its "Binding RPC" line.
 
-    Measured on bitcoind v31.1.0: `-rpcbind=0.0.0.0` without
+    Measured on bitcoind v32.1.0: `-rpcbind=0.0.0.0` without
     `-rpcallowip` logs the first warning and binds loopback. The second
-    is logged for an address that binds every interface, once bound.
+    is logged for an address naming every interface, before its bind,
+    and the third for a name.
     """
     manager = a_manager(get_random_port(), rpc_host=rpc_host, rpcbind=rpcbind)
     warnings: list[tuple[object, ...]] = []
@@ -495,10 +581,11 @@ def test_bind_warns_as_cores_http_bind_addresses(
     monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
     monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
     bound_hosts(manager._bind())
-    assert warnings == [(warning,) for warning in warned]
+    port = manager.port
+    assert warnings == [(*w, port) if len(w) > 1 else w for w in warned]
     hosts = ("::1", "127.0.0.1") if rpc_host is None else (rpc_host,)
     assert infos == [
-        ("Binding RPC on address %s port %s", host, manager.port) for host in hosts
+        ("Binding RPC on address %s port %s", host, port) for host in hosts
     ]
 
 
@@ -535,8 +622,10 @@ def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
 ) -> None:
     """ISS 1268: `HTTPBindAddresses`'s other branch, one socket an endpoint.
 
-    Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1 -rpcallowip=127.0.0.1`
-    listens on `127.0.0.1` at `-rpcport`, and a port given overrides it.
+    That function is Core's at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1
+    -rpcallowip=127.0.0.1` listens on `127.0.0.1` at `-rpcport`, and a
+    port given overrides it.
     """
     port, other = get_random_port(), get_random_port()
     manager = a_manager(
@@ -556,14 +645,14 @@ def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
     ]
 
 
-def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
+def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: `a..b` fails as a bind, and `127.0.0.1` still listens.
+    """ISS 2152: `a..b` is no address, and `127.0.0.1` still listens.
 
-    Measured on bitcoind v31.1.0 with `-rpcbind=127.0.0.1 -rpcbind=a..b
-    -rpcallowip=127.0.0.1`: it starts, and warns "Binding RPC on address
-    a..b port <port> failed.".
+    Measured on bitcoind v32.1.0 with `-rpcbind=a..b -rpcbind=127.0.0.1
+    -rpcallowip=127.0.0.1`: it starts, and warns "Could not bind RPC on
+    address a..b port <port>: Address lookup failed.".
     """
     port = get_random_port()
     manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
@@ -572,13 +661,13 @@ def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
     monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
     server_sockets = manager._bind()
     assert bound_hosts(server_sockets) == ["127.0.0.1"]
-    assert ("Binding RPC on address %s port %s failed.", "a..b", port) in warnings
+    assert (_LOOKUP_FAILED, "a..b", port) in warnings
 
 
 def test_an_rpcbind_port_core_refuses_binds_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: `HTTPBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
+    """ISS 1268: `GetBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
 
     `cli` refuses such a value first; a `Config` built in Python reaches
     this, and the listener does not start.
@@ -650,6 +739,15 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
         manager.join(timeout=10)
 
 
+def read_a_head(sock: socket.socket) -> bytes:
+    """Read `sock` to the end of a header section, ten seconds a read."""
+    sock.settimeout(10)
+    data = b""
+    while b"\r\n\r\n" not in data:
+        data += sock.recv(1 << 16)
+    return data
+
+
 def read_to_the_end(sock: socket.socket) -> bytes:
     """Read `sock` until the other end closes, within ten seconds a read."""
     sock.settimeout(10)
@@ -709,18 +807,147 @@ def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
 def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
     a_manager: AManagerFactory,
 ) -> None:
-    """A request arriving on an idle connection during `stop`'s wait: 503.
+    """A request arriving on an idle connection while workers run: 503.
 
-    Core's event loop runs through `StopHTTPServer`'s
-    `g_requests.WaitUntilEmpty()`, so a request on a kept-alive
-    connection idle until then reaches `http_reject_request_cb`, which
-    `InterruptHTTPServer` set, and is answered 503 with `Connection:
-    close` (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). One connection idles in `run`; another's reply is held
-    on the manager's loop, so `stop` is still waiting when the request
-    is sent, and released once the 503 is read. Nobody counts the idle
-    connection, so `stop` returns long before `request_timeout`
-    (btclib-org/btclib-node#1545).
+    Core's socket thread runs while `StopHTTPServer` waits for its
+    workers, so a request on a kept-alive connection idle until then
+    reaches `RejectRequest`, which `InterruptHTTPServer` set, and is
+    answered 503 with no body (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). One connection idles in
+    `run`; another's reply is due 3 seconds on, as a worker asleep in a
+    `stop` RPC's `wait` is, so `stop` is still in that phase when the
+    request is sent (btclib-org/btclib-node#1545).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    loop = manager.loop
+    idle, idle_peer = socket.socketpair()
+    busy, busy_peer = socket.socketpair()
+    waiting = threading.Event()
+    finish_replies = manager._finish_replies
+
+    def signal_then_finish() -> None:
+        waiting.set()
+        finish_replies()
+
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(loop, idle)
+        asyncio.run_coroutine_threadsafe(conn.run(), loop)
+        # its own id, as `_accept_loop` gives each connection
+        manager.last_connection_id += 1
+        answering = a_connection_answering(manager, busy)
+        manager._finish_replies = signal_then_finish  # type: ignore[method-assign]
+        answering.send_and_close_after(
+            HttpReply(OK, {"result": None, "error": None, "id": 1}), 3.0
+        )
+        stopping.start()
+        assert waiting.wait(10)
+        body = json.dumps(REQUEST).encode()
+        idle_peer.sendall(
+            b"POST / HTTP/1.1\r\nHost: x\r\n"
+            + RPCAUTH_LINE
+            + b"Content-Length: %d\r\n\r\n" % len(body)
+            + body
+        )
+        reply = read_a_head(idle_peer)
+        answered = read_to_the_end(busy_peer)
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        idle_peer.close()
+        busy_peer.close()
+        stopping.join(60)
+    assert stopped
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert head.split(b"\r\n") == [
+        b"HTTP/1.1 503 Service Unavailable",
+        b"Cache-Control: no-store",
+        b"Content-Length: 0",
+    ]
+    assert not body
+    assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
+
+
+def test_stop_accepts_and_refuses_a_new_client_until_the_replies_are_due(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2152: while workers run, `stop` accepts a client and answers 503.
+
+    Core's `StopHTTPServer` accepts until its workers have stopped,
+    `RejectRequest` answering every request 503, then calls
+    `StopAccepting`, and `StopListening` only after its wait
+    (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). A reply due 3 seconds on, as a worker asleep in a `stop` RPC's
+    `wait` is, holds `stop` in that first phase while a new client
+    connects. The listening sockets are still open once accepting stops,
+    and closed once `stop` returns.
+    """
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.start()
+    wait_until_listening(manager)
+    busy, busy_peer = socket.socketpair()
+    waiting = threading.Event()
+    finish_replies = manager._finish_replies
+    stop_accepting = manager._stop_accepting
+    open_once_not_accepting: list[bool] = []
+
+    def signal_then_finish() -> None:
+        waiting.set()
+        finish_replies()
+
+    def record_then_stop_accepting() -> None:
+        stop_accepting()
+        open_once_not_accepting.append(
+            all(sock.fileno() != -1 for sock in manager._server_sockets)
+        )
+
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        answering = a_connection_answering(manager, busy)
+        manager._finish_replies = signal_then_finish  # type: ignore[method-assign]
+        manager._stop_accepting = record_then_stop_accepting  # type: ignore[method-assign]
+        answering.send_and_close_after(
+            HttpReply(OK, {"result": None, "error": None, "id": 1}), 3.0
+        )
+        stopping.start()
+        assert waiting.wait(10)
+        body = json.dumps(REQUEST).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
+            client.sendall(
+                b"POST / HTTP/1.1\r\nHost: x\r\n"
+                + RPCAUTH_LINE
+                + b"Content-Length: %d\r\n\r\n" % len(body)
+                + body
+            )
+            reply = read_a_head(client)
+        answered = read_to_the_end(busy_peer)
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        busy_peer.close()
+        stopping.join(60)
+    assert stopped
+    assert reply.startswith(b"HTTP/1.1 503 Service Unavailable\r\n")
+    assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
+    assert open_once_not_accepting == [True]
+    assert all(sock.fileno() == -1 for sock in manager._server_sockets)
+
+
+def test_stop_disconnects_an_idle_connection_once_the_replies_are_due(
+    a_manager: AManagerFactory,
+) -> None:
+    """Once every reply is due, `stop` closes a connection between requests.
+
+    `StopHTTPServer` disconnects every client with no request under way
+    and nothing left to send before it waits for the rest
+    (`HTTPServer::DisconnectAllClients`, `src/httpserver.h`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). One connection has
+    answered a kept-alive request and idles in `run`; another's reply is
+    held on the manager's loop, so `stop` is still waiting for it when
+    the idle one is closed.
     """
     manager = a_manager(get_random_port())
     manager.start()
@@ -732,16 +959,9 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
     sock_sendall = loop.sock_sendall
 
     async def held_sendall(sock: socket.socket, data: Buffer) -> None:
-        if sock is busy:
-            await released.wait()
+        # patched in once only `busy` is left to write to
+        await released.wait()
         await sock_sendall(sock, data)
-
-    waiting = threading.Event()
-    finish_replies = manager._finish_replies
-
-    def signal_then_finish() -> None:
-        waiting.set()
-        finish_replies()
 
     def release() -> None:
         with suppress(RuntimeError):
@@ -750,21 +970,19 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
     stopping = threading.Thread(target=manager.stop)
     try:
         conn = manager.create_connection(loop, idle)
-        asyncio.run_coroutine_threadsafe(conn.run(), loop)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        conn.send(HttpReply(OK, {"result": None, "error": None, "id": 1}))
+        first = read_a_head(idle_peer)
+        # the reply is written, and `run` reads the next request
+        wait_until(lambda: conn._reading)
+        # its own id, as `_accept_loop` gives each connection
+        manager.last_connection_id += 1
         answering = a_connection_answering(manager, busy)
         loop.sock_sendall = held_sendall  # type: ignore[method-assign]
-        manager._finish_replies = signal_then_finish  # type: ignore[method-assign]
-        answering.send(HttpReply(OK, {"result": None, "error": None, "id": 1}))
+        answering.send(HttpReply(OK, {"result": None, "error": None, "id": 2}))
         stopping.start()
-        assert waiting.wait(10)
-        body = json.dumps(REQUEST).encode()
-        idle_peer.sendall(
-            b"POST / HTTP/1.1\r\nHost: x\r\n"
-            + RPCAUTH_LINE
-            + b"Content-Length: %d\r\n\r\n" % len(body)
-            + body
-        )
-        reply = read_to_the_end(idle_peer)
+        read_to_the_end(idle_peer)
+        still_waiting = stopping.is_alive()
         release()
         answered = read_to_the_end(busy_peer)
         stopping.join(10)
@@ -775,9 +993,8 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
         busy_peer.close()
         stopping.join(60)
     assert stopped
-    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
-    assert head[0] == b"HTTP/1.1 503 Service Unavailable"
-    assert b"Connection: close" in head
+    assert first.startswith(b"HTTP/1.1 200 OK\r\n")
+    assert still_waiting
     assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
 
 
@@ -862,17 +1079,20 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     assert all(server_socket.fileno() == -1 for server_socket in server_sockets)
 
 
-def test_server_closes_every_listening_socket_it_was_handed(
+def test_server_leaves_its_listening_sockets_open_once_cancelled(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1269: cancelled on its own, `server` closes each of its sockets.
+    """ISS 2152: cancelled on its own, `server` leaves its sockets open.
 
-    `stop` closes them too, so this is the caller that cancels `server`
-    alone, as `server`'s own `finally` has it.
+    Core's `StopHTTPServer` stops accepting before its wait and closes
+    the listening sockets only after it (`StopAccepting`,
+    `StopListening`, `src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), so `stop` closes them, last.
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
     server_sockets = manager._bind()
+    manager._server_sockets = server_sockets
     task = loop.create_task(manager.server(loop, server_sockets))
     while manager._accept_queue is None:
         loop.run_until_complete(asyncio.sleep(0))
@@ -880,6 +1100,8 @@ def test_server_closes_every_listening_socket_it_was_handed(
     with suppress(asyncio.CancelledError):
         loop.run_until_complete(task)
     # a closed socket's own fileno is -1
+    assert all(server_socket.fileno() != -1 for server_socket in server_sockets)
+    manager.stop()
     assert all(server_socket.fileno() == -1 for server_socket in server_sockets)
 
 
@@ -1237,8 +1459,8 @@ def test_stop_finishes_a_reply_written_once_shutdown_began(
     `StopHTTPServer` waits for every reply it tracks to be sent before
     it frees the event base (`src/httpserver.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request asked for
-    keep-alive, and the reply still carries the `Connection: close`
-    Core's `HTTPRequest::WriteReply` adds once shutdown has begun.
+    keep-alive, and the connection still closes after the reply, with no
+    `Connection: close` (`RpcConnection._shutting_down`).
     """
     manager = a_manager(get_random_port())
     manager.start()
@@ -1264,23 +1486,24 @@ def test_stop_finishes_a_reply_written_once_shutdown_began(
         theirs.close()
     assert not stopping.is_alive()
     head, _, body = reply.partition(b"\r\n\r\n")
-    assert b"Connection: close" in head.split(b"\r\n")
+    assert b"Connection: close" not in head.split(b"\r\n")
     assert json.loads(body)["result"] == result
 
 
 def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
     a_manager: AManagerFactory,
 ) -> None:
-    """A reply nobody reads holds `stop` no longer than `request_timeout`.
+    """A reply nobody reads holds `stop` no longer than `idle_timeout`.
 
-    `evhttp_set_timeout` bounds Core's own write with
-    `-rpcservertimeout` (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); the reply `stop`
-    finishes rather than cancels is bounded the same way, and its
+    Core's idle timeout closes a client that stops reading while
+    `StopHTTPServer` waits for its replies to be sent
+    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); the reply `stop`
+    finishes rather than cancels idles out the same way, and its
     connection is closed once it gives up (ISS 1506).
     """
     manager = a_manager(get_random_port())
-    manager.request_timeout = 0.2
+    manager.idle_timeout = 0.2
     manager.start()
     wait_until_listening(manager)
     ours, theirs = socket.socketpair()
@@ -1303,38 +1526,34 @@ def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
     assert ours.fileno() == -1
 
 
-def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
+def test_stop_gives_up_a_reply_after_disconnect_wait_with_no_idle_timeout(
     a_manager: AManagerFactory,
 ) -> None:
-    """`request_timeout=None` leaves `stop`'s own reply wait unbounded.
+    """With no idle timeout, `stop` waits `disconnect_wait` for a reply.
 
-    `-rpcservertimeout=0` or `=-1` is `_request_timeout`'s own `None`
-    (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
-    own once `evhttp_set_timeout` has armed none either. The shape is
-    the sibling test above, its own `request_timeout=0.2` bound turned
-    off here instead of shortened -- but what holds the write open is
-    `release`, an event this test controls, rather than a socket pair's
-    own buffer: how much a write like this one can queue before it
-    blocks is the platform's own number, not this test's, and asserting
-    `stopping.is_alive()` after a fixed join on that assumption fails
-    on Windows, whose `socketpair` is emulated over loopback TCP.
-    `manager.loop.sock_sendall`
+    `StopHTTPServer` waits 30 seconds for its clients to disconnect, and
+    with no idle timeout armed a client that never reads its reply holds
+    that wait to its end (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). What holds the write
+    open is `release`, an event this test controls, rather than a socket
+    pair's own buffer: how much a write like this one can queue before
+    it blocks is the platform's own number, not this test's, and Windows
+    emulates `socketpair` over loopback TCP. `manager.loop.sock_sendall`
     is what `RpcConnection._write` awaits to write the reply; patched
-    here, it blocks on `release` before doing the real write, so the
-    reply cannot finish, on any platform, until this test says so.
+    here, it blocks on `release` and writes nothing, `stop` cancelling
+    it first.
     """
     manager = a_manager(get_random_port())
-    manager.request_timeout = None
+    manager.idle_timeout = None
+    manager.disconnect_wait = 1.0
     manager.start()
     wait_until_listening(manager)
     holding = threading.Event()
     release = threading.Event()
-    real_sock_sendall = manager.loop.sock_sendall
 
     async def held_sock_sendall(sock: socket.socket, data: Buffer) -> None:
         holding.set()
         await asyncio.to_thread(release.wait)
-        await real_sock_sendall(sock, data)
 
     manager.loop.sock_sendall = held_sock_sendall  # type: ignore[method-assign]
     ours, theirs = socket.socketpair()
@@ -1347,19 +1566,17 @@ def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
         conn.send(HttpReply(OK, reply))
         # the write has begun, and cannot finish until `release` is set
         assert holding.wait(10)
+        started = time.monotonic()
         stopping.start()
-        # deterministic, not a wall-clock guess: `release` is unset, so
-        # the write this reply is stuck in cannot have ended, whatever
-        # this join's own timeout is
-        stopping.join(1.0)
-        assert stopping.is_alive()
-        release.set()
         stopping.join(10)
+        stopped_after = time.monotonic() - started
+        stopped = not stopping.is_alive()
     finally:
         release.set()
         theirs.close()
         stopping.join(10)
-    assert not stopping.is_alive()
+    assert stopped
+    assert stopped_after >= manager.disconnect_wait
     assert ours.fileno() == -1
 
 
@@ -1376,21 +1593,31 @@ def test_manager_takes_max_connections_from_rpcmaxconnections(
         manager.loop.close()
 
 
-def test_manager_takes_request_timeout_from_rpcservertimeout(
-    a_manager: AManagerFactory,
+@pytest.mark.parametrize(
+    ("seconds", "idle_timeout"),
+    [
+        (0, None),
+        (-1, None),
+        (-5, None),
+        (45, 45.0),
+        (9223372036, 9223372036.0),
+        (9223372037, (9223372037 * 10**9 - 2**64) / 10**9),
+        (18446744074, (18446744074 * 10**9 - 2**64) / 10**9),
+    ],
+)
+def test_manager_takes_idle_timeout_from_rpcservertimeout(
+    a_manager: AManagerFactory, seconds: int, idle_timeout: float | None
 ) -> None:
-    """`RpcManager.__init__` reads `request_timeout` off `Config`.
+    """`RpcManager.__init__` reads `idle_timeout` off `Config`.
 
-    `-rpcservertimeout=0` is one of Core's own two spellings for no
-    bound at all (`_request_timeout`'s own docstring has the other,
-    `-1`), which this manager carries as `None` from construction --
-    not only where a test lowers `request_timeout` directly afterward,
-    the seam `RpcManager.__init__`'s own comment names.
+    ISS 2152: a value of 0 or less arms none, and past `INT64_MAX`
+    nanoseconds the value wraps as Core's does, below 0 at `9223372037`
+    and back above it at `18446744074`. Measured on bitcoind v32.1.0:
+    with `-rpcservertimeout=1` an idle connection is closed within two
+    seconds, and with `0` or `-5` it is still open after 6.
     """
-    manager = a_manager(get_random_port(), rpcservertimeout=0)
-    assert manager.request_timeout is None
-    other = a_manager(get_random_port(), rpcservertimeout=45)
-    assert other.request_timeout == 45.0
+    manager = a_manager(get_random_port(), rpcservertimeout=seconds)
+    assert manager.idle_timeout == idle_timeout
 
 
 def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
@@ -1403,12 +1630,12 @@ def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     swept the loop's tasks and begins to finish the replies it spared,
     so it is still unwritten when that sweep runs, whatever the socket
     pair buffers. Core's
-    `StopHTTPServer` waits for the reply to every request `g_requests`
-    tracks, whenever it arrived (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request keeps its
-    connection alive, which goes back to reading once the reply is
-    written: idle, and not waited for, so `stop` returns long before
-    `request_timeout`. The deadline `stop` records covers its wait.
+    `StopHTTPServer` waits for a client it still has a reply to send to
+    (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). The request keeps its connection alive, which goes back to
+    reading once the reply is written: idle, and not waited for, so
+    `stop` returns long before `disconnect_wait`. The deadline `stop`
+    records covers its wait.
     """
     manager = a_manager(get_random_port())
     manager.start()
@@ -1454,8 +1681,7 @@ def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     assert json.loads(body)["result"] == result
     deadline = manager.latest_reply_deadline()
     assert deadline is not None
-    assert manager.request_timeout is not None
-    assert deadline >= sent + manager.request_timeout
+    assert deadline >= sent + manager.disconnect_wait
 
 
 def test_stop_finishes_a_401_asleep_in_its_failed_attempt_delay(
@@ -1740,6 +1966,18 @@ def test_a_refused_source_is_closed_as_it_is_accepted(
         manager.join(timeout=10)
 
 
+def tcp_pair() -> tuple[socket.socket, socket.socket]:
+    """Return the two ends of a loopback TCP connection, the accepted one first.
+
+    What `_accept_loop` sets `TCP_NODELAY` on. Off Windows
+    `socket.socketpair` answers a Unix socket, which refuses `TCP_NODELAY`.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        theirs = socket.create_connection(listener.getsockname()[:2])
+        ours, _ = listener.accept()
+    return ours, theirs
+
+
 @pytest.mark.parametrize(
     ("sockaddr", "logged"),
     [
@@ -1767,7 +2005,7 @@ def test_accept_loop_closes_a_refused_source_and_queues_the_next(
     accepted: asyncio.Queue[Any] = asyncio.Queue()
     debugged: list[tuple[Any, ...]] = []
     monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
-    pairs = [socket.socketpair() for _ in range(2)]
+    pairs = [tcp_pair() for _ in range(2)]
     refused, allowed = pairs[0][0], pairs[1][0]
     backlog = [(allowed, ("127.0.0.1", 45001)), (refused, sockaddr)]
 
@@ -1817,7 +2055,7 @@ def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
     failed: list[Any] = []
     monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
     monkeypatch.setattr(manager.logger, "exception", lambda *a, **k: failed.append(a))
-    ours, theirs = socket.socketpair()
+    ours, theirs = tcp_pair()
     refusals: list[float] = []
     fail_until = time.monotonic() + 0.35
     backlog = [(ours, ("127.0.0.1", 45000))]
@@ -1853,6 +2091,70 @@ def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
     line = ("http", "Cannot accept new connection: %s", text)
     assert debugged == [line] * len(refusals)
     assert not failed
+
+
+def test_an_accepted_socket_has_nagle_s_algorithm_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2152: `HTTPServer::NewSockAccepted` sets `TCP_NODELAY` on it."""
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port), timeout=20):
+            wait_until(lambda: manager.connections)
+            (conn,) = manager.connections.values()
+            nodelay = conn.client.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        assert nodelay
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_accept_loop_queues_a_socket_refusing_tcp_nodelay(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2152: Core logs the refusal at debug and keeps the connection."""
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    debugged: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
+
+    class Refusing:
+        """An accepted socket refusing every option."""
+
+        def setsockopt(self, *_: object) -> None:
+            raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+        def settimeout(self, _: object) -> None:
+            """Do nothing, as a socket already non-blocking would."""
+
+    refusing = Refusing()
+    backlog = [(refusing, ("127.0.0.1", 45001))]
+
+    async def accept(sock: socket.socket) -> tuple[Any, tuple[str, int]]:
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[Any, tuple[str, int]]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", accept)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            queued = loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+    assert queued == (refusing, ("127.0.0.1", 45001))
+    line = "connection from %s: unable to set TCP_NODELAY, continuing anyway"
+    assert debugged == [("http", line, "127.0.0.1:45001")]
 
 
 def test_report_server_failure_logs_a_real_exception(

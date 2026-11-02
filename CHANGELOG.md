@@ -32,6 +32,177 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.10.30
+
+### A block failing its signet solution leaves no header
+
+`submitblock` and a peer's block index no header for it, as in Core.
+`passes_check_block`, `is_block_failed` and `is_cached_invalid` take the chain,
+to ask the solution as Core's `CheckBlock` does (closes #2079).
+
+### `submitblock` answers `high-hash` before `CheckBlock`'s body rules
+
+A block whose header misses its proof of work is answered `high-hash`, as Core's
+`CheckBlockHeader` answers it ahead of the body (issue #2079).
+
+### A `ping` with octets past its nonce is answered
+
+The node reads the nonce off the first eight octets, as Core's `PING` does
+(closes #2086).
+
+### 3fff::/20 is an invalid address
+
+RFC 9637's documentation range is refused as Core v32.1's `CNetAddr::IsValid`
+refuses it (closes #1756).
+
+### A traceback in the log is escaped and indented
+
+Each line of a traceback or a stack starts with two spaces, its control
+characters escaped as a message's are (closes #2092).
+
+### `STANDARD_FLAGS` leaves out btclib's `MINIMALIF_ALL`
+
+The comment above the set says why, and the set is unchanged (closes #2141).
+
+### The integration tests run against bitcoind 32.1
+
+`integration-bitcoind.yml` pins v32.1, and each case where this node still
+answers as v31.1 is a strict xfail citing its issue (closes #2094).
+
+### The RPC surface is diffed against Core 32.1's OpenRPC document
+
+`scripts/openrpc/divergences.txt` is `scripts/openrpc/diff_openrpc.py`'s
+report, and `tests/openrpc_test.py` fails where it is out of date
+(closes #1759).
+
+### What a sync costs keeps only script validation
+
+`docs/source/running_a_node.md` drops the figures measured on the sqlite3 store
+(closes #2047).
+
+### The shared documents and the hook comments
+
+`REVIEWING.md` takes btclib-org/.github's sentence (issue
+btclib-org/.github#1919), and `.pre-commit-config.yaml` says what the one
+shebang hook checks (closes #2083).
+
+### The version is the release's date
+
+`pyproject.toml` declares `2026.10.30` in place of the `2026.11` placeholder
+(#2137).
+
+## v2026.10.29
+
+### The floors are btclib 2026.10.28 and ecc 2026.10.28
+
+The maintainer raised them: an earlier btclib refuses, once it is to join the
+active chain, a block of version 0 or below under the BIP34, BIP66 and BIP65
+heights, which Core accepts (issue btclib-org/btclib#2833).
+
+### `solver` is btclib's
+
+`btclib_node.rpc.solver` is deleted, and the node imports `solver` from
+`btclib.script.solver` (closes #1998, closes #2055).
+
+### The low-work headers sync is btclib's
+
+`btclib_node.p2p.headers_sync` is deleted for `btclib.p2p.headers_sync`, and
+`Chain.headers_sync_params` reads `btclib.consensus.HEADERS_SYNC_PARAMS`
+(issue btclib-org/btclib#2706).
+
+### Genesis blocks and RPC ports come from btclib and bitcoin-core-rpc
+
+`Chain.genesis_block` and `Chain.rpc_port` are properties, and
+`create_genesis` is deleted (closes #2074, issue btclib-org/btclib#2707).
+
+### Contextual block checks go through btclib's `BlockContext`
+
+`contextual_check_block` asks `Block.assert_valid_contextual`, and
+`mining.contextual_block_reason` replaces `mining.witness_reason`
+(issue btclib-org/btclib#2705).
+
+### A contextual consensus failure marks the block's header invalid
+
+bad-txns-nonfinal, bad-cb-height and bad-blk-weight mark it before storing,
+where no earlier check refuses the block, such as time-too-new or, from a
+peer, the check for a mutated body (closes #2075, closes #2053).
+
+### A stored header is loaded under its own hash, by proof of work
+
+A header that misses its work fails the load with Core's "Error loading
+block database" (closes #1997).
+
+### A stored block is checked where Core's `ReadBlock` checks it
+
+A record that hashes to another block, misses its work or fails its signet
+solution is refused, and `getblock` stays unchecked (closes #2002,
+closes #2038).
+
+### Mining refuses a signet block whose solution fails
+
+`generatetoaddress` and `generateblock` answer `ProcessNewBlock, block not
+accepted` and store nothing (closes #2080).
+
+### Control characters in a log message are escaped
+
+C0 controls, DEL and C1 controls in a message are written as `\x` and their
+hex code, and a traceback as it is (closes #1952).
+
+### A repeated orphan announcement from the same peer is dropped early
+
+The node returns before computing the orphan's parents or looking them up
+(closes #1951).
+
+### V2Transport drops its ephemeral key after the handshake
+
+`_process_key_bytes` sets `_prv_key` to `None` once the `Cipher` exists
+(closes #1955).
+
+### The tests cover more of what Core does
+
+Decoys from Core's v2 sender (closes #2029), oversized messages
+(closes #1992), same-block BIP68 locks (closes #2035), fresh nonces
+(closes #2070) and a mutated-block liar (closes #1993) are tested.
+
+### The loopback test helpers take a free port
+
+`taken_loopbacks` takes another port where one is held (closes #2014,
+closes #2050).
+
+### Calls of btclib-org/.github are pinned to a tagged commit
+
+Every call, `claude-review.yml`'s included, names a tag's commit (issue
+btclib-org/.github#1870), and Dependabot moved them to v2026.10.26 (#2069).
+
+### The shared documents follow btclib-org/.github
+
+`CONTRIBUTING.md` says development is LLM-based and a contribution must be
+understood, and `REVIEWING.md` takes `btclib-org/.github@72e0222` (issue
+btclib-org/.github#1846, issue btclib-org/.github#1904).
+
+### A release is verified by the repository's id
+
+`SECURITY.md` and `RELEASING.md` check the certificate against the id
+(closes #2039).
+
+### A defect rooted in btclib is fixed in btclib
+
+`CONTRIBUTING.md` says so (closes #2076).
+
+### The CWE-209 entry names the unknown-key warning's tests
+
+`ASSURANCE_CASE.md` lists them (closes #2012).
+
+### Dependabot moves the dev tooling and the workflow pins
+
+hypothesis 6.170.5, sphinx 9.2.0 and uv-build 0.13.5 (#2133), and the calls of
+btclib-org/.github to v2026.10.29 with setup-uv 10.3.2 (#2134).
+
+### `uv_build` moves to `<0.14`, with the hooks and CI
+
+The dev tooling (closes #2033) and the pinned hooks (#2073) move, and the
+Windows suite job's timeout is 45 minutes (closes #2006).
+
 ## v2026.10.25
 
 ### The floors are btclib 2026.10.24, ecc 2026.10.23 and btclib-wallet 2026.10.25

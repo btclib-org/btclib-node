@@ -2,12 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The fee estimates and `fee_estimates.dat`, against bitcoind's.
+"""The fee estimates and the files they are kept in, against bitcoind's.
 
 Both nodes are given the same transactions, by `sendrawtransaction`, and
 the same blocks, mined by bitcoind. After each block both answer every
-estimate alike. Then each is stopped, the two files are compared, and
-each file is read by a fresh node of the other kind.
+estimate alike, from either estimator and from both. Then each is
+stopped, the files are compared, and each block policy file is read by a
+fresh node of the other kind, which moves it from the legacy path.
 """
 
 import random
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
+from btclib_node.rpc.help import HELP_TEXT
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
 from tests.integration.conftest import _started_bitcoind
 from tests.integration.prioritise_test import _FUND, _FUNDED, _answer, _spend
@@ -38,10 +40,31 @@ _PER_ROUND = 20
 _RATES = (1, 2, 3, 5, 8, 12, 20, 35, 60, 100)
 _CUTOFFS = (5, 12, 3, 20, 8, 35)
 
-_SMART = [
+_SMART: list[list[Any]] = [
     [target, *mode]
     for target in (1, 2, 3, 5, 6, 10, 12, 24, 48, 100, 500, 1008)
     for mode in ([], ["economical"], ["conservative"])
+] + [
+    [target, mode, options]
+    for target in (1, 2, 6, 1008)
+    for mode in (None, "conservative")
+    for options in (
+        {"fee_rate_estimator": "block_policy"},
+        {"fee_rate_estimator": "MEMPOOL_POLICY"},
+        {"fee_rate_estimator": "auto", "verbosity": 2},
+    )
+]
+# what `options` refuses, in the order Core refuses it
+_REFUSED: list[list[Any]] = [
+    [6, None, []],
+    [6, None, {"fee_rate_estimator": "mempool"}],
+    [6, None, {"fee_rate_estimator": 1}],
+    [6, None, {"verbosity": True}],
+    [6, None, {"verbosity": 1.5}],
+    [6, None, {"verbosity": 2**31}],
+    [6, None, {"blocks": 2}],
+    [0, None, {"fee_rate_estimator": "mempool_policy"}],
+    [6, "economical", {"fee_rate_estimator": "mempool_policy"}, None],
 ]
 _RAW = [
     [target, *threshold]
@@ -51,7 +74,7 @@ _RAW = [
 
 
 def _calls() -> list[tuple[str, list[Any]]]:
-    return [("estimatesmartfee", p) for p in _SMART] + [
+    return [("estimatesmartfee", p) for p in _SMART + _REFUSED] + [
         ("estimaterawfee", p) for p in _RAW
     ]
 
@@ -89,6 +112,11 @@ def _paying(spent: tuple[bytes, int], value: int, rate: int) -> Tx:
 def _holds(client: Any, pool: list[str]) -> bool:
     """Whether the node's mempool is `pool`, sorted."""
     return sorted(client.call("getrawmempool", [])) == pool
+
+
+def _loaded(call: Any) -> bool:
+    """Whether the node's first load of its mempool has ended."""
+    return bool(call("getmempoolinfo", [])["loaded"])
 
 
 def _mined_descriptor(bitcoind: Bitcoind) -> str:
@@ -161,8 +189,11 @@ def test_estimates_and_their_file_are_bitcoind_s(  # noqa: PLR0915
         assert held
         stack.close()
 
-    theirs = tmp_path / "first" / "bitcoind" / "regtest" / "fee_estimates.dat"
-    ours = node.data_dir / "fee_estimates.dat"
+    fees = tmp_path / "first" / "bitcoind" / "regtest" / "fees"
+    mined = "mempool_policy_estimator.dat"
+    assert (node.data_dir / "fees" / mined).read_bytes() == (fees / mined).read_bytes()
+    theirs = fees / "block_policy_estimates.dat"
+    ours = node.data_dir / "fees" / "block_policy_estimates.dat"
     assert ours.read_bytes() == theirs.read_bytes()
     assert sha256(ours.read_bytes()).hexdigest() != _CORE_EMPTY_FILE_SHA256
 
@@ -180,6 +211,18 @@ def test_estimates_and_their_file_are_bitcoind_s(  # noqa: PLR0915
         )
         fresh = _start_node(tmp_path / "fresh", p2p=False)
         stack.callback(_stop, fresh)
-        answers = _answers(rpc_client(fresh).call)
+        client = rpc_client(fresh)
+        # the mempool estimator answers by whether the mempool has loaded
+        for call in (client.call, bitcoind.rpc):
+            wait_until(partial(_loaded, call))
+        answers = _answers(client.call)
         assert answers == _answers(bitcoind.rpc)
         assert any("feerate" in str(answer) for answer in answers)
+    assert not (tmp_path / "fresh" / "regtest" / "fee_estimates.dat").exists()
+    assert not (swapped / "fee_estimates.dat").exists()
+
+
+def test_help_is_bitcoind_s(bitcoind: Bitcoind) -> None:
+    """`help estimatesmartfee` is bitcoind's own text."""
+    theirs = cast("str", bitcoind.rpc("help", ["estimatesmartfee"]))
+    assert HELP_TEXT["estimatesmartfee"].rstrip("\n") == theirs.rstrip("\n")

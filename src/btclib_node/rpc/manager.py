@@ -32,21 +32,21 @@ listening socket that can be accepted past it.
 
 import asyncio
 import errno
-import os
-import re
 import socket
 import sys
 import threading
 import time
 from collections import deque
 from concurrent.futures import CancelledError
-from contextlib import ExitStack, suppress
-from ipaddress import ip_address
+from contextlib import suppress
+from ipaddress import IPv4Address, IPv6Address
 from typing import TYPE_CHECKING, Any, override
 
-from btclib_node.config import split_host_port
+from btclib_node.config import lookup_service, service_text, split_host_port
+from btclib_node.constants import CLIENT_NAME
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.banman import SpecialAddress
 from btclib_node.p2p.manager import network_error_string
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
@@ -58,15 +58,21 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from btclib_node import Node
-    from btclib_node.p2p.banman import Subnet
+    from btclib_node.log import Logger
+    from btclib_node.p2p.banman import Host, Subnet
     from btclib_node.rpc.jsonrpc import HttpReply
 
 __all__ = ["RpcManager"]
 
-# What `HTTPBindAddresses` binds without `-rpcbind` and `-rpcallowip`
+# What `GetBindAddresses` binds without `-rpcbind` and `-rpcallowip`
 # both given, in its order (`src/httpserver.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
+
+# The seconds `StopHTTPServer` waits, once its workers have stopped, for
+# its clients to disconnect (`src/httpserver.cpp`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+_DISCONNECT_WAIT = 30.0
 
 
 # What `accept` fails with where no descriptor is left, for this process
@@ -82,119 +88,71 @@ _OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
 _ACCEPT_RETRY_DELAY = 0.1
 
 
-def _is_bind_any(host: str) -> bool:
-    """Whether `host` is an IP literal naming every interface.
-
-    Core's `CNetAddr::IsBindAny`, over `LookupHost(host, false)`: a
-    name that is no IP literal is not looked up, and is not one.
-    """
-    try:
-        return ip_address(host.strip("[]")).is_unspecified
-    except ValueError:
-        return False
-
-
-_WINDOWS = sys.platform == "win32"
-# what `strtoul` reads whole as a zone index, the empty zone included
-_NUMERIC_ZONE = re.compile(r"([ \t\n\v\f\r]*[+-]?[0-9]+)?")
-
-
-def _libevent_literal(host: str) -> bool:
-    """Whether libevent's own parse reads `host` as an IP address.
-
-    `evutil_getaddrinfo_common_` tries `evutil_inet_pton_scope` for IPv6,
-    whose zone after `%` is an interface name or a number `strtoul`
-    reads to its end, then `evutil_inet_pton` for IPv4 (`evutil.c`, at
-    libevent 2.1.12-stable). libevent is handed `c_str()`, which ends at
-    a NUL byte, so `host` is read up to it (ISS 1377).
-    """
-    host = host.partition("\0")[0]
-    address, percent, zone = host.partition("%")
-    try:
-        socket.inet_pton(socket.AF_INET6, address)
-    except OSError:
-        pass
-    else:
-        if not percent or _NUMERIC_ZONE.fullmatch(zone):
-            return True
-        try:
-            socket.if_nametoindex(zone)
-        except OSError:
-            return False
-        return True
-    try:
-        socket.inet_pton(socket.AF_INET, host)
-    except OSError:
-        return False
-    return True
-
-
-def _address_flags(host: str) -> int:
-    """Return the flags libevent's lookup of `host` is held to.
-
-    `make_addrinfo` asks for `AI_PASSIVE | AI_ADDRCONFIG` (`http.c`, at
-    libevent 2.1.12-stable). On Windows, `evutil_getaddrinfo` answers an IP
-    literal itself, never held to `AI_ADDRCONFIG`, and hands a name to
-    the system's `getaddrinfo` with it.
-    """
-    if _WINDOWS and _libevent_literal(host):
-        return socket.AI_PASSIVE
-    return socket.AI_PASSIVE | socket.AI_ADDRCONFIG
-
-
-# what `getaddrinfo` answers as an address
-_SockAddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
-
-
-def _first_address(
-    host: str, port: int | None
-) -> tuple[socket.AddressFamily, socket.SocketKind, int, _SockAddr]:
-    """Return the family, type, protocol and address `host` binds first.
-
-    `host` reaches `getaddrinfo` as its bytes, as libevent hands it
-    over: a `str` would be IDNA-encoded first, which reads fullwidth
-    digits as ASCII ones and refuses `a..b` with a `UnicodeError`
-    rather than as a lookup that failed. The empty host is libevent's
-    `NULL`, every interface, which on Windows `evutil_getaddrinfo_common_`
-    answers itself, `0.0.0.0` ahead of `::`; elsewhere the system
-    lookup answers it, in the order it answers `bitcoind`.
-    """
-    if not host and _WINDOWS:
-        return (
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-            socket.IPPROTO_TCP,
-            # libevent's own `0.0.0.0`, bound exactly as `bitcoind` binds it
-            ("0.0.0.0", port or 0),  # noqa: S104
-        )
-    family, kind, proto, _, sockaddr = socket.getaddrinfo(
-        os.fsencode(host) if host else None,
-        port,
-        type=socket.SOCK_STREAM,
-        flags=_address_flags(host),
-    )[0]
-    return family, kind, proto, sockaddr
-
-
-def _bind_endpoint(host: str, port: int | None) -> socket.socket:
+def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
     """Return a socket listening at `host` and `port`, non-blocking.
 
-    What libevent's `evhttp_bind_socket_with_handle` does for Core
-    (`http.c`, at libevent 2.1.12-stable, the version Core's `depends`
-    builds): the first address a passive lookup answers, an empty host
-    being every interface, then `SO_KEEPALIVE`, and `SO_REUSEADDR` off
-    Windows alone, where it would let another process bind the port
-    this one holds. Raises `OSError` where any step fails, the socket
-    closed.
+    Core's `HTTPServer::BindAndStartListening` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `SO_EXCLUSIVEADDRUSE` on
+    Windows, so that no other process binds the port, `SO_REUSEADDR`
+    elsewhere, and `IPV6_V6ONLY` on an IPv6 socket, a failure to set
+    either of the last two logged and passed over. Raises `OSError` in
+    Core's words where any other step fails, the socket closed.
+
+    Core also sets `IPV6_PROTECTION_LEVEL` on Windows, and this does not:
+    `P2pManager._bind_one` leaves it unset for Core's `BindListenPort`
+    too (btclib-org/btclib-node#2163).
     """
-    family, kind, proto, sockaddr = _first_address(host, port)
-    server_socket = socket.socket(family, kind, proto)
+    address = service_text(host, port)
+    if isinstance(host, SpecialAddress):
+        err_msg = f"Bind address family for {address} not supported"
+        raise OSError(err_msg)
+    family = socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
     try:
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        # 0 is the option's default, so Windows is left as libevent leaves it
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, not _WINDOWS)
-        server_socket.bind(sockaddr)
-        server_socket.listen()
+        server_socket = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+    except OSError as error:
+        err_msg = (
+            f"Cannot create {address} listen socket: {network_error_string(error)}"
+        )
+        raise OSError(err_msg) from error
+    try:
+        if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+            try:
+                server_socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                )
+            except OSError as error:
+                err_msg = (
+                    f"Cannot set SO_EXCLUSIVEADDRUSE on {address} listen socket: "
+                    f"{network_error_string(error)}"
+                )
+                raise OSError(err_msg) from error
+        else:
+            _set_or_log(
+                server_socket, socket.SOL_SOCKET, "SO_REUSEADDR", address, logger
+            )
+        if family == socket.AF_INET6:
+            _set_or_log(
+                server_socket, socket.IPPROTO_IPV6, "IPV6_V6ONLY", address, logger
+            )
+        try:
+            server_socket.bind(_sockaddr(host, port))
+        except OSError as error:
+            if error.errno == errno.EADDRINUSE:
+                err_msg = (
+                    f"Unable to bind to {address} on this computer. "
+                    f"{CLIENT_NAME} is probably already running."
+                )
+            else:
+                err_msg = (
+                    f"Unable to bind to {address} on this computer (bind returned "
+                    f"error {network_error_string(error)})"
+                )
+            raise OSError(err_msg) from error
+        try:
+            server_socket.listen(socket.SOMAXCONN)
+        except OSError as error:
+            err_msg = f"Cannot listen on {address}: {network_error_string(error)}"
+            raise OSError(err_msg) from error
         server_socket.settimeout(0.0)
     except OSError:
         server_socket.close()
@@ -202,23 +160,52 @@ def _bind_endpoint(host: str, port: int | None) -> socket.socket:
     return server_socket
 
 
-def _request_timeout(seconds: int) -> float | None:
-    """Return what `-rpcservertimeout=<seconds>` binds every read and write to.
+def _sockaddr(
+    host: IPv4Address | IPv6Address, port: int
+) -> tuple[str, int] | tuple[str, int, int, int]:
+    """Return the address `bind` takes for `host`, an IPv6 one with its scope.
 
-    Core's own `evhttp_set_timeout` (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-1` builds no `timeval`
-    at all (`evhttp_set_timeout_tv(http, NULL)`), and `0` builds one that
-    is zero in both fields -- `{0, 0}` -- which libevent's own
-    `evutil_timerisset` then reads as unset wherever it decides whether
-    to arm a connection's read or write timer at all
-    (`bufferevent_generic_adj_timeouts_`, `bufferevent.c`, at
-    libevent/libevent@5df3037): every other value arms one, `0` included
-    in name only. `None` here is what `asyncio.timeout` reads as no
-    bound at all, for both call sites this feeds: `RpcConnection.run`,
-    directly, and `RpcManager._finish_replies`, as the bound it would
-    otherwise give the shutdown wait for a reply still being written.
+    CPython reads a scope written after `%` in a 2-tuple's host as 0, so
+    `fe80::1%1` binds only as a 4-tuple naming scope 1.
     """
-    return None if seconds in (0, -1) else float(seconds)
+    if isinstance(host, IPv4Address):
+        return str(host), port
+    return str(host).partition("%")[0], port, 0, int(host.scope_id or 0)
+
+
+def _set_or_log(
+    server_socket: socket.socket, level: int, name: str, address: str, logger: Logger
+) -> None:
+    """Turn the option `name` on, or log at debug that it could not be."""
+    try:
+        server_socket.setsockopt(level, getattr(socket, name), 1)
+    except OSError as error:
+        logger.log_debug(
+            "http",
+            "Cannot set %s on %s listen socket: %s, continuing anyway",
+            name,
+            address,
+            network_error_string(error),
+        )
+
+
+def _idle_timeout(seconds: int) -> float | None:
+    """Return the idle timeout `-rpcservertimeout=<seconds>` sets, in seconds.
+
+    `None` for none: Core arms it only for a value above 0
+    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). There Core compares the
+    idle time, a duration of its steady clock in nanoseconds, with the
+    option's seconds, so it converts them to nanoseconds as a signed
+    64-bit count, which wraps past `INT64_MAX`. This wraps the same way.
+    A result below 0 closes a connection before it reads anything:
+    bitcoind v32.1.0 keeps an idle connection open at `9223372036` and
+    closes it at once at `9223372037` (btclib-org/btclib-node#2152).
+    """
+    if seconds <= 0:
+        return None
+    nanoseconds = (seconds * 10**9 + 2**63) % 2**64 - 2**63
+    return nanoseconds / 10**9
 
 
 class RpcManager(threading.Thread):
@@ -243,16 +230,14 @@ class RpcManager(threading.Thread):
         self.port = port
         self.last_connection_id = -1
         # handed to every RpcConnection create_connection below builds;
-        # an instance attribute rather than a call-site default so a
-        # test can lower it on a live manager, before opening the
-        # connection it means to time out, without waiting through
-        # REQUEST_TIMEOUT's own real, Core-matching value. `-rpcservertimeout`
-        # is this attribute's own source once `Config` resolves it, `None`
-        # for no bound at all -- `_request_timeout`'s own docstring has
-        # Core's `0` and `-1`.
-        self.request_timeout = _request_timeout(node.config.rpcservertimeout)
+        # an instance attribute, so that a test can lower it on a live
+        # manager before it opens the connection it means to idle out
+        self.idle_timeout = _idle_timeout(node.config.rpcservertimeout)
+        # how long `_finish_replies` waits for replies still being
+        # written, an instance attribute for the same reason
+        self.disconnect_wait = _DISCONNECT_WAIT
         # `-rpcmaxconnections`: the most entries `connections` holds. An
-        # instance attribute, as `request_timeout` is, so a test can lower
+        # instance attribute, as `idle_timeout` is, so a test can lower
         # it on a live manager.
         self.max_connections = node.config.rpcmaxconnections
         # Set by `forget_connection` as an entry leaves `connections`,
@@ -315,20 +300,19 @@ class RpcManager(threading.Thread):
         # after it, never both. Not in warmup until `Node.run` says so.
         self.in_warmup = False
         self.warmup_status = "RPC server started"
-        # What `run` binds and `stop` closes. `server`'s own
-        # `ExitStack` ordinarily closes these once `stop`'s
-        # cancellation reaches that task -- except where `stop` arrives
-        # before `run_forever` has stepped that task even once: a
-        # coroutine `cancel()` reaches with no frame yet raises
+        # What `run` binds and `stop` closes, last. `server` never
+        # closes them, cancelled or not; nor may it run at all where
+        # `stop` arrives before `run_forever` has stepped its task even
+        # once: a coroutine `cancel()` reaches with no frame yet raises
         # `CancelledError` at its own definition point rather than
-        # inside the running body, so that `ExitStack` is never
-        # entered at all (btclib-org/btclib-node#323). Read only by
-        # `run` and `stop`, both on this manager's own object and never
+        # inside the running body (btclib-org/btclib-node#323). Read only
+        # by `run` and `stop`, both on this manager's own object and never
         # concurrently -- `run` sets it once, from this thread, before
         # `stop` could possibly be reached by another.
         self._server_sockets: list[socket.socket] = []
         # the coroutine of `server`'s own task, which `run` schedules and
-        # `stop` cancels ahead of every other (btclib-org/btclib-node#1545)
+        # `_stop_accepting` cancels ahead of every other
+        # (btclib-org/btclib-node#1545)
         self._server_coro: Coroutine[Any, Any, None] | None = None
         # `server`'s own accept queue, kept here rather than only local
         # to `server`'s own frame so the two `manager_test.py` tests
@@ -435,7 +419,7 @@ class RpcManager(threading.Thread):
             client,
             self,
             self.last_connection_id,
-            request_timeout=self.request_timeout,
+            idle_timeout=self.idle_timeout,
         )
         self.connections[self.last_connection_id] = new_connection
         return new_connection
@@ -457,44 +441,45 @@ class RpcManager(threading.Thread):
     def _bind(self) -> list[socket.socket]:
         """Bind and listen on every endpoint, before anything is scheduled.
 
-        Core's `HTTPBindAddresses` (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): each endpoint is
-        logged before it is tried, and one that cannot be bound is warned
-        about and passed over, so a host without IPv6 still listens on
-        `127.0.0.1`. Empty where none binds. See
-        `P2pManager._bind` for why this is synchronous (#88). Unlike that
-        one, this does not set `listening`: `_listen` does, once the
-        cookie is written too.
+        Core's `InitHTTPServer` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): each endpoint is
+        logged before it is tried, and looked up as `Lookup(address,
+        port, false)` does, with no DNS lookup, so a name binds nothing.
+        One that cannot be looked up or bound is warned about and passed
+        over, so a host without IPv6 still listens on `127.0.0.1`. Empty
+        where none binds. See `P2pManager._bind` for why this is
+        synchronous (#88). Unlike that one, this does not set
+        `listening`: `_listen` does, once the cookie is written too.
         """
         bound: list[socket.socket] = []
         for host, port in self._endpoints():
             self.logger.info("Binding RPC on address %s port %s", host, port)
-            try:
-                bound.append(_bind_endpoint(host, port))
-            except OSError:
+            service = lookup_service(host, port)
+            if service is None:
                 self.logger.warning(
-                    "Binding RPC on address %s port %s failed.", host, port
+                    "Could not bind RPC on address %s port %s: Address lookup failed.",
+                    host,
+                    port,
                 )
                 continue
-            # once bound, as Core warns: an empty host or one `LookupHost`
-            # reads, without a DNS lookup, as the any address
-            if not host or _is_bind_any(host):
+            address, service_port = service
+            if not isinstance(address, SpecialAddress) and address.is_unspecified:
                 self.logger.warning(
                     "The RPC server is not safe to expose to untrusted networks "
                     "such as the public internet"
                 )
-            # Nagle's algorithm off, as Core sets it on every bound socket
             try:
-                bound[-1].setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except OSError:
-                self.logger.info(
-                    "WARNING: Unable to set TCP_NODELAY on RPC server socket, "
-                    "continuing anyway"
+                bound.append(_bind_and_listen(address, service_port, self.logger))
+            except OSError as error:
+                self.logger.warning(
+                    "Binding RPC on address %s failed: %s",
+                    service_text(address, service_port),
+                    error,
                 )
         return bound
 
     def _endpoints(self) -> list[tuple[str, int]]:
-        """Return what `HTTPBindAddresses` binds, logging its warnings.
+        """Return what `GetBindAddresses` binds, logging its warnings.
 
         Loopback, where `-rpcbind` and `-rpcallowip` are not both given;
         every `-rpcbind` endpoint otherwise, its port defaulting to
@@ -614,12 +599,9 @@ class RpcManager(threading.Thread):
         A socket from a source `client_allowed` refuses is closed as it is
         accepted, before anything is read off it, and logged at debug:
         Core's `HTTPServer::AcceptConnection` (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@cce32b1687, and in v32.0rc1). The release
-        `integration-bitcoind.yml` pins, v31.1, reads the request first,
-        up to `-rpcservertimeout`, answers it a bare 403 and keeps the
-        connection. This node takes `master`'s, since otherwise a refused
-        source holds one of `max_connections` places for as long as it
-        likes (btclib-org/btclib-node#1963).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Otherwise a refused
+        source would hold one of `max_connections` places for as long as
+        it liked (btclib-org/btclib-node#1963).
 
         `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
         internally on both loop families this node runs on (a selector
@@ -627,8 +609,7 @@ class RpcManager(threading.Thread):
         `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
         ordinary way, a peer resetting the connection between the kernel
         reporting it readable and the accept reaching it -- which is what
-        the `except OSError` below answers exactly as `server`'s own
-        former reader callback used to.
+        the `except OSError` below answers.
 
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
@@ -676,6 +657,17 @@ class RpcManager(threading.Thread):
                 )
                 sock.close()
                 continue
+            # Nagle's algorithm off, as `HTTPServer::NewSockAccepted` sets
+            # it on every accepted socket (`src/httpserver.cpp`, at
+            # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                self.logger.log_debug(
+                    "http",
+                    "connection from %s: unable to set TCP_NODELAY, continuing anyway",
+                    ip_and_port(host, port),
+                )
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
@@ -691,81 +683,59 @@ class RpcManager(threading.Thread):
         `conn.run` task per socket `_accept_loop` queues -- rather than a bare
         `await loop.sock_accept(...)` right here, which does not have the
         property the comment below argues for.
+
+        Cancelled, it stops accepting and leaves `server_sockets` open:
+        `stop` closes them last, as Core's `StopHTTPServer` calls
+        `StopAccepting` before its wait and `StopListening` after it
+        (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag).
         """
-        with ExitStack() as listeners:
-            for server_socket in server_sockets:
-                listeners.enter_context(server_socket)
-            # The queue is what keeps a shutdown from discarding an
-            # already-accepted socket reaching `server`'s own consumption
-            # below: an item lands in its deque through `put_nowait`, a
-            # plain call rather than an await, so nothing this
-            # coroutine's own suspension on `accepted.get()` is cancelled
-            # out of can ever lose an item already there -- the `finally`
-            # closes whatever is left in it on whichever pass reaches
-            # this task. That half of btclib-org/btclib-node#391 still
-            # holds exactly as it did.
-            #
-            # What no longer holds is the other half, for `_accept_loop`
-            # itself: `loop.add_reader`, which #391 chose over
-            # `loop.sock_accept` because the reader callback it registers
-            # is never itself a `Task.cancel` target, is not implemented
-            # by Windows' own default Proactor loop
-            # (btclib-org/btclib-node#430) -- so accepting there has to
-            # go back through a task awaiting `loop.sock_accept`, and
-            # that task is reachable by `stop`'s own blanket sweep over
-            # `asyncio.all_tasks` exactly as #323's shielded task was:
-            # `Task.cancel` cannot cancel a future that is already done,
-            # so a cancel landing in the narrow window between the
-            # kernel resolving one `sock_accept` and `_accept_loop`'s own
-            # next step still throws `CancelledError` in regardless,
-            # before that socket ever reaches `put_nowait`. CPython's own
-            # reference counting is what bounds the cost of that window
-            # rather than eliminating it: nothing else holds the
-            # discarded socket once its frame unwinds, so it is closed by
-            # its own `__del__` -- a `ResourceWarning`, not a leaked
-            # descriptor -- in place of the graceful close `finally`
-            # gives every item that did reach the queue. A client that
-            # dials in that exact instant of shutdown loses the
-            # connection it just opened; nothing during ordinary
-            # operation reaches this window at all, `_accept_loop` never
-            # otherwise stopping. `P2pManager.server` carries the
-            # identical fix, for the identical reason.
-            accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]] = (
-                asyncio.Queue()
-            )
-            self._accept_queue = accepted
-            accept_tasks = [
-                loop.create_task(self._accept_loop(server_socket, accepted))
-                for server_socket in server_sockets
-            ]
-            try:
-                while True:
-                    await self._until_room(lambda: len(self.connections))
-                    client, _ = await accepted.get()
-                    self.last_connection_id += 1
-                    conn = self.create_connection(self.loop, client)
-                    # The `Future` this returns is not kept: nothing
-                    # reads it, the way `RpcConnection.send` already
-                    # discards `async_send`'s own for the same reason,
-                    # and `RpcConnection.close`'s own docstring is where
-                    # keeping one used to seem worth it and turned out
-                    # not to be (issue #714).
-                    asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
-            finally:
-                # Already cancelled directly by `stop`'s own sweep
-                # whenever that is how this task ends too -- both are in
-                # the same `asyncio.all_tasks` snapshot -- so this is for
-                # the caller that cancels `server` alone, such as a test
-                # exercising it outside `stop`, where nothing else would
-                # ever join this task.
-                for accept_task in accept_tasks:
-                    accept_task.cancel()
-                for accept_task in accept_tasks:
-                    with suppress(asyncio.CancelledError):
-                        await accept_task
-                self._accept_queue = None
-                while not accepted.empty():
-                    accepted.get_nowait()[0].close()
+        # The queue keeps a cancel from losing a socket already accepted:
+        # an item lands in its deque through `put_nowait`, a plain call,
+        # so cancelling this coroutine's wait on `accepted.get()` cannot
+        # lose it, and the `finally` closes whatever is left
+        # (btclib-org/btclib-node#391).
+        #
+        # `_accept_loop` awaits `loop.sock_accept`, because Windows'
+        # default Proactor loop has no `loop.add_reader`
+        # (btclib-org/btclib-node#430). A cancel that lands after the
+        # kernel completes an accept and before `_accept_loop`'s next
+        # step discards that socket before it reaches the queue:
+        # `Task.cancel` cannot cancel a future that is already done.
+        # Nothing else holds the socket, so its own `__del__` closes it,
+        # a `ResourceWarning` and not a leaked descriptor. Only shutdown
+        # cancels `_accept_loop`, so only a client connecting in that
+        # instant loses its connection. `P2pManager.server` does the
+        # same, for the same reason.
+        accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]] = asyncio.Queue()
+        self._accept_queue = accepted
+        accept_tasks = [
+            loop.create_task(self._accept_loop(server_socket, accepted))
+            for server_socket in server_sockets
+        ]
+        try:
+            while True:
+                await self._until_room(lambda: len(self.connections))
+                client, _ = await accepted.get()
+                self.last_connection_id += 1
+                conn = self.create_connection(self.loop, client)
+                # The `Future` this returns is not kept: nothing
+                # reads it, as `RpcConnection.send` discards
+                # `async_send`'s, and `RpcConnection.close`'s docstring
+                # says why a connection holds no handle (issue #714).
+                asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
+        finally:
+            # `_stop_accepting` cancels `server` alone, so the accept
+            # loops are cancelled and awaited here: none is left
+            # accepting once it returns.
+            for accept_task in accept_tasks:
+                accept_task.cancel()
+            for accept_task in accept_tasks:
+                with suppress(asyncio.CancelledError):
+                    await accept_task
+            self._accept_queue = None
+            while not accepted.empty():
+                accepted.get_nowait()[0].close()
 
     def _report_server_failure(self, future: Future[None]) -> None:
         """Log what `server`'s own scheduled task ends on, loudly.
@@ -861,55 +831,82 @@ class RpcManager(threading.Thread):
         with self.queue_lock:
             self.interrupted.set()
 
+    def _stop_accepting(self) -> None:
+        """Cancel `server`, which stops this manager accepting.
+
+        Core's `StopHTTPServer` calls `StopAccepting` once its workers
+        have stopped, and accepts until then (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). `server`'s `finally`
+        cancels and awaits each `_accept_loop`, and leaves the listening
+        sockets open for `stop` to close last.
+        """
+        # Cancelled directly, whether or not `_finish_replies` has run the
+        # loop first: `server`'s comment says what a cancel can lose.
+        # `run_until_complete` is safe here because `stop` cancelled its
+        # own `loop.stop` handle first (btclib-org/btclib-node#377,
+        # btclib-org/btclib-node#380).
+        listening = {
+            task
+            for task in asyncio.all_tasks(self.loop)
+            if task.get_coro() is self._server_coro
+        }
+        for task in listening:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                self.loop.run_until_complete(task)
+
     def _finish_replies(self) -> None:
         """Drive this loop until every reply in `replies` has ended, bounded.
 
         Called by `stop`, on `Node`'s thread, once this manager's own
-        thread has ended. The bound is `request_timeout` past the latest
+        thread has ended. The bound is `disconnect_wait` past the latest
         moment a reply is due to begin its write -- a `stop` RPC's
         hidden `wait` (btclib-org/btclib-node#1467), a 401's
         `FAILED_ATTEMPT_DELAY`, or now -- and is recorded through
         `extend_reply_deadline` before the wait, so `Node.stop` waits for
-        it too. Core bounds each connection's write on its own, with
-        libevent's `evhttp_set_timeout` (`-rpcservertimeout`,
-        `src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag), and its `WaitUntilEmpty` has no bound beyond those; this is
-        one bound over the whole wait, which is what `Node.stop` can read
-        as one deadline recorded on its own thread. A reply given up on
-        is cancelled by `stop` after this returns, and its connection
-        closed.
+        it too.
+
+        Core's `StopHTTPServer` first stops its workers, however long
+        their replies take to begin. Its socket thread meanwhile still
+        accepts connections and refuses every request 503. Then it stops
+        accepting, disconnects every client it has heard from and
+        finished sending to, and waits `_DISCONNECT_WAIT` for the rest.
+        This drives the loop until the last reply is due, `server` and
+        every read still running, then calls `_stop_accepting`, closes
+        each connection `RpcConnection.disconnect_if_idle` finds idle,
+        and waits `disconnect_wait`. Meanwhile a write still idles out
+        where `idle_timeout` arms that (`RpcConnection`), as in Core, so
+        a client that stops reading ends the wait sooner. A reply given
+        up on is cancelled by `stop` after this returns, and its
+        connection closed.
 
         A reply scheduled during the wait -- the refusal of a request
-        read off any connection, `stop` leaving every read running -- is
-        waited for too, within the same bound.
+        read off a connection still open -- is waited for too, within the
+        same bound.
 
-        `request_timeout` being `None` -- `-rpcservertimeout=0` or `=-1`,
-        `_request_timeout`'s own docstring has why both read that way --
-        there is no bound of Core's left to read either, `evhttp_set_timeout`
-        having armed none of its own for this same reason: the wait below
-        is then for as long as it takes, same as `WaitUntilEmpty` is, and
-        nothing is recorded through `extend_reply_deadline`, `Node.stop`'s
-        own `STOP_TIMEOUT` remaining as the one bound still standing over
-        this manager's own thread.
+        Core also waits, within its bound, for a client still waiting for
+        its first request or partway through one, until it idles out.
+        This waits for neither: such a client, which may never send
+        another byte, would hold shutdown until it idles out, up to the
+        whole `disconnect_wait` where `-rpcservertimeout` arms no timeout
+        or a longer one.
         """
         with self._replies_lock:
-            if not self.replies:
-                return
-            due = max(self.replies.values())
-        if self.request_timeout is None:
-            self.loop.run_until_complete(self._replies_written(None))
+            due = max(self.replies.values(), default=None)
+        if due is None:
+            self._stop_accepting()
             return
-        finish_by = max(time.monotonic(), due) + self.request_timeout
+        finish_by = max(time.monotonic(), due) + self.disconnect_wait
         self.extend_reply_deadline(finish_by)
+        self.loop.run_until_complete(self._replies_written(due))
+        self._stop_accepting()
+        for conn in self.connections.values():
+            self.loop.call_soon(conn.disconnect_if_idle)
         self.loop.run_until_complete(self._replies_written(finish_by))
 
-    async def _replies_written(self, finish_by: float | None) -> None:
-        """Return once `replies` is empty, or at `finish_by`.
-
-        `finish_by` is a `time.monotonic()` value, or `None` for no bound
-        at all, which `asyncio.timeout` reads the same way.
-        """
-        delay = None if finish_by is None else finish_by - time.monotonic()
+    async def _replies_written(self, finish_by: float) -> None:
+        """Return once `replies` is empty, or at the monotonic `finish_by`."""
+        delay = finish_by - time.monotonic()
         with suppress(TimeoutError):
             async with asyncio.timeout(delay):
                 while True:
@@ -922,18 +919,17 @@ class RpcManager(threading.Thread):
     def stop(self) -> None:
         """Stop this manager's loop, join its thread, and close every socket.
 
-        Once the thread has ended: cancels `server`, which stops this
-        manager listening, finishes the replies in `replies` through
-        `_finish_replies` while every connection goes on reading, then
-        cancels whatever is left and closes every connection
+        Once the thread has ended: finishes the replies in `replies`
+        through `_finish_replies`, which stops `server` accepting partway
+        through, then cancels whatever is left, closes every connection,
+        and closes the listening sockets last
         (btclib-org/btclib-node#1539, btclib-org/btclib-node#1545).
 
         Guarded on `is_alive` for the node that never started this
         thread at all; the long comments below argue why the handle
-        this schedules is cancelled unconditionally afterward, why the
-        pending-task sweep runs as its own pass rather than folded into
-        one combined loop, and why closing `_server_sockets` here does
-        not race `server`'s own `ExitStack`.
+        this schedules is cancelled unconditionally afterward, and why
+        the pending-task sweep runs as its own pass rather than folded
+        into one combined loop.
 
         Sets `interrupted` too, unconditionally: Core's `ThreadPool::Stop`
         sets `m_interrupt = true` itself rather than relying on a prior
@@ -995,76 +991,10 @@ class RpcManager(threading.Thread):
         # the identical reason (btclib-org/btclib-node#377,
         # btclib-org/btclib-node#380).
         stop_handle.cancel()
-        # `server` is cancelled first and on its own, which is what stops
-        # this manager listening -- its `finally` cancels and awaits each
-        # `_accept_loop` -- as `StopHTTPServer` unlistens before it waits
-        # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        # tag). Nothing else is: the read of every connection goes on
-        # running through `_finish_replies` below (btclib-org/btclib-node#1545).
-        #
-        # No step of the loop first here, unlike an earlier version of
-        # this method: that step existed only to let a task sitting on
-        # an already-resolved future -- `server`'s own former `accept`
-        # task -- return normally into `create_connection` before a
-        # direct cancel discarded it, `Task.cancel` on a task whose own
-        # awaited future is already done forcing `CancelledError` in on
-        # its next step regardless of what the future already held
-        # (btclib-org/btclib-node#323, for a cancel arriving through
-        # `server`'s own shield; this loop's own former blanket sweep,
-        # for one reaching that task directly). `server` no longer has
-        # such a task to protect: what it accepts sits in a queue
-        # instead, and `server`'s own consumption of that queue is
-        # immune to that discard regardless of when the cancel below
-        # reaches it (btclib-org/btclib-node#391). `_accept_loop`'s own
-        # production side of the same queue is not -- `server`'s own
-        # docstring has the reason and the bound on what it costs
-        # (btclib-org/btclib-node#430). `stop_handle.cancel()`
-        # above already closed the other reason an earlier version of
-        # this step existed, a `RuntimeError` this loop could raise
-        # running `pending`'s own already-scheduled tasks on a loop
-        # whose `run_forever` never delivered this method's own
-        # `loop.stop` (btclib-org/btclib-node#377,
-        # btclib-org/btclib-node#380) -- so neither of the two reasons
-        # this step used to answer still applies.
-        listening = {
-            task
-            for task in asyncio.all_tasks(self.loop)
-            if task.get_coro() is self._server_coro
-        }
-        for task in listening:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                self.loop.run_until_complete(task)
-        # Closed explicitly and unconditionally, after the loop above
-        # rather than instead of it: `server`'s own `ExitStack` is what
-        # ordinarily closes these, once that task's own
-        # cancellation is delivered and the exception propagates through
-        # the `with`. Measured to be skipped entirely where `stop()`
-        # arrives before `run_forever` has stepped that task even once
-        # -- `_server_sockets`'s own comment has the mechanism, and this
-        # is what closes what that path does not reach; a `with` block
-        # already run leaves nothing here for `close()` to do, since a
-        # socket is closed only once, whichever call reaches it first.
-        for server_socket in self._server_sockets:
-            server_socket.close()
-        # `StopHTTPServer` then waits in `g_requests.WaitUntilEmpty()` for
-        # the reply to every request `http_request_cb` registered, 403,
-        # 404 and 405 included, and `_finish_replies` waits for every
-        # reply in `replies`. Core's event loop runs through that wait,
-        # `evhttp_free` coming only after it, so a request arriving on a
-        # kept-alive connection idle until then reaches
-        # `http_reject_request_cb`, set by `InterruptHTTPServer`, and is
-        # answered 503 with libevent's `Connection: close`; here the
-        # connection's read is still running, and `_refused_early`
-        # answers it the same, `interrupted` being set. `g_requests`
-        # counts no idle connection, and `replies` holds none either, so
-        # an idle read never holds the wait.
-        #
-        # What differs is the 503 itself, and libevent's own error pages:
-        # Core does not register them, and its loop writes them while it
-        # runs, until `evhttp_free`. Here they are in `replies`, this loop
-        # running only while this method drives it, so the wait lasts
-        # until they are written, within the same bound.
+        # `StopHTTPServer`'s wait for its workers and its clients, with
+        # `server` cancelled between the two (`_stop_accepting`), as
+        # `_finish_replies` says. An idle read never holds it: `replies`
+        # holds no read.
         self._finish_replies()
         # Every task left -- a reply `_finish_replies` gave up on, and the
         # read of every connection -- cancelled as its own pass before
@@ -1086,6 +1016,14 @@ class RpcManager(threading.Thread):
                 self.loop.run_until_complete(task)
         for conn in self.connections.values():
             conn.close()
+        # Last, as `StopHTTPServer` calls `StopListening` last
+        # (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        # tag): `server` leaves these open once cancelled, and
+        # `_stop_accepting` may not have reached it at all where `stop`
+        # arrives before `run_forever` has stepped it even once
+        # (`_server_sockets`'s own comment).
+        for server_socket in self._server_sockets:
+            server_socket.close()
         self.loop.close()
         # so that the flag says what its name says: a socket
         # closed here is not one anything should wait for

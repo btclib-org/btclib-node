@@ -51,8 +51,6 @@ UNEXPORTED = {
         "STOP_DUMP_DELAY",
         "STOP_TIMEOUT",
     ],
-    # called only by the four leaves' own constructors, in this module
-    "btclib_node.chains": ["create_genesis"],
     # the module-level singleton `Config.chain`'s default already closes
     # over; nothing outside config.py reaches for the constant itself
     "btclib_node.config": ["DEFAULT_CHAIN"],

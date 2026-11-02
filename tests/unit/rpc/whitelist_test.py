@@ -4,11 +4,11 @@
 
 """What `-rpcwhitelist` lets a user call, and what `RpcConnection` answers.
 
-Every reply expected below is what a real `bitcoind` v31.1.0 answered
+Every reply expected below is what a real `bitcoind` v32.1.0 answered
 the same request with, run with `-rpcuser=alice -rpcpassword=pw
--rpcwhitelist=alice:getblockcount`, less the `Date` header libevent
-adds and the `Content-Type` it adds to a 403, which `RpcConnection`
-does not write.
+-rpcwhitelist=alice:getblockcount`, less the `Date` field Core adds
+and the `Content-Type` it adds to a 403, which `RpcConnection` does
+not write.
 """
 
 import asyncio
@@ -167,7 +167,7 @@ def test_an_empty_method_name_is_what_an_empty_list_allows() -> None:
     assert refusal.status == FORBIDDEN
 
 
-# (request, status line, body) as `bitcoind` v31.1.0 answered them
+# (request, status line, body) as `bitcoind` v32.1.0 answered them
 CORE_ERRORS = [
     (
         [{"id": 1, "method": ALLOWED}, 5],

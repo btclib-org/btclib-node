@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 
 # How many blocks the two branches share, and it is Core's own coinbase
 # maturity: `COINBASE_MATURITY`, `src/consensus/consensus.h`,
-# at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+# at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
 # `integration-bitcoind.yml` pins and this module therefore runs
 # against. A constant there and not a chain parameter, so regtest does
 # not relax it. The fork therefore sits one block past that depth, which
@@ -104,7 +104,7 @@ _SPENDS_IT = script.serialize([b"\x11" * 32, _REDEEM])
 # `src/net_processing.cpp`), and it leaves that state only once its own
 # tip is within `-maxtipage` of the clock -- a day, by
 # `DEFAULT_MAX_TIP_AGE` in `src/kernel/chainstatemanager_opts.h`; both
-# at bitcoin/bitcoin@9be056a8a7. `tests.GENESIS_TIME` is
+# at bitcoin/bitcoin@f0de87f040. `tests.GENESIS_TIME` is
 # `RegTest().genesis.time`, which is not a day behind the clock but
 # years, so Core would hold every branch dated from it to itself and
 # announce none of it.
@@ -148,12 +148,12 @@ def a_coinbase(height: int, *, funding: bool = False) -> Tx:
     octets a coinbase's own consensus rule asks of it: BIP34 encodes a
     height below seventeen as one `OP_1`..`OP_16` octet, which
     `CheckTransaction` refuses as `bad-cb-length`
-    (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@9be056a8a7), and
+    (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@f0de87f040), and
     the chain here is built from the genesis up. Core's own template
-    pads the same place for the same reason and calls the padding a
-    dummy extraNonce (`include_dummy_extranonce`, `src/node/miner.cpp`,
-    at the same commit); random octets rather than its fixed `OP_0`
-    leave no two coinbases here alike whatever else they share.
+    pads the same place for the same reason at those heights
+    (`BlockAssembler::CreateNewBlock`, `src/node/miner.cpp`, at the same
+    commit); random octets rather than its fixed `OP_0` leave no two
+    coinbases here alike whatever else they share.
     """
     return Tx(
         version=1,
@@ -247,7 +247,7 @@ def submit(bitcoind: Bitcoind, blocks: list[Block]) -> str:
     branch here gets and which is not a refusal: `submitblock` returns
     it where its own `submitblock_StateCatcher` saw no verdict on the
     block, and Core reaches no verdict on a branch that does not become
-    the tip (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7). A
+    the tip (`src/rpc/mining.cpp`, at bitcoin/bitcoin@f0de87f040). A
     block Core actually refuses answers with the reason instead, which
     is what this assertion is for.
     """

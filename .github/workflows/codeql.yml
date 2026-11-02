@@ -89,7 +89,7 @@ jobs:
   # not inherit through a call, so the write the analysis needs is declared on
   # this job rather than assumed from the read-only default above
   analyze:
-    uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@eb3b0c28476b98694ab3a3c3a9dce7e8e26ab4f5 # v2026.10.26
+    uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@ed616d71c43cd4c8bded40d1182befccd99e6ee7 # v2026.10.29
     with:
       queries: security-extended
     permissions:

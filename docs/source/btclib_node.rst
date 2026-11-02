@@ -120,6 +120,13 @@ btclib\_node.mempool module
    :members:
    :show-inheritance:
 
+btclib\_node.mempool\_estimator module
+---------------------------------------
+
+.. automodule:: btclib_node.mempool_estimator
+   :members:
+   :show-inheritance:
+
 btclib\_node.mempool\_persist module
 -------------------------------------
 

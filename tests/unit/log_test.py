@@ -6,6 +6,8 @@
 
 import ast
 import logging
+import os
+import re
 import time
 from pathlib import Path
 
@@ -225,6 +227,7 @@ _CATEGORY_OF_FILE = {
     "fee_estimator.py": "estimatefee",
     "main.py": "validation",
     "mempool.py": "mempool",
+    "mempool_estimator.py": "estimatefee",
     "p2p/banman.py": "net",
     "p2p/callbacks.py": "net",
     "p2p/compact_block.py": "net",
@@ -232,6 +235,7 @@ _CATEGORY_OF_FILE = {
     "p2p/main.py": "net",
     "p2p/manager.py": "net",
     "rpc/connection.py": "http",
+    "rpc/fees.py": "estimatefee",
     "rpc/main.py": "rpc",
     "rpc/manager.py": "http",
 }
@@ -430,3 +434,71 @@ def test_rate_limiting_disabled_is_logged(tmp_path: Path) -> None:
     logger = open_history_log(path, debug=False, data_dir=tmp_path, rate_limit=False)
     logger.close()
     assert _log_lines(path)[-1] == "Log rate limiting disabled"
+
+
+def test_a_line_escapes_control_characters_from_rpc_method(
+    tmp_path: Path,
+) -> None:
+    r"""ISS 1952: C0 controls, DEL and C1 controls are escaped as \xNN.
+
+    A method containing them is escaped, so a newline cannot start a fake
+    log line and a control character cannot reach a terminal.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    method = "fake\nmethod\r\x00\x1b[31m\x7f\x80\x9f"
+    logger.warning("RPC User alice not allowed to call method %s", method)
+    logger.close()
+    lines = _log_lines(path)
+    assert lines == [
+        (
+            "[warning] RPC User alice not allowed to call method "
+            "fake\\x0amethod\\x0d\\x00\\x1b[31m\\x7f\\x80\\x9f"
+        )
+    ]
+    raw_message = path.read_bytes().splitlines()[5]
+    assert not any(b < 0x20 or b == 0x7F for b in raw_message)
+    assert not any(bytes([0xC2, b]) in raw_message for b in range(0x80, 0xA0))
+
+
+# the time a record's own line opens with, behind `[*] ` while silenced
+_RECORD_START = re.compile(rb"(\[\*\] )?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
+
+
+def _raise_chained(text: str) -> None:
+    """Raise a `ValueError` holding `text`, from a `KeyError` holding it."""
+    empty: dict[str, str] = {}
+    try:
+        empty[text]
+    except KeyError as e:
+        raise ValueError(text) from e
+
+
+def test_a_traceback_and_a_stack_cannot_forge_a_line_or_reach_a_terminal(
+    tmp_path: Path,
+) -> None:
+    """ISS 2092: a traceback's lines are escaped and start with two spaces.
+
+    An exception whose text holds a newline, a fake time and an ESC, raised
+    from another holding the same and logged with a stack, writes no raw
+    control byte but the newlines ending its lines, and no line that opens
+    as a record but the record's own.
+    """
+    bad = "bad\n2026-01-01T00:00:00Z fake line \x1b[31m"
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    try:
+        _raise_chained(bad)
+    except ValueError:
+        logger.exception("chained", stack_info=True)
+    logger.close()
+    # a text-mode file ends each line in `os.linesep`; splitting on it, not
+    # on every line break, leaves a stray `\r` in a line for the last check
+    lines = path.read_bytes().split(os.linesep.encode())[5:-1]
+    assert [line for line in lines if _RECORD_START.match(line)] == [lines[0]]
+    assert lines[0].endswith(b" [error] chained")
+    assert all(line.startswith(b"  ") for line in lines[1:])
+    assert b"  ValueError: bad" in lines
+    assert b"  2026-01-01T00:00:00Z fake line \\x1b[31m" in lines
+    assert b"  Stack (most recent call last):" in lines
+    assert not any(b < 0x20 or b == 0x7F for line in lines for b in line)

@@ -6,6 +6,7 @@
 
 import functools
 import io
+import json
 import os
 import re
 import runpy
@@ -14,13 +15,14 @@ import stat
 import sys
 import tempfile
 from contextlib import redirect_stderr, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from btclib_node import Node, cli
-from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
@@ -965,6 +967,37 @@ def test_help_names_the_buffer_options() -> None:
     ) in message
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "percent"),
+    [
+        ([], "", 50),
+        (["-inboundrelaypercent=30"], "", 30),
+        ([], "inboundrelaypercent=0\n", 0),
+        (["-inboundrelaypercent=101"], "", 100),
+        (["-inboundrelaypercent=-1"], "", 0),
+        # `std::clamp<int>` narrows the `int64_t` before it clamps
+        ([f"-inboundrelaypercent={2**32 + 40}"], "", 40),
+    ],
+    ids=["Core's default", "command line", "file", "over", "under", "narrowed"],
+)
+def test_build_config_reads_the_relay_share_as_core_clamps_it(
+    tmp_path: Path, argv: list[str], conf: str, percent: int
+) -> None:
+    """ISS 1769: `-inboundrelaypercent`, clamped to 0 to 100 as in v32.1."""
+    assert _build(tmp_path, *argv, conf=conf).inbound_relay_percent == percent
+
+
+def test_help_names_the_relay_share() -> None:
+    """ISS 1769: in v32.1's words, among the connection options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-inboundrelaypercent=<n> Permit a maximum percent of inbound "
+        "connections to relay transactions, to limit memory utilization "
+        "(0 to 100, default: 50)."
+    ) in message
+    assert "connections to peers (default: 200)" in message
+
+
 def test_help_names_bantime() -> None:
     """ISS 1219: in Core's words, among the connection options."""
     assert (
@@ -1034,13 +1067,19 @@ def test_help_names_the_four_notify_options() -> None:
         ([], "rpcservertimeout=5\n", 5),
         (["-rpcservertimeout=0"], "", 0),
         (["-rpcservertimeout=-1"], "", -1),
+        (["-rpcservertimeout=4294967297"], "", 2**32 + 1),
     ],
-    ids=["Core's default", "command line", "file", "zero", "negative one"],
+    ids=["Core's default", "command line", "file", "zero", "negative one", "int64"],
 )
 def test_build_config_reads_rpcservertimeout(
     tmp_path: Path, argv: list[str], conf: str, rpcservertimeout: int
 ) -> None:
-    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does."""
+    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does.
+
+    As the `int64_t` `InitHTTPServer` reads (ISS 2152): bitcoind v32.1.0
+    run with `-rpcservertimeout=4294967297` keeps an idle connection
+    open past 6 seconds, where one second would close it.
+    """
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
 
@@ -2338,6 +2377,118 @@ def test_build_config_minimumchainwork_is_debug_only(
     with pytest.raises(SystemExit):
         _build(tmp_path, "-help-debug")
     assert "-minimumchainwork=<hex>" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("chain_flag", "chain"),
+    [
+        ("-regtest", RegTest()),
+        ("-testnet", TestNet()),
+        ("-signet", SigNet()),
+        ("-testnet4", TestNet4()),
+    ],
+)
+def test_build_config_testactivationheight_moves_heights_off_mainnet(
+    tmp_path: Path, chain_flag: str, chain: Chain
+) -> None:
+    """ISS 2155: read on every chain but mainnet, a later value winning.
+
+    The file's chain section is read as the command line is, and the
+    heights left out keep the chain's own.
+    """
+    conf = "".join(
+        f"[{section}]\ntestactivationheight=csv@0005\n"
+        for section in ("regtest", "test", "signet", "testnet4")
+    )
+    config = _build(
+        tmp_path,
+        chain_flag,
+        "-testactivationheight=segwit@432",
+        "-testactivationheight=bip34@-0",
+        "-testactivationheight=segwit@2147483646",
+        conf=conf,
+    )
+    assert config.chain.consensus == replace(
+        chain.consensus, segwit_height=2147483646, bip34_height=0, csv_height=5
+    )
+
+
+def test_build_config_testactivationheight_unset_keeps_the_shared_row(
+    tmp_path: Path,
+) -> None:
+    """Without the option the chain's row is btclib's own, not a copy."""
+    config = _build(tmp_path, "-regtest")
+    assert config.chain.consensus is RegTest().consensus
+
+
+@pytest.mark.parametrize(
+    ("value", "refusal"),
+    [
+        ("segwit", "Invalid format"),
+        ("segwit=5", "Invalid format"),
+        ("segwit@", "Invalid height value"),
+        ("segwit@-1", "Invalid height value"),
+        ("segwit@+5", "Invalid height value"),
+        ("segwit@ 5", "Invalid height value"),
+        ("segwit@5 ", "Invalid height value"),
+        ("segwit@0x5", "Invalid height value"),
+        ("segwit@2147483647", "Invalid height value"),
+        ("segwit@99999999999", "Invalid height value"),
+        ("segwit@" + "9" * 5000, "Invalid height value"),
+        ("segwit@5@6", "Invalid height value"),
+        ("bip65@5", "Invalid name"),
+        ("SEGWIT@5", "Invalid name"),
+        ("@5", "Invalid name"),
+    ],
+)
+def test_build_config_testactivationheight_refuses_what_core_refuses(
+    tmp_path: Path, value: str, refusal: str
+) -> None:
+    """`HandleDeploymentArgs`'s refusals, in Core's words."""
+    expected = re.escape(f"{refusal} ({value}) for -testactivationheight=name@height.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-testactivationheight={value}")
+
+
+def test_build_config_testactivationheight_is_refused_before_the_help(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig`'s `SelectParams` reads it ahead of `ProcessInitCommands`."""
+    with pytest.raises(ValueError, match=r"^Invalid format"):
+        _build(tmp_path, "-regtest", "-help", "-testactivationheight=segwit")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-testactivationheight=segwit@5",),
+        ("-notestactivationheight",),
+        ("-chain=main", "-testactivationheight=csv@1"),
+    ],
+)
+def test_build_config_testactivationheight_is_refused_on_mainnet(
+    tmp_path: Path, argv: Sequence[str]
+) -> None:
+    """`AppInitParameterInteraction`'s `IsArgSet`: a negation is refused too."""
+    expected = re.escape("The -testactivationheight option may not be used on mainnet.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, *argv)
+
+
+def test_build_config_testactivationheight_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`DEBUG_ONLY`: listed under `-help-debug` alone, in Core's words."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-testactivationheight" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    assert (
+        "  -testactivationheight=name@height.\n"
+        "       Set the activation height of 'name' (segwit, bip34, dersig, cltv, csv).\n"
+        "       (test-only)\n"
+    ) in capsys.readouterr().out
 
 
 def test_build_config_assumevalid_is_off_when_not_given(tmp_path: Path) -> None:
@@ -4537,6 +4688,50 @@ def test_build_config_refuses_a_debugexclude_category_core_does_not_know(
         _build(tmp_path, f"-debugexclude={category}")
 
 
+_LIBEVENT_WARNING = (
+    "The logging category `libevent` is deprecated, does nothing, and will be "
+    "removed in a future version"
+)
+
+
+@pytest.mark.parametrize(
+    ("argv", "warned", "categories"),
+    [
+        (["-debug=libevent"], 1, set()),
+        (["-debug=libevent", "-debug=net"], 1, {"net"}),
+        (["-debug=libevent", "-debugexclude=libevent"], 2, set()),
+        (["-debug=libevent", "-debug=0"], 0, set()),
+    ],
+    ids=["alone", "beside net", "excluded too", "discarded"],
+)
+def test_build_config_warns_over_libevent_and_selects_nothing(
+    tmp_path: Path, argv: list[str], warned: int, categories: set[str]
+) -> None:
+    """ISS 2152: `GetLogCategory` warns once each time it reads `libevent`.
+
+    Measured on bitcoind v32.1.0: `-debug=libevent -debugexclude=libevent`
+    logs the warning twice, after the section warning, and starts. A
+    category discarded by a later `0` is not read at all.
+    """
+    config = _build(tmp_path, *argv)
+    assert config.debug_warnings == (_LIBEVENT_WARNING,) * warned
+    assert config.debug is bool(categories)
+    assert config.debug_categories == categories
+    assert not config.debug_exclude
+
+
+def test_build_config_takes_v32_1_s_mining_category(tmp_path: Path) -> None:
+    """ISS 2152: `mining` is in v32.1's `LOG_CATEGORIES_BY_STR`."""
+    assert _build(tmp_path, "-debug=mining").debug_categories == {"mining"}
+
+
+def test_help_lists_v32_1_s_categories() -> None:
+    """ISS 2152: `LogCategoriesString` lists `mining`, and not `libevent`."""
+    message = " ".join(cli._help_message(show_debug=True).split())
+    assert "mempoolrej, mining, net" in message
+    assert "libevent" not in message
+
+
 def test_help_names_debugexclude_under_debug_alone() -> None:
     """ISS 1609: `-debugexclude` is a `DEBUG_TEST` option, as `-debug` is."""
     assert "-debugexclude=<category>" in cli._help_message(show_debug=True)
@@ -4833,7 +5028,12 @@ def test_a_negated_chain_selector_in_the_file_is_skipped(tmp_path: Path) -> None
 def test_the_values_are_logged_and_the_unknown_names_warned_of(
     tmp_path: Path,
 ) -> None:
-    """Core's own `_VALUES`, `LogArgs`' "Setting file arg:" in key order."""
+    """Core's own `_VALUES`, `LogArgs`' "Setting file arg:" in key order.
+
+    Core writes every value. This tree writes `****` for the value of a
+    sensitive option and of a name no option has, which may be one
+    misspelled.
+    """
     _settings(
         tmp_path,
         '{"string":"string","num":5,"bool":true,"null":null,"list":[6,7],'
@@ -4851,19 +5051,51 @@ def test_the_values_are_logged_and_the_unknown_names_warned_of(
     lines = cli._log_args(settings)
     assert lines[:2] == (
         "Config file arg: rpcuser=****",
-        "Setting file arg: bool = true",
+        "Setting file arg: bool = ****",
     )
     assert lines[2:11] == (
-        "Setting file arg: list = [6,7]",
+        "Setting file arg: list = ****",
         "Setting file arg: nolisten = true",
-        "Setting file arg: nozzz = 1",
-        "Setting file arg: null = null",
-        "Setting file arg: num = 5",
+        "Setting file arg: nozzz = ****",
+        "Setting file arg: null = ****",
+        "Setting file arg: num = ****",
         "Setting file arg: regtest.port = 5",
-        'Setting file arg: rpcuser = "x"',
-        'Setting file arg: string = "string"',
+        "Setting file arg: rpcuser = ****",
+        "Setting file arg: string = ****",
         f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "logged"),
+    [
+        ("rpcpassword", "rpcpassword"),
+        ("regtest.rpcpassword", "<19 characters>"),
+        ("rpcauth", "rpcauth"),
+        ("rpcpasword", "rpcpasword"),
+        (LEAK, "<28 characters>"),
+        (f"rpcpassword={LEAK}", "rpcpassword"),
+    ],
+    ids=["sensitive", "in a section", "rpcauth", "misspelled", "long", "with value"],
+)
+def test_a_settings_value_is_logged_by_its_name_and_never_as_written(
+    tmp_path: Path, name: str, logged: str
+) -> None:
+    """A `settings.json` name and value may hold a secret; the log omits it."""
+    _settings(tmp_path, json.dumps({name: LEAK}))
+    settings = _read(tmp_path)
+    lines = cli._log_args(settings)
+    assert f"Setting file arg: {logged} = ****" in lines
+    assert_secret_free(ValueError(*lines, *settings.log_warnings), [LEAK])
+
+
+def test_a_known_settings_name_past_the_limit_is_given_by_its_length(
+    tmp_path: Path,
+) -> None:
+    """A known name is quoted by the same rule as an unknown one."""
+    _settings(tmp_path, '{"rpcwhitelistdefault":true}')
+    lines = cli._log_args(_read(tmp_path))
+    assert "Setting file arg: <19 characters> = true" in lines
 
 
 def test_the_help_names_settings_as_core_does() -> None:

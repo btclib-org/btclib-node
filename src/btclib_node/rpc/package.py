@@ -205,7 +205,12 @@ def _read(params: list[Any]) -> _Call:
 
 
 def _tx_result(tx: Tx, outcome: Outcome) -> dict[str, Any]:
-    """Return the JSON of what `outcome` says of `tx`."""
+    """Return the JSON of what `outcome` says of `tx`.
+
+    A transaction taken or held answers `vsize_adjusted`, `vsize` and
+    `vsize_bip141` in Core's order (`src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
     from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
         _MISSING_INPUTS_REASON,
     )
@@ -218,7 +223,9 @@ def _tx_result(tx: Tx, outcome: Outcome) -> dict[str, Any]:
         result["other-wtxid"] = outcome.other_wtxid.hex()
     else:
         fees: dict[str, Any] = {"base": btc_amount(outcome.base_fee)}
+        result["vsize_adjusted"] = outcome.vsize
         result["vsize"] = outcome.vsize
+        result["vsize_bip141"] = tx.vsize
         result["fees"] = fees
         if outcome.effective is not None:
             modified_fee, vsize, wtxids = outcome.effective
@@ -241,7 +248,8 @@ def _held(mempool: Mempool, tx: Tx) -> Outcome | None:
 def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
     """Take what passes of `call.txs`, and return the message and each outcome.
 
-    Core's `AcceptPackage` (`src/validation.cpp`, same tag). A package
+    Core's `AcceptPackage` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A package
     `package_refusal` refuses answers each transaction "package-not-validated".
     Otherwise each is taken or refused alone, in turn: one the mempool holds, or
     holds under another witness, is answered as such, and one that is taken

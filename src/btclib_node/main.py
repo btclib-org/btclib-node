@@ -116,6 +116,7 @@ __all__ = [
     "activate_best_chain",
     "already_confirmed",
     "assert_valid_block",
+    "assert_valid_block_proof",
     "check_fork_warning_conditions",
     "check_max_feerate",
     "contextual_check_block",
@@ -123,6 +124,7 @@ __all__ = [
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
+    "mark_contextual_failure",
     "missing_prevout_refusal",
     "new_pow_valid_block",
     "package_refusal",
@@ -196,13 +198,14 @@ def check_fork_warning_conditions(node: Node) -> None:
 
     Called wherever this tree calls `BlockIndex.invalidate` (through
     `update_header_index` in `_invalidate_failed_block`, and directly in
-    `invalidate_chain`, `p2p.callbacks` and `rpc.callbacks`), or commits
-    a fork (`_after_tip_change`), and once at `Node.load`, matching Core's own
-    three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
-    itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
-    call and, for a block that fails validation, from `InvalidBlockFound`
-    calling `InvalidChainFound` in turn, the same way this tree's four
-    `invalidate` call sites above all reach this one function --
+    `invalidate_chain`, `mark_contextual_failure`, `p2p.callbacks` and
+    `rpc.callbacks`), or commits a fork (`_after_tip_change`), and once at
+    `Node.load`, matching Core's own three call sites
+    (`src/validation.cpp`, same sha): `InvalidChainFound` itself (`:1987`)
+    -- reached both from `InvalidateBlock`'s own direct call and, for a
+    block that fails validation, from `InvalidBlockFound` calling
+    `InvalidChainFound` in turn, the same way each `invalidate` call site
+    above reaches this one function --
     `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
     neither `InvalidChainFound` nor this function itself), and
     `LoadChainTip` (`:4643`, not `LoadBlockIndex`, which is `best_invalid`'s
@@ -548,6 +551,13 @@ def _reconcile_mempool_for_reorg(
         # during initial block download would pay for every transaction
         removed = node.mempool.remove_for_block(block.transactions)
         node.fee_estimator.process_block(removed, height)
+        # v32.1's `ConnectTip` signals the block to the estimators only
+        # outside initial block download (`src/validation.cpp`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
+        # estimator is still told during it, as v31.1 told it
+        # (btclib-org/btclib-node#2178).
+        if not node.is_initial_block_download:
+            node.mempool_estimator.block_connected(block, removed, height)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
@@ -1134,10 +1144,11 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
 
-def passes_check_block(block: Block) -> bool:
+def passes_check_block(block: Block, chain: Chain) -> bool:
     """Whether `block` passes what Core's `CheckBlock` asks of a body.
 
-    The merkle root, `bad-blk-length`, `bad-cb-missing`,
+    On a signet chain the solution (`signet.assert_valid_solution`), then
+    the merkle root, `bad-blk-length`, `bad-cb-missing`,
     `bad-cb-multiple`, each transaction's `CheckTransaction` and
     `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
@@ -1146,6 +1157,8 @@ def passes_check_block(block: Block) -> bool:
     """
     transactions = block.transactions
     try:
+        if isinstance(chain, SigNet):
+            assert_valid_solution(block, chain)
         block.assert_valid_merkle_root()
         block.assert_valid_length()
         if not transactions or not transactions[0].is_coinbase:
@@ -1163,26 +1176,34 @@ def passes_check_block(block: Block) -> bool:
 def assert_valid_block(block: Block, chain: Chain) -> None:
     """Assert what `Block.assert_valid` asks, the signet solution spliced in.
 
-    `Block.assert_valid`'s own three steps -- the header, its proof of
-    work, then every other rule `passes_check_block` above already
-    names -- with `signet.assert_valid_solution` run between the second
-    and the third, on a signet chain only: Core's own `CheckBlock` asks
-    it there too, gated on `consensusParams.signet_blocks`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), right after the header's proof of work and before the merkle
-    root. btclib carries no signet concept to splice this into
-    `Block.assert_valid` itself, hence the decomposition here instead
-    of a fourth argument to it -- the same three calls that function
-    already makes, in the same order, for every chain but this one.
+    `Block.assert_valid`'s own three steps -- the header, its proof of work,
+    then `Block.assert_valid_structure` -- with
+    `signet.assert_valid_solution` run between the second and the third, on
+    a signet chain only: Core's own `CheckBlock` asks it there too, gated on
+    `consensusParams.signet_blocks` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), right after the header's
+    proof of work and before the merkle root. btclib carries no signet
+    concept to splice this into `Block.assert_valid` itself, hence the
+    decomposition here instead of a fourth argument to it -- the same three
+    calls that function already makes, in the same order, for every chain
+    but this one.
+    """
+    assert_valid_block_proof(block, chain)
+    block.assert_valid_structure()
+
+
+def assert_valid_block_proof(block: Block, chain: Chain) -> None:
+    """Assert the steps of `assert_valid_block` before the body's structure.
+
+    The header, its proof of work and, on a signet chain, the solution.
     """
     block.header.assert_valid()
     block.header.assert_valid_pow(chain.pow_limit_bits)
     if isinstance(chain, SigNet):
         assert_valid_solution(block, chain)
-    block.assert_valid_structure()
 
 
-def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
+def is_block_failed(block: Block, chain: Chain, *, check_witness_root: bool) -> bool:
     """Whether `block`, failing `Block.assert_valid`, is marked failed.
 
     Core's `ProcessNewBlock` (`src/validation.cpp`, at
@@ -1196,12 +1217,12 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
-        and passes_check_block(block)
+        and passes_check_block(block, chain)
         and block.weight > MAX_BLOCK_WEIGHT
     )
 
 
-def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
+def is_cached_invalid(block_index: BlockIndex, block: Block, chain: Chain) -> bool:
     """Whether `block` is Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`.
 
     Its header indexed and marked invalid already, and its body passing
@@ -1214,7 +1235,7 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
     return (
         known is not None
         and known.status == BlockStatus.invalid
-        and passes_check_block(block)
+        and passes_check_block(block, chain)
     )
 
 
@@ -1395,6 +1416,31 @@ def _contextual_reason(message: str) -> str:
     return message
 
 
+# The reasons of `ContextualCheckBlock` that Core gives as `BLOCK_CONSENSUS`,
+# for which `InvalidBlockFound` marks the block failed (`src/validation.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its witness reasons are
+# `BLOCK_MUTATED`, which it leaves unmarked. The header's rules, which
+# `contextual_check_block` asks again, Core does not ask of a header it holds.
+_FAILED_CONTEXTUAL_REASONS = frozenset(
+    {"bad-txns-nonfinal", "bad-cb-height", "bad-blk-weight"}
+)
+
+
+def mark_contextual_failure(node: Node, block_hash: bytes, reason: str) -> bool:
+    """Mark `block_hash` failed where Core's `AcceptBlock` does for `reason`.
+
+    `reason` is what `contextual_check_block` refused the block for.
+    Answers whether the block was marked.
+    """
+    if reason not in _FAILED_CONTEXTUAL_REASONS:
+        return False
+    node.chainstate.block_index.invalidate(block_hash)
+    # Core's own `InvalidChainFound` call, same citation as
+    # `check_fork_warning_conditions`'s own docstring
+    check_fork_warning_conditions(node)
+    return True
+
+
 def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
     """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
 
@@ -1408,9 +1454,9 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     went back. Core does not ask them again of a header it holds, so there
     it answers `bad-txns-nonfinal`, or goes on to the block's other rules,
     where this refuses `time-too-new`: btclib has no public block-only
-    check (btclib-org/btclib#2836). A version under 1 below BIP34's height
-    reaches this too: `add_headers` accepts it, as Core does, and btclib
-    refuses it (btclib-org/btclib#2833). `bad-diffbits` is left to
+    check (btclib-org/btclib#2836). A version under 1 below the BIP34,
+    BIP66 and BIP65 heights passes here as it passes `add_headers`, as
+    Core accepts it (btclib-org/btclib#2833). `bad-diffbits` is left to
     `add_headers`: the context carries no `required_bits`. The refusal is
     raised in Core's word where `_CONTEXTUAL_REASONS` has one, and in
     btclib's text otherwise.
@@ -1756,13 +1802,11 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     Core's own `InvalidateBlock`, the free RPC-layer function
     (`src/rpc/blockchain.cpp:1695-1714`) calling `Chainstate::InvalidateBlock`
     (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag. Its callers are `rpc.callbacks.invalidate_block`, which has
+    tag. Its caller is `rpc.callbacks.invalidate_block`, which has
     already refused a `block_hash` this index does not know (Core's own
-    `RPC_INVALID_ADDRESS_OR_KEY`), and `rpc.snapshot`'s
-    `_rolled_back_write`, whose `block_hash` is `chain[height + 1]`, a
-    block of the active chain above genesis and so known. Core's own
-    silent no-op for the genesis block (`if (pindex->nHeight == 0) return
-    false`) is answered below, in this function, rather than there, since
+    `RPC_INVALID_ADDRESS_OR_KEY`). Core's own silent no-op for the
+    genesis block (`if (pindex->nHeight == 0) return false`) is answered
+    below, in this function, rather than there, since
     `BlockIndex.invalidate` itself has no such floor and would mark the
     whole index invalid by walking every block ever built on genesis.
 
@@ -1904,15 +1948,14 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     which runs only where a better chain is found
     (`src/validation.cpp:3423-3424` and `:3318`, same sha).
 
-    Its callers are `rpc.callbacks.reconsider_block`, which has already
+    Its caller is `rpc.callbacks.reconsider_block`, which has already
     refused a `block_hash` this index does not know
     (`RPC_INVALID_ADDRESS_OR_KEY`, Core's own answer for the identical
-    lookup failure), and `rpc.snapshot`'s `_rolled_back_write`, which
-    passes the known block it invalidated. Reconsidering a `block_hash`
-    this index knows but never marked invalid is a no-op the way Core's
-    own loop is: nothing in `header_dict` carries the mark `reconsider`'s
-    own filter looks for, so nothing is cleared, and `activate_best_chain`
-    finds the tip already best.
+    lookup failure). Reconsidering a `block_hash` this index knows but
+    never marked invalid is a no-op the way Core's own loop is: nothing
+    in `header_dict` carries the mark `reconsider`'s own filter looks
+    for, so nothing is cleared, and `activate_best_chain` finds the tip
+    already best.
 
     `BlockStatus` carries no counterpart to Core's own separate
     `BLOCK_FAILED_VALID` bit: `valid` and `invalid` share the one field
