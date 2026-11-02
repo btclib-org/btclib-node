@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 from btclib_node.constants import CLIENT_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 __all__ = [
     "SETTINGS_FILENAME",
@@ -105,7 +105,7 @@ def type_name(value: Json) -> str:
     if value is None:
         return "null"
     if isinstance(value, bool):
-        return "boolean"
+        return "bool"
     if isinstance(value, Number):
         return "number"
     if isinstance(value, str):
@@ -416,13 +416,21 @@ def write_json(value: Json, *, indent: int = 0) -> str:
     return "".join(out)
 
 
-def read_settings(path: str) -> dict[str, Json]:
+def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
     """Return the settings in the file at `path`; none where it is absent.
 
-    `common::ReadSettings`. Raises `ValueError` in its words where the file
-    cannot be opened, is not JSON, is not an object, or names a key twice. The
-    `_warning_` key is left out, and the rest is in key order, as Core's
-    `std::map` holds it.
+    `common::ReadSettings`. Raises `ValueError` where the file cannot be
+    opened, is not JSON, is not an object, or names a key twice, in Core's
+    words except as below. The `_warning_` key is left out, and the rest is
+    in key order, as Core's `std::map` holds it.
+
+    A value that is not an object is given by its `type_name`, and a key
+    named twice as `quote` returns it, because a refusal reaches stderr and
+    logs and the file may hold a password (ASSURANCE_CASE.md, "Common
+    implementation weaknesses"). Core writes both whole
+    (`src/common/settings.cpp:102` and `:111`, at
+    bitcoin/bitcoin@9be056a8a7). `cli.py`, which knows the sensitive
+    options, passes `_quoted_line` as `quote`.
 
     Core opens a directory and reads nothing from it, so a directory is not
     valid JSON; opening one fails here with `IsADirectoryError`, and with a
@@ -454,12 +462,14 @@ def read_settings(path: str) -> dict[str, Json]:
         )
         raise ValueError(err_msg) from None
     if not isinstance(value, Object):
-        err_msg = f"Found non-object value {write_json(value)} in settings file {path}"
+        err_msg = (
+            f"Found non-object value of type {type_name(value)} in settings file {path}"
+        )
         raise ValueError(err_msg)  # noqa: TRY004 -- a refusal of the file
     values: dict[str, Json] = {}
     for key, item in value.pairs:
         if key in values:
-            err_msg = f"Found duplicate key {key} in settings file {path}"
+            err_msg = f"Found duplicate key {quote(key)} in settings file {path}"
             raise ValueError(err_msg)
         values[key] = item
     values.pop(_WARNING_KEY, None)

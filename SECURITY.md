@@ -155,17 +155,21 @@ fails to parse, and a command-line argument refused as an invalid parameter,
 are quoted as ASSURANCE_CASE.md's CWE-209 entry says. So are the key of an
 unknown configuration value, which is also given its file and line, and a
 section name, in the unrecognized-section warning and in the log of the
-configuration, and a `settings.json` name, in the unknown-name warning and in
-the log of the settings. Bitcoin Core quotes each of these whole, at
-bitcoin/bitcoin@db0bde16b9: the descriptor at `rpc/util.cpp:1370`, the line
-in `GetConfigOptions` (`src/common/config.cpp`), the argument in
-`ParseParameters` (`src/common/args.cpp:234`), the key in `ReadConfigStream`
-(`src/common/config.cpp:110`), the section in
-`AppInitParameterInteraction` (`src/init.cpp:992`) and `logArgsPrefix`
-(`src/common/args.cpp:988`), and the `settings.json` name in
-`ReadSettingsFile`'s warning (`src/common/args.cpp:479`) and in `LogArgs`
-(`src/common/args.cpp:1007`). A refusal reaches stderr, logs and the RPC
-caller.
+configuration, and a `settings.json` name, in the unknown-name warning, in
+the duplicate-key refusal and in the log of the settings. A `settings.json`
+that is not an object is refused by its value's type. Bitcoin Core quotes
+each of these whole, at bitcoin/bitcoin@db0bde16b9: the descriptor at
+`rpc/util.cpp:1370`, the line in `GetConfigOptions`
+(`src/common/config.cpp`), the argument in `ParseParameters`
+(`src/common/args.cpp:234`), the key in `ReadConfigStream`
+(`src/common/config.cpp:110`), the section in `AppInitParameterInteraction`
+(`src/init.cpp:992`) and `logArgsPrefix` (`src/common/args.cpp:988`), the
+`settings.json` name in `ReadSettingsFile`'s warning
+(`src/common/args.cpp:479`), in `ReadSettings`'s refusal
+(`src/common/settings.cpp:110`) and in `LogArgs`
+(`src/common/args.cpp:1007`), and the value that is not an object in
+`ReadSettings` (`src/common/settings.cpp:101`). A refusal reaches stderr,
+logs and the RPC caller.
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,

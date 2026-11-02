@@ -4902,14 +4902,14 @@ def test_an_empty_settings_is_the_default_file(tmp_path: Path) -> None:
     ("content", "detail"),
     [
         ("invalid json", "Settings file {p} does not contain valid JSON."),
-        ('"string"', 'Found non-object value "string" in settings file {p}'),
+        ('"string"', "Found non-object value of type string in settings file {p}"),
         ('{"key": 1, "key": 2}', "Found duplicate key key in settings file {p}"),
     ],
 )
 def test_a_malformed_file_refuses_the_start(
     tmp_path: Path, content: str, detail: str
 ) -> None:
-    """Core's words, and the file is left as it was."""
+    """The refusal `settings_file.py` gives, and the file is left as it was."""
     path = _settings(tmp_path, content)
     with pytest.raises(ValueError, match=r".") as refused:
         _read(tmp_path)
@@ -4917,6 +4917,38 @@ def test_a_malformed_file_refuses_the_start(
         "Settings file could not be read:\n- " + detail.format(p=path)
     )
     assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize(
+    ("content", "detail"),
+    [
+        pytest.param(
+            json.dumps(LEAK), "Found non-object value of type string", id="value"
+        ),
+        pytest.param(
+            f'{{"{LEAK}": 1, "{LEAK}": 2}}',
+            "Found duplicate key <28 characters>",
+            id="long key",
+        ),
+        pytest.param(
+            f'{{"rpcpassword={LEAK}": 1, "rpcpassword={LEAK}": 2}}',
+            "Found duplicate key rpcpassword",
+            id="key with a value",
+        ),
+    ],
+)
+def test_a_malformed_file_is_refused_without_its_secret(
+    tmp_path: Path, content: str, detail: str
+) -> None:
+    """Core writes the value or the key whole; `_quoted_line` quotes the key."""
+    _settings(tmp_path, content)
+    with pytest.raises(ValueError, match=r".") as refused:
+        _read(tmp_path)
+    assert str(refused.value) == (
+        f"Settings file could not be read:\n- {detail} in settings file "
+        f"{_settings(tmp_path)}"
+    )
+    assert_secret_free(refused.value, [LEAK])
 
 
 @pytest.mark.usefixtures("no_node")
@@ -5122,7 +5154,7 @@ def _file_settings(content: str, *argv: str, conf: str = "") -> cli._Settings:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "settings.json"
         path.write_text(content, encoding="utf-8")
-        settings.rw_settings = read_settings(str(path))
+        settings.rw_settings = read_settings(str(path), quote=cli._quoted_line)
     return settings
 
 
@@ -5218,7 +5250,7 @@ def test_a_status_that_cannot_be_read_is_refused_as_the_library_words_it(
 ) -> None:
     """`fs::exists` throws; `InitConfig` shows the exception's text alone."""
 
-    def refuse(_path: str) -> dict[str, object]:
+    def refuse(_path: str, *, quote: object) -> dict[str, object]:
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(cli, "read_settings", refuse)
