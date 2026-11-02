@@ -456,13 +456,16 @@ this release included.
    a job two hops from something that failed by design is skipped
    without ever being mentioned.
 
-   **Some skips are correct, and they are the ones a reader will cite
-   as the defect**: `publish-testpypi` reports `skipped` on a tag push,
-   its guard being `workflow_dispatch`. On a rehearsal the mirror image
-   is correct for the same reason — `publish-pypi` skips, its guard
-   being `push` — and `documented` skips on its own account, its guard
-   being the push. Everything else that skipped wants explaining before
-   the release is called done.
+   **Some skips are correct, and they are the ones a reader will cite as
+   the defect**: `publish-testpypi` reports `skipped` on a tag push, its
+   guard being `workflow_dispatch`. On a rehearsal the mirror image is
+   correct for the same reason — `publish-pypi` skips, its guard being
+   `push` — and `documented` skips on its own account, its guard being
+   the push. `Run the lint workflow / lint / Dependency review` and `Run
+   the lint workflow / lint / Sign-off` are `skipped` on every run, as
+   they run only on a `pull_request`; a tagged commit had both checks on
+   its own pull request. Everything else that skipped wants explaining
+   before the release is called done.
 
 1. Read the `documented` job rather than the site: read the docs
    activates and builds a new release tag from the automation rule
