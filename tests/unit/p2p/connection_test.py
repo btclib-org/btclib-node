@@ -1633,8 +1633,8 @@ def test_run_does_not_read_again_while_recv_resume_is_cleared() -> None:
 def test_a_peer_past_the_send_bound_is_sent_to_not_dropped() -> None:
     """ISS 1805: past `send_buffer_max_size` a message is still queued and sent.
 
-    Core drops no peer over its send buffer: past `nSendBufferMaxSize` it
-    sets `fPauseSend`, and what it queues still goes out.
+    Core drops no peer for passing `nSendBufferMaxSize`: it sets
+    `fPauseSend`, and what it queues still goes out.
     """
 
     async def drive() -> tuple[Connection, list[bytes]]:
@@ -1687,6 +1687,40 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     asyncio.run(connection._drain_outbox())
     assert connection.send_memusage == 0
     assert not connection.pause_send
+
+
+def test_a_pause_is_timed_from_when_it_began(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ISS 2112: `pause_send_since` is stamped where a pause begins, only there.
+
+    Core's `PushMessage` and `SocketSendData` stamp `m_pause_send_since`
+    only where `fPauseSend` goes from false to true. A message queued while
+    paused leaves the stamp as it is, and a pause after a drain stamps it
+    again.
+    """
+    now = [100.0]
+    monkeypatch.setattr(clock_module, "now", lambda: now[0])
+    connection, _ = a_connection()
+    bound = connection.send_buffer_max_size
+    connection.send_memusage = bound
+    messages = [connection._queue(Ping(1))]
+    now[0] = 200.0
+    messages.append(connection._queue(Ping(2)))
+    started = [connection.pause_send_since]
+    connection.send_memusage -= bound
+
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
+        pass
+
+    connection._send = _send  # type: ignore[method-assign]
+    connection._outbox.extend(cast("list[SerializedMessage]", messages))
+    asyncio.run(connection._drain_outbox())
+    paused = [connection.pause_send]
+    now[0] = 300.0
+    connection.send_memusage = bound
+    connection._queue(Ping(3))
+    started.append(connection.pause_send_since)
+    assert paused == [False]
+    assert started == [100.0, 300.0]
 
 
 def _raw_block_of(header: BlockHeader, size: int) -> bytes:

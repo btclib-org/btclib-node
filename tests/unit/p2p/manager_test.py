@@ -155,6 +155,8 @@ def a_conn(
         ping_start=time.time() if ping_start is None else ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
+        pause_send=False,
+        pause_send_since=0.0,
         relay_tx=relay_tx,
         feefilter=feefilter,
         nonce=nonce,
@@ -956,7 +958,7 @@ def test_a_peer_at_bip31_or_below_is_pinged_without_a_pong_to_wait_for(
 
     It is sent a ping every `PING_INTERVAL` and owes no `pong`. The first
     pass stamps `ping_start`, so a second pass sends no second ping. Only
-    silence drops it.
+    silence, or a pause that lasts, drops it.
     """
     pinged = a_conn(1, ping_start=time.time() - PING_INTERVAL - 10, protocol=60000)
     silent = a_conn(2, last_receive=time.time() - TIMEOUT_INTERVAL - 10, protocol=60000)
@@ -964,6 +966,35 @@ def test_a_peer_at_bip31_or_below_is_pinged_without_a_pong_to_wait_for(
     asyncio.run(one_pass(manager))
     asyncio.run(one_pass(manager))
     assert pinged.sent == ["ping"]
+    assert list(manager.connections) == [1]
+
+
+@pytest.mark.parametrize(
+    ("paused", "dropped"),
+    [(TIMEOUT_INTERVAL + 10, True), (TIMEOUT_INTERVAL - 10, False)],
+)
+def test_a_peer_paused_for_the_timeout_interval_is_dropped(
+    a_manager: AManagerFactory, paused: int, *, dropped: bool
+) -> None:
+    """ISS 2112: `InactivityCheck` drops a peer whose send buffer stays full.
+
+    The peer is at `BIP0031_VERSION`, so it owes no `pong`, and it is heard
+    from and takes octets, so only the pause can drop it.
+    """
+    conn = a_conn(1, protocol=BIP0031_VERSION)
+    conn.pause_send = True
+    conn.pause_send_since = time.time() - paused
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert (1 not in manager.connections) is dropped
+
+
+def test_a_peer_that_unpaused_in_time_is_kept(a_manager: AManagerFactory) -> None:
+    """ISS 2112: a pause that has ended is not timed, however old its start."""
+    conn = a_conn(1, protocol=BIP0031_VERSION)
+    conn.pause_send_since = time.time() - TIMEOUT_INTERVAL - 10
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
     assert list(manager.connections) == [1]
 
 
@@ -1019,6 +1050,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         last_receive = time.time()
         last_send = time.time()
         ping_start = time.time() - 200
+        pause_send = False
         relay_tx = True
         feefilter = 0
         automatic = False

@@ -732,7 +732,8 @@ class Connection:
 
         # Core's `nSendBufferMaxSize`, `-maxsendbuffer` in bytes. Past it
         # a connection sets `pause_send`, as Core sets `fPauseSend`, and
-        # nothing drops it for that.
+        # `_keep_alive` (`p2p/manager.py`) drops a peer whose pause lasts
+        # `_TIMEOUT_INTERVAL`.
         #
         # The pause is what bounds a peer that does not read, as in Core.
         # While it is set, `_hold_message` (`p2p/main.py`) reads nothing
@@ -744,12 +745,10 @@ class Connection:
         # before it.
         #
         # What this node sends unprompted -- a `ping`, an announcement, a
-        # `feefilter`, its address -- checks no pause, here or in Core.
-        # `_keep_alive` (`p2p/manager.py`) drops a peer that owes a `pong`
-        # for `_TIMEOUT_INTERVAL`, and sends the next `ping`, behind
-        # whatever is queued, within `_PING_INTERVAL` of each `pong`. So a
-        # peer holds no more than what is queued for it unprompted in
-        # `_TIMEOUT_INTERVAL` plus `_PING_INTERVAL`.
+        # `feefilter`, its address -- checks no pause, here or in Core. So
+        # what a peer holds past the bound is what the paragraph above lets
+        # it ask for, and what is queued for it unprompted until the pause
+        # has lasted `_TIMEOUT_INTERVAL`.
         self.send_buffer_max_size: int = send_buffer_max_size
         # Core's `m_send_memusage`: every message queued and not yet
         # written whole, weighed by `_send_memusage`. `_queue` counts it on
@@ -773,6 +772,10 @@ class Connection:
         # the lock on `Node`'s thread: a drain the read misses holds the
         # peer one more pass of `Node`'s loop.
         self.pause_send: bool = False
+        # Core's `m_pause_send_since` (`src/net.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): when `pause_send`
+        # last went from false to true. `_set_pause_send` writes both.
+        self.pause_send_since: float = 0.0
         self._send_lock: threading.Lock = threading.Lock()
         self._write_lock = asyncio.Lock()
 
@@ -1243,7 +1246,7 @@ class Connection:
         with self._send_lock:
             self.send_memusage += _send_memusage(message)
             if self.send_memusage > self.send_buffer_max_size:
-                self.pause_send = True
+                self._set_pause_send(paused=True)
         return message
 
     async def _deliver(self, message: SerializedMessage) -> None:
@@ -1277,7 +1280,20 @@ class Connection:
                     return
                 with self._send_lock:
                     self.send_memusage -= _send_memusage(self._outbox.popleft())
-                    self.pause_send = self.send_memusage > self.send_buffer_max_size
+                    self._set_pause_send(
+                        paused=self.send_memusage > self.send_buffer_max_size
+                    )
+
+    def _set_pause_send(self, *, paused: bool) -> None:
+        """Set `pause_send`, stamping `pause_send_since` where a pause begins.
+
+        Called under `_send_lock`. The time is written first, so a reader
+        that reads `pause_send` before `pause_send_since` never times a
+        pause from an earlier one's start.
+        """
+        if paused and not self.pause_send:
+            self.pause_send_since = clock.now()
+        self.pause_send = paused
 
     async def async_send(self, payload: Payload) -> None:
         """Frame `payload` and send it.

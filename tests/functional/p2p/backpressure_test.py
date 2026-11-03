@@ -4,21 +4,24 @@
 
 """The send-side bound, against a peer on a real socket that stops reading.
 
-Past `Connection.send_buffer_max_size` (`btclib_node/p2p/connection.py`),
-`-maxsendbuffer`, a connection sets `pause_send`, Core's `fPauseSend`: a
-half-served answer pauses, the peer's later messages wait, and the peer
-is not dropped for it. The bound engages only against a peer that stops
-draining what it was sent, and a well-behaved daemon always reads:
-pointing a bitcoind at this node cannot reach it, so this half of the
-question wants a synthetic peer and no daemon at all. The receive-side
-half is `tests/integration/backpressure_test.py`, which does want one;
-the last test here sets `-maxreceivebuffer` low enough for this peer to
-reach it. btclib-org/btclib-node#492
+Past `Connection.send_buffer_max_size`
+(`btclib_node/p2p/connection.py`), `-maxsendbuffer`, a connection sets
+`pause_send`, Core's `fPauseSend`: a half-served answer pauses, the
+peer's later messages wait, and the peer is dropped only where the pause
+lasts `_TIMEOUT_INTERVAL` (`btclib_node/p2p/manager.py`). The bound
+engages only against a peer that stops draining what it was sent, and a
+well-behaved daemon always reads: pointing a bitcoind at this node
+cannot reach it, so this half of the question wants a synthetic peer and
+no daemon at all. The receive-side half is
+`tests/integration/backpressure_test.py`, which does want one; the last
+test here sets `-maxreceivebuffer` low enough for this peer to reach it.
+btclib-org/btclib-node#492
 
-The peer here completes the handshake and then never calls `recv`
-again. Nothing it was sent is lost: those octets sit in the two kernel
-buffers until the window closes behind them, and what will not fit is
-what stands in this node's own `send_memusage`.
+The peer here completes the handshake and then never calls `recv` again,
+except in the slow-reader test. Nothing it was sent is lost: those
+octets sit in the two kernel buffers until the window closes behind
+them, and what will not fit is what stands in this node's own
+`send_memusage`.
 
 The blocks a `getdata` asks for go straight into `block_db` without the
 header chain that would ordinarily carry them: `advance_getdata` serves
@@ -69,6 +72,7 @@ from btclib_node.constants import (
 )
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p import manager as manager_module
+from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.transport import SerializedMessage
 from tests import (
     GENESIS_TIME,
@@ -272,12 +276,12 @@ class DeafPeer:
         )
         self.socket.sendall(message.serialize())
 
-    def shake_hands(self) -> None:
+    def shake_hands(self, protocol: int = PROTOCOL_VERSION) -> None:
         """Send what `callbacks.verack` requires before it will promote."""
         services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
         self.send(
             Version(
-                version=PROTOCOL_VERSION,
+                version=protocol,
                 services=services,
                 timestamp=int(time.time()),
                 addr_recv=NetworkAddress(services=services, port=0),
@@ -457,6 +461,64 @@ def test_a_peer_that_does_not_read_is_dropped_by_the_ping_timeout(
         return connection.id not in node.p2p_manager.connections
 
     wait_until(dropped, timeout=30)
+    assert connection.status == P2pConnStatus.Closed
+
+
+# What the slow reader below takes off its socket at each poll of
+# `wait_until`: enough to let `_send` finish a `_SEND_CHUNK` well within
+# the shortened `_TIMEOUT_INTERVAL`.
+_SLOW_READ_BYTES = 16_384
+
+
+def test_a_slow_reader_at_bip31_is_dropped_once_its_pause_lasts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2112: a peer that reads too slowly to unpause is dropped.
+
+    At `BIP0031_VERSION` the peer owes no `pong`. It sends, so it is not
+    silent, and it reads a little at a time, so `last_send` keeps moving.
+    What is queued for it is kept past the bound, as announcements keep it
+    in the advisory bitcoin/bitcoin#36667 fixes. Only the pause is left to
+    drop it, past `_TIMEOUT_INTERVAL`, shortened here once the pause has
+    begun, as Core's `InactivityCheck` drops it.
+    """
+    chain = blocks_of(1, _SERVED_BLOCK_BYTES)
+    block = block_messages(chain)[0]
+    with a_served_node(tmp_path, chain) as node:
+        peer = DeafPeer(node)
+        try:
+            peer.shake_hands(BIP0031_VERSION)
+            wait_until(lambda: len(node.p2p_manager.connections) == 1)
+            connection = the_connection(node)
+            connection.client.setsockopt(
+                socket.SOL_SOCKET, socket.SO_SNDBUF, _SOCKET_BUFFER_BYTES
+            )
+
+            def topped_up() -> bool:
+                # one block a poll, up to twice the bound: the pause sets
+                # one block past the bound, so the first poll after it
+                # queues one more
+                if connection.send_memusage < 2 * _SEND_BUFFER_MAX_SIZE:
+                    connection.send(block)
+                return connection.pause_send
+
+            wait_until(topped_up)
+            monkeypatch.setattr(manager_module, "_TIMEOUT_INTERVAL", 2)
+
+            def dropped() -> bool:
+                if connection.id not in node.p2p_manager.connections:
+                    return True
+                topped_up()
+                # the node may close the socket between the check above
+                # and these two calls
+                with suppress(BrokenPipeError, ConnectionResetError):
+                    peer.send(Ping(1))
+                    peer.socket.recv(_SLOW_READ_BYTES)
+                return False
+
+            wait_until(dropped, timeout=30)
+        finally:
+            peer.close()
     assert connection.status == P2pConnStatus.Closed
 
 
