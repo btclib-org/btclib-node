@@ -3148,6 +3148,9 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     assert block_index.active_chain[1:] == hashes(heavier)
 
     assert node.mempool.contains_tx(resurrectable)
+    # Core's `bypass_limits` entry sequence, so a getdata is served it
+    # unannounced (ISS 2157)
+    assert node.mempool.entry_sequences[resurrectable.hash] == 0
 
 
 def test_each_connected_block_reaches_the_fee_estimator_at_its_height(

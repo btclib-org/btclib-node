@@ -261,12 +261,9 @@ class PeerStats:
 
     `time_offset` is Core's `Peer::m_time_offset`, the peer's `version`
     timestamp less this node's clock when `callbacks.version` read it,
-    in whole seconds. `last_inv_sequence` is `TxRelay::m_last_inv_sequence`,
-    `Mempool.sequence` as of this connection's last trickle, which
-    `DownloadManager` writes, and 1 before the first, where Core starts it.
-    `addr_processed` and `addr_rate_limited` are `Peer::m_addr_processed`
-    and `m_addr_rate_limited`, which `callbacks.addr` and
-    `callbacks.addrv2` count on `Node`'s thread.
+    in whole seconds. `addr_processed` and `addr_rate_limited` are
+    `Peer::m_addr_processed` and `m_addr_rate_limited`, which
+    `callbacks.addr` and `callbacks.addrv2` count on `Node`'s thread.
 
     The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
     tables: the octets written to and read off the socket, the tables by
@@ -277,7 +274,6 @@ class PeerStats:
     """
 
     time_offset: int = 0
-    last_inv_sequence: int = 1
     addr_processed: int = 0
     addr_rate_limited: int = 0
     bytes_sent: int = 0
@@ -701,6 +697,12 @@ class Connection:
         # pops and touches nothing else. btclib-org/btclib-node#141
         self.tx_announce_queue: dict[bytes, None] = {}
         self.next_inv_send_time: float = 0.0
+        # Core's `TxRelay::m_last_inv_sequence`: `Mempool.sequence` as of
+        # the last trickle that had something queued, which
+        # `DownloadManager` writes, and 1 before it, where Core starts it.
+        # `Mempool.get_tx_for_relay` says which transactions it lets
+        # `callbacks.getdata` serve.
+        self.last_inv_sequence: int = 1
 
         # What this peer is known to have, so that a transaction is not
         # announced to it again: Core's `m_tx_inventory_known_filter`.

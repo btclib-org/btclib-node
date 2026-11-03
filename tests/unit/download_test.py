@@ -129,6 +129,7 @@ def a_conn(
         last_block_announcement=last_block_announcement,
         tx_announce_queue={},
         next_inv_send_time=0.0,
+        last_inv_sequence=1,
         known_tx_inventory=KnownTxInventory(),
         stats=PeerStats(),
         block_availability=BlockAvailability(),
@@ -847,19 +848,28 @@ def test_each_peer_is_sent_only_what_is_queued_for_it() -> None:
     assert hashes_of(only(second, Inv)[0]) == [b.hash, c.hash]
 
 
-def test_a_trickle_records_the_mempool_s_sequence_announcing_or_not() -> None:
-    """A trickle due records `Mempool.sequence`, one not yet due does not."""
-    due, idle, waiting = a_conn(1), a_conn(2), a_conn(3)
-    manager = make_manager([due, idle, waiting])
+def test_a_trickle_records_the_mempool_s_sequence_where_something_is_queued() -> None:
+    """A trickle due records `Mempool.sequence` where its queue is not empty.
+
+    Announced or not: an entry the mempool no longer holds is dropped
+    unsent. A trickle due with nothing queued, and one not yet due, record
+    nothing, as Core v32.1's `SendMessages` does.
+    """
+    due, gone, idle, waiting = a_conn(1), a_conn(2), a_conn(3), a_conn(4)
+    manager = make_manager([due, gone, idle, waiting])
     due.tx_announce_queue = dict.fromkeys([a_hash(1)])
     hold(manager, a_hash(1))
+    gone.tx_announce_queue = dict.fromkeys([a_hash(2)])
+    waiting.tx_announce_queue = dict.fromkeys([a_hash(1)])
     waiting.next_inv_send_time = time.time() + 3600
     cast("Any", manager.node).mempool.sequence = 42
     manager._send_due_announcements()
-    assert due.stats.last_inv_sequence == 42
-    assert idle.stats.last_inv_sequence == 42
+    assert due.last_inv_sequence == 42
+    assert not gone.sent
+    assert gone.last_inv_sequence == 42
     # 1, what a connection starts at
-    assert waiting.stats.last_inv_sequence == 1
+    assert idle.last_inv_sequence == 1
+    assert waiting.last_inv_sequence == 1
 
 
 def test_a_queued_announcement_evicted_before_its_own_schedule_is_not_sent() -> None:

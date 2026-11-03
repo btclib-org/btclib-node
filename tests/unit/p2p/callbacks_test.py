@@ -748,6 +748,9 @@ def a_peer(**attributes: Any) -> Any:
         bip152_highbandwidth_to=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
+        # what `Connection` starts at; `Mempool.get_tx_for_relay` says what
+        # it serves
+        last_inv_sequence=1,
         download_queue=[],
         ping_sent=0,
         continuation_block=None,
@@ -4118,7 +4121,7 @@ def test_a_transaction_this_node_holds_is_served() -> None:
         (InventoryType.MSG_WITNESS_TX, transaction.id, True),
         (InventoryType.MSG_WTX, transaction.hash, True),
     ):
-        peer = a_peer()
+        peer = a_peer(last_inv_sequence=mempool.sequence)
         getdata(node, GetData([Inventory(type_code, identifier)]).serialize(), peer)
         (answer,) = peer.sent
         assert isinstance(answer, TxMsg)
@@ -4140,7 +4143,7 @@ def test_serving_a_getdata_for_a_transaction_clears_it_unbroadcast() -> None:
     mempool.mark_broadcast_locally(transaction.id)
     assert mempool.unbroadcast == {transaction.id}
     node = a_data_node(mempool=mempool)
-    peer = a_peer()
+    peer = a_peer(last_inv_sequence=mempool.sequence)
     getdata(
         node,
         GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)]).serialize(),
@@ -4163,7 +4166,7 @@ def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
         (InventoryType.MSG_TX, transaction.hash),
         (InventoryType.MSG_WTX, transaction.id),
     ):
-        peer = a_peer()
+        peer = a_peer(last_inv_sequence=mempool.sequence)
         item = Inventory(type_code, identifier)
         getdata(node, GetData([item]).serialize(), peer)
         (answer,) = peer.sent
@@ -4188,6 +4191,45 @@ def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
     assert answer.items == (item,)
 
 
+def test_a_transaction_not_below_the_peer_s_sequence_gets_a_notfound() -> None:
+    """ISS 2157: one whose entry sequence is not below the peer's is not served.
+
+    Core's `FindTxForGetData` asks `info_for_relay` with the peer's
+    `m_last_inv_sequence`. The peer here had a trickle with something
+    queued after `earlier` entered and before `later` did.
+    """
+    earlier, later = a_transaction(), a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(earlier)
+    peer = a_peer(last_inv_sequence=mempool.sequence)
+    mempool.add_tx(later)
+    node = a_data_node(mempool=mempool)
+    items = [Inventory(InventoryType.MSG_WTX, tx.hash) for tx in (earlier, later)]
+    getdata(node, GetData(items).serialize(), peer)
+    tx_answer, notfound_answer = peer.sent
+    assert isinstance(tx_answer, TxMsg)
+    assert tx_answer.tx == earlier
+    assert isinstance(notfound_answer, NotFound)
+    assert notfound_answer.items == (items[1],)
+
+
+def test_a_transaction_a_reorg_re_added_is_served_unannounced() -> None:
+    """Its entry sequence is 0, as Core sets it under `bypass_limits`."""
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction, bypass_limits=True)
+    node = a_data_node(mempool=mempool)
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)]).serialize(),
+        peer,
+    )
+    (answer,) = peer.sent
+    assert isinstance(answer, TxMsg)
+    assert answer.tx == transaction
+
+
 def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
     """One `getdata` naming a hit and misses answers both, misses batched.
 
@@ -4198,7 +4240,7 @@ def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer()
+    peer = a_peer(last_inv_sequence=mempool.sequence)
     held = Inventory(InventoryType.MSG_WTX, transaction.hash)
     missing = [
         Inventory(InventoryType.MSG_TX, b"\x11" * 32),
@@ -5250,7 +5292,7 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer(pause_send=True)
+    peer = a_peer(pause_send=True, last_inv_sequence=mempool.sequence)
     item = Inventory(InventoryType.MSG_WTX, transaction.hash)
     getdata(node, GetData([item]).serialize(), peer)
     assert not peer.sent
@@ -5281,7 +5323,7 @@ def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     hit = Inventory(InventoryType.MSG_WTX, held.hash)
     never_reached = Inventory(InventoryType.MSG_TX, b"\x22" * 32)
 
-    peer = a_peer()
+    peer = a_peer(last_inv_sequence=mempool.sequence)
     sent = peer.sent
 
     def send_then_fill(msg: Any) -> None:
@@ -5315,7 +5357,7 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     for transaction in transactions:
         mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer()
+    peer = a_peer(last_inv_sequence=mempool.sequence)
     sent = peer.sent
 
     def send_then_close(msg: Any) -> None:
