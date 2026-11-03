@@ -153,7 +153,7 @@ _PEER_CONNECT_TIMEOUT = 60
 # (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, in
 # seconds: the wait before a connection with no ping outstanding is sent
 # one, and the silence, or the delay of a `pong`, that drops it.
-# `_keep_alive` applies them.
+# `_keep_alive` applies them, and drops a peer paused that long too.
 #
 # bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
 # serving a block this node asked for, is not in v31.1 and is not here.
@@ -1957,7 +1957,14 @@ class P2pManager(threading.Thread):
         `pong` is that overdue, is dropped; otherwise it is sent a `ping`
         once `_PING_INTERVAL` has passed since the last and none is
         outstanding. A peer at `BIP0031_VERSION` or below has none
-        outstanding, so only its silence drops it.
+        outstanding.
+
+        A peer whose `pause_send` has held for `_TIMEOUT_INTERVAL` is
+        dropped too, as `InactivityCheck` drops one whose `fPauseSend` has
+        (bitcoin/bitcoin#36667, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag). A peer that reads slowly keeps `last_send` fresh, and one at
+        `BIP0031_VERSION` or below owes no `pong`, so without this check
+        such a peer stays paused while what is queued for it grows.
         """
         # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
         # on the other thread, clears it the moment a pong answers this
@@ -1966,10 +1973,14 @@ class P2pManager(threading.Thread):
         # peer for having just answered.
         # btclib-org/btclib-node#357
         ping_sent = conn.ping_sent
+        # `pause_send` first: `Connection._set_pause_send` writes the time
+        # before the flag.
+        paused = conn.pause_send
         if (
             now - conn.last_receive > _TIMEOUT_INTERVAL
             or now - conn.last_send > _TIMEOUT_INTERVAL
             or (ping_sent and now - ping_sent > _TIMEOUT_INTERVAL)
+            or (paused and now - conn.pause_send_since > _TIMEOUT_INTERVAL)
         ):
             self.remove_connection(conn.id)
             return False
