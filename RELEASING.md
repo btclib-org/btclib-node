@@ -242,13 +242,14 @@ and the publish step — and publishes the very files those checks passed to
 ## What a red `public-api` means
 
 `release.yml`'s `public-api` job walks the public API of the release
-before this one against the one being cut, with griffe, and reports
-what broke: a removed object, a changed parameter kind or default, a
-narrowed type. **A red one is not a failure to stop on.** Before 1.0
-the surface breaks deliberately and often, which is why that job is not
-a merge gate and why its own comment says so: it runs here, on the
-release, so the answer arrives while `RELEASE_NOTES.md` is already
-being written.
+before this one against the one being cut, with griffe and with
+btclib-org/.github's `api_gaps.py` beside it, and reports what broke: a
+removed object, a changed parameter kind or default, a narrowed type, a
+changed dataclass field or return annotation. **A red one is not a
+failure to stop on.** Before 1.0 the surface breaks deliberately and
+often, which is why that job is not a merge gate and why its own comment
+says so: it runs here, on the release, so the answer arrives while
+`RELEASE_NOTES.md` is already being written.
 
 Read it, do not obey it. Each finding is checked by hand against that
 file's own *Breaking changes* list, and the question is whether the

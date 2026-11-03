@@ -314,6 +314,12 @@ if grep -rn 'href="#\.\.\?/' docs/build/html --include='*.html'; then
   echo "::error::the links above resolve to no page (unresolved relative path)"
   exit 1
 fi
+served=$(mktemp -d)
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/btclib-org/.github "$served"
+git -C "$served" sparse-checkout set .github/scripts
+uv run --no-project --python 3.15 \
+    "$served"/.github/scripts/check_included_links.py docs/build/html
 ```
 
 `--all-files` means every file git tracks, so a file that is new and not
@@ -347,6 +353,11 @@ own resolver; the grep asks the same question of the HTML, where a
 suppression cannot hide the answer. Two spellings answer for every local
 destination, `.pre-commit-config.yaml`'s `local-link-prefix` hook holding
 each of them to the `./` or `../` prefix.
+
+`check_included_links.py` after the grep is that gate's third step. It is
+btclib-org/.github's: `docs.yml`'s job checks it out at the commit
+`docs.yml` pins, and the commands above fetch it from `main`. Its
+docstring says what it refuses.
 
 `validate-config` is worth running before pushing a change to the hook
 config: it catches what a wrong `types_or` tag or a malformed entry would
