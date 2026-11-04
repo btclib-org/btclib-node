@@ -48,12 +48,14 @@ The dependencies and their floors are unchanged.
   from a disconnected block, and one in the most recent block, is served at
   once.
 - **A `settings.json` refused for naming a key twice, or for not holding an
-  object, quotes no secret** (closes #2139). From 2026.10.8 to 2026.11.2 the
-  refusal printed on stderr at start wrote that key, or the whole value. A key
-  is now cut after `rpcauth`, `rpcpassword` or `rpcuser` where it holds one, and
-  at its first `=`, and what is left is given by its length where it is longer
-  than 16 characters. A value is given by its type. Treat a secret in a
-  `settings.json` refused that way as exposed to whoever read the node's stderr.
+  object, quotes no value, and at most 16 characters of a key** (closes #2139).
+  From 2026.10.8 to 2026.11.2 the refusal printed on stderr at start wrote that
+  key, or the whole value. A key is now quoted as a configuration line's name
+  is: cut after `rpcauth`, `rpcpassword` or `rpcuser` where it holds one, and at
+  its first `=`, and given by its length where what is left is longer than 16
+  characters. What is left, where it has 16 characters or fewer, is printed. A
+  value is given by its type. Treat a secret in a `settings.json` refused that
+  way as exposed to whoever read the node's stderr.
 
 ### Breaking changes
 
