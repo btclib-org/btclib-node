@@ -1997,3 +1997,26 @@ def test_a_package_expires_what_is_too_old(monkeypatch: pytest.MonkeyPatch) -> N
     members = a_package(0, 1000)
     assert all(mempool.add_package(members, height=0))
     assert set(mempool.txid_index) == {tx.id for tx, *_ in members}
+
+
+def test_get_tx_for_relay_hashes_no_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It hashes no transaction, whether it returns one or not.
+
+    The sequence is read under the wtxid the index holds, so a repeated
+    `getdata` for a transaction too recent to serve costs no hashing.
+    """
+    tx = generate_random_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(tx)
+    wtxid, txid, held = tx.hash, tx.id, mempool.sequence
+
+    def hashed(_: Tx) -> bytes:
+        pytest.fail("a transaction was hashed")
+
+    monkeypatch.setattr(Tx, "hash", property(hashed))
+    monkeypatch.setattr(Tx, "id", property(hashed))
+    for key, by_wtxid in ((wtxid, True), (txid, False)):
+        assert mempool.get_tx_for_relay(key, wtxid=by_wtxid, last_sequence=1) is None
+        assert mempool.get_tx_for_relay(key, wtxid=by_wtxid, last_sequence=held) is tx

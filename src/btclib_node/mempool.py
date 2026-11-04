@@ -397,10 +397,13 @@ class Mempool:
         disconnected block has entry sequence 0 (`entry_sequences`), so it
         is returned for every peer.
         """
-        tx = self.get_tx(txid, wtxid=wtxid)
-        if tx is None or self.entry_sequences[tx.hash] >= last_sequence:
+        # keyed on the wtxid the index holds: `Tx.hash` serializes and
+        # hashes the whole transaction on every read
+        key = txid if wtxid else self.txid_index.get(txid)
+        sequence = None if key is None else self.entry_sequences.get(key)
+        if sequence is None or sequence >= last_sequence:
             return None
-        return tx
+        return self.transactions[key]
 
     def was_recently_rejected(self, wtxid: bytes) -> bool:
         """Whether `mark_rejected` may have recorded `wtxid` lately.
