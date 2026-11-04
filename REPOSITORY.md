@@ -772,18 +772,18 @@ done
   `True True` beside `stable`, and `v2026.9.4` -- the newer tag -- now
   answers the same pair too, read again at 2026-09-21T22:52:12Z after
   the earlier reading here had gone stale by one tag.
-- **The repository's `.homepage` names this same site**, read back from
-  the endpoint rather than from `pyproject.toml`'s own copy of it
-  (issue btclib-org/.github#533):
+- **The repository's `.homepage` is its page on btclib.org, not this
+  site**, read back from the endpoint rather than from `pyproject.toml`'s
+  own copy of it (issue btclib-org/.github#1974):
 
   ```shell
   gh api repos/btclib-org/btclib-node --jq '.homepage'
-  # https://btclib-node.readthedocs.io
+  # https://btclib.org/btclib-node/
   ```
 
-  `[project.urls] homepage` carries the identical string: a releasing
-  tree's home is its own documentation, not `btclib.org`, the sibling's
-  project page the field named before.
+  `[project.urls] homepage` carries the identical string, and
+  `[project.urls] documentation` names this site,
+  `https://btclib-node.readthedocs.io/`.
 
 ## What is not configured, and why
 

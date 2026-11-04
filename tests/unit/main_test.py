@@ -3301,7 +3301,7 @@ def test_a_reorg_re_adds_a_dust_spend_only_if_it_pays_no_fee(
     """`bypass_limits` skips the fee floors but not `PreCheckEphemeralTx`.
 
     A confirmed spend with a dust output comes back after a reorg when it
-    paid nothing and stays out when it paid a fee, as bitcoin-node-tests'
+    paid nothing and stays out when it paid a fee, as functional-tests'
     `mempool_ephemeral_dust` asserts of Core (btclib-org/btclib-node#1594).
     """
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)

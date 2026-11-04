@@ -224,16 +224,15 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 
-# the seven links section 3 of btclib-org/.github names, keyed as
-# btclib, btclib-secp256k1 and bitcoin-core-rpc key them, so the index
-# reports the same spelling across every published sibling.
-# `documentation` follows the same `<repository>.readthedocs.io` pattern
-# those three already answer to rather than a guess, and it is served by
-# the project REPOSITORY.md's "Read the Docs, which is
-# btclib-node.readthedocs.io" reads back.
+# the links section 3 of btclib-org/.github names, keyed as btclib,
+# btclib-secp256k1 and bitcoin-core-rpc key them, so the index reports
+# the same spelling across every published sibling. `homepage` is this
+# repository's page on btclib.org, and `documentation` the site
+# REPOSITORY.md's "Read the Docs, which is btclib-node.readthedocs.io"
+# reads back (btclib-org/.github#1974).
 [project.urls]
-homepage = "https://btclib-node.readthedocs.io"
-documentation = "https://btclib-node.readthedocs.io"
+homepage = "https://btclib.org/btclib-node/"
+documentation = "https://btclib-node.readthedocs.io/"
 download = "https://github.com/btclib-org/btclib-node/releases"
 # RELEASE_NOTES.md and not CHANGELOG.md: this url is what an index puts
 # behind "Changelog", and what a user following it wants is the release
