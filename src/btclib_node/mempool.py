@@ -400,7 +400,9 @@ class Mempool:
         # keyed on the wtxid the index holds: `Tx.hash` serializes and
         # hashes the whole transaction on every read
         key = txid if wtxid else self.txid_index.get(txid)
-        sequence = None if key is None else self.entry_sequences.get(key)
+        if key is None:
+            return None
+        sequence = self.entry_sequences.get(key)
         if sequence is None or sequence >= last_sequence:
             return None
         return self.transactions[key]
