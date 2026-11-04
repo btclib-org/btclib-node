@@ -32,6 +32,62 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.11.4
+
+### A peer paused on a full send buffer is dropped after 20 minutes
+
+`_keep_alive` drops a peer whose `pause_send` has held for `_TIMEOUT_INTERVAL`,
+as Core's `InactivityCheck` does since bitcoin/bitcoin#36667, and
+`Connection.pause_send_since` records when the pause began (closes #2112).
+
+### A `getdata` for a transaction newer than the last trickle is `notfound`
+
+A mempool transaction is served only where it entered the mempool before the
+peer's last trickle with something queued, as in Core's `FindTxForGetData`, and
+`last_inv_sequence` moves from `PeerStats` to `Connection` (closes #2157).
+
+### `getpeerinfo`'s `last_inv_sequence` advances only on a trickle with a queue
+
+The trickle records the mempool's sequence only where something is queued for
+the peer, as Core v32.1's `SendMessages` does, not on every trickle due
+(issue #2157).
+
+### `settings.json` refusals quote no value and no long name
+
+A duplicate key is quoted as `_quoted_line` quotes a name, a value that is not
+an object is given by its type, and `read_settings` takes `quote`
+(closes #2139).
+
+### macOS is run on arm64 alone
+
+`pypi-install.yml` drops its `macos-26-intel` cell, as section 10 of the
+organization standard says (issue btclib-org/.github#1982).
+
+### btclib-org/.github's reusable workflows are pinned at v2026.11.2
+
+`public-api` and `api-break` run `api_gaps.py` beside griffe, and the docs gate
+runs `check_included_links.py` (issue btclib-org/.github#1988).
+
+### The pre-commit hooks are updated
+
+ruff v0.17.3, uv 0.13.6, and btclib-org/.github's hooks at v2026.11.2 (#2206).
+
+### `RELEASING.md` names the lint jobs a release run skips
+
+`Dependency review` and `Sign-off` run only on a pull request (issue
+btclib-org/.github#1989).
+
+### `REVIEWING.md` and `.coderabbit.yaml` follow btclib-org/.github
+
+`REVIEWING.md`'s shared part takes the standard's copy (issue
+btclib-org/.github#2004), and `.coderabbit.yaml` is the standard's copy too
+(issue btclib-org/.github#1998).
+
+### The version is 2026.11.4
+
+`pyproject.toml` declares `2026.11.4` in place of the `2026.12` placeholder
+(#2200).
+
 ## v2026.11.2
 
 ### A `settings.json` secret stays out of the log
