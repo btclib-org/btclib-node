@@ -22,6 +22,69 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.4
+
+Everything below is measured against `v2026.11.2`. `CHANGELOG.md`'s own
+`v2026.11.4` section is the record of what went into it.
+
+The dependencies and their floors are unchanged.
+
+### Security
+
+- **A peer that stays paused on a full send buffer is dropped once the pause has
+  lasted 20 minutes** (closes #2112), as bitcoind v31.2 and v32.1 drop it
+  (bitcoin/bitcoin#36667). From 2026.10.8 to 2026.11.2 a peer that announces a
+  version at or below BIP 31's stayed: it owes no `pong`, so it could read
+  slowly enough to stay paused while what the node queued for it grew without
+  bound, the defect of
+  [Core's advisory](https://bitcoincore.org/en/2026/10/28/disclose-fpausesend-oom/).
+  Upgrade.
+- **A `getdata` for a mempool transaction is answered `notfound` unless the
+  transaction entered the mempool before the peer's last announcement round
+  that had something queued for it** (closes #2157), as bitcoind's
+  `FindTxForGetData` answers it. Every earlier release served any mempool
+  transaction asked for, so a peer could fetch a transaction that entered the
+  mempool after the node's last announcement round to it. A transaction re-added
+  from a disconnected block, and one in the most recent block, is served at
+  once.
+- **A `settings.json` refused for naming a key twice, or for not holding an
+  object, quotes no value, and at most 16 characters of a key** (closes #2139).
+  From 2026.10.8 to 2026.11.2 the refusal printed on stderr at start wrote that
+  key, or the whole value. A key is now quoted as a configuration line's name
+  is: cut after `rpcauth`, `rpcpassword` or `rpcuser` where it holds one, and at
+  its first `=`, and given by its length where what is left is longer than 16
+  characters. What is left, where it has 16 characters or fewer, is printed. A
+  value is given by its type. Treat a secret in a `settings.json` refused that
+  way as exposed to whoever read the node's stderr.
+
+### Breaking changes
+
+- **`PeerStats` has no `last_inv_sequence` field** (closes #2157), and its later
+  fields move up the positional order. Read `Connection.last_inv_sequence`
+  instead. It is the mempool sequence of the last announcement round that had
+  something queued for the peer, as in bitcoind v32.1, and `getpeerinfo`'s
+  `last_inv_sequence` answers it for a peer that relays transactions.
+- **`settings_file.read_settings` takes a required keyword argument, `quote`**
+  (closes #2139): the function a duplicate key is quoted through. `cli.py`
+  passes `_quoted_line`.
+
+### Worth knowing, though nothing raises
+
+- **A peer that reads slowly is dropped after 20 minutes paused** (closes
+  #2112), whatever its version. A peer above BIP 31's version was already
+  dropped by the ping timeout, its `pong` unread while it is paused.
+  `Connection.pause_send_since` is when the pause began.
+- **`getpeerinfo`'s `last_inv_sequence` advances only on a trickle that has
+  something queued for the peer** (closes #2157), as in bitcoind v32.1, and no
+  longer on every trickle due.
+- **`Mempool.get_tx_for_relay` returns a transaction only as `getdata` serves
+  it** (closes #2157), and `Mempool.add_tx` takes `bypass_limits`, true for a
+  transaction re-added from a disconnected block.
+- **`settings_file.type_name` answers `bool` for a boolean** (closes #2139), as
+  Core's `uvTypeName` does. 2026.11.2 answered `boolean`.
+- **The release run installs from PyPI on macOS arm64 alone** (issue
+  btclib-org/.github#1982): its `macos-26-intel` cell is dropped.
+
 ## v2026.11.2
 
 Everything below is measured against `v2026.10.30`. `CHANGELOG.md`'s own
