@@ -248,6 +248,13 @@ class Mempool:
         # `MemPoolAccept::Finalize`, `src/validation.cpp`, same tag).
         # `getmempoolentry`'s own `height` field. btclib-org/btclib-node#1397
         self.heights: dict[bytes, int] = {}
+        # wtxid -> Core's `CTxMemPoolEntry::entry_sequence`
+        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag): `sequence` when the entry was accepted, and 0 for one
+        # re-added from a disconnected block, as Core's
+        # `MemPoolAccept::PreChecks` sets it under `bypass_limits`.
+        # `get_tx_for_relay` reads it.
+        self.entry_sequences: dict[bytes, int] = {}
         # txid -> nothing, this mempool's own copy of Core's own
         # `m_unbroadcast_txids` (`src/txmempool.h`, same tag): a
         # transaction `rpc.callbacks.send_raw_transaction` submitted and
@@ -379,6 +386,27 @@ class Mempool:
             return None
         return self.transactions.get(key)
 
+    def get_tx_for_relay(
+        self, txid: bytes, *, wtxid: bool, last_sequence: int
+    ) -> Tx | None:
+        """Return the held tx if its entry sequence is below `last_sequence`.
+
+        Core's `CTxMemPool::info_for_relay` (`src/txmempool.h`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). `last_sequence` is a
+        peer's `Connection.last_inv_sequence`. A transaction re-added from a
+        disconnected block has entry sequence 0 (`entry_sequences`), so it
+        is returned for every peer.
+        """
+        # keyed on the wtxid the index holds: `Tx.hash` serializes and
+        # hashes the whole transaction on every read
+        key = txid if wtxid else self.txid_index.get(txid)
+        if key is None:
+            return None
+        sequence = self.entry_sequences.get(key)
+        if sequence is None or sequence >= last_sequence:
+            return None
+        return self.transactions[key]
+
     def was_recently_rejected(self, wtxid: bytes) -> bool:
         """Whether `mark_rejected` may have recorded `wtxid` lately.
 
@@ -446,6 +474,7 @@ class Mempool:
         height: int = 0,
         trim: bool = True,
         entry_time: float | None = None,
+        bypass_limits: bool = False,
     ) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
 
@@ -481,6 +510,10 @@ class Mempool:
         `entry_time` is when `tx` entered the mempool, now where it is
         `None`: `mempool.dat` gives an older one, which the expiry before
         the trim reads, as Core's `AcceptToMemoryPool` takes `accept_time`.
+
+        `bypass_limits` is true for a transaction re-added from a
+        disconnected block, whose entry sequence is then 0
+        (`entry_sequences`).
         """
         # `fee` defaults to 0 rather than being required, for the
         # callers -- mostly in tests -- that add a transaction without
@@ -520,7 +553,7 @@ class Mempool:
             # a conflict left out of `replaced`, by a caller that skipped
             # `main.verify_mempool_acceptance`
             return False
-        self._insert(tx, fee, vsize, height, weight)
+        self._insert(tx, fee, vsize, height, weight, bypass_limits=bypass_limits)
         if entry_time is not None:
             self.set_entry_time(wtxid, entry_time)
         self.graph.do_work(POST_CHANGE_COST)
@@ -602,6 +635,7 @@ class Mempool:
         weight: int | None = None,
         *,
         graph: bool = True,
+        bypass_limits: bool = False,
     ) -> None:
         """Enter `tx` in every index, with no eviction.
 
@@ -621,6 +655,7 @@ class Mempool:
         self.weights[wtxid] = _weight(tx, vsize) if weight is None else weight
         self.set_entry_time(wtxid, clock.now())
         self.heights[wtxid] = height
+        self.entry_sequences[wtxid] = 0 if bypass_limits else self.sequence
         for vin in tx.vin:
             self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
         self.size += 1
@@ -1378,6 +1413,7 @@ class Mempool:
             self.graph.remove_transaction(wtxid)
         self.entry_times.pop(wtxid, None)
         self.heights.pop(wtxid, None)
+        self.entry_sequences.pop(wtxid)
         # Core's own `removeUnchecked` discards it unconditionally on
         # every way a transaction leaves the mempool -- eviction,
         # confirmation, a conflict -- not only through `remove_tx`, the

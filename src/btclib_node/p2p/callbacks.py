@@ -2093,13 +2093,20 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2
 
 
-def _find_tx_for_getdata(node: Node, tx_hash: bytes, *, wtxid: bool) -> Tx | None:
+def _find_tx_for_getdata(
+    node: Node, conn: Connection, tx_hash: bytes, *, wtxid: bool
+) -> Tx | None:
     """Return the mempool's transaction, else the most recent block's.
 
-    Core's `FindTxForGetData`: the most recent block's transactions are
+    Core's `FindTxForGetData` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a mempool transaction
+    only as `Mempool.get_tx_for_relay` returns it for
+    `conn.last_inv_sequence`. The most recent block's transactions are
     `m_most_recent_block_txs`.
     """
-    tx = node.mempool.get_tx(tx_hash, wtxid=wtxid)
+    tx = node.mempool.get_tx_for_relay(
+        tx_hash, wtxid=wtxid, last_sequence=conn.last_inv_sequence
+    )
     if tx is None and node.most_recent_block is not None:
         tx = node.most_recent_block.txs.get((wtxid, tx_hash))
     return tx
@@ -2112,7 +2119,7 @@ def _serve_getdata_tx(
     if not conn.relay_tx:
         return
     wtxid = item.type_code == InventoryType.MSG_WTX
-    tx = _find_tx_for_getdata(node, item.hash, wtxid=wtxid)
+    tx = _find_tx_for_getdata(node, conn, item.hash, wtxid=wtxid)
     if tx:
         include_witness = item.type_code in (
             InventoryType.MSG_WITNESS_TX,

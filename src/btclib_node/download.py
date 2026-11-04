@@ -1259,9 +1259,11 @@ class DownloadManager:
                 and NetPermissionFlags.NO_BAN not in conn.permissions
             ):
                 continue
-            # Core's trickle records the mempool's sequence whether or
-            # not it announces anything
-            conn.stats.last_inv_sequence = self.node.mempool.sequence
+            # Core's trickle records the mempool's sequence where
+            # something is queued, announced or not (`SendMessages`,
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+            if conn.tx_announce_queue:
+                conn.last_inv_sequence = self.node.mempool.sequence
             due_conns.append((conn, due))
         ranked = self._rank_queued([conn for conn, _ in due_conns])
         rank = {wtxid: n for n, wtxid in enumerate(ranked)}

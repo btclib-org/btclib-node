@@ -304,6 +304,8 @@ def test_a_message_behind_a_paused_getdata_is_handled_after_its_answer(
     transactions = [a_transaction() for _ in range(2)]
     for transaction in transactions:
         node.mempool.add_tx(transaction)
+    # as after a trickle to `peer` with something queued (ISS 2157)
+    peer.last_inv_sequence = node.mempool.sequence
     request = GetData(
         [Inventory(InventoryType.MSG_WTX, tx.hash) for tx in transactions]
     ).serialize()

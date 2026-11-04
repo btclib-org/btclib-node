@@ -651,6 +651,7 @@ def _reconcile_mempool_for_reorg(
                 weight=accepted.weight,
                 trim=False,
                 replaced=accepted.replaced,
+                bypass_limits=True,
             )
             track_accepted(node, tx, limit_bypassed=True)
             readded.append(tx.hash)

@@ -1478,7 +1478,7 @@ def _peer_entry(
     entry["services"] = f"{services:016x}"
     entry["servicesnames"] = service_names(services)
     entry["relaytxes"] = relays
-    entry["last_inv_sequence"] = p2p_conn.stats.last_inv_sequence if relays else 0
+    entry["last_inv_sequence"] = p2p_conn.last_inv_sequence if relays else 0
     entry["inv_to_send"] = len(p2p_conn.tx_announce_queue) if relays else 0
     # Whole seconds, pushed unconditionally, and the ping fields in
     # fractional seconds, each only once it holds a value.
