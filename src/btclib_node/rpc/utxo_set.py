@@ -207,13 +207,6 @@ def scan_tx_out_set(
     its range. Core infers every script before the walk; here only a
     script a coin has is inferred, which answers the same.
 
-    Where one fragment spells a key twice, bip32_descriptors' provider
-    puts the later origin in front of the earlier one, as Core v31.1 does.
-    v32.1 replaces the earlier origin (bitcoin/bitcoin@b42f7fade0), so its
-    `desc` names the later origin, where this node's names the later
-    fingerprint over both paths (btclib-org/btclib-node#2104,
-    btclib-org/btclib-wallet#616).
-
     A descriptor parse error has Core's code and bip32_descriptors' message.
     """
     if not params:
