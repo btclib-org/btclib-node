@@ -229,7 +229,9 @@ classifiers = [
 # the same spelling across every published sibling. `homepage` is this
 # repository's page on btclib.org, and `documentation` the site
 # REPOSITORY.md's "Read the Docs, which is btclib-node.readthedocs.io"
-# reads back (btclib-org/.github#1974).
+# reads back (btclib-org/.github#1974). With any other `homepage`, the
+# index would not send a reader to this page, and the standard's
+# tests/homepage_test.py would fail on this repository.
 [project.urls]
 homepage = "https://btclib.org/btclib-node/"
 documentation = "https://btclib-node.readthedocs.io/"
