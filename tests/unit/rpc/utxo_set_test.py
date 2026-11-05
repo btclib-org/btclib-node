@@ -257,10 +257,10 @@ def test_a_key_s_origin_is_the_first_index_s(node: Node) -> None:
         f"wsh(multi(1,[aaaaaaaa/5/0/0]{CHILD_00},[bbbbbbbb/7/0/1]{CHILD_01}))#ry2d83lg",
         f"wsh(multi(1,[bbbbbbbb/7/0/1]{CHILD_01},[bbbbbbbb/7/0/1]{CHILD_01}))#5xzh3ty0",
     ]
-    # v31.1.0's answer; v32.1 answers [bbbbbbbb/7/0/1]
-    # (btclib-org/btclib-wallet#616)
+    # v32.1's answer; v31.1.0 puts one origin in front of the other,
+    # [bbbbbbbb/7/5/0/1] (btclib-org/bip32-descriptors#20)
     assert descs(scan(node, {"desc": ranged, "range": [1, 1]})) == [
-        f"wsh(multi(1,[bbbbbbbb/7/5/0/1]{CHILD_01},[bbbbbbbb/7/5/0/1]{CHILD_01}))#q0ht8plu",
+        f"wsh(multi(1,[bbbbbbbb/7/0/1]{CHILD_01},[bbbbbbbb/7/0/1]{CHILD_01}))#5xzh3ty0",
     ]
 
 

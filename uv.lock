@@ -274,16 +274,16 @@ wheels = [
 
 [[package]]
 name = "bip32-descriptors"
-version = "2026.10.31"
+version = "2026.11.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "btclib" },
     { name = "ecc" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/50/38/163d52014a6157d8824ba0a509805c3bc7f49ee26d3669bdbd9bf5ca9d52/bip32_descriptors-2026.10.31.tar.gz", hash = "sha256:77b9166c45273f5d2a01ac2832d816676a4e429edd253a19f64c277b42d718ee", size = 838893, upload-time = "2026-10-31T17:09:40.763Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/b5/f3a0f2572967211b1376ae2556c3e937ebbba9a2ec05466522eb1f36330d/bip32_descriptors-2026.11.4.tar.gz", hash = "sha256:3b7ffce34aafdb93a3b43c0b95e483b1d5c020b9c377f128884c2694db13112b", size = 870643, upload-time = "2026-11-04T07:41:24.675Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4c/7e/14525b824b7510a5f3a2bf6fe8b18bea6234fd9dca486d9b0e259f51142f/bip32_descriptors-2026.10.31-py3-none-any.whl", hash = "sha256:1061cc2830d3f973272f79d229c90954af57e641e0677a65734a2275e889e99c", size = 134830, upload-time = "2026-10-31T17:09:39.332Z" },
+    { url = "https://files.pythonhosted.org/packages/96/fe/c3bd5aa0faa986df317b32acb3b16f85669a1eb6b092484e95b5c44d7b55/bip32_descriptors-2026.11.4-py3-none-any.whl", hash = "sha256:bc06b0ac0fec28144448589efd91423546643740336905218095ccc95f7585f1", size = 142209, upload-time = "2026-11-04T07:41:22.815Z" },
 ]
 
 [[package]]
@@ -413,7 +413,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bip32-descriptors", specifier = ">=2026.10.31" },
+    { name = "bip32-descriptors", specifier = ">=2026.11.2" },
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.28" },
     { name = "ecc", specifier = ">=2026.10.28" },

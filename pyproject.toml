@@ -92,8 +92,10 @@ dependencies = [
     # floor is the maintainer's decision.
     "btclib[secp256k1,bip324]>=2026.10.28",
     # Descriptors and miniscript, as ARCHITECTURE.md's *What is delegated,
-    # and what is not* says. The floor is 2026.10.31, the first release.
-    "bip32-descriptors>=2026.10.31",
+    # and what is not* says. The floor is 2026.11.2, the first release
+    # whose provider gives a key spelled twice in a fragment Core v32.1's
+    # origin (btclib-org/bip32-descriptors#20).
+    "bip32-descriptors>=2026.11.2",
     # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
     # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
