@@ -1004,7 +1004,7 @@ def track_accepted(
         limit_bypassed=limit_bypassed,
         in_package=in_package,
         chain_current=is_current_for_fee_estimation(node),
-        has_no_mempool_parents=not any(
-            vin.prev_out.tx_id in mempool.txid_index for vin in tx.vin
+        has_no_mempool_parents=all(
+            vin.prev_out.tx_id not in mempool.txid_index for vin in tx.vin
         ),
     )

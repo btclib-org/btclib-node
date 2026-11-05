@@ -420,7 +420,7 @@ def test_drain_rpc_queue_answers_a_request_still_waiting(
 
         node._drain_rpc_queue()
 
-        assert answers == []
+        assert not answers
         assert len(pushed) == 1
 
 
@@ -439,7 +439,7 @@ def test_the_loop_starts_a_request_only_while_a_thread_is_free(
             node.pending_rpc.append((None, None))  # type: ignore[arg-type]
 
         assert node._drain_message_queues() is True
-        assert started == []
+        assert not started
 
         node.pending_rpc.pop()
         assert node._drain_message_queues() is False
@@ -2289,7 +2289,7 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
     wait_until(lambda: not node.is_alive())
 
     assert node.terminate_flag.is_set()
-    assert step_chain_update_chain_calls == []
+    assert not step_chain_update_chain_calls
 
 
 class APool:

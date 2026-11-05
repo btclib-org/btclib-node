@@ -736,8 +736,7 @@ class Mempool:
         (`remove_for_block`). `mempool.dat` keeps them across a restart
         (`mempool_persist`). btclib-org/btclib-node#1502
         """
-        delta = _saturate(self.delta(txid) + fee_delta)
-        if delta:
+        if delta := _saturate(self.delta(txid) + fee_delta):
             self.deltas[txid] = delta
         else:
             self.deltas.pop(txid, None)
@@ -1641,8 +1640,7 @@ class Mempool:
         child paying for it. The chunk is the end of its cluster's
         linearization: nothing left behind spends it.
         """
-        expired = self.expire()
-        if expired:
+        if expired := self.expire():
             self.logger.log_debug(
                 "mempool", "Expired %i transactions from the memory pool", expired
             )

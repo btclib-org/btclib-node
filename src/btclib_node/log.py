@@ -164,8 +164,7 @@ def _prefix(record: logging.LogRecord) -> str:
     `[debug] `, `[warning] ` or `[error] ` otherwise. `CRITICAL`, which
     Core has no level for, is `[error] `.
     """
-    category = getattr(record, "category", None)
-    if category:
+    if category := getattr(record, "category", None):
         return f"[{category}] "
     levelno = record.levelno
     if levelno >= logging.ERROR:

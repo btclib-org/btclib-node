@@ -126,7 +126,7 @@ def test_a_file_left_at_another_tip_is_not_taken_at_start(tmp_path: Path) -> Non
     path.write_bytes(_file(_stats(4)))
     estimator, lines = an_estimator(tmp_path)
     assert estimator.blocks == []
-    assert not any("successfully read" in line for line in lines.messages)
+    assert all("successfully read" not in line for line in lines.messages)
 
 
 def test_an_empty_list_is_read_at_any_tip(tmp_path: Path) -> None:
@@ -175,7 +175,7 @@ def test_a_mempool_that_did_not_load_clears_the_blocks(tmp_path: Path) -> None:
     """Core's `MempoolLoadFailed`: the blocks went with the mempool."""
     estimator, lines = an_estimator(tmp_path)
     estimator.mempool_load_failed()
-    assert not any("did not load" in line for line in lines.messages)
+    assert all("did not load" not in line for line in lines.messages)
     estimator.blocks = _stats(4, 5)
     estimator.mempool_load_failed()
     assert estimator.blocks == []

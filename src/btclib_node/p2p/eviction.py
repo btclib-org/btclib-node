@@ -176,7 +176,7 @@ def protect_eviction_candidates_by_ratio(candidates: list[EvictionCandidate]) ->
     max_protect_by_network = total_protect_size // 2
     num_protected = 0
     while num_protected < max_protect_by_network:
-        num_networks = sum(1 for n in networks if n.count)
+        num_networks = sum(bool(n.count) for n in networks)
         if num_networks == 0:
             break
         disadvantaged_to_protect = max_protect_by_network - num_protected
@@ -187,8 +187,7 @@ def protect_eviction_candidates_by_ratio(candidates: list[EvictionCandidate]) ->
                 continue
             before = len(candidates)
             _erase_last_k(candidates, n.network_time, protect_per_network, n.holds)
-            delta = before - len(candidates)
-            if delta:
+            if delta := before - len(candidates):
                 protected_at_least_one = True
                 num_protected += delta
                 if num_protected >= max_protect_by_network:
@@ -306,12 +305,12 @@ def _ip(address: NetworkAddressV2) -> _IP:
 
 def _is_valid(ip: _IP) -> bool:
     """`CNetAddr::IsValid` for IPv4 and IPv6, `NET_INTERNAL` aside."""
-    return not any(ip in net for net in _INVALID)
+    return all(ip not in net for net in _INVALID)
 
 
 def _is_routable(ip: _IP) -> bool:
     """`CNetAddr::IsRoutable` of an IP: `_is_valid`, in none of its ranges."""
-    return _is_valid(ip) and not any(ip in net for net in (*_LOCAL, *_UNROUTABLE))
+    return _is_valid(ip) and all(ip not in net for net in (*_LOCAL, *_UNROUTABLE))
 
 
 def _linked_ipv4(ip: _IP) -> IPv4Address | None:

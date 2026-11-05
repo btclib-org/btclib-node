@@ -236,7 +236,7 @@ def test_a_path_holding_a_nul_byte_cannot_be_opened(tmp_path: Path) -> None:
         auth.generate_cookie(tmp_path / "a\0b")
     assert isinstance(caught.value.__cause__, ValueError)
     assert auth.cookie_path is None
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.skipif(
@@ -419,7 +419,7 @@ def test_start_refuses_rpccookieperms_before_the_cookie(tmp_path: Path) -> None:
         start(auth, recorder)
     assert recorder.calls == [("error", ("%s", message))]
     assert auth.cookie_path is None
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.iterdir())
 
 
 def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
@@ -469,7 +469,7 @@ def test_start_writes_no_cookie_where_it_is_disabled(tmp_path: Path) -> None:
     ]
     assert auth.cookie_path is None
     assert auth.entries == []
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.iterdir())
 
 
 def test_rpcpassword_stops_the_cookie_and_is_warned_about(tmp_path: Path) -> None:

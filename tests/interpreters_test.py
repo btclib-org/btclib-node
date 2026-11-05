@@ -301,7 +301,7 @@ def _implicit(block: str) -> set[str]:
     conditioned out is never read as the job's own (issue #991).
     """
     setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
-    if setup and not any("python-version" in step for step in setup):
+    if setup and all("python-version" not in step for step in setup):
         return {_PIN}
     return set()
 

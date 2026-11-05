@@ -194,7 +194,6 @@ class RollingBloomFilter:
         if self._planes is None:
             return False
         lo, hi = self._planes
-        for index, bit in self._positions(key):
-            if not ((lo[index] | hi[index]) >> bit) & 1:
-                return False
-        return True
+        return all(
+            ((lo[index] | hi[index]) >> bit) & 1 for index, bit in self._positions(key)
+        )

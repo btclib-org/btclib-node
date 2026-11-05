@@ -630,7 +630,7 @@ def test_scan_prefix_walks_the_prefix_alone_in_key_order(tmp_path: Path) -> None
         store.put(key, b"v" + key)
     walked = list(store.scan_prefix(b"b-"))
     assert walked == [(b"b-%d" % i, b"vb-%d" % i) for i in range(1, 8)]
-    assert list(store.scan_prefix(b"nothing-")) == []
+    assert not list(store.scan_prefix(b"nothing-"))
     store.close()
 
 

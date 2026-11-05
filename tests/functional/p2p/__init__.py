@@ -131,8 +131,9 @@ class ScriptedPeer:
         self.forged: set[bytes] = set()
         self.dropped = threading.Event()
         self._magic = node.chain.magic
-        self._height = {genesis: 0}
-        self._height.update({b.header.hash: i + 1 for i, b in enumerate(self.chain)})
+        self._height = {genesis: 0} | {
+            b.header.hash: i + 1 for i, b in enumerate(self.chain)
+        }
         self._socket = socket.create_connection(
             ("127.0.0.1", node.p2p_port), timeout=30
         )

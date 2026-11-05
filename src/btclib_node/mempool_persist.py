@@ -290,6 +290,12 @@ def read_mempool_file(data: bytes) -> MempoolFile:
     return MempoolFile(reader.key, entries, reader.deltas(), reader.unbroadcast())
 
 
+# a name in the clause, where ruff format would write a tuple as PEP 758's
+# bare form, which Sourcery does not read (btclib-org/.github#2028); one
+# clause per exception would leave a handler no test reaches
+_REFUSED = (MissingPrevoutError, BTClibValueError, BTClibTypeError)
+
+
 def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     """Try one transaction of the file, and return what became of it.
 
@@ -302,7 +308,7 @@ def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     try:
         tx.assert_valid()
         accepted = verify_mempool_acceptance(node, tx)
-    except MissingPrevoutError, BTClibValueError, BTClibTypeError:
+    except _REFUSED:
         return "failed" if mempool.get_tx(tx.id) is None else "already there"
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     if not mempool.add_tx(
@@ -373,9 +379,13 @@ def load_mempool(
     """
     logger = node.logger
     mempool = node.mempool
-    try:
+    # one clause each, so Sourcery reads it (btclib-org/.github#2028)
+    try:  # sourcery skip: merge-except-handler
         file = _open(path)
-    except OSError, ValueError:
+    except OSError:
+        logger.info("Failed to open mempool file. Continuing anyway.")
+        return False
+    except ValueError:
         logger.info("Failed to open mempool file. Continuing anyway.")
         return False
     now = int(clock.now())

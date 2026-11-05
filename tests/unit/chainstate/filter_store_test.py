@@ -98,7 +98,7 @@ def stage(node: Node, chain: list[Block]) -> None:
         block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
-    for _ in range(len(chain)):
+    for _ in chain:
         update_chain(node)
 
 

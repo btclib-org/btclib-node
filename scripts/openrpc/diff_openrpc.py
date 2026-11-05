@@ -105,8 +105,7 @@ def parse_result(lines: list[str]) -> Node | None:
         if _CLOSE_LINE.match(line):
             del stack[-1:]
             continue
-        ellipsis = _ELLIPSIS_LINE.match(line)
-        if ellipsis:
+        if ellipsis := _ELLIPSIS_LINE.match(line):
             _mark_open(stack, elided=ellipsis.group(1) is not None)
             continue
         found = _line_node(line)
@@ -128,11 +127,9 @@ def parse_result(lines: list[str]) -> Node | None:
 
 def _line_node(line: str) -> tuple[Node, str | None] | None:
     """Return the node a line starts and its key, or None for any other line."""
-    key_match = _KEY_LINE.match(line)
-    if key_match:
+    if key_match := _KEY_LINE.match(line):
         return Node(_kind(key_match.group(3))), key_match.group(2)
-    open_match = _OPEN_LINE.match(line)
-    if open_match:
+    if open_match := _OPEN_LINE.match(line):
         return Node(_kind(open_match.group(1))), None
     return None
 
@@ -280,8 +277,7 @@ def compare_params(name: str, method: dict[str, Any]) -> list[str]:
     core, ours = _core_positions(method), _positions(name)
     if core != ours:
         out.append(f"{name}: Core {_render(core)}, btclib-node {_render(ours)}")
-    options = named_only.get(name)
-    if options:
+    if options := named_only.get(name):
         index = next(
             i for i, entry in enumerate(arg_names[name]) if options[0] in entry
         )

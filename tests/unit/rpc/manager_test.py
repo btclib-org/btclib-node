@@ -2224,7 +2224,7 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     future: Future[None] = Future()
     future.set_exception(asyncio.CancelledError())
     manager._report_server_failure(future)
-    assert logged == []
+    assert not logged
 
 
 def test_the_cookie_is_there_once_listening_and_gone_once_stopped(
@@ -2350,7 +2350,7 @@ def test_an_rpccookiefile_core_cannot_write_stops_the_listener(
     monkeypatch.setattr(manager.logger, "warning", warnings_into(logged))
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert raised == []
+    assert not raised
     assert len(logged) == 1
     assert str(logged[0][1]).startswith("Unable to ")
     assert len(manager._server_sockets) == len(LOOPBACKS)

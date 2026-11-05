@@ -764,7 +764,7 @@ def test_generate_block_candidates_admits_a_valid_block_only_if_downloaded(
     block_index.generate_block_candidates()
 
     assert len(block_index.block_candidates) == 2
-    assert not any(h == chain[0].hash for h, _ in block_index.block_candidates)
+    assert all(h != chain[0].hash for h, _ in block_index.block_candidates)
 
 
 def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(

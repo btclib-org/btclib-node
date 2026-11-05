@@ -684,10 +684,11 @@ class BlockIndex:
 
     def generate_active_chain(self) -> None:
         """Rebuild `active_chain` from every header marked `in_active_chain`."""
-        chain_dict: dict[int, bytes] = {}
-        for block_hash, block_info in self.header_dict.items():
-            if block_info.status == BlockStatus.in_active_chain:
-                chain_dict[block_info.index] = block_hash
+        chain_dict: dict[int, bytes] = {
+            block_info.index: block_hash
+            for block_hash, block_info in self.header_dict.items()
+            if block_info.status == BlockStatus.in_active_chain
+        }
         for index in sorted(chain_dict.keys()):
             self.active_chain.append(chain_dict[index])
 
@@ -1343,10 +1344,14 @@ class BlockIndex:
         # for this same batch again and stall short of the fork's own
         # tip. None only for a batch that connects to nothing this index
         # knows at all. btclib-org/btclib-node#122
-        for header in reversed(headers):
-            if header.hash in self.header_dict:
-                return header.hash
-        return None
+        return next(
+            (
+                header.hash
+                for header in reversed(headers)
+                if header.hash in self.header_dict
+            ),
+            None,
+        )
 
     # whether hash and everything back to the active chain has arrived,
     # not just hash itself -- a hole behind a downloaded tip is still a

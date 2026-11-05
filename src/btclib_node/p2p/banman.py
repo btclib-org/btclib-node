@@ -197,6 +197,12 @@ def lookup_host(text: str, *, allow_lookup: bool = False) -> Host | None:
     return SpecialAddress.parse(text) or _resolved_host(text, allow_lookup=allow_lookup)
 
 
+# a name in the clause, where ruff format would write a tuple as PEP 758's
+# bare form, which Sourcery does not read (btclib-org/.github#2028); one
+# clause per exception would leave a handler no test reaches
+_LOOKUP_ERRORS = (OSError, UnicodeError)
+
+
 def _getaddrinfo(text: str, flags: int) -> list[Any]:
     """Return `getaddrinfo`'s answers for `text`, none where it fails."""
     try:
@@ -207,7 +213,7 @@ def _getaddrinfo(text: str, flags: int) -> list[Any]:
             proto=socket.IPPROTO_TCP,
             flags=flags,
         )
-    except OSError, UnicodeError:
+    except _LOOKUP_ERRORS:
         return []
 
 
@@ -436,7 +442,7 @@ class BanMan:
             return
         try:
             banned = self._read(self.path)
-        except (OSError, UnicodeDecodeError, ValueError) as error:
+        except (OSError, ValueError) as error:
             if not isinstance(error, FileNotFoundError):
                 self.logger.warning("Cannot load banlist %s: %s", self.path, error)
             self.logger.info("Recreating the banlist database")

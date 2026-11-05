@@ -502,18 +502,18 @@ class Model:
 
     def count(self, peer: int) -> int:
         """Count the peer's announcements."""
-        return sum(1 for p, _ in self.rows if p == peer)
+        return sum(p == peer for p, _ in self.rows)
 
     def count_in_flight(self, peer: int) -> int:
         """Count the peer's requested announcements."""
         return sum(
-            1 for (p, _), r in self.rows.items() if p == peer and r.phase == "requested"
+            p == peer and r.phase == "requested" for (p, _), r in self.rows.items()
         )
 
     def count_candidates(self, peer: int) -> int:
         """Count the peer's candidate announcements."""
         return sum(
-            1 for (p, _), r in self.rows.items() if p == peer and r.phase == "candidate"
+            p == peer and r.phase == "candidate" for (p, _), r in self.rows.items()
         )
 
     def candidates(self, txhash: bytes) -> list[int]:

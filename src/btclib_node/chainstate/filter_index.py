@@ -297,8 +297,10 @@ class FilterIndex:
             return 0
         if self.best_block not in block_index.header_dict:
             # Core's `BaseIndex::Init` refuses the same way
-            err_msg = "the best block of the block filter index is not in the "
-            err_msg += "block index; delete indexes/blockfilter to rebuild it"
+            err_msg = (
+                "the best block of the block filter index is not in the "
+                "block index; delete indexes/blockfilter to rebuild it"
+            )
             raise ChainstateInconsistencyError(err_msg)
         fork = block_index.last_common_ancestor(
             self.best_block, block_index.active_chain[-1]

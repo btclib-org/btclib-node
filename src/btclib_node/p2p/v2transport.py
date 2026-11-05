@@ -179,9 +179,9 @@ class V2Transport(Transport):
             if self._recv_state is RecvState.V1:
                 return self._v1.received_bytes(msg_bytes)
             taken = 0
-            while taken < len(msg_bytes):
-                if self._recv_state is RecvState.APP_READY:
-                    break
+            while (
+                taken < len(msg_bytes) and self._recv_state is not RecvState.APP_READY
+            ):
                 size = min(len(msg_bytes) - taken, self._max_bytes_to_process())
                 self._recv_buffer += msg_bytes[taken : taken + size]
                 taken += size

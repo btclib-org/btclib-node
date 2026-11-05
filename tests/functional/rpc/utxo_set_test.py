@@ -71,7 +71,7 @@ def test_the_loop_serves_another_request_while_the_scan_runs(
     assert walking.wait(BOUND)
 
     assert call(node, "getblockcount", [])["result"] == 0
-    assert replies == []
+    assert not replies
 
     release.set()
     asker.join(BOUND)

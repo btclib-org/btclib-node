@@ -163,8 +163,7 @@ def _scan(raw: bytes, *, strip: bool) -> bytes:
                 if strip:
                     # the version and the body stay, the marker and the
                     # witnesses go, the lock time is the next run's
-                    parts.append(raw[run : start + _UINT32_SIZE])
-                    parts.append(raw[body:witnesses])
+                    parts.extend((raw[run : start + _UINT32_SIZE], raw[body:witnesses]))
                     run = i
             i += _UINT32_SIZE
     except IndexError as e:

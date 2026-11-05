@@ -337,8 +337,8 @@ def test_transactions_are_relayed_at_any_sync_state() -> None:
     assert hashes_of(getdata) == [a_hash(8)]
     (announced,) = only(other, Inv)
     assert hashes_of(announced) == [wtxid]
-    assert manager.received_txs == []
-    assert manager.inv_txs == []
+    assert not manager.received_txs
+    assert not manager.inv_txs
 
 
 def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:
@@ -1409,8 +1409,8 @@ def test_both_lists_are_emptied_by_a_step() -> None:
     manager.inv_txs = [(1, a_hash(1), False)]
     manager.received_txs = [(1, a_hash(2))]
     manager.tx_download()
-    assert manager.inv_txs == []
-    assert manager.received_txs == []
+    assert not manager.inv_txs
+    assert not manager.received_txs
 
 
 def test_the_fee_filter_bucket_set_starts_at_zero_and_half_the_floor() -> None:

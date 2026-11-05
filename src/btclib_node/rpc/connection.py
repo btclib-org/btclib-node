@@ -476,10 +476,14 @@ class RequestHead:
         one.
         """
         name = name.lower()
-        for key, value in self.fields:
-            if key.lower() == name:
-                return value.decode("latin-1")
-        return None
+        return next(
+            (
+                value.decode("latin-1")
+                for key, value in self.fields
+                if key.lower() == name
+            ),
+            None,
+        )
 
     @property
     def connection(self) -> str | None:
@@ -666,6 +670,12 @@ def parse_request_head(data: bytes) -> RequestHead:
     if head.error is not None:
         raise head.error
     return head
+
+
+# a name in the clause, where ruff format would write a tuple as PEP 758's
+# bare form, which Sourcery does not read (btclib-org/.github#2028); one
+# clause per exception would leave a handler no test reaches
+_NO_PEER_NAME = (OSError, ValueError)
 
 
 class RpcConnection:
@@ -1575,7 +1585,7 @@ class RpcConnection:
             host, port = self.client.getpeername()[:2]
         # `OSError` for a socket no longer connected, `ValueError` for a
         # peer name that is not a `(host, port)` pair
-        except OSError, ValueError:
+        except _NO_PEER_NAME:
             return "an unknown address"
         return ip_and_port(host, port)
 

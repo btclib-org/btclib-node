@@ -220,8 +220,7 @@ def drain_pending_tasks() -> list[str]:
 
 def fail_on_pending_tasks() -> None:
     """Drain `_PENDING_TASKS`, failing the running test where it held any."""
-    pending = drain_pending_tasks()
-    if pending:
+    if pending := drain_pending_tasks():
         pytest.fail(
             "tasks were left pending on an event loop"
             " (btclib-org/btclib-node#1107):\n" + "\n".join(pending),

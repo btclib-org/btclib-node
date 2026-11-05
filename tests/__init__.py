@@ -961,7 +961,7 @@ def wait_until_listening(
     # several managers would be told nothing about which. The manager
     # and its port are what tell them apart.
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
-    err_msg += "listening" if not manager.listening.is_set() else "out of warmup"
+    err_msg += "out of warmup" if manager.listening.is_set() else "listening"
     err_msg += f" within {timeout} seconds (waited {elapsed:.2f}s)"
     raise WaitTimeoutError(err_msg)
 

@@ -20,7 +20,7 @@ def fresh_keys(graph: TxGraph[int]) -> dict[int, MiningKey]:
     for ref in graph._locator:
         cluster = graph._locator[ref][0]
         graph._make_acceptable(cluster)
-        fresh.update(graph._order_keys(cluster))
+        fresh |= graph._order_keys(cluster)
     return fresh
 
 

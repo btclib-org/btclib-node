@@ -719,7 +719,7 @@ class DownloadManager:
         next_youngest = peers[-2] if len(peers) > 1 else None
         next_time = 0 if next_youngest is None else next_youngest.last_novel_block_time
         to_disconnect = youngest
-        if youngest.last_novel_block_time > next_time:
+        if to_disconnect.last_novel_block_time > next_time:
             if next_youngest is None:
                 return
             to_disconnect = next_youngest
@@ -1272,8 +1272,7 @@ class DownloadManager:
                 # The cap is Core's, from the queue's size before anything
                 # is popped (`m_tx_inventory_to_send.size()`).
                 cap = _trickle_cap(len(conn.tx_announce_queue))
-                batch = self._pop_trickle(conn, cap, ranked, rank)
-                if batch:
+                if batch := self._pop_trickle(conn, cap, ranked, rank):
                     # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
                     # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
                     self._send_trickle(conn, batch)
@@ -1298,7 +1297,7 @@ class DownloadManager:
         """
         queued: dict[bytes, None] = {}
         for conn in conns:
-            queued.update(conn.tx_announce_queue)
+            queued |= conn.tx_announce_queue
         keys = dict.fromkeys(queued, _GONE_KEY)
         mempool = self.node.mempool
         keys.update(

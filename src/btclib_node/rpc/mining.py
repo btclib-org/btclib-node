@@ -567,9 +567,10 @@ def _long_poll(
     after each look. A node that stops meanwhile answers Core's
     `RPC_CLIENT_NOT_CONNECTED`.
     """
-    while not node.terminate_flag.is_set():
-        if node.chainstate.block_index.active_chain[-1] != watched:
-            break
+    while (
+        not node.terminate_flag.is_set()
+        and node.chainstate.block_index.active_chain[-1] == watched
+    ):
         if monotonic() >= check_at:
             if _transactions_updated(node) != counter:
                 break
@@ -742,9 +743,7 @@ def _wait_for_tip(
         return block_index.active_chain[-1], len(block_index.active_chain) - 1
 
     current = read()
-    while not done(*current):
-        if deadline is not None and monotonic() >= deadline:
-            break
+    while not done(*current) and (deadline is None or monotonic() < deadline):
         yield False
         if node.terminate_flag.is_set():
             break

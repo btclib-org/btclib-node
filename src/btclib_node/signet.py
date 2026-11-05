@@ -136,8 +136,7 @@ def _fetch_and_clear_signet_section(script: bytes) -> tuple[bytes, bytes | None]
     solution = None
     found = False
     for op_code, start, stop in op_code_spans(script):
-        data = _push_data(script, op_code, start, stop)
-        if data:
+        if data := _push_data(script, op_code, start, stop):
             if (
                 not found
                 and len(data) > len(_SIGNET_HEADER)

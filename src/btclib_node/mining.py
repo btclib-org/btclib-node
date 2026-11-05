@@ -505,10 +505,14 @@ def _contextual_header_reason(node: Node, header: BlockHeader) -> str | None:
 def _version_reason(node: Node, header: BlockHeader) -> str | None:
     """Return `bad-version` for a version BIP34, 66 or 65 made obsolete."""
     height = len(node.chainstate.block_index.active_chain)
-    for least, field in _MIN_VERSIONS:
-        if header.version < least and height >= getattr(node.chain.consensus, field):
-            return f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
-    return None
+    return next(
+        (
+            f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
+            for least, field in _MIN_VERSIONS
+            if header.version < least and height >= getattr(node.chain.consensus, field)
+        ),
+        None,
+    )
 
 
 def contextual_block_reason(node: Node, block: Block, height: int) -> str | None:

@@ -169,9 +169,12 @@ def _tracked_files() -> list[Path]:
 
 def _read_text(path: Path) -> str | None:
     """Return path's text, or None where it is not text this check can read."""
-    try:
+    # one clause each, so Sourcery reads it (btclib-org/.github#2028)
+    try:  # sourcery skip: merge-except-handler
         return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError, OSError:
+    except UnicodeDecodeError:
+        return None
+    except OSError:
         return None
 
 

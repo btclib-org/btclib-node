@@ -282,10 +282,14 @@ class TxRequestTracker:
 
     def _selected(self, txhash: bytes) -> _Announcement | None:
         """Return the `BEST` or `REQUESTED` announcement of `txhash`, if any."""
-        for announcement in self._by_hash.get(txhash, {}).values():
-            if announcement.state in (_State.BEST, _State.REQUESTED):
-                return announcement
-        return None
+        return next(
+            (
+                announcement
+                for announcement in self._by_hash.get(txhash, {}).values()
+                if announcement.state in (_State.BEST, _State.REQUESTED)
+            ),
+            None,
+        )
 
     def _set_state(self, announcement: _Announcement, state: _State) -> None:
         """Change the state, keeping the peer's counts and `BEST` table.
@@ -348,14 +352,14 @@ class TxRequestTracker:
         `state` is `COMPLETED` or `DELAYED`. The `READY` announcement of the
         highest priority, if there is one, becomes the `BEST`.
         """
-        if announcement.state in (_State.BEST, _State.REQUESTED):
-            ready = [
+        if announcement.state in (_State.BEST, _State.REQUESTED) and (
+            ready := [
                 a
                 for a in self._by_hash[announcement.txhash].values()
                 if a.state is _State.READY
             ]
-            if ready:
-                self._set_state(max(ready, key=self._priority), _State.BEST)
+        ):
+            self._set_state(max(ready, key=self._priority), _State.BEST)
         self._set_state(announcement, state)
 
     def _make_completed(self, announcement: _Announcement) -> bool:
