@@ -116,10 +116,11 @@ SIGNAL_POLL_SECONDS = 0.5
 # How long after a SIGINT, SIGTERM or SIGTSTP the process is still
 # running before every thread's stack is written to stderr
 # (`install_signal_handlers`). Below `STOP_TIMEOUT`, and below the wait
-# after which bitcoin-node-tests' adapter kills the node, so the dump is
+# after which functional-tests' adapter kills the node, so the dump is
 # out before anything gives up on the process. That wait is
 # `scaled(_STARTUP_TIMEOUT)` in `NodeAdapter._terminate`
-# (`src/bitcoin_node_tests/node.py`), at btclib-org/bitcoin-node-tests@037126c.
+# (`src/btclib_functional_tests/node.py`), at
+# btclib-org/functional-tests@6520fdc.
 # `tests/unit/init_test.py` asserts the first.
 STOP_DUMP_DELAY = 15
 
