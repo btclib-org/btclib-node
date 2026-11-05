@@ -727,7 +727,7 @@ class SpanningForestState:
             self._shuffled_into(self._nonminimal, entry)
         self.cost += 18 * len(self._nonminimal)
 
-    def minimize_step(self) -> bool:  # noqa: C901, PLR0912 -- Core's, in its shape
+    def minimize_step(self) -> bool:  # noqa: C901, PLR0912 -- Core's, in its shape  # sourcery skip: low-code-quality
         """Try to split one chunk; return whether any chunk may still split.
 
         A chunk splits into equal-feerate parts where an active dependency
@@ -893,7 +893,7 @@ def linearize(  # noqa: PLR0913
     return forest.get_linearization(fallback_key), optimal, forest.cost
 
 
-def post_linearize(  # noqa: PLR0915 -- Core's `PostLinearize`, in its shape
+def post_linearize(  # noqa: PLR0915 -- Core's `PostLinearize`, in its shape  # sourcery skip: low-code-quality
     depgraph: DepGraph, linearization: list[int]
 ) -> None:
     """Improve `linearization` in place, Core's `PostLinearize`.

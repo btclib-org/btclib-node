@@ -168,7 +168,7 @@ def test_a_rollback_is_dumped_as_bitcoind_dumps_it(
     for number in (len(_SCRIPTS) + 1, 7):
         base = cast("str", bitcoind.rpc("getblockhash", [number]))
         options: dict[str, object] = {
-            "rollback": base if target in ("hash", "type") else number
+            "rollback": base if target in {"hash", "type"} else number
         }
         if target == "in_memory":
             options["in_memory"] = True
@@ -190,7 +190,9 @@ def test_a_rollback_is_dumped_as_bitcoind_dumps_it(
 
 def _at_tip(bitcoind: Bitcoind, node: Node) -> bool:
     """Say whether the node's tip is bitcoind's again."""
-    return bool(
+    # both calls answer Any, so the comparison is Any too, which mypy's
+    # no-any-return refuses where the function returns bool
+    return bool(  # sourcery skip: remove-unnecessary-cast
         rpc_client(node).call("getbestblockhash") == bitcoind.rpc("getbestblockhash")
     )
 

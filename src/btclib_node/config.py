@@ -385,8 +385,10 @@ def _refuse_reindex_chainstate_when_pruned(
     `-reindex` yet: btclib-org/btclib-node#1415.
     """
     if pruned and reindex_chainstate:
-        err_msg = "Prune mode is incompatible with -reindex-chainstate. "
-        err_msg += "Use full -reindex instead."
+        err_msg = (
+            "Prune mode is incompatible with -reindex-chainstate. "
+            "Use full -reindex instead."
+        )
         raise ValueError(err_msg)
 
 
@@ -930,7 +932,9 @@ class Config:
     # statements) measures the same flatness from the body's side: one
     # assignment per independent setting, which is what grows with every
     # field this object carries rather than a body that wants splitting.
-    def __init__(  # noqa: PLR0913, PLR0915
+    # Sourcery's low-code-quality reads the same length, and is skipped
+    # for the same reason.
+    def __init__(  # noqa: PLR0913, PLR0915  # sourcery skip: low-code-quality
         self,
         *,
         chain: Chain | str = DEFAULT_CHAIN,

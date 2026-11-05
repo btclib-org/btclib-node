@@ -469,12 +469,12 @@ def test_a_migration_that_fails_is_warned_about(
     logger.addHandler(lines)
     legacy = tmp_path / "fee_estimates.dat"
     legacy.write_bytes(b"legacy")
-    if blocked == "remove":
+    if blocked == "directory":
+        (tmp_path / "fees").write_bytes(b"")
+    elif blocked == "remove":
         (tmp_path / "fees").mkdir()
         (tmp_path / "fees" / "block_policy_estimates.dat").write_bytes(b"new")
         monkeypatch.setattr(Path, "unlink", _refuse)
-    elif blocked == "directory":
-        (tmp_path / "fees").write_bytes(b"")
     else:
         monkeypatch.setattr(Path, "rename", _refuse)
     migrate_legacy_file(tmp_path, logger)

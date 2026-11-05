@@ -331,10 +331,17 @@ class _Production:
         script = self.keystore.scripts.get(script_id)
         if script is not None:
             return script
-        for held in (self.sigdata.redeem_script, self.sigdata.witness_script):
-            if hash160(held) == script_id:
-                return held
-        return None
+        return next(
+            (
+                held
+                for held in (
+                    self.sigdata.redeem_script,
+                    self.sigdata.witness_script,
+                )
+                if hash160(held) == script_id
+            ),
+            None,
+        )
 
     def get_pubkey(self, key_id: bytes) -> bytes | None:
         """Return the public key of `key_id`, found in a signature or stored."""

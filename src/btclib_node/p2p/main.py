@@ -151,7 +151,7 @@ def _after_verack(conn: Connection, msg_type: str) -> None:
     does (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag).
     """
-    if msg_type in ("wtxidrelay", "sendaddrv2"):
+    if msg_type in {"wtxidrelay", "sendaddrv2"}:
         conn.stop()
 
 

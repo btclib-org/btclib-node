@@ -851,8 +851,7 @@ def _coinbase_tx_dict(coinbase: Tx) -> dict[str, Any]:
         "sequence": vin0.sequence,
         "coinbase": vin0.script_sig.hex(),
     }
-    stack = vin0.script_witness.stack
-    if stack:
+    if stack := vin0.script_witness.stack:
         # `CHECK_NONFATAL(witness_stack.size() == 1)` (same file, :195):
         # a coinbase carries at most the one segwit commitment element.
         out["witness"] = stack[0].hex()
@@ -1393,7 +1392,7 @@ def service_names(services: int) -> list[str]:
     does.
     """
     names: list[str] = []
-    for bit in range(int(services).bit_length()):
+    for bit in range(services.bit_length()):
         if not services >> bit & 1:
             continue
         flag = ServiceFlags(1 << bit)
@@ -1498,8 +1497,7 @@ def _peer_entry(
         entry["minping"] = p2p_conn.min_ping_time
     # Nonzero exactly while a ping is outstanding, which is what Core's
     # own test of `m_ping_nonce_sent` asks.
-    ping_sent = p2p_conn.ping_sent
-    if ping_sent:
+    if ping_sent := p2p_conn.ping_sent:
         ping_wait = clock.now() - ping_sent
         if ping_wait > 0:
             entry["pingwait"] = ping_wait
@@ -1556,7 +1554,7 @@ def _peer_entry(
         sorted(p2p_conn.stats.bytes_recv_per_msg.copy().items())
     )
     entry["connection_type"] = _connection_type(p2p_conn)
-    entry.update(_transport_fields(p2p_conn))
+    entry |= _transport_fields(p2p_conn)
     return entry
 
 
@@ -1737,7 +1735,7 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     )
     manager = node.p2p_manager
     peers = {**manager.pending_connections, **manager.connections}
-    connections_in = sum(1 for p2p_conn in peers.values() if p2p_conn.inbound)
+    connections_in = sum(bool(p2p_conn.inbound) for p2p_conn in peers.values())
     return {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
@@ -2125,7 +2123,7 @@ def get_node_addresses(
     ]
     if mismatches:
         raise type_errors(*mismatches)
-    count = 1 if len(params) < 1 or params[0] is None else params[0]
+    count = 1 if not params or params[0] is None else params[0]
     count = _integer(count, -(1 << 31), (1 << 31) - 1)
     if count < 0:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Address count out of range")
@@ -2732,8 +2730,7 @@ def _vin_to_univ(
             entry["txid"] = tx_in.prev_out.tx_id.hex()
             entry["vout"] = tx_in.prev_out.vout
             entry["scriptSig"] = script_to_dict(tx_in.script_sig)
-        stack = tx_in.script_witness.stack
-        if stack:
+        if stack := tx_in.script_witness.stack:
             entry["txinwitness"] = [item.hex() for item in stack]
         if undo is not None and prevout:
             coin = undo[i]
@@ -3514,10 +3511,12 @@ def _raw_transaction_json(
         if block_undo is None:
             raise RpcError(RPCErrorCode.INTERNAL_ERROR, _UNDO_UNREADABLE)
         undo = block_undo[position]
-    out.update(
-        _tx_to_univ(
-            tx, node.chain.name, include_hex=True, undo=undo, prevout=undo is not None
-        )
+    out |= _tx_to_univ(
+        tx,
+        node.chain.name,
+        include_hex=True,
+        undo=undo,
+        prevout=undo is not None,
     )
     if block is not None and block_height is not None:
         out["blockhash"] = block.header.hash.hex()

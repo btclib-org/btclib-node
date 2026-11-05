@@ -439,9 +439,12 @@ def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
     Where the file's status cannot be read, for want of permission on its
     directory, `OSError` is raised, as `fs::exists` throws.
     """
-    try:
+    # one clause each, so Sourcery reads it (btclib-org/.github#2028)
+    try:  # sourcery skip: merge-except-handler
         os.stat(path)  # noqa: PTH116
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError:
+        return {}
+    except NotADirectoryError:
         return {}
     try:
         with open(path, "rb") as file:  # noqa: PTH123

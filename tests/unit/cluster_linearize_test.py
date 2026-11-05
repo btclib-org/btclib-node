@@ -133,11 +133,10 @@ def deserialize(data: bytes) -> DepGraph:
         if diff <= total_size:
             reordering = [pos + (pos >= total_size - diff) for pos in reordering]
             reordering.append(total_size - diff)
-            total_size += 1
         else:
             total_size = diff
             reordering.append(total_size)
-            total_size += 1
+        total_size += 1
         if read_error:
             break
     return DepGraph.remapped(topo, reordering, total_size)

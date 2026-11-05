@@ -2641,7 +2641,7 @@ def test_an_address_is_relayed_only_to_peers_that_can_carry_it(
         onion = replace(an_address_on(BIP155Network.TORV3), port=port)
         manager.relay_address(conns[0], onion, 1000.0)
         queued = {conn.id: conn.take_addresses() for conn in conns}
-        assert [conn.id for conn in v1_peers if queued[conn.id]] == []
+        assert not [conn.id for conn in v1_peers if queued[conn.id]]
         assert sum(len(v) for v in queued.values()) in (1, 2)
 
 
@@ -3678,7 +3678,7 @@ def test_process_addr_fetch_refuses_past_the_shared_pool(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert dialled == []
+    assert not dialled
     assert not manager.pending_connections
 
 
@@ -7278,7 +7278,7 @@ def test_accept_loop_discards_the_kernel_accepted_socket_on_the_documented_race(
     # is never called.
     unraisable.clear()
     race_once()
-    assert unraisable == []
+    assert not unraisable
 
 
 def test_accept_loop_logs_and_retries_on_a_refused_accept(
@@ -7639,7 +7639,7 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     future: Future[None] = Future()
     future.set_exception(asyncio.CancelledError())
     manager._report_server_failure(future)
-    assert logged == []
+    assert not logged
 
 
 FULL_NODE = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
@@ -7992,7 +7992,7 @@ def test_an_anchor_is_popped_off_the_back_past_those_refused(
     manager = a_manager()
     manager.anchors = [ANCHOR, refused]
     assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
-    assert manager.anchors == []
+    assert not manager.anchors
 
 
 @pytest.mark.parametrize("port", [8333, 18444])
@@ -8009,7 +8009,7 @@ def test_an_anchor_that_is_this_node_s_own_is_passed_over(
     manager.local_addresses = frozenset({host_key(peer_address("9.9.9.9", 1))})
     manager.anchors = [ANCHOR, own]
     assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
-    assert manager.anchors == []
+    assert not manager.anchors
 
 
 def test_an_anchor_short_of_any_left_draws_from_the_table(
@@ -8051,7 +8051,7 @@ def test_an_anchor_short_of_any_left_draws_from_the_table(
             },
         )
     ]
-    assert manager.anchors == []
+    assert not manager.anchors
 
 
 def test_an_anchor_is_dialled_block_relay_only_with_the_table_empty(

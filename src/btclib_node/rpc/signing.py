@@ -81,13 +81,12 @@ def _check_types(
     must be given: a null optional one is not checked, a null required one
     is.
     """
-    mismatches = [
+    if mismatches := [
         (i + 1, name, params[i], expected)
         for i, (name, expected) in enumerate(arguments[: len(params)])
         if json_type_name(params[i]) != expected
         and (params[i] is not None or i < required)
-    ]
-    if mismatches:
+    ]:
         raise type_errors(*mismatches)
 
 

@@ -35,7 +35,8 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 #   {"app_id":15368,"context":"lint / Lint and type-check"},
 #   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
 #   {"app_id":15368,"context":"lint / Dependency review"},
-#   {"app_id":15368,"context":"lint / Sign-off"}],
+#   {"app_id":15368,"context":"lint / Sign-off"},
+#   {"app_id":15368,"context":"sourcery / Sourcery"}],
 #   "strict":false}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
@@ -58,6 +59,7 @@ that answers for it:
 | `regtest / Regtest against Bitcoin Core` | `integration-bitcoind.yml` |
 | `lint / Dependency review` | `lint.yml`, calling `reusable-lint.yml` |
 | `lint / Sign-off` | `lint.yml`, calling `reusable-lint.yml` |
+| `sourcery / Sourcery` | `sourcery.yml`, calling `reusable-sourcery.yml` |
 
 `test.yml` has more than one job, so it is named through its aggregate,
 `test: every job passed`, so that a job added to that workflow is gated
@@ -65,8 +67,8 @@ on by being added rather than by somebody editing a rule stored outside
 the tree. Every one of these jobs carries the reasoning in its own
 header.
 
-The other three contribute no name of their own instead: each of
-`docs.yml`, `lint.yml` and `integration-bitcoind.yml` is a whole body
+The others contribute no name of their own instead: each of `docs.yml`,
+`lint.yml`, `integration-bitcoind.yml` and `sourcery.yml` is a whole body
 that calls a reusable workflow of `btclib-org/.github`'s, so the context
 joins the calling job's id to the called job's own name. `docs.yml`'s
 `docs` job calls `reusable-docs.yml`, whose own job is still named
@@ -79,7 +81,12 @@ joins the calling job's id to the called job's own name. `docs.yml`'s
 `integration-bitcoind.yml`'s `regtest`
 job calls `reusable-integration-bitcoind.yml` the same way, whose own
 job is still named `Regtest against Bitcoin Core`, producing
-`regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196).
+`regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196);
+`sourcery.yml`'s `sourcery` job calls `reusable-sourcery.yml` the same
+way, whose own job is named `Sourcery`, producing `sourcery / Sourcery`.
+[Section 10 of the
+standard](https://github.com/btclib-org/.github#the-set-and-its-cadence)
+says when a tree requires it.
 
 The context is the job's `name:`, not the workflow's, and the `checks`
 array above holds it as a literal string that nothing in the tree can
@@ -108,7 +115,8 @@ gh api -X PATCH \
             {"context": "lint / Lint and type-check", "app_id": 15368},
             {"context": "regtest / Regtest against Bitcoin Core", "app_id": 15368},
             {"context": "lint / Dependency review", "app_id": 15368},
-            {"context": "lint / Sign-off", "app_id": 15368}]}
+            {"context": "lint / Sign-off", "app_id": 15368},
+            {"context": "sourcery / Sourcery", "app_id": 15368}]}
 JSON
 ```
 

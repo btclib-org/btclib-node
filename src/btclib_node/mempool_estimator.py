@@ -306,8 +306,7 @@ class MempoolEstimator:
         """
         block_weight = sum(tx.weight for tx in block.transactions[1:])
         removed_weight = sum(tx.weight for tx in removed)
-        stale = [stats for stats in self.blocks if stats.height >= height]
-        if stale:
+        if stale := [stats for stats in self.blocks if stats.height >= height]:
             self.logger.log_debug(
                 "estimatefee",
                 "%s: connected block height=%d discards tracked mined-block stats "

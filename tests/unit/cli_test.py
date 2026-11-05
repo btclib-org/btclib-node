@@ -2938,7 +2938,7 @@ def test_build_config_an_absolute_datadir_needs_no_working_directory(
     monkeypatch.setattr(os, "getcwd", getcwd)
     with pytest.raises(ValueError, match=r"^Data directory"):
         cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
-    assert calls == {}
+    assert not calls
 
 
 _SYMLINK = pytest.mark.skipif(
@@ -4356,7 +4356,7 @@ def test_dunder_main_imported_plainly_does_not_call_main(
     calls: list[int] = []
     monkeypatch.setattr(cli, "main", lambda: calls.append(1))
     runpy.run_module("btclib_node.__main__", run_name="btclib_node.__main__")
-    assert calls == []
+    assert not calls
 
 
 def test_build_config_rpcuser_and_rpcpassword_from_the_file_on_any_chain(
@@ -4876,7 +4876,7 @@ def test_nosettings_still_creates_the_directory_without_wallets(
     It also makes `wallets` there, which this node, having no wallet, does not.
     """
     _read(tmp_path, "-nosettings")
-    assert list((tmp_path / "regtest").iterdir()) == []
+    assert not list((tmp_path / "regtest").iterdir())
 
 
 @pytest.mark.parametrize("relative", [True, False])

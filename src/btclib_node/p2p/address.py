@@ -298,8 +298,7 @@ def ip_and_port(ip: str, port: int) -> str:
     parsed = ip_address(ip)
     if not isinstance(parsed, IPv6Address):
         return f"{parsed}:{port}"
-    mapped = parsed.ipv4_mapped
-    if mapped:
+    if mapped := parsed.ipv4_mapped:
         return f"{mapped}:{port}"
     return f"[{parsed}]:{port}"
 
@@ -387,7 +386,8 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     loop = asyncio.get_running_loop()
     try:
         await asyncio.wait_for(loop.sock_connect(client, peer), _DIAL_TIMEOUT)
-    except OSError, TimeoutError:
+    # TimeoutError, which wait_for raises at _DIAL_TIMEOUT, is an OSError
+    except OSError:
         client.close()
         return None
     except asyncio.CancelledError:
@@ -1100,7 +1100,8 @@ class PeerDB:
         else:
             self._bucket_key = stored
 
-    def _place_stored(
+    # low-code-quality skipped: `AddrManImpl::Unserialize`'s, in its shape
+    def _place_stored(  # sourcery skip: low-code-quality
         self,
         known: list[tuple[bytes, NetworkAddressV2]],
         sources: dict[bytes, list[bytes]],
@@ -1182,8 +1183,8 @@ class PeerDB:
         if slot in self._occupant:
             group = primary
             slot = _new_slot(self._bucket_key, address, primary, own=own)
-            if slot in self._occupant:
-                return
+        if slot in self._occupant:
+            return
         self._occupant[slot] = endpoint
         self._slots.setdefault(endpoint, {})[slot] = group
 
@@ -1447,7 +1448,7 @@ class PeerDB:
             known_count = len(self.addresses)
             known_keys = set(self._known_keys)
         with self._active_lock:
-            unmatched = sum(1 for key in self._active_index if key not in known_keys)
+            unmatched = sum(key not in known_keys for key in self._active_index)
         return known_count + unmatched
 
     @property

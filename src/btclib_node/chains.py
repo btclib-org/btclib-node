@@ -175,7 +175,7 @@ class Chain:
         refuses the option on mainnet, as Core's init does.
         """
         moved = dict(self.activation_heights)
-        moved.update((BURIED_DEPLOYMENTS[name], h) for name, h in heights.items())
+        moved |= ((BURIED_DEPLOYMENTS[name], h) for name, h in heights.items())
         chain = copy.copy(self)
         chain.activation_heights = tuple(sorted(moved.items()))
         return chain

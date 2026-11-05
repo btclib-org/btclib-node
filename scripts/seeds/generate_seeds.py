@@ -105,9 +105,8 @@ def _ipv6_to_bip155(addr: str) -> tuple[BIP155Network, bytes]:
 
 def parse_spec(s: str) -> tuple[BIP155Network, bytes, int] | None:
     """Convert an endpoint string to a `(networkID, addr, port)` tuple."""
-    match = re.match(r"\[([0-9a-fA-F:]+)\](?::([0-9]+))?$", s)
-    if match:  # ipv6
-        host, port = match.group(1), match.group(2)
+    if match := re.match(r"\[([0-9a-fA-F:]+)\](?::([0-9]+))?$", s):  # ipv6
+        host, port = match[1], match[2]
     elif s.count(":") > 1:  # ipv6, no port
         host, port = s, ""
     else:

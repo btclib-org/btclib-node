@@ -613,6 +613,7 @@ def _reconcile_mempool_for_reorg(
                 # the mempool" (same citation as `bypass_limits` below).
                 node.mempool.remove_dependents(tx)
                 continue
+            # one clause each, so Sourcery reads it (btclib-org/.github#2028)
             try:
                 # Core's own `bypass_limits=true` for this re-add
                 # (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
@@ -625,13 +626,16 @@ def _reconcile_mempool_for_reorg(
                 # the active chain carried, each paid for with its proof
                 # of work.
                 accepted = verify_mempool_acceptance(node, tx, bypass_limits=True)
-            except MissingPrevoutError, BTClibValueError:
-                # Rejected on re-add, whether for a prevout this walk's
-                # own earlier iterations have not yet restored or for
-                # anything else `verify_mempool_acceptance` refuses: the
-                # identical "doesn't make it in to the mempool" shape the
-                # past-the-cap branch above answers, and the same
-                # `removeRecursive` citation answers it.
+            # Rejected on re-add, whether for a prevout this walk's own
+            # earlier iterations have not yet restored or for anything
+            # else `verify_mempool_acceptance` refuses: the identical
+            # "doesn't make it in to the mempool" shape the past-the-cap
+            # branch above answers, and the same `removeRecursive`
+            # citation answers it.
+            except MissingPrevoutError:
+                node.mempool.remove_dependents(tx)
+                continue
+            except BTClibValueError:
                 node.mempool.remove_dependents(tx)
                 continue
             # Core's own `nHeight`, the active chain's own tip height at
@@ -1411,10 +1415,14 @@ _CONTEXTUAL_REASONS = (
 
 def _contextual_reason(message: str) -> str:
     """Return Core's reject reason for btclib's contextual `message`."""
-    for prefix, reason in _CONTEXTUAL_REASONS:
-        if message.startswith(prefix):
-            return reason
-    return message
+    return next(
+        (
+            reason
+            for prefix, reason in _CONTEXTUAL_REASONS
+            if message.startswith(prefix)
+        ),
+        message,
+    )
 
 
 # The reasons of `ContextualCheckBlock` that Core gives as `BLOCK_CONSENSUS`,

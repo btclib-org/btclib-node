@@ -1357,7 +1357,7 @@ def test_tx_out_set_info_muhash_and_none_scan_nothing() -> None:
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], calls=calls)
     get_tx_out_set_info(node, _CONN, ["muhash"])
     get_tx_out_set_info(node, _CONN, ["none"])
-    assert calls == []
+    assert not calls
 
 
 def test_tx_out_set_info_answers_an_internal_error_where_the_set_is_unreadable() -> (
@@ -1466,7 +1466,7 @@ def test_tx_out_set_info_refuses_a_specific_block_before_scanning() -> None:
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, ["hash_serialized_3", 5])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert calls == []
+    assert not calls
 
 
 def test_tx_out_set_info_answers_core_s_hash_over_a_real_chainstate(
@@ -2703,7 +2703,7 @@ def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
     assert raised.value.message == (
         f"JSON value of type {json_type} is not of expected type string"
     )
-    assert verified == []
+    assert not verified
 
 
 def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
@@ -2874,7 +2874,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
     assert raised.value.message == "bad-txns-inputs-missingorspent"
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
@@ -2909,7 +2909,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
     assert raised.value.message == "mempool full"
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_mempool_is_full(
@@ -4820,7 +4820,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
     assert raised.value.message == f"{reason}, {details}"
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def a_fee_refusal(node: Any, transaction: Any) -> NoReturn:
@@ -4849,7 +4849,7 @@ def test_a_fee_refusal_is_answered_in_core_s_words(
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
     assert raised.value.message == "min relay fee not met, 0 < 11"
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
@@ -5021,7 +5021,7 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     with pytest.raises(StoreCorruptionError):
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> None:
@@ -7115,9 +7115,7 @@ def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
     connect(node, lighter)
     block_index = node.chainstate.block_index
     assert block_index.active_chain[-1] == heavier[-1].header.hash
-    assert not any(
-        h == lighter[-1].header.hash for h, _ in block_index.block_candidates
-    )
+    assert all(h != lighter[-1].header.hash for h, _ in block_index.block_candidates)
 
     invalidate_block(node, _CONN, [heavier[1].header.hash.hex()])
 
@@ -8772,7 +8770,7 @@ def test_send_raw_transaction_default_maxfeerate_refuses_a_high_fee(
         "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)"
     )
     assert not mempool.contains_tx(tx)
-    assert broadcast == []
+    assert not broadcast
 
 
 def test_send_raw_transaction_a_maxfeerate_param_allows_a_higher_default_fee(

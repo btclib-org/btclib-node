@@ -217,6 +217,12 @@ def _windows_addresses(
     return _adapter_addresses(ctypes.cast(buffer, ctypes.POINTER(_Adapter)))
 
 
+# what loading a C library or one of its functions raises. A name in the
+# clause, where ruff format would write a tuple as PEP 758's bare form,
+# which Sourcery does not read (btclib-org/.github#2028)
+_LOAD_ERRORS = (OSError, AttributeError)
+
+
 def local_addresses() -> list[IPv4Address | IPv6Address]:
     """Return this machine's interface addresses, as Core's `GetLocalAddresses`.
 
@@ -230,7 +236,7 @@ def local_addresses() -> list[IPv4Address | IPv6Address]:
             iphlpapi = ctypes.WinDLL("iphlpapi")
             iphlpapi.GetAdaptersAddresses.restype = ctypes.c_uint32
             get_adapters = iphlpapi.GetAdaptersAddresses
-        except OSError, AttributeError:
+        except _LOAD_ERRORS:
             return []
         return _windows_addresses(
             lambda buffer, size: get_adapters(0, _GAA_FLAGS, None, buffer, size)
@@ -239,7 +245,7 @@ def local_addresses() -> list[IPv4Address | IPv6Address]:
         libc = ctypes.CDLL(None)
         getifaddrs = libc.getifaddrs
         freeifaddrs = libc.freeifaddrs
-    except OSError, AttributeError:
+    except _LOAD_ERRORS:
         return []
     first = ctypes.POINTER(_IfAddrs)()
     if getifaddrs(ctypes.byref(first)) != 0:

@@ -227,7 +227,8 @@ def _successors(
         yield from reversed(chunk)
 
 
-def find_next_blocks_to_download(  # noqa: PLR0913
+# low-code-quality skipped: Core's `FindNextBlocks`, kept in its shape
+def find_next_blocks_to_download(  # noqa: PLR0913  # sourcery skip: low-code-quality
     block_index: BlockIndex,
     state: BlockAvailability,
     count: int,

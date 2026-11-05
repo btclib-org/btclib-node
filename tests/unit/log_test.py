@@ -458,7 +458,7 @@ def test_a_line_escapes_control_characters_from_rpc_method(
     ]
     raw_message = path.read_bytes().splitlines()[5]
     assert not any(b < 0x20 or b == 0x7F for b in raw_message)
-    assert not any(bytes([0xC2, b]) in raw_message for b in range(0x80, 0xA0))
+    assert all(bytes([0xC2, b]) not in raw_message for b in range(0x80, 0xA0))
 
 
 # the time a record's own line opens with, behind `[*] ` while silenced

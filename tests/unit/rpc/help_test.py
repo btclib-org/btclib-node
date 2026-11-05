@@ -298,7 +298,7 @@ def test_stop_help_names_what_stop_actually_returns() -> None:
     assert match is not None
     node = cast("Node", None)
     conn = cast("RpcConnection", None)
-    assert match.group(1) == stop(node, conn, [])
+    assert match[1] == stop(node, conn, [])
 
 
 @pytest.mark.parametrize(

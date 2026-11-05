@@ -79,8 +79,10 @@ def get_real(value: float) -> float:
     libstdc++ statically (`contrib/guix/libexec/build.sh:234`). The
     caller has checked it is a number.
     """
+    # a JSON integer arrives as an int, which the float annotation admits;
+    # float() of it is what raises OverflowError past the largest double
     try:
-        real = float(value)
+        real = float(value)  # sourcery skip: remove-unnecessary-cast
     except OverflowError:  # an int past the largest double
         real = math.inf
     if math.isinf(real):

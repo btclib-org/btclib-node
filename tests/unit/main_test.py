@@ -129,7 +129,7 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
         block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
-    for _ in range(len(chain)):
+    for _ in chain:
         update_chain(node)
     node.chainstate.flush()
     return block_index
@@ -3972,7 +3972,7 @@ def test_blocknotify_does_not_fire_during_initial_block_download(
     stale = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, stale)
     assert node.is_initial_block_download is True
-    assert calls == []
+    assert not calls
 
 
 def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
@@ -4013,7 +4013,7 @@ def test_unknown_activations_are_not_checked_during_initial_block_download(
     )
     connect(node, generate_random_chain(2, RegTest().genesis.hash))
     assert node.is_initial_block_download is True
-    assert calls == []
+    assert not calls
 
 
 def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
@@ -4707,7 +4707,7 @@ def test_an_unpruned_node_never_calls_prune_up_to(
     connect(
         node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     )
-    assert calls == []
+    assert not calls
 
 
 def test_a_pruned_node_with_no_mib_target_never_calls_prune_up_to(
@@ -4730,7 +4730,7 @@ def test_a_pruned_node_with_no_mib_target_never_calls_prune_up_to(
     connect(
         node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     )
-    assert calls == []
+    assert not calls
 
 
 def _always_over_target(node: Node, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5373,7 +5373,7 @@ def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
         block = build_block(chain[0].header.hash, [generate_coinbase(height=5)], 2)
     elif case == "announced-before":
         node.highest_fast_announce = 2
-    elif case in ("pre-segwit", "at-segwit"):
+    elif case in {"pre-segwit", "at-segwit"}:
         segwit_height = 3 if case == "pre-segwit" else 2
         consensus = replace(node.chain.consensus, segwit_height=segwit_height)
         node.chain = cast("Any", SimpleNamespace(consensus=consensus))
@@ -5392,7 +5392,7 @@ def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
 
     main.new_pow_valid_block(node, block)
 
-    if case in ("announced", "at-no-ban-version", "at-segwit"):
+    if case in {"announced", "at-no-ban-version", "at-segwit"}:
         (message,) = sent
         assert isinstance(message, CmpctBlock)
         assert message.serialize() == compact_block(block, message.nonce).serialize()

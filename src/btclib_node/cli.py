@@ -1025,28 +1025,28 @@ def _interpret_value(
     `warnings`, for the log alone, as Core's `LogWarning`
     (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
-    if info.negated:
-        if option.disallow_negation:
-            err_msg = f"Negating of -{info.name} is meaningless and therefore forbidden"
-            raise ValueError(err_msg)
-        if value is not None and not _interpret_bool(value):
-            # Core's warning writes a `SENSITIVE` option's value in clear:
-            # this one writes the `****` Core's `LogArgs` writes instead.
-            shown = "****" if option.sensitive else value
-            warnings.append(
-                f"Parsed potentially confusing double-negative -{info.name}={shown}"
-            )
-            return True
-        return False
-    return "" if value is None else value
+    if not info.negated:
+        return "" if value is None else value
+    if option.disallow_negation:
+        err_msg = f"Negating of -{info.name} is meaningless and therefore forbidden"
+        raise ValueError(err_msg)
+    if value is not None and not _interpret_bool(value):
+        # Core's warning writes a `SENSITIVE` option's value in clear:
+        # this one writes the `****` Core's `LogArgs` writes instead.
+        shown = "****" if option.sensitive else value
+        warnings.append(
+            f"Parsed potentially confusing double-negative -{info.name}={shown}"
+        )
+        return True
+    return False
 
 
 def _negated(values: Sequence[Json]) -> int:
     """Return how many of `values` a negation discards: Core's `negated()`."""
-    for index in range(len(values), 0, -1):
-        if values[index - 1] is False:
-            return index
-    return 0
+    return next(
+        (index for index in range(len(values), 0, -1) if values[index - 1] is False),
+        0,
+    )
 
 
 def _parse_parameters(
@@ -1087,8 +1087,7 @@ def _parse_parameters(
             raise ValueError(err_msg) from None
         options.setdefault(info.name, []).append(value)
     includes = options.get("includeconf", [])
-    live = includes[_negated(includes) :]
-    if live:
+    if live := includes[_negated(includes) :]:
         first = "true" if live[0] is True else json.dumps(live[0], ensure_ascii=False)
         err_msg = (
             f"{_PARSE_ERROR}-includeconf cannot be used from commandline; "
@@ -1105,12 +1104,11 @@ def _name_of(line: str) -> str:
     The names are `rpcauth`, `rpcpassword` and `rpcuser`, found wherever
     they sit in `line`.
     """
-    ends = [
+    if ends := [
         line.find(name) + len(name)
         for name, option in _OPTIONS.items()
         if option.sensitive and name in line
-    ]
-    if ends:
+    ]:
         line = line[: min(ends)]
     return line.partition("=")[0].rstrip(" \t")
 
@@ -2114,7 +2112,7 @@ def _parse_money(value: str) -> int | None:
         not text
         or len(whole) > _MONEY_WHOLE_DIGITS
         or len(fraction) > _MONEY_DECIMALS
-        or not all(c in digits for c in whole + fraction)
+        or any(c not in digits for c in whole + fraction)
     ):
         return None
     amount = int(whole or "0") * _COIN + int(fraction.ljust(_MONEY_DECIMALS, "0"))
@@ -2536,12 +2534,11 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     own order for it. A name is quoted by `_quoted_line`, which Core's
     does not: it may hold a password.
     """
-    lines = "".join(
+    if lines := "".join(
         f"{filepath}:{lineno} Section [{_quoted_line(name)}] is not recognized.\n"
         for name, filepath, lineno in settings.config_sections
         if name not in _RECOGNIZED_SECTIONS
-    )
-    if lines:
+    ):
         sys.stderr.write(f"Warning: {lines}\n")
         settings.section_warning = lines
 
@@ -2730,7 +2727,8 @@ def _check_bind(
         seen.add(key)
 
 
-def _after_lock(before: _BeforeLock) -> Config:
+# low-code-quality skipped: Core's `AppInitMain` checks, kept in its order
+def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quality
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its

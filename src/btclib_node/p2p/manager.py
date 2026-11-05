@@ -1447,11 +1447,9 @@ class P2pManager(threading.Thread):
         """
         if self.network_active == active:
             return
-        if not active:
-            held = self._block_relay_addresses()
-            if held:
-                with self._anchors_lock:
-                    self.anchors = held
+        if not active and (held := self._block_relay_addresses()):
+            with self._anchors_lock:
+                self.anchors = held
         self.network_active = active
         self._disconnect_if_inactive()
 
@@ -2184,12 +2182,13 @@ class P2pManager(threading.Thread):
         """
         with self._connections_lock:
             return sum(
-                1
+                bool(
+                    conn.automatic
+                    and not conn.block_relay
+                    and not conn.feeler
+                    and not conn.addr_fetch
+                )
                 for conn in self.connections.values()
-                if conn.automatic
-                and not conn.block_relay
-                and not conn.feeler
-                and not conn.addr_fetch
             )
 
     def _arm_dial_loop(self) -> None:

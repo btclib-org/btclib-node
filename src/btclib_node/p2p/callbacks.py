@@ -1853,7 +1853,10 @@ def _first_rejected_item(conn: Connection, items: tuple[Inventory, ...]) -> int 
     )
 
 
-def inv(node: Node, msg: bytes, conn: Connection) -> None:
+# low-code-quality skipped: Core's `ProcessMessage` `INV` branch, in its shape
+def inv(  # sourcery skip: low-code-quality
+    node: Node, msg: bytes, conn: Connection
+) -> None:
     """Ask for headers behind an announced block, queue missing transactions.
 
     The `INV` branch of Core's `ProcessMessage` (`net_processing.cpp`, at
@@ -1891,14 +1894,13 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
         )
         conn.stop()
         return
-    unknown = [
+    if unknown := [
         x.hash
         for x in inv.items
         if x.type_code == InventoryType.MSG_BLOCK
         and x.hash not in block_index.header_dict
         and node.status != NodeStatus.Reindexing
-    ]
-    if unknown:
+    ]:
         manager = node.download_manager
         sync_started = conn.id in manager.headers_sync_timeouts
         if sync_started or (
@@ -2119,8 +2121,7 @@ def _serve_getdata_tx(
     if not conn.relay_tx:
         return
     wtxid = item.type_code == InventoryType.MSG_WTX
-    tx = _find_tx_for_getdata(node, conn, item.hash, wtxid=wtxid)
-    if tx:
+    if tx := _find_tx_for_getdata(node, conn, item.hash, wtxid=wtxid):
         include_witness = item.type_code in (
             InventoryType.MSG_WITNESS_TX,
             InventoryType.MSG_WTX,
@@ -2559,10 +2560,10 @@ def _ask_for_more_headers(
     headers. A low-work sync still running with `conn` asks for its own
     next batch, so `have_headers_sync` is what keeps this from asking too.
     """
-    block_index = node.chainstate.block_index
     if batch_size == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         if have_headers_sync:
             return
+        block_index = node.chainstate.block_index
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it

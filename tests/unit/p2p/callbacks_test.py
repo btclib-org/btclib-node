@@ -1749,7 +1749,7 @@ def test_a_verack_before_the_version_is_ignored() -> None:
     verack(node, b"", peer)
     assert not peer.stopped
     assert peer.status == P2pConnStatus.Open
-    assert promoted == []
+    assert not promoted
     assert not node.p2p_manager.discouraged
 
 
@@ -2060,17 +2060,17 @@ def test_an_address_core_does_not_relay_is_not_relayed(reason: str) -> None:
     peer = a_gossiping_peer()
     address = a_gossiped_address("8.8.8.8" if reason == "discouraged" else "8.8.4.4")
     others = []
-    if reason == "stale":
-        address = replace(address, timestamp=int(time.time()) - 601)
-    elif reason == "unroutable":
-        address = a_gossiped_address("192.168.1.1")
-    elif reason == "getaddr unanswered":
+    if reason == "getaddr unanswered":
         peer.getaddr_sent = True
     elif reason == "message too large":
         others = [a_gossiped_address(f"8.8.{n}.1") for n in range(10, 20)]
+    elif reason == "stale":
+        address = replace(address, timestamp=int(time.time()) - 601)
+    elif reason == "unroutable":
+        address = a_gossiped_address("192.168.1.1")
     addrv2(node, AddrV2([address, *others]).serialize(), peer)
     relayed = node.p2p_manager.relayed
-    assert [a for _, a in relayed if a == address] == []
+    assert not [a for _, a in relayed if a == address]
 
 
 def test_a_message_of_ten_is_relayed_and_of_eleven_is_not() -> None:
@@ -2908,7 +2908,7 @@ def test_a_transaction_already_held_skips_reverification(
     node = a_data_node()
     node.mempool.add_tx(transaction)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
-    assert calls == []
+    assert not calls
 
 
 @pytest.mark.parametrize("site", ["confirmed", "rejects"])
@@ -2937,7 +2937,7 @@ def test_what_a_filter_finds_skips_verification(
     never = next(t for t in candidates if t.hash in bloom)
     for transaction in (held, never):
         tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
-    assert calls == []
+    assert not calls
 
 
 def test_a_corrupted_stored_record_propagates_out_of_tx(
@@ -3216,7 +3216,7 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
         ),
         peer,
     )
-    assert added == []
+    assert not added
     assert index.marked == []
     assert peer.last_novel_block_time == 0
     assert peer.download_queue == []
@@ -3261,7 +3261,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     )
     with pytest.raises(MisbehavingError):
         block_callback(node, payload, a_peer(download_queue=[broken.header.hash]))
-    assert added == []
+    assert not added
     assert index.marked == []
 
 
@@ -3321,7 +3321,7 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     )
     with pytest.raises(MisbehavingError):
         block_callback(node, payload, a_peer())
-    assert added == []
+    assert not added
     assert index.marked == []
     assert orphan.header.hash not in index.infos
 
@@ -5854,7 +5854,7 @@ def test_below_the_minimum_chain_work_the_answer_is_empty(
     message = GetHeaders(PROTOCOL_VERSION, [_GENESIS], _NO_STOP).serialize()
     getheaders(node, message, peer)
     (sent,) = peer.sent
-    assert list(sent.headers) == []
+    assert not list(sent.headers)
     assert peer.block_availability.best_header_sent is None
 
 
@@ -7267,7 +7267,7 @@ def test_an_addrv2_count_past_what_the_payload_could_hold_decides_alone(
     assert len(entry) == 9
     payload = entry * 1001
     assert cb._addrv2_count_past(var_int.serialize(1002) + payload, 1000) == 0
-    assert skipped == []
+    assert not skipped
     assert cb._addrv2_count_past(var_int.serialize(1001) + payload, 1000) == 1001
     assert len(skipped) == 1001
 
@@ -7661,12 +7661,12 @@ def test_low_work_headers_are_stored_nowhere_even_after_a_reopen(
     peer = a_peer()
     for header in spam:
         headers(node, Headers([header]).serialize(), peer)
-    assert not any(h.hash in block_index.header_dict for h in spam)
+    assert all(h.hash not in block_index.header_dict for h in spam)
     assert peer.headers_sync is None
     assert not peer.sent
     node.chainstate.close()
     reopened = Chainstate(tmp_path, RegTest(), Logger(debug=True))
-    assert not any(h.hash in reopened.block_index.header_dict for h in spam)
+    assert all(h.hash not in reopened.block_index.header_dict for h in spam)
     reopened.close()
 
 
@@ -8102,7 +8102,7 @@ def test_a_peer_holding_download_is_answered_below_the_minimum_work(
     other = a_peer(permissions=NetPermissionFlags.RELAY)
     getheaders(node, message, other)
     (sent,) = other.sent
-    assert list(sent.headers) == []
+    assert not list(sent.headers)
 
 
 def test_a_pruned_node_serves_a_no_ban_peer_below_its_retained_depth() -> None:

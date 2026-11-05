@@ -1001,7 +1001,7 @@ def test_a_group_with_most_addresses_is_drawn_as_one_bucket() -> None:
     )
     draw = peer_db.address_sampler()
     drawn = [draw() for _ in range(400)]
-    other = sum(1 for a in drawn if a is not None and a.address == bytes([8, 8, 8, 8]))
+    other = sum(a is not None and a.address == bytes([8, 8, 8, 8]) for a in drawn)
     assert 100 < other < 300
 
 
@@ -1117,7 +1117,7 @@ def test_a_draw_takes_a_bucket_before_an_address() -> None:
     )
     draw = peer_db.address_sampler(new_only=True)
     drawn = [draw() for _ in range(400)]
-    assert 80 < sum(1 for a in drawn if a == one) < 320
+    assert 80 < drawn.count(one) < 320
 
 
 @pytest.mark.parametrize(("start", "index"), [(0, 0), (11, 1), (12, 1), (13, 0)])
@@ -2382,10 +2382,8 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
     peer_db = a_peer_db()
     assert not peer_db.holds_network(BIP155Network.IPV6)
     held = peer_address("2a01:4f8::1", 8333)
-    if table == "addresses":
-        peer_db.add_addresses([held])
-    else:
-        peer_db.add_addresses([held])
+    peer_db.add_addresses([held])
+    if table != "addresses":
         peer_db.add_active_address(held)
         peer_db.addresses.clear()
     assert peer_db.holds_network(BIP155Network.IPV6)
@@ -2461,7 +2459,7 @@ def test_a_draw_on_no_network_never_calls_get_network(
 
     monkeypatch.setattr(address_module, "get_network", get_network)
     assert peer_db.address_sampler()() is not None
-    assert asked == []
+    assert not asked
     assert peer_db.address_sampler(network=Network.IPV4)() is not None
     assert asked
 
@@ -2786,7 +2784,7 @@ def test_the_draw_keeps_an_address_by_its_chance() -> None:
     peer_db.attempt(tried)
     draw = peer_db.address_sampler(new_only=True)
     drawn = [draw() for _ in range(300)]
-    assert sum(1 for a in drawn if a == idle) > 250
+    assert drawn.count(idle) > 250
 
 
 def test_a_stored_table_comes_back_with_its_tried_entries_and_counts(

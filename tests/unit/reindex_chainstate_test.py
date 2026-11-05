@@ -176,7 +176,7 @@ def test_rebuilds_the_same_tip_utxo_set_and_undo_and_keeps_the_filters(
     with _node(tmp_path, reindex_chainstate=True) as node:
         assert node.status == NodeStatus.Reindexing
         assert node.chainstate.block_index.active_chain == [regtest.genesis.hash]
-        assert list(node.chainstate.utxo_index.cursor()) == []
+        assert not list(node.chainstate.utxo_index.cursor())
         # Core keeps its block filter index on `-reindex-chainstate`
         assert filters == {
             block_hash: node.chainstate.filter_index.get_filter(block_hash)
@@ -405,7 +405,7 @@ def test_a_block_is_dropped_unread_while_reindexing() -> None:
         check_validity=False
     )
     block_callback(node, payload, peer)
-    assert added == []
+    assert not added
     assert peer.download_queue == [block_hash]
     node.status = NodeStatus.BlockSynced
     block_callback(node, payload, peer)

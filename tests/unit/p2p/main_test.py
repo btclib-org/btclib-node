@@ -933,7 +933,7 @@ def test_resume_cfilters_keeps_the_peer_on_a_bare_exception(
 
     monkeypatch.setattr(main_module, "advance_cfilters", boom)
     assert resume_cfilters(node) is True
-    assert stopped == []
+    assert not stopped
     assert node.pending_cfilters == {}
     assert not discouraged
     assert logged
@@ -1090,7 +1090,7 @@ def test_resume_getdata_keeps_the_peer_on_a_bare_exception(
 
     monkeypatch.setattr(main_module, "advance_getdata", boom)
     assert resume_getdata(node) is True
-    assert stopped == []
+    assert not stopped
     assert node.pending_getdata == {}
     assert not discouraged
     assert logged
