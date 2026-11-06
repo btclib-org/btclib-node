@@ -32,6 +32,58 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.11.7
+
+### `scantxoutset` names a key spelled twice under v32.1's origin
+
+The `bip32-descriptors` floor moves to 2026.11.2: that key gets v32.1's origin
+(closes #2104), and `raw` in `sh`, `wsh` and `tr`, `rawpkh`, and `rawnode` and
+`rawleaf` in `tr`, which v32.1 refuses, are accepted (issue #2231).
+
+### `homepage` is the package's page on btclib.org
+
+`[project.urls]` names `https://btclib.org/btclib-node/` as `homepage`, as
+btclib-org/.github#1974 asks (closes #2191).
+
+### The renamed functional-tests repository is named `functional-tests`
+
+`ARCHITECTURE.md`, `REPOSITORY.md` and the `STOP_DUMP_DELAY` comment name
+btclib-org/functional-tests (closes #2179, closes #2198).
+
+### Sourcery runs on every pull request
+
+`sourcery.yml` is a required check, and its findings on `main` are fixed or
+skipped by name with their reason (issue btclib-org/.github#2005).
+
+### btclib-org/.github's reusable workflows are pinned at v2026.11.5
+
+Every call moves from v2026.11.2, so that `sourcery.yml` can call
+`reusable-sourcery.yml` (issue btclib-org/.github#2005).
+
+### `release.yml`'s `pypi-install` job is named `published`
+
+The name the shared `RELEASING.md` gives it (closes #2223).
+
+### `tests/interpreters_test.py` reads the pin off a job's first Setup uv step
+
+`_implicit()` adds `.python-version`'s pin only where that step names no
+`python-version` (closes #2224).
+
+### `CONTRIBUTING.md` says who answers for a pull request the agent opened
+
+Its shared part is btclib-org/.github's at 23c0cbe, which adds that the approver
+answers for every line (issue btclib-org/.github#2022).
+
+### The locked dependencies and setup-uv are updated
+
+ecc 2026.10.30, btclib-secp256k1 0.8.0.13, ruff 0.17.3, pytest 9.2.0 and others
+in `uv.lock` (#2221); setup-uv v10.3.3 (#2217).
+
+### The version is 2026.11.7
+
+`pyproject.toml` declares `2026.11.7` in place of the `2026.12` placeholder
+(#2215).
+
 ## v2026.11.4
 
 ### A peer paused on a full send buffer is dropped after 20 minutes
