@@ -1393,12 +1393,22 @@ def test_an_unroutable_address_is_not_kept(address: NetworkAddressV2) -> None:
     "address",
     [
         peer_address("1.2.3.4", 8333),
+        peer_address("223.255.255.255", 8333),
         peer_address("2a01:4f8::1", 8333),
+        peer_address("feff::1", 8333),
         NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x02" * 32, 8333),
         NetworkAddressV2(0, 0, BIP155Network.I2P, b"\x02" * 32, 8333),
         NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + b"\x02" * 15, 8333),
     ],
-    ids=["ipv4", "ipv6", "torv3", "i2p", "cjdns"],
+    ids=[
+        "ipv4",
+        "ipv4 multicast boundary",
+        "ipv6",
+        "ipv6 multicast boundary",
+        "torv3",
+        "i2p",
+        "cjdns",
+    ],
 )
 def test_a_routable_address_of_every_network_core_decodes_is_kept(
     address: NetworkAddressV2,
@@ -2216,6 +2226,11 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) ->
 _UNSTORABLE = [
     pytest.param(peer_address("127.0.0.1", 18444), id="loopback"),
     pytest.param(peer_address("192.168.1.1", 8333), id="rfc1918"),
+    pytest.param(peer_address("224.0.0.1", 8333), id="ipv4 multicast"),
+    pytest.param(peer_address("239.255.255.250", 8333), id="ipv4 multicast upper"),
+    pytest.param(peer_address("::ffff:224.0.0.1", 8333), id="mapped ipv4 multicast"),
+    pytest.param(peer_address("ff02::1", 8333), id="ipv6 multicast"),
+    pytest.param(peer_address("ff0e::1", 8333), id="ipv6 multicast global"),
     pytest.param(peer_address("::1", 8333), id="ipv6 loopback"),
     pytest.param(peer_address(_AN_ONIONCAT_ADDRESS, 8333), id="embedded torv2"),
 ]

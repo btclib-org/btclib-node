@@ -267,10 +267,12 @@ _UNROUTABLE = (
     IPv4Network("192.0.2.0/24"),  # RFC5737
     IPv4Network("198.51.100.0/24"),  # RFC5737
     IPv4Network("203.0.113.0/24"),  # RFC5737
+    IPv4Network("224.0.0.0/4"),  # IPv4 multicast
     IPv6Network("fe80::/64"),  # RFC4862
     IPv6Network("fc00::/7"),  # RFC4193
     IPv6Network("2001:10::/28"),  # RFC4843
     IPv6Network("2001:20::/28"),  # RFC7343
+    IPv6Network("ff00::/8"),  # IPv6 multicast
 )
 # The IPv6 ranges `CNetAddr::HasLinkedIPv4` reads an IPv4 address out of
 _SIIT = IPv6Network("::ffff:0:0:0/96")  # RFC6145
