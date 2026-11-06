@@ -590,9 +590,21 @@ and what follows is kept by hand.
 version stays on PyPI whatever a tag does, an index refusing a version
 that has been uploaded once, and deleting its tag takes away the only
 thing that says which commit it was built from. A tag nothing has been
-published from can be deleted and cut again, and whether anything has
-is read from the index — `RELEASING.md`'s *If something goes wrong*
-has the call that licenses the deletion.
+published from can be deleted and cut again.
+
+Whether anything has been published is read from the simple API, the
+index's own state. The JSON API of the `curl` call above is a cache of
+it, and can still lack a version the index serves
+(btclib-org/btclib-node#545):
+
+```shell
+curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
+  https://pypi.org/simple/btclib-node/ |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["versions"])'
+```
+
+Run it again before an absence is trusted: the index can lack a version
+just after its upload (btclib-org/btclib-node#546).
 
 `RELEASING.md` is the whole of the procedure, from the one-time
 publisher registration through the tag command itself — naming the
