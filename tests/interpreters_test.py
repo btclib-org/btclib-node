@@ -291,7 +291,7 @@ def _unconditioned(block: str) -> str:
 
 
 def _implicit(block: str) -> set[str]:
-    """Return `.python-version`'s pin where the job's Setup uv step names none.
+    """Return `.python-version`'s pin where a Setup uv step names none.
 
     A Setup uv step naming no `python-version:` -- `dist`'s own shape --
     takes whatever `.python-version` pins for every step of the job that
@@ -301,7 +301,7 @@ def _implicit(block: str) -> set[str]:
     conditioned out is never read as the job's own (issue #991).
     """
     setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
-    if setup and all("python-version" not in step for step in setup):
+    if any("python-version" not in step for step in setup):
         return {_PIN}
     return set()
 
@@ -797,6 +797,8 @@ def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
     )
     assert _found({"dist": unpinned}, {"dist"}) == {_PIN}
     assert _found({"dist": pinned}, {"dist"}) == {"3.12"}
+    mixed = unpinned + pinned
+    assert _found({"dist": mixed}, {"dist"}) == {_PIN, "3.12"}
     # the control: a job naming no Setup uv step at all -- no gate job
     # here is shaped that way, `changes` being a call to a reusable
     # workflow with no `steps:` of its own -- gets nothing added either,
