@@ -172,11 +172,11 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # `dist`'s own Setup uv step names no interpreter, so what a job merely
 # names would miss it entirely: `uv build`, the `--only-group check`
 # steps and the smoke test that imports `Node` all take whatever
-# `.python-version` pins, and a free-threaded pin would reach that
-# smoke test -- project code, unlike the other two -- with nothing here
-# to say so. `_implicit`, below `_unconditioned`, is what does not miss
-# it: read beside `_named` in `_found`, it adds `.python-version`'s own
-# pin, `_PIN` further down, wherever a job's Setup uv step is silent on
+# `.python-version` pins, and a free-threaded pin would reach that smoke
+# test -- project code, unlike the other two -- with nothing here to say
+# so. `_implicit`, below `_unconditioned`, is what does not miss it:
+# read beside `_named` in `_found`, it adds `.python-version`'s own pin,
+# `_PIN` further down, wherever a job's first Setup uv step is silent on
 # one (issue #991). `dist`'s remaining two steps are unaffected either
 # way: the sdist normalizer and the bill-of-materials writer each carry
 # their own `--python 3.14`, a version `_named` already reads off their
@@ -291,17 +291,24 @@ def _unconditioned(block: str) -> str:
 
 
 def _implicit(block: str) -> set[str]:
-    """Return `.python-version`'s pin where the job's Setup uv step names none.
+    """Return `.python-version`'s pin where the first Setup uv step names none.
 
-    A Setup uv step naming no `python-version:` -- `dist`'s own shape --
-    takes whatever `.python-version` pins for every step of the job that
-    does not override that with a `--python` of its own, and `_named`
-    reads none of those: there is no token in this workflow for it to
-    find. Called on `_unconditioned` text, so a Setup uv step itself
-    conditioned out is never read as the job's own (issue #991).
+    A job's first Setup uv step naming no `python-version:` -- `dist`'s
+    own shape -- leaves `.python-version`'s pin to every later step that
+    passes no `--python` of its own, until a Setup uv step names a
+    version. `_named` reads none of those: there is no token in this
+    workflow for it to find. Called on `_unconditioned` text, so a Setup
+    uv step itself conditioned out is never read as the job's own
+    (issue #991).
+
+    Where an earlier Setup uv step names a version, a later one naming
+    none changes nothing. setup-uv exports `UV_PYTHON` only where a step
+    names a version, a later step does not clear it, and `uv run` reads
+    `UV_PYTHON` ahead of `.python-version`. So every step after the
+    pinned one runs the version it names, which `_named` already reads.
     """
     setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
-    if setup and all("python-version" not in step for step in setup):
+    if setup and "python-version" not in setup[0]:
         return {_PIN}
     return set()
 
@@ -782,6 +789,11 @@ def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
     with nothing here to say so unless `.python-version`'s own pin
     stands in (issue #991). The pinned job beside it is `coverage`'s own
     shape, which names an interpreter explicitly and gets nothing added.
+
+    A job with both shapes is read in order, as `_implicit` says. The
+    unpinned step first gets the pin added beside the named version. The
+    pinned step first gets nothing added, every later step running the
+    version it names.
     """
     unpinned = (
         "      - name: Setup uv\n"
@@ -797,6 +809,9 @@ def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
     )
     assert _found({"dist": unpinned}, {"dist"}) == {_PIN}
     assert _found({"dist": pinned}, {"dist"}) == {"3.12"}
+    mixed = unpinned + pinned
+    assert _found({"dist": mixed}, {"dist"}) == {_PIN, "3.12"}
+    assert _found({"dist": pinned + unpinned}, {"dist"}) == {"3.12"}
     # the control: a job naming no Setup uv step at all -- no gate job
     # here is shaped that way, `changes` being a call to a reusable
     # workflow with no `steps:` of its own -- gets nothing added either,
