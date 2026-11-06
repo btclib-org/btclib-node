@@ -479,7 +479,7 @@ this release included.
    says why: nothing about the publication depends on it, so the fix is
    a build on their side and never a moved tag.
 
-1. `release.yml`'s own `pypi-install` job already installed what was
+1. `release.yml`'s own `published` job already installed what was
    just published and ran it past import, on every image this
    repository claims and on `windows-latest` besides — the audit above
    is where its own result is read. What is left to check by hand is
