@@ -591,8 +591,9 @@ version stays on PyPI whatever a tag does, an index refusing a version
 that has been uploaded once, and deleting its tag takes away the only
 thing that says which commit it was built from. A tag nothing has been
 published from can be deleted and cut again, and whether anything has
-is read from the index — `RELEASING.md`'s *If something goes wrong*
-has the call that licenses the deletion.
+is read from the index, by the `curl` call above, run again before an
+absence is trusted: a CDN serves the index, and it can answer stale for
+minutes after an upload (btclib-org/btclib-node#545).
 
 `RELEASING.md` is the whole of the procedure, from the one-time
 publisher registration through the tag command itself — naming the
