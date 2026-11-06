@@ -238,7 +238,7 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
       # No install-verify step here, matching every other repository
-      # that publishes: pypi-install.yml, below the pypi-install job past
+      # that publishes: pypi-install.yml, below the published job past
       # publish-pypi, reads pypi.org and has nothing to say about
       # test.pypi.org, a rehearsal being a check on the publish step
       # itself rather than on what the index then serves
@@ -292,8 +292,8 @@ jobs:
   # rather than before it -- a release announcing files that do not
   # install is worse than a release announced a minute later, but the
   # announcement is not what makes them installable
-  pypi-install:
-    name: Run the pypi-install workflow
+  published:
+    name: published
     needs: publish-pypi
     # publish-pypi's own always() opts it back in past public-api's
     # designed failure, but does not carry this job with it: a bare
