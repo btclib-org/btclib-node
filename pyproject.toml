@@ -532,11 +532,27 @@ source-include = [
 # pattern here takes out is not reported as one the sdist is missing, and
 # does not have to be named again in [tool.check-sdist] below
 source-exclude = [
-    # the one test that reads something outside tests/: fuzz/ is
-    # git-only below, so this module would collect from an unpacked
-    # sdist and fail on a directory that is not there. Anchored, for
-    # the reason the docs line below is.
+    # the test modules whose subject is not in the archive. Shipped, they
+    # fail in an unpacked sdist on what is not there, and a packager
+    # running the suite from it reads a red run that says nothing about
+    # this package. Anchored, for the reason the docs line below is.
+    #
+    # `.github/` is not shipped, as the comment on source-include above
+    # says: these load a script from `.github/scripts` by path, or read
+    # the CI files there
+    "/tests/check_core_citation_pin_test.py",
+    "/tests/check_vendored_pin_test.py",
+    "/tests/interpreters_test.py",
+    "/tests/normalize_sdist_test.py",
+    "/tests/release_digests_test.py",
+    # fuzz/ is git-only below: fuzz_corpus_test.py reads the harnesses
+    # and the seeds there, and property_test.py imports what reads them
     "/tests/fuzz_corpus_test.py",
+    "/tests/property_test.py",
+    # an unpacked sdist is no git repository: these ask git about the
+    # tracked files
+    "/tests/pragma_test.py",
+    "/tests/sdist_dotted_names_test.py",
     # where sphinx-build writes, CONTRIBUTING.md's docs command and
     # docs.yml both naming docs/build/html: "docs/**" above reaches it,
     # so an sdist built after a local docs build would otherwise carry
