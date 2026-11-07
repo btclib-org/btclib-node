@@ -348,6 +348,9 @@ test = [
     # `btclib>=2026.10.24` and `ecc>=2026.10.23`
     # (btclib-org/btclib-node#2008).
     "btclib-wallet>=2026.10.25",
+    # tests/docs_conf_test.py executes docs/source/conf.py, which imports
+    # it; the floor is `docs`'s, below
+    "sphinx>=9.1.0",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
@@ -675,7 +678,8 @@ package = ["src/btclib_node"]
 
 [tool.pytest.ini_options]
 # The modules beside the directories rather than under either are named
-# one at a time: `tests/fuzz_corpus_test.py` reads fuzz/,
+# one at a time: `tests/docs_conf_test.py` runs the transform of
+# docs/source/conf.py, `tests/fuzz_corpus_test.py` reads fuzz/,
 # `tests/interpreters_test.py` reads pyproject.toml, .python-version and
 # the CI files against one another, `tests/property_test.py` draws
 # unconstrained octets against the entry points those harnesses declare,
@@ -710,6 +714,7 @@ package = ["src/btclib_node"]
 testpaths = [
     "tests/check_core_citation_pin_test.py",
     "tests/check_vendored_pin_test.py",
+    "tests/docs_conf_test.py",
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/openrpc_test.py",
