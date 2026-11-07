@@ -42,10 +42,10 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-    import pytest
 
 _ROOT = Path(__file__).parents[1]
 _PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -176,7 +176,7 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # test -- project code, unlike the other two -- with nothing here to say
 # so. `_implicit`, below `_unconditioned`, is what does not miss it:
 # read beside `_named` in `_found`, it adds `.python-version`'s own pin,
-# `_PIN` further down, wherever a job's first Setup uv step is silent on
+# `_pin` further down, wherever a job's first Setup uv step is silent on
 # one (issue #991). `dist`'s remaining two steps are unaffected either
 # way: the sdist normalizer and the bill-of-materials writer each carry
 # their own `--python 3.14`, a version `_named` already reads off their
@@ -309,7 +309,7 @@ def _implicit(block: str) -> set[str]:
     """
     setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
     if setup and "python-version" not in setup[0]:
-        return {_PIN}
+        return {_pin()}
     return set()
 
 
@@ -477,15 +477,29 @@ _FLOOR = str(_PROJECT.get("requires-python", "")).removeprefix(">=")
 _CLASSIFIED = tuple(
     match[1] for match in map(_CLASSIFIER.match, _PROJECT["classifiers"]) if match
 )
-# a whole-line comment is what .python-version takes -- a trailing one
-# on the version line makes uv ignore the file -- so what is left once
-# they are dropped is the pin. The `t` of a free-threaded build goes
-# with them: it asks for that version without the GIL, which is the
-# same version as far as a classifier is concerned
-_LINES = (_ROOT / ".python-version").read_text(encoding="utf-8").splitlines()
-_PIN = next(
-    (line.strip() for line in _LINES if line.strip() and line.lstrip()[0] != "#"), ""
-).removesuffix("t")
+
+
+def _pin() -> str:
+    """Return the interpreter `.python-version` pins, `t` included.
+
+    A whole-line comment is what the file takes -- a trailing one on the
+    version line makes uv ignore the file -- so what is left once they
+    are dropped is the pin. A free-threaded `t` stays: it is what
+    `_implicit` reports a job running (issue #2228). The file is read
+    through `_ROOT` at each call, so a test can point it at one of its
+    own.
+    """
+    return next(
+        (
+            line.strip()
+            for line in (_ROOT / ".python-version")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() and line.lstrip()[0] != "#"
+        ),
+        "",
+    )
+
 
 # `as_posix()`, not `str()`: a `PurePath`'s own `__str__` renders with
 # `os.sep`, backslashes on a `WindowsPath` (`pathlib`'s own
@@ -513,7 +527,7 @@ def test_every_declaration_was_read() -> None:
     """
     assert _FLOOR, "pyproject.toml declares no requires-python"
     assert _CLASSIFIED, "pyproject.toml declares no per-version Python classifier"
-    assert _PIN, ".python-version names no interpreter"
+    assert _pin(), ".python-version names no interpreter"
     assert _NAMING == _NAMES_ONE, (
         f"an interpreter is named in {', '.join(_NAMING) or 'no CI file'},"
         f" and the files that carry one are {', '.join(_NAMES_ONE)}"
@@ -530,10 +544,15 @@ def test_the_floor_is_the_lowest_classifier() -> None:
 
 
 def test_the_pin_is_the_newest_classifier() -> None:
-    """`.python-version` and the classifiers name the same newest Python."""
+    """`.python-version` and the classifiers name the same newest Python.
+
+    The pin's `t` is dropped: it asks for that version without the GIL,
+    which is the same version as far as a classifier is concerned.
+    """
     newest = max(_CLASSIFIED, key=_ordered)
-    assert newest == _PIN, (
-        f".python-version pins {_PIN} and the newest classifier is"
+    pin = _pin()
+    assert newest == pin.removesuffix("t"), (
+        f".python-version pins {pin} and the newest classifier is"
         f" {newest}: a bare `uv run` is the version this package claims"
     )
 
@@ -807,10 +826,10 @@ def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
         "          enable-cache: true\n",
         '          enable-cache: true\n          python-version: "3.12"\n',
     )
-    assert _found({"dist": unpinned}, {"dist"}) == {_PIN}
+    assert _found({"dist": unpinned}, {"dist"}) == {_pin()}
     assert _found({"dist": pinned}, {"dist"}) == {"3.12"}
     mixed = unpinned + pinned
-    assert _found({"dist": mixed}, {"dist"}) == {_PIN, "3.12"}
+    assert _found({"dist": mixed}, {"dist"}) == {_pin(), "3.12"}
     assert _found({"dist": pinned + unpinned}, {"dist"}) == {"3.12"}
     # the control: a job naming no Setup uv step at all -- no gate job
     # here is shaped that way, `changes` being a call to a reusable
@@ -818,6 +837,26 @@ def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
     # `_implicit` having no step to read as silent on a version
     no_setup_uv = "      - name: A step\n        run: true\n"
     assert _found({"other": no_setup_uv}, {"other"}) == set()
+
+
+def test_a_free_threaded_pin_reaches_the_free_threading_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A free-threaded pin is what `dist` runs, and still the newest classifier.
+
+    The pin is read off a `.python-version` of the test's own through
+    `_ROOT`, so a `t` dropped in `_pin` fails the first assertion. The
+    free-threading check then refuses the gate for the missing
+    classifier, while the newest-classifier check still passes (issue
+    #2228).
+    """
+    pinned = f"{max(_CLASSIFIED, key=_ordered)}t"
+    (tmp_path / ".python-version").write_text(f"# a pin\n{pinned}\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "_ROOT", tmp_path)
+    assert pinned in _gating()
+    with pytest.raises(AssertionError, match=f"waits on run {re.escape(pinned)}"):
+        test_free_threading_is_classified_exactly_when_the_gate_runs_it()
+    test_the_pin_is_the_newest_classifier()
 
 
 def test_found_discounts_a_job_whose_only_pytest_step_may_not_run() -> None:
@@ -874,7 +913,7 @@ def test_found_discounts_an_implicit_pin_the_same_way() -> None:
     # the control: `_implicit` alone, called directly rather than through
     # `_found`, does add the pin -- without it the assertion above could
     # not tell a gate with teeth from `_implicit` finding nothing at all
-    assert _implicit(maybe_skipped) == {_PIN}
+    assert _implicit(maybe_skipped) == {_pin()}
 
 
 def test_found_follows_a_local_action_regardless(
