@@ -1395,7 +1395,7 @@ def _validate_block(
 
 # Core's own `MAX_MONEY` (`src/consensus/amount.h`, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the bound `MoneyRange` puts
-# on the fees a block accumulates
+# on an input value, an input total and the fees a block accumulates
 _MAX_MONEY = 21_000_000 * 100_000_000
 
 
@@ -2695,21 +2695,32 @@ def _sigop_adjusted_weight(tx: Tx, prev_outputs: list[TxOut]) -> int:
 
 
 def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> None:
-    """Refuse an immature coinbase spend or outputs over the inputs.
+    """Refuse an immature coinbase, an input out of range, outputs over inputs.
 
     Core's own `Consensus::CheckTxInputs` (`src/consensus/tx_verify.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order and its
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order and its
     words, for a mempool candidate and for each transaction of a block,
     `_validate_block`. A mempool parent's output is never a coinbase's:
     a coinbase is never held. btclib-org/btclib-node#1328
+
+    Core's last check, "bad-txns-fee-outofrange", is left out because it
+    cannot fail, as Core's own comment there says: the input total is in
+    0..MAX_MONEY, and the outputs are neither negative (`Tx.assert_valid`,
+    Core's `CheckTransaction`) nor over it, so the fee is in that range too.
+    btclib-org/btclib-node#2111
     """
+    value_in = 0
     for coin in prevout_coins:
         depth = spend_height - coin.height
         if coin.is_coinbase and depth < COINBASE_MATURITY:
             reason = "bad-txns-premature-spend-of-coinbase"
             details = f"tried to spend coinbase at depth {depth}"
             raise TxRejectedError(reason, details)
-    value_in = sum(coin.tx_out.value for coin in prevout_coins)
+        value = coin.tx_out.value
+        value_in += value
+        if not (0 <= value <= _MAX_MONEY and 0 <= value_in <= _MAX_MONEY):
+            reason = "bad-txns-inputvalues-outofrange"
+            raise TxRejectedError(reason)
     value_out = sum(tx_out.value for tx_out in tx.vout)
     if value_in < value_out:
         reason = "bad-txns-in-belowout"

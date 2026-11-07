@@ -1275,9 +1275,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `BlockScriptVerifyError`, whose own `str()` is Core's
     `block-script-verify-flag-failed (%s)` (`CheckInputScripts`, same
     file and sha) with `ScriptErrorString`.
-    A spend of an immature coinbase and one over its inputs are Core's
-    `bad-txns-premature-spend-of-coinbase` and `bad-txns-in-belowout`,
-    the reason alone as `GetRejectReason` gives it, and so are
+    A spend `main._check_tx_inputs` refuses is answered with Core's
+    reason alone, as `GetRejectReason` gives it, and so are
     `bad-txns-accumulated-fee-outofrange` and `bad-blk-sigops`, and the
     words `main._CONTEXTUAL_REASONS` gives btclib's contextual refusals.
     Anything else `update_chain`'s trial raises for this exact hash is
