@@ -43,7 +43,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, fee_estimator, main
-from btclib_node.block_db import BlockDB
+from btclib_node.block_db import BlockDB, Coin
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
@@ -98,7 +98,6 @@ from tests.unit.rpc.mempool_graph_test import a_tx
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
     from btclib_node.rpc.connection import RpcConnection
 
@@ -570,19 +569,28 @@ def test_the_fees_a_block_accumulates_are_bounded_by_max_money(
     the block connects, one satoshi under it, with each spend's own fee
     well inside, is `bad-txns-accumulated-fee-outofrange`
     (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    Each spends a coin worth its fee alone, because `_check_tx_inputs`
+    bounds an input by the same `MAX_MONEY` first.
     """
     chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
-    block_index = connect(node, chain)
     fee = 10
-    # a coinbase `COINBASE_MATURITY` deep, and an output the last block made
-    # to be spent
+    # a coinbase `COINBASE_MATURITY` deep, and an output the last block made,
+    # each turned into a coin worth `fee`
     coins_spent = [chain[1].transactions[0], chain[-1].transactions[1]]
-    spends = [spend(tx, tx.vout[0].value - fee) for tx in coins_spent]
-    subsidy_here = generate_coinbase(height=len(chain) + 1).vout[0].value
-    block = build_block(
+    funding = [spend(tx, fee) for tx in coins_spent]
+    funded = build_block(
         chain[-1].header.hash,
-        [generate_coinbase(subsidy_here + 2 * fee, height=len(chain) + 1), *spends],
+        [generate_coinbase(height=len(chain) + 1), *funding],
         len(chain),
+    )
+    block_index = connect(node, [*chain, funded])
+    spends = [spend(tx, 0) for tx in funding]
+    height = len(chain) + 2
+    subsidy_here = generate_coinbase(height=height).vout[0].value
+    block = build_block(
+        funded.header.hash,
+        [generate_coinbase(subsidy_here + 2 * fee, height=height), *spends],
+        height - 1,
     )
     monkeypatch.setattr(main, "_MAX_MONEY", 2 * fee + limit_offset)
     connect(node, [block])
@@ -1602,6 +1610,57 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
         f"bad-txns-in-belowout, value in ({format_money(value_out - 1)}) "
         f"< value out ({format_money(value_out)})"
     )
+
+
+def a_coin(value: int, *, is_coinbase: bool = False) -> Coin:
+    """Return a coin at height 1 worth `value`, out of range or not."""
+    tx_out = TxOut(value, anyone_can_spend(), check_validity=False)
+    return Coin(tx_out, height=1, is_coinbase=is_coinbase, check_validity=False)
+
+
+_OUT_OF_RANGE = "bad-txns-inputvalues-outofrange"
+# one block deep at the spend height the tests below pass, and worth too much
+_IMMATURE_COINBASE = a_coin(main._MAX_MONEY + 1, is_coinbase=True)
+
+
+@pytest.mark.parametrize(
+    ("coins", "refusal"),
+    [
+        pytest.param([a_coin(main._MAX_MONEY), a_coin(1)], _OUT_OF_RANGE, id="total"),
+        pytest.param([a_coin(main._MAX_MONEY + 1)], _OUT_OF_RANGE, id="value"),
+        pytest.param([a_coin(1), a_coin(-1)], _OUT_OF_RANGE, id="negative"),
+        pytest.param(
+            [a_coin(main._MAX_MONEY + 1), _IMMATURE_COINBASE],
+            _OUT_OF_RANGE,
+            id="before-a-later-coinbase",
+        ),
+        pytest.param(
+            [_IMMATURE_COINBASE],
+            "bad-txns-premature-spend-of-coinbase, tried to spend coinbase at depth 1",
+            id="after-its-own-maturity",
+        ),
+    ],
+)
+def test_an_input_value_out_of_range_is_refused(
+    coins: list[Coin], refusal: str
+) -> None:
+    """Core's `CheckTxInputs` bounds each coin and the running total.
+
+    `MoneyRange` on both, in the loop that asks maturity, after it
+    (`src/consensus/tx_verify.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag): a coin out of range is refused before a later coin's
+    maturity, and an immature coinbase worth too much is refused as
+    immature. btclib-org/btclib-node#2111
+    """
+    with pytest.raises(TxRejectedError) as refused:
+        main._check_tx_inputs(coins, generate_random_transaction(value=1), 2)
+    assert str(refused.value) == refusal
+
+
+def test_an_input_total_of_max_money_is_in_range() -> None:
+    """`MoneyRange` is inclusive: inputs summing to `MAX_MONEY` pass."""
+    coins = [a_coin(main._MAX_MONEY - 1), a_coin(1)]
+    main._check_tx_inputs(coins, generate_random_transaction(value=1), 2)
 
 
 def a_candidate_heavier_than_standard(node: Node) -> Tx:
