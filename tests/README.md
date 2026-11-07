@@ -30,8 +30,8 @@ and every test in it skips itself without one. `slow/` holds what a node
 can be tested with but not within every run (*Slow tests*).
 
 `tests/` root holds what neither of those is the subject of: a script
-under `.github/scripts/` (`check_core_citation_pin_test.py`
-and `check_vendored_pin_test.py`) or `scripts/`
+under `.github/scripts/` (`check_core_citation_pin_test.py`,
+`check_vendored_pin_test.py` and `normalize_sdist_test.py`) or `scripts/`
 (`openrpc_test.py`), the corpus
 and property layer over `fuzz/`'s own harnesses (`fuzz_corpus_test.py`,
 `property_test.py`), or a rule or fact recorded across files no one

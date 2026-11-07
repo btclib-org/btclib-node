@@ -34,6 +34,7 @@ The script is loaded by path, `.github/scripts` being no package.
 from __future__ import annotations
 
 import importlib.util
+import runpy
 import shutil
 import subprocess
 import sys
@@ -480,3 +481,45 @@ def test_a_stale_citation_in_changelog_is_not_flagged_end_to_end(
     )
 
     assert script.main() == 0
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        pytest.param(_WORKFLOW.replace('"31.1"', "31.1"), id="none"),
+        pytest.param(_WORKFLOW + '      bitcoind-version: "31.2"\n', id="two"),
+    ],
+)
+def test_a_workflow_without_exactly_one_pin_is_refused(
+    agreeing_tree: ModuleType, tmp_path: Path, workflow: str
+) -> None:
+    """No pin, or two, is no release to hold the citations to."""
+    (tmp_path / "integration-bitcoind.yml").write_text(workflow, encoding="utf-8")
+    with pytest.raises(AssertionError, match="expected exactly one bitcoind version"):
+        agreeing_tree.main()
+
+
+def test_a_tracked_file_missing_from_disk_is_skipped(
+    agreeing_tree: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path `git ls-files` names and the disk has not got is not read.
+
+    A file deleted and not yet staged is one, and its text is no claim
+    about the tree any more.
+    """
+    tracked = agreeing_tree._tracked_files()
+    gone = tmp_path / "deleted_but_tracked.py"
+    monkeypatch.setattr(agreeing_tree, "_tracked_files", lambda: [*tracked, gone])
+    assert agreeing_tree.main() == 0
+
+
+def test_the_main_guard_exits_with_what_main_returns() -> None:
+    """Run as `__main__` against this tree, the script exits 0.
+
+    `runpy.run_path` runs the file in this interpreter, where coverage
+    measures it, and `_ROOT` is then this tree, as in
+    `test_this_tree_agrees_with_itself`.
+    """
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(_SCRIPT), run_name="__main__")
+    assert exc.value.code == 0
