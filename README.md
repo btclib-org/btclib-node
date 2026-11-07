@@ -78,66 +78,71 @@ expose.
 
 A checkout of `main` is a cycle in progress, declaring the month with no
 day, so it is not the same thing as what pip installs;
-[CONTRIBUTING.md](./CONTRIBUTING.md) has how to work from one.
+[CONTRIBUTING.md](https://github.com/btclib-org/btclib-node/blob/main/CONTRIBUTING.md)
+has how to work from one.
 
 ## Running a node
 
-[Running a node](./docs/source/running_a_node.md) is what comes after
-`pip install`: the command against each of the four chains, pointing it
-at a peer of your own, reading its progress, the RPC methods it
-answers, what it validates and what it does not, and what script
-validation costs on mainnet.
+[Running a node](https://github.com/btclib-org/btclib-node/blob/main/docs/source/running_a_node.md)
+is what comes after `pip install`: the command against each of the four
+chains, pointing it at a peer of your own, reading its progress, the RPC
+methods it answers, what it validates and what it does not, and what
+script validation costs on mainnet.
 
 ## Architecture
 
-[ARCHITECTURE.md](./ARCHITECTURE.md) is the design: the loop `Node`
-runs, the protocol and the RPC surface around it, and the store
-underneath. [ASSURANCE_CASE.md](./ASSURANCE_CASE.md) is why the
-security section below holds.
+[ARCHITECTURE.md](https://github.com/btclib-org/btclib-node/blob/main/ARCHITECTURE.md)
+is the design: the loop `Node` runs, the protocol and the RPC surface
+around it, and the store underneath.
+[ASSURANCE_CASE.md](https://github.com/btclib-org/btclib-node/blob/main/ASSURANCE_CASE.md)
+is why the security section below holds.
 
 ## Security
 
 The JSON-RPC listener takes Bitcoin Core's cookie, `-rpcauth` and
 `-rpcuser`/`-rpcpassword` credentials, and any caller it accepts may
 call every method its `-rpcwhitelist` leaves it —
-[SECURITY.md](./SECURITY.md) carries that and the rest of what is known
-and recorded rather than a vulnerability to report again, and how to
-report one that is not already there.
+[SECURITY.md](https://github.com/btclib-org/btclib-node/blob/main/SECURITY.md)
+carries that and the rest of what is known and recorded rather than a
+vulnerability to report again, and how to report one that is not
+already there.
 
 ## Contributing
 
 Development is LLM-based: humans are welcome, as long as they are
 comfortable with agentic development ;-). A contribution must have been
 read and understood by the person who submits it.
-[`CONTRIBUTING.md`](./CONTRIBUTING.md#working-with-an-llm) has the rules.
+[`CONTRIBUTING.md`](https://github.com/btclib-org/btclib-node/blob/main/CONTRIBUTING.md#working-with-an-llm)
+has the rules.
 
-[CONTRIBUTING.md](./CONTRIBUTING.md)'s last section has the commands, and
-they are the ones CI runs: `uv sync` builds the environment, `uv run
-pytest` is the suite and its coverage floor, and the lint gate is
-`.pre-commit-config.yaml` run as `lint.yml` runs it. uv is the only tool
-that has to be installed; it fetches the interpreter and every dependency
-group itself.
+[CONTRIBUTING.md](https://github.com/btclib-org/btclib-node/blob/main/CONTRIBUTING.md)'s
+last section has the commands, and they are the ones CI runs: `uv sync`
+builds the environment, `uv run pytest` is the suite and its coverage
+floor, and the lint gate is `.pre-commit-config.yaml` run as `lint.yml`
+runs it. uv is the only tool that has to be installed; it fetches the
+interpreter and every dependency group itself.
 
 How the organization decides, and who holds which role, is its
 [GOVERNANCE.md](https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md);
 what it intends to do, and what it deliberately does not, is its
 [ROADMAP.md](https://github.com/btclib-org/.github/blob/main/ROADMAP.md).
 
-[REVIEWING.md](./REVIEWING.md) is what a pull request here is answered
-against.
+[REVIEWING.md](https://github.com/btclib-org/btclib-node/blob/main/REVIEWING.md)
+is what a pull request here is answered against.
 
 ## Links
 
 - Source: <https://github.com/btclib-org/btclib-node>
 - Releases: <https://github.com/btclib-org/btclib-node/releases>
-- [CHANGELOG.md](./CHANGELOG.md) for what changed, and
-  [RELEASE_NOTES.md](./RELEASE_NOTES.md) for what a release asks a user
-  to act on. `pyproject.toml` between releases declares the month a
-  cycle is open on rather than a version anybody can install, and
-  `CONTRIBUTING.md`'s *A release path, and what it has published* is
-  what that shape is for
-- [REPOSITORY.md](./REPOSITORY.md) for the settings that live outside the
-  tree
+- [CHANGELOG.md](https://github.com/btclib-org/btclib-node/blob/main/CHANGELOG.md)
+  for what changed, and
+  [RELEASE_NOTES.md](https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md)
+  for what a release asks a user to act on. `pyproject.toml` between
+  releases declares the month a cycle is open on rather than a version
+  anybody can install, and `CONTRIBUTING.md`'s *A release path, and what
+  it has published* is what that shape is for
+- [REPOSITORY.md](https://github.com/btclib-org/btclib-node/blob/main/REPOSITORY.md)
+  for the settings that live outside the tree
 
 ---
 
