@@ -4,10 +4,11 @@
 
 """`V2Transport`, against the scenarios of Core's `v2transport_test`.
 
-`src/test/net_tests.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
-Each test drives the transport with a `Cipher` playing the other side, as
-Core's `V2TransportTester` does, since a second `V2Transport` could not
-send garbage, decoys or a damaged packet.
+`src/test/net_tests.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
+which this node follows until ISS 2253. Each test drives the transport
+with a `Cipher` playing the other side, as Core's `V2TransportTester`
+does, since a second `V2Transport` could not send garbage, decoys or a
+damaged packet.
 """
 
 import random

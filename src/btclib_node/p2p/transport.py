@@ -6,7 +6,7 @@
 
 `Transport` is Core's class of that name (`src/net.h`) and `V1Transport`
 is its `V1Transport` (`src/net.cpp`), both read at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, with the names in snake case.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag, with the names in snake case.
 A transport does no I/O: `Connection` feeds it what the socket read and
 writes what it hands back. `V1Transport` holds no lock;
 `p2p.v2transport`'s docstring says why `V2Transport` holds two. A BIP324
@@ -326,8 +326,8 @@ def frame_message_bytes(data: bytes) -> Message:
 
     The first message `data` holds, framed by a `V1Transport` built with
     no socket: the shape of Core's `p2p_transport_serialization.cpp` fuzz
-    target (at bitcoin/bitcoin@ca7162cde5), which feeds raw octets to a
-    `V1Transport` constructed with no wider node context.
+    target (at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which feeds
+    raw octets to a `V1Transport` constructed with no wider node context.
 
     `RegTest`'s own magic, this tree's cheapest chain to construct, rather
     than a magic threaded through the entry point: the magic check is

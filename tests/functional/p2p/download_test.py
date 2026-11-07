@@ -84,8 +84,8 @@ def test_download(tmp_path: Path) -> None:
     assert bootstrap_node.status == NodeStatus.BlockSynced
 
     # `_finalize_fork` only calls `Chainstate.flush` once
-    # `UtxoIndex.should_flush` says the staged UTXO cache has grown
-    # past its own bound (`main.py`), which this chain of coinbase-only
+    # `UtxoIndex.should_flush` says the staged UTXO cache has grown past
+    # its own bound (`main.py`), which this chain of coinbase-only
     # blocks never reaches: everything `BlockIndex.stage_status` and
     # `FilterIndex`'s own `pending` hold (`db.py`'s docstring) is still
     # Python state, never written to the store, so a copy taken without
@@ -96,11 +96,11 @@ def test_download(tmp_path: Path) -> None:
     # here reopens btclib-org/btclib-node#703's own Windows question.
     # Core's own `TestFramework._initialize_chain`
     # (`test/functional/test_framework/test_framework.py`) fully stops
-    # its cache node before copying its datadir to seed every other
-    # one, read at bitcoin/bitcoin@ca7162cde5, rather than flushing a
-    # node it leaves running -- this test diverges because
-    # `bootstrap_node` has to stay a live peer for the rest of it,
-    # which a stopped cache node never needs to be.
+    # its cache node before copying its datadir to seed every other one,
+    # read at bitcoin/bitcoin@f0de87f040, the v32.1 tag, rather than
+    # flushing a node it leaves running -- this test diverges because
+    # `bootstrap_node` has to stay a live peer for the rest of it, which
+    # a stopped cache node never needs to be.
     bootstrap_node.chainstate.flush()
     # Every node started here is stopped whichever way the test ends: one
     # left running outlives the test in its xdist worker and goes on

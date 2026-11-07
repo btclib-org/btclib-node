@@ -9,6 +9,8 @@ disconnect, and `handle_p2p_handshake` does the same, so what a callback
 raises over a message it dislikes is the difference between refusing the
 message and losing the peer. The functional tests drive two cooperating
 nodes, which is the path where every message is welcome; these are the rest.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import math
@@ -1198,8 +1200,8 @@ def test_a_peer_drawn_without_the_witness_service_is_let_go() -> None:
 def test_an_addr_fetch_peer_without_the_witness_service_is_let_go() -> None:
     """An addr-fetch peer is `_expects_services` too, `automatic` or not.
 
-    `ExpectServicesFromConn` (`src/net.h:838-848`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is `true` for `ADDR_FETCH`,
+    `ExpectServicesFromConn` (`src/net.h:851-861`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) is `true` for `ADDR_FETCH`,
     and `P2pManager.create_connection` gives such a peer `automatic=False`
     (btclib-org/btclib-node#1284) -- so this refusal would miss it
     entirely without `_expects_services` covering `conn.addr_fetch` too.
@@ -1324,10 +1326,11 @@ def test_an_inbound_peer_records_whether_it_has_every_wanted_service(
 def test_an_inbound_peer_with_neither_service_is_kept() -> None:
     """An inbound peer is never disconnected for its services, Core's own scope.
 
-    `ExpectServicesFromConn` (net.h:847-856, at bitcoin/bitcoin@ca7162cde5)
-    is `false` for an inbound connection -- this node accepted it, and
-    never asked it for any particular service, so a missing one is not
-    grounds to drop it, however synced this node is.
+    `ExpectServicesFromConn` (net.h:851-860, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) is `false` for an inbound
+    connection -- this node accepted it, and never asked it for any
+    particular service, so a missing one is not grounds to drop it,
+    however synced this node is.
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
@@ -1581,8 +1584,8 @@ def test_a_dialled_peer_is_recorded_as_answered_at_its_own_version() -> None:
     Not at this connection's own `verack`, which nothing here calls: a
     peer this node dialled is recorded once its `version` is kept, the
     same point Core's `net_processing.cpp` calls `Good` at (right after
-    the `verack` this node just pushed, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). #70: evidence this node dialled it and a socket
+    the `verack` this node just pushed, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). #70: evidence this node dialled it and a socket
     answered, not the peer's own unauthenticated word for its address,
     and the live handshake's own services rather than whatever an
     earlier gossip of the same peer happened to carry.
@@ -1623,8 +1626,8 @@ def test_a_dialled_peer_refused_in_version_is_not_recorded(refused: bytes) -> No
 
     `nVersion < MIN_PEER_PROTO_VERSION` and a missing desired service
     both disconnect and return before `ProcessMessage`'s own `VERSION`
-    handling reaches `m_addrman.Good` (`net_processing.cpp:3790`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this tree's own two
+    handling reaches `m_addrman.Good` (`net_processing.cpp:4049`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); this tree's own two
     matching refusals, above, return before the same point. The peer is
     one this node drew itself, the only kind Core's
     `ExpectServicesFromConn` refuses for a missing service.
@@ -1642,7 +1645,7 @@ def test_an_inbound_peer_completing_version_is_not_recorded() -> None:
     """ISS 1229: `version`'s own recording is `not conn.inbound`-gated too.
 
     `AddrMan::Good` runs under `!pfrom.IsInboundConn()` alone
-    (`net_processing.cpp:3790`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`net_processing.cpp:4049`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag); an inbound peer reaches the same point in this callback --
     none of `_refuses`'s checks single it out -- and must still not be
     recorded, which nothing calling `verack` on an inbound peer alone
@@ -1810,10 +1813,9 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
 def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
     """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one is refused.
 
-    Checked ahead of the version, as Core's own order is, on master,
-    at bitcoin/bitcoin@ba8fdb9717 (btclib-org/btclib-node#1223). v31.1,
-    at bitcoin/bitcoin@9be056a8a7, still reads the octet as a plain
-    `bool` and never refuses one above one.
+    Checked ahead of the version, as Core's own order is
+    (`net_processing.cpp:4172-4178`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag; btclib-org/btclib-node#1223).
     """
     peer = a_peer(requested_hb_cmpctblocks=False)
     with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field: 2"):
@@ -1862,8 +1864,9 @@ def test_a_feefilter_outside_the_money_range_leaves_the_filter_in_place(
     """A `feefilter` outside MoneyRange keeps the peer's earlier filter.
 
     Core assigns a received rate only within MoneyRange (net_processing.cpp's
-    NetMsgType::FEEFILTER, at bitcoin/bitcoin@9be056a8a7), so a rate outside it
-    neither sets a filter nor clears the one the peer sent before.
+    NetMsgType::FEEFILTER, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+    a rate outside it neither sets a filter nor clears the one the peer sent
+    before.
     """
     peer = a_peer()
     feefilter(a_handshake_node(), FeeFilter(1000).serialize(), peer)
@@ -2126,7 +2129,7 @@ def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> No
     port (`AddrManImpl::AddSingle`'s `addr == source` slices `addr` down
     to its `CNetAddr` base before `CNetAddr::operator==` ever runs,
     `src/addrman.cpp` and `src/netaddress.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the exemption still
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so the exemption still
     has to apply here.
     """
     source = peer_address("1.2.3.4", 54321)
@@ -2707,10 +2710,11 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
     Core's own rule above the flag set `interpreter.STANDARD_FLAGS`
     copies: "we do not ban/disconnect nodes that forward txs violating
     the additional (non-mandatory) rules here, to improve forwards and
-    backwards compatibility" (`src/policy/policy.h:112-117`,
-    at bitcoin/bitcoin@4519933391). The class is a `BTClibValueError`,
-    so letting it out of `tx` would reach `handle_p2p`'s own
-    `isinstance(e, BTClibException)` and discourage the peer --
+    backwards compatibility" (`src/policy/policy.h:112-117`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The class is a
+    `BTClibValueError`, so letting it out of `tx` would reach
+    `handle_p2p`'s own `isinstance(e, BTClibException)` and discourage
+    the peer --
     `test_a_callback_that_raises_a_btclib_exception_costs_the_peer`
     (`p2p/main_test.py`) is that half, by type -- which is what the
     catch this pins exists to prevent.
@@ -2741,8 +2745,9 @@ def test_a_transaction_failing_a_consensus_check_costs_the_peer_nothing(
     failures never trigger disconnections/bans ... either due to
     non-consensus relay policies ... or due to new consensus rules
     introduced in soft forks" (`src/validation.cpp:2112-2117`, at
-    bitcoin/bitcoin@4519933391) -- and there is no `MaybePunishNodeForTx`
-    at all, where `MaybePunishNodeForBlock` exists and is called.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- and there is no
+    `MaybePunishNodeForTx` at all, where `MaybePunishNodeForBlock`
+    exists and is called.
     `test_a_consensus_invalid_transaction_costs_the_peer_nothing`
     (`p2p/main_test.py`) is the same claim through `handle_p2p`'s own
     dispatch rather than by calling `tx` directly.
@@ -3300,8 +3305,8 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     """A block naming a parent this node has never heard of is not a `KeyError`.
 
     Core's own `AcceptBlockHeader` (`validation.cpp`, at
-    bitcoin/bitcoin@ca7162cde5) refuses exactly this shape with
-    `BLOCK_MISSING_PREV`, and `MaybePunishNodeForBlock`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) refuses exactly this
+    shape with `BLOCK_MISSING_PREV`, and `MaybePunishNodeForBlock`
     (`net_processing.cpp`, same sha) calls `Misbehaving` for it --
     `MisbehavingError` here is what `main.handle_p2p`'s own `except`
     answers by discouraging and dropping the peer
@@ -3450,7 +3455,7 @@ def test_a_block_whose_header_is_marked_invalid_is_refused_duplicate_invalid(
 ) -> None:
     """ISS 1344: Core's `BLOCK_CACHED_INVALID`, punished from an outbound peer.
 
-    Measured against bitcoind v31.1: not stored, an inbound peer kept, an
+    Measured against bitcoind: not stored, an inbound peer kept, an
     outbound one `Misbehaving`.
     """
     node = a_chainstate_node(tmp_path)
@@ -3520,7 +3525,7 @@ def test_a_body_failing_its_signet_solution_leaves_no_header(
     """ISS 2079: Core's `CheckBlock` asks the signet solution.
 
     `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock` indexes the
-    header (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    header (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so a body failing its solution leaves no header. `main.SigNet`
     is `RegTest` here: mining a block at signet's target takes millions of
     hashes. The same block, off signet, has its header indexed.
@@ -3549,7 +3554,7 @@ def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
     `passes_check_block`'s other rules answers `bad-signet-blksig`
     first, matching `CheckSignetBlockSolution` running ahead of the
     merkle root in Core's own `CheckBlock` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- proven here, as
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- proven here, as
     `main_test.py`'s own isolated gating test is, by a stub standing in
     for `assert_valid_block` rather than a real block at signet's target,
     whose mining takes millions of hashes.
@@ -3574,7 +3579,7 @@ def test_an_unrequested_low_work_block_failing_check_block_costs_its_peer(
 ) -> None:
     """ISS 1363: Core's `CheckBlock` runs before `AcceptBlock`'s early returns.
 
-    Measured against bitcoind v31.1: an unrequested block at height 1 on a
+    Measured against bitcoind: an unrequested block at height 1 on a
     fork below a tip at height 2, carrying two coinbases, logs
     `Misbehaving` and disconnects the peer, the header left unindexed;
     the same block with one coinbase is taken quietly. From an inbound
@@ -3617,7 +3622,7 @@ def test_a_block_failing_a_contextual_consensus_rule_invalidates_the_header(
     `bad-txns-nonfinal` and `bad-cb-height` are `ContextualCheckBlock`'s
     `BLOCK_CONSENSUS`, which `InvalidBlockFound` marks and
     `MaybePunishNodeForBlock` punishes (`src/validation.cpp` and
-    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). The body is not mutated, so Core's `BLOCK` arm reaches them.
     """
     node = a_chainstate_node(tmp_path)
@@ -3645,7 +3650,7 @@ def test_a_compact_block_failing_a_contextual_consensus_rule_keeps_the_peer(
 
     Core's `MaybePunishNodeForBlock` punishes no `BLOCK_CONSENSUS` block
     that came through `cmpctblock` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = a_chainstate_node(tmp_path)
     bad = build_block(RegTest().genesis.hash, [generate_coinbase()], 0)
@@ -4581,10 +4586,11 @@ def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> N
     """A pruned node disconnects rather than silently drops a stale request.
 
     Core's own `ProcessGetBlockData` (`net_processing.cpp`, at
-    bitcoin/bitcoin@ca7162cde5): "Avoid leaking prune-height by never
-    sending blocks below the NODE_NETWORK_LIMITED threshold" -- fired on
-    height alone, whether or not this node still happens to hold the
-    block asked for, which is why the store here still answers one.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): "Avoid leaking
+    prune-height by never sending blocks below the NODE_NETWORK_LIMITED
+    threshold" -- fired on height alone, whether or not this node still
+    happens to hold the block asked for, which is why the store here
+    still answers one.
     """
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
     node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
@@ -4661,8 +4667,9 @@ def test_a_pruned_node_s_own_threshold_is_strictly_greater_than_the_buffer() -> 
     """`MIN_BLOCKS_TO_KEEP + 2` behind the tip is still served, one past is not.
 
     Core's own check is `>`, not `>=` (`ProcessGetBlockData`, at
-    bitcoin/bitcoin@ca7162cde5), so a block sitting exactly at the "+ 2 for
-    possible races" buffer is inside it rather than past it.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a block sitting
+    exactly at the "+ 2 for possible races" buffer is inside it rather
+    than past it.
     """
     length = MIN_BLOCKS_TO_KEEP + 10
     block_index = a_tall_block_index(length)
@@ -7452,10 +7459,10 @@ def test_a_feeler_is_recorded_and_dropped_at_its_version_unasked_for_addresses(
     """ISS 1096: Core's `VERSION` handler ends a feeler once it has answered.
 
     The three answers and no `getaddr`, where a full-relay peer, the
-    control, is sent one (ISS 1770: v32.1's `SetupAddressRelay` refuses
-    a feeler). Then the address recorded as answered with the services
-    the `version` names, same as the control, and only then the drop,
-    after what was sent. ISS 1226: Core's `FinalizeNode` never calls
+    control, is sent one (ISS 1770: Core's `SetupAddressRelay` refuses a
+    feeler). Then the address recorded as answered with the services the
+    `version` names, same as the control, and only then the drop, after
+    what was sent. ISS 1226: Core's `FinalizeNode` never calls
     `Connected` for a feeler, so the time of the address is the one
     gossip gave it.
     """

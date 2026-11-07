@@ -8,9 +8,10 @@ Every other wire message this node speaks is `btclib.p2p`'s, imported
 where it is used, except the stored block `p2p.raw_block` serves. The
 payloads here are what Core still sends a peer too old for the rest, and
 they are sent and never parsed: `p2p.callbacks` is where every command
-received is dispatched to a handler. BIP61's
-`reject` has none: Core's `ProcessMessage` ignores it as an unknown type
-(`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
+received is dispatched to a handler. BIP61's `reject` has none: Core's
+`ProcessMessage` ignores it as an unknown type
+(`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag).
 """
 
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ class NoncelessPing(Payload):
     """A `ping` with no payload, for a peer at `BIP0031_VERSION` or below.
 
     What Core's `MaybeSendPing` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sends such a peer, which
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) sends such a peer, which
     answers it with no `pong`. btclib's own `Ping` always carries a
     nonce.
     """
@@ -56,7 +57,7 @@ class FinalAlert(Payload):
     """The final `alert`, for a peer at a common version of 70012 or below.
 
     What Core's `version` handler (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sends a peer "old enough
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) sends a peer "old enough
     to have the old alert system", its common version 70012 or below.
     """
 

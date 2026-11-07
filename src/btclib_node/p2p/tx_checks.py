@@ -21,7 +21,7 @@ Candidates are checked in the order they were queued, so a peer that
 sends again goes to the back. Core's message handler reads one message
 of each peer per pass, its peers shuffled each time
 (`CConnman::ThreadMessageHandler`, `src/net.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a queue holding each peer at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag); a queue holding each peer at
 most once is as fair, without the shuffle.
 
 Everything here is read and written on `Node`'s thread alone, so it

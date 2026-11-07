@@ -8,7 +8,7 @@
 blocks: `pindexBestKnownBlock`, `hashLastUnknownBlock`,
 `pindexLastCommonBlock`, `pindexBestHeaderSent`, `m_stalling_since` and
 `m_downloading_since` (`src/net_processing.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag); `Connection.download_queue`
+bitcoin/bitcoin@f0de87f040, the v32.1 tag); `Connection.download_queue`
 is its `vBlocksInFlight`. The functions below are the ones of Core's
 that read and write those fields, under the same names:
 `callbacks.headers` and `callbacks.inv` call `update_block_availability`,
@@ -54,12 +54,12 @@ __all__ = [
 ]
 
 # Core's `BLOCK_DOWNLOAD_WINDOW` (`src/net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how far past a peer's
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): how far past a peer's
 # `last_common` block anything is asked of it.
 BLOCK_DOWNLOAD_WINDOW = 1024
 
 # How many successors Core's `FindNextBlocks` (`src/net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) reads at a time at
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag) reads at a time at
 # least, "because CBlockIndex::GetAncestor may be as expensive as
 # iterating over ~100 CBlockIndex* entries anyway"
 _FETCH_CHUNK = 128

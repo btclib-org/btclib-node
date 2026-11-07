@@ -7,7 +7,7 @@
 `NetPermissionFlags` is Core's enum, `Whitelist` is `-whitelist` parsed as
 `NetWhitelistPermissions::TryParse` does (`src/net_permissions.cpp`) and
 `Whitelist.flags` is `CConnman::AddWhitelistPermissionFlags` (`src/net.cpp`),
-all read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A value is read by
+all read at bitcoin/bitcoin@f0de87f040, the v32.1 tag. A value is read by
 `lookup_subnet`, the ban list's `LookupSubNet`.
 
 `parse_whitebind_permissions` reads the permissions of a `-whitebind`

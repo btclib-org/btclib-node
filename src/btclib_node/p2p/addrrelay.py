@@ -4,8 +4,8 @@
 
 """Which peers a gossiped address is relayed to, as Core's `RelayAddress`.
 
-`RelayAddress` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-the v31.1 tag) picks the same one or two peers for an address for 24
+`RelayAddress` (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag) picks the same one or two peers for an address for 24
 hours at a time, so a peer's `addr_known` keeps the address from going
 to it twice, and a peer that sends its own address often gains no reach.
 It hashes with SipHash under `P2pManager`'s per-process key, as Core does

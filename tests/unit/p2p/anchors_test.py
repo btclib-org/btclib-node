@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`anchors.dat`, in the format bitcoind v31.1.0 reads and writes."""
+"""`anchors.dat`, in the format bitcoind reads and writes.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 from typing import TYPE_CHECKING
 
@@ -19,11 +22,11 @@ if TYPE_CHECKING:
 
 REGTEST = RegTest().magic
 
-# What bitcoind v31.1.0 wrote on a clean `stop` holding two
-# block-relay-only peers it had been told to open with `addconnection`,
-# to 127.0.0.1 on ports 60765 and 60768: the magic, a count of two, each
-# address behind the disk version `0x20035b60`, a timestamp of Core's
-# `TIME_INIT` and no services, and the checksum.
+# What bitcoind wrote on a clean `stop` holding two block-relay-only
+# peers it had been told to open with `addconnection`, to 127.0.0.1 on
+# ports 60765 and 60768: the magic, a count of two, each address behind
+# the disk version `0x20035b60`, a timestamp of Core's `TIME_INIT` and
+# no services, and the checksum.
 BITCOIND = bytes.fromhex(
     "fabfb5da02"
     "605b032000e1f5050001047f000001ed5d"

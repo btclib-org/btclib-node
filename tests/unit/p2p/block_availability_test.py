@@ -6,7 +6,7 @@
 
 Each case is one of Core's own rules for the `CNodeState` block fields
 and the blocks a peer is asked for (`src/net_processing.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 """
 
 from types import SimpleNamespace

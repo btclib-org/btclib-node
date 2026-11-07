@@ -119,18 +119,17 @@ __all__ = ["P2pManager", "network_error_string"]
 # What `accept` fails with where no descriptor is left, for this process
 # or for the system. A connection the kernel leaves queued makes the next
 # accept fail at once too. Core logs each failure at info and tries again
-# on its loop's next pass (`CConnman::AcceptConnection`, `src/net.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag, and at
-# bitcoin/bitcoin@cce32b1687), a pass that can come at once while the
-# listening socket stays readable. `_ACCEPT_RETRY_DELAY` is the seconds
-# `_accept_loop` waits instead, a departure so that it does not spin this
-# manager's loop (btclib-org/btclib-node#1961).
+# on its loop's next pass (`CConnman::AcceptConnection`, `src/net.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), a pass that can come at
+# once while the listening socket stays readable. `_ACCEPT_RETRY_DELAY` is
+# the seconds `_accept_loop` waits instead, a departure so that it does
+# not spin this manager's loop (btclib-org/btclib-node#1961).
 _OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
 _ACCEPT_RETRY_DELAY = 0.1
 
 # How often `manage_connections`' own loop calls `_maybe_dial_more_peers`,
 # the "draw a candidate and dial it" arm of Core's `ThreadOpenConnections`
-# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # `m_interrupt_net->sleep_for(500ms)`, once a pass, ahead of the draw.
 # `_open_addr_fetches`'s own `_MANUAL_STEP` sleep already matches that
 # same function's `ProcessAddrFetch` arm at this cadence
@@ -143,25 +142,26 @@ _AUTOMATIC_DIAL_INTERVAL = 0.5
 
 # How long a connection has from connecting to finishing its handshake:
 # Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past which
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), past which
 # `CConnman::InactivityCheck` drops a connection not yet
 # `fSuccessfullyConnected`, whatever it has sent. This node has no
 # `-peertimeout` to set it.
 _PEER_CONNECT_TIMEOUT = 60
 
 # Core's `PING_INTERVAL` (`src/net_processing.cpp`) and `TIMEOUT_INTERVAL`
-# (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, in
+# (`src/net.h`), at bitcoin/bitcoin@f0de87f040, the v32.1 tag, in
 # seconds: the wait before a connection with no ping outstanding is sent
 # one, and the silence, or the delay of a `pong`, that drops it.
 # `_keep_alive` applies them, and drops a peer paused that long too.
 #
 # bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
-# serving a block this node asked for, is not in v31.1 and is not here.
+# serving a block this node asked for, is not
+# at bitcoin/bitcoin@f0de87f040 and is not here.
 _PING_INTERVAL = 120
 _TIMEOUT_INTERVAL = 1200
 
 # The two loops Core dials `-connect` and `-addnode` from, each its own
-# thread (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# thread (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
 # and `_open_connect_peers`/`_open_added_peers` below each their own
 # task (btclib-org/btclib-node#1316). `ThreadOpenConnections`'s own
 # `-connect` arm is an uncapped `for (int64_t nLoop = 0;; nLoop++)`
@@ -188,7 +188,7 @@ _MAX_ADDNODE_CONNECTIONS = 8
 # The outbound slots Core reserves out of `-maxconnections` before
 # inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
 # `MAX_BLOCK_RELAY_ONLY_CONNECTIONS` and `MAX_FEELER_CONNECTIONS`
-# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so that a
+# (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so that a
 # peer finds as many inbound slots here as in a Core node given the same
 # `-maxconnections`.
 _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
@@ -198,7 +198,7 @@ _MAX_FEELER_CONNECTIONS = 1
 # How long `_maybe_add_fixed_seeds` gives DNS seeding and `-addnode` to
 # fill the table before falling back on the chain's fixed seeds: Core's
 # `start + std::chrono::minutes{1}` in `ThreadOpenConnections`
-# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _FIXED_SEEDS_DELAY = 60
 
 # How often `_maybe_add_fixed_seeds` looks, at most: once per pass of
@@ -209,7 +209,7 @@ _FIXED_SEEDS_DELAY = 60
 _FIXED_SEEDS_CHECK_INTERVAL = 0.5
 
 # Core's `SEED_OUTBOUND_CONNECTION_THRESHOLD`
-# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # `_maybe_add_seednode` keeps queuing `-seednode` values while fewer
 # full-relay peers than this are held, and `_wait_for_seednode_peers`
 # and `_dns_address_seed` below each end a wait of their own early once
@@ -245,7 +245,7 @@ _ADDR_BROADCAST_INTERVAL = 30
 
 # How many addresses `_maybe_dial_more_peers` draws in one pass before
 # giving up until the next: `ThreadOpenConnections`'s `nTries > 100`
-# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _MAX_DRAWS_PER_PASS = 100
 
 # `ThreadOpenConnections`' own thresholds, as the constant above: a draw
@@ -260,8 +260,8 @@ _BAD_PORT_DRAWS = 50
 _ADDED_NODES_BOUND = 24
 
 # `Lookup`'s own `nMaxSolutions` argument, as `ConnectNode` calls it for
-# a `pszDest` (`src/net.cpp:413`, at bitcoin/bitcoin@9be056a8a7, the
-# v31.1 tag): `LookupIntern` (`src/netbase.cpp:144-168`, same sha) stops
+# a `pszDest` (`src/net.cpp:413`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag): `LookupIntern` (`src/netbase.cpp:144-168`, same sha) stops
 # collecting once this many resolved answers have cleared its own
 # `IsInternal` filter, whatever the resolver answered with past that
 # point, and before `ConnectNode` ever shuffles or dials any of them.
@@ -298,7 +298,7 @@ _FEELER_SLEEP_WINDOW = 1.0
 _ADDR_FETCH_TIMEOUT = 10 * 30
 
 # `ThreadDNSAddressSeed`'s own DNS-seed schedule (`src/net.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), past
 # `_wait_for_seednode_peers`'s own `-seednode` wait above: a batch of
 # this many seeds is asked before the next wait, and a wait ends early
 # once `_SEED_OUTBOUND_CONNECTION_THRESHOLD` above (Core's own constant
@@ -332,8 +332,8 @@ class _Outbound(enum.Enum):
 class _Reconnection:
     """What a v1 retry needs of the connection it replaces.
 
-    Core's `ReconnectionInfo` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). `holds_slot` says the dropped connection held an
+    Core's `ReconnectionInfo` (`src/net.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). `holds_slot` says the dropped connection held an
     outbound slot, which `_reserved_outbound` keeps under
     `connection_type` until the retry concludes: Core's `grant`, moved
     to the entry.
@@ -397,12 +397,12 @@ def network_error_string(error: OSError) -> str:
     """Core's `NetworkErrorString` of a failed socket call: text, then number.
 
     Core's `"%s (%d)"` carries `SysErrorString`'s errno off Windows and
-    `Win32ErrorString`'s Winsock code on it (`src/util/sock.cpp:426-434`,
-    `src/util/syserror.cpp:17-50`, at bitcoin/bitcoin@9be056a8a7). CPython
-    keeps that code as `winerror` on what a socket call raises there
-    (`set_error`, `Modules/socketmodule.c` at CPython v3.14.0) and renumbers
-    a few of them in `errno`, `WSAEACCES` 10013 becoming 13 (`PC/errmap.h`),
-    so `winerror` is the number read where it is set.
+    `Win32ErrorString`'s Winsock code on it (`src/util/sock.cpp:433-441`,
+    `src/util/syserror.cpp:18-51`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). CPython keeps that code as `winerror` on what a socket call raises
+    there (`set_error`, `Modules/socketmodule.c` at CPython v3.14.0) and
+    renumbers a few of them in `errno`, `WSAEACCES` 10013 becoming 13
+    (`PC/errmap.h`), so `winerror` is the number read where it is set.
 
     The text is not Core's to the byte on Windows: CPython strips trailing
     whitespace and periods off `FormatMessageW`'s text before this sees it
@@ -481,20 +481,20 @@ class P2pManager(threading.Thread):
         # `Node.run` sets it from `-whitelist` before the listener starts
         self.whitelist = Whitelist()
         # Core's scheduler first dumps the ban list one interval after
-        # start (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # start (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag)
         self._last_ban_dump = time.monotonic()
         # Core's own `-connect`: dial only the peers it names, with DNS
         # seeding and every automatically-drawn outbound connection off
         # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
-        # `InitParameterInteraction`, at bitcoin/bitcoin@ca7162cde5).
-        # `node.config.connect_given`, not `node.config.connect`'s own
-        # truthiness: the two disagree under `-connect=0`, which is
-        # still the `-connect` arm even though it dials nobody
-        # (`Config`'s own field comment). Read once here rather than at
-        # each call site below, so a `Config` a caller mutates after
-        # building this manager cannot change which arm `run` and
-        # `_maybe_dial_more_peers` take mid-flight.
+        # `InitParameterInteraction`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag). `node.config.connect_given`, not
+        # `node.config.connect`'s own truthiness: the two disagree under
+        # `-connect=0`, which is still the `-connect` arm even though it
+        # dials nobody (`Config`'s own field comment). Read once here
+        # rather than at each call site below, so a `Config` a caller
+        # mutates after building this manager cannot change which arm
+        # `run` and `_maybe_dial_more_peers` take mid-flight.
         self.use_addrman_outgoing = not node.config.connect_given
         # Core's own `-listen`, read the same way and for the same
         # reason: whether `_bind` below runs at all, decided once here
@@ -512,7 +512,7 @@ class P2pManager(threading.Thread):
         self.whitebind = node.config.whitebind
         self.externalip = node.config.externalip
         # Core's own `fNetworkActive` (`src/net.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), always true at
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), always true at
         # construction there (`CConnman`'s own constructor passes
         # `network_active=true`), and flipped only by the
         # `setnetworkactive` RPC (`set_network_active` below). Read at
@@ -521,16 +521,17 @@ class P2pManager(threading.Thread):
         # there.
         self.network_active = True
         # Core's own division of `-maxconnections`, `CConnman::Init`
-        # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
-        # slots above come off the top, capped by the total itself, and
-        # inbound peers get what is left. `max_outbound_full_relay` and
-        # `max_outbound_block_relay` are Core's `m_max_outbound_full_relay`
-        # and `m_max_outbound_block_relay`, the targets
-        # `ThreadOpenConnections` dials each kind up to, and
-        # `_maybe_dial_more_peers` is the one dial held to them:
-        # `async_connect`, the `-connect`/`-addnode` route, reads no
-        # bound, as Core's manual connections take no `semOutbound`
-        # grant. Read once, for the same reason as the two fields above.
+        # (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
+        # outbound slots above come off the top, capped by the total
+        # itself, and inbound peers get what is left.
+        # `max_outbound_full_relay` and `max_outbound_block_relay` are
+        # Core's `m_max_outbound_full_relay` and
+        # `m_max_outbound_block_relay`, the targets `ThreadOpenConnections`
+        # dials each kind up to, and `_maybe_dial_more_peers` is the one
+        # dial held to them: `async_connect`, the `-connect`/`-addnode`
+        # route, reads no bound, as Core's manual connections take no
+        # `semOutbound` grant. Read once, for the same reason as the two
+        # fields above.
         max_connections = node.config.max_connections
         full_relay = min(_MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, max_connections)
         block_relay = min(
@@ -582,7 +583,7 @@ class P2pManager(threading.Thread):
         # `add_fixed_seeds`.
         self.add_fixed_seeds = node.config.fixed_seeds
         # Core's own `-seednode`, `ThreadOpenConnections`'s `seed_nodes`
-        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
         # `_maybe_add_seednode` below pops from the back, as Core's own
         # `SpanPopBack` does, queuing each onto `_addr_fetches` for
         # `_process_addr_fetch` to dial. `use_seednodes` is Core's own
@@ -623,8 +624,8 @@ class P2pManager(threading.Thread):
             dict.fromkeys(node.config.connect_args)
         )
         # Core's `m_added_node_params`, `AddNode`/`RemoveAddedNode`'s
-        # own list (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag): every `-addnode` value, as given, plus whatever
+        # own list (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag): every `-addnode` value, as given, plus whatever
         # the `addnode` RPC's own `add` (`add_added_peer`, reached from
         # `rpc/callbacks.py`) has appended and `remove`
         # (`remove_added_peer`) not yet taken back out. `dict[str,
@@ -747,10 +748,10 @@ class P2pManager(threading.Thread):
         # off the socket: Core's `CNetMessage::m_time`, which
         # `ProcessMessage` takes as `time_received` and reads only in its
         # `pong` handling (`src/net_processing.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7), as only `callbacks.pong` reads it
-        # here. `handshake_messages` carries the same, for what a
-        # connection sends before its `verack` is processed
-        # (`Connection.parse_messages`).
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), as only
+        # `callbacks.pong` reads it here. `handshake_messages` carries
+        # the same, for what a connection sends before its `verack` is
+        # processed (`Connection.parse_messages`).
         self.messages: deque[tuple[str, bytes, int, int, float]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int, int, float]] = deque()
         # Every nonce `add_pending_outbound_nonce` (below) has recorded
@@ -785,8 +786,8 @@ class P2pManager(threading.Thread):
         self._addr_relay_key = (secrets.randbits(64), secrets.randbits(64))
         # The hosts `discourage` has recorded, by `host_key`: Core's
         # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000,
-        # 0.000001}` (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). Like Core's, it treats a host never discouraged as
+        # 0.000001}` (`src/banman.h`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag). Like Core's, it treats a host never discouraged as
         # discouraged up to once in a million queries, and nothing resets
         # it. Not written to disk, so a restart forgets them. Locked, as
         # Core's `m_banned_mutex` guards its filter: `discourage` and
@@ -814,7 +815,7 @@ class P2pManager(threading.Thread):
         # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
         # addresses, by `host_key`, the map being keyed by `CNetAddr`,
         # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `_add_local`
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `_add_local`
         # fills it. Written before `manage_connections` is scheduled and
         # read only by it, on this thread.
         self.local_addresses: frozenset[bytes] = frozenset()
@@ -900,8 +901,8 @@ class P2pManager(threading.Thread):
         """Return whether `NODE_P2P_V2` is among the services this node offers.
 
         Core's `GetLocalServices() & NODE_P2P_V2`, which every site that
-        picks a transport asks (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag).
+        picks a transport asks (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag).
         """
         return bool(local_services(self.node.config) & ServiceFlags.NODE_P2P_V2)
 
@@ -996,7 +997,8 @@ class P2pManager(threading.Thread):
         Unconditional on the address, like `verack`'s own line and for
         the same reason -- argued there rather than twice here: Core's
         analogous site, `CNode`'s own constructor (`src/net.cpp`, at
-        bitcoin/bitcoin@05e49b342f), gates the address on `fLogIPs`.
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), gates the address on
+        `fLogIPs`.
 
         `local_address` is the accepted socket's own address, concrete
         where the listener is bound to every interface, `None` for a
@@ -1120,7 +1122,7 @@ class P2pManager(threading.Thread):
         """Return the v1 retry of `conn`, or `None`; `_connections_lock` held.
 
         Core's `DisconnectNodes` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) queues one for every
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) queues one for every
         connection it drops, of any type, while the network is active
         and `ShouldReconnectV1` holds. It moves the node's grant to the
         entry. Here the slot an automatic or addr-fetch connection held
@@ -1218,7 +1220,7 @@ class P2pManager(threading.Thread):
         A name is resolved again, as `ConnectNode` does for `m_dest`.
         The retry counts no failed dial: `attempt` only stamps the time,
         as `PerformReconnections`' `fCountFailure=false` does (`src/net.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         if not self.network_active:
             return
@@ -1265,7 +1267,7 @@ class P2pManager(threading.Thread):
         """Tell the address table a handshaken connection is gone.
 
         Core's `FinalizeNode` (`src/net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) calls
         `AddrMan::Connected` for a peer that completed its handshake and
         is a full outbound one: "only change visible addrman state for
         full outbound peers", so neither an inbound peer, nor a
@@ -1290,15 +1292,15 @@ class P2pManager(threading.Thread):
     def is_self_connect_nonce(self, nonce: int) -> bool:
         """Whether `nonce` is a live, unhandshaken outbound connection's own.
 
-        The only caller is `callbacks.version`. Matches Core's own
-        live, per-connection search -- `CConnman::CheckIncomingNonce`,
-        `net.cpp:360-376` at bitcoin/bitcoin@b91d983f66 -- which walks
-        every node still short of `fSuccessfullyConnected` and not
-        `IsInboundConn()`, rather than a fixed-size ring:
-        `pending_outbound_nonces` (`__init__`) reproduces that search by
-        never holding an inbound connection's own nonce to begin with
-        (`add_pending_outbound_nonce` above), not by filtering one out
-        of a wider set at lookup time.
+        The only caller is `callbacks.version`. Matches Core's own live,
+        per-connection search -- `CConnman::CheckIncomingNonce`,
+        `net.cpp:360-376` at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag -- which walks every node still short of
+        `fSuccessfullyConnected` and not `IsInboundConn()`, rather than
+        a fixed-size ring: `pending_outbound_nonces` (`__init__`)
+        reproduces that search by never holding an inbound connection's
+        own nonce to begin with (`add_pending_outbound_nonce` above),
+        not by filtering one out of a wider set at lookup time.
 
         That same walk also excludes a private-broadcast connection's
         own nonce, one candidate among the ones it visits -- the reason
@@ -1332,7 +1334,7 @@ class P2pManager(threading.Thread):
 
         Keyed by `host_key`, without the port, as Core's
         `BanMan::Discourage` is (`src/banman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         key = host_key(address)
         with self._discouraged_lock:
@@ -1348,7 +1350,7 @@ class P2pManager(threading.Thread):
         """Drop `conn` for misbehaving, and discourage its host as Core would.
 
         Core's `MaybeDiscourageAndDisconnect` (`src/net_processing.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), answering whether
         the host was discouraged. A manual peer, one `-connect`,
         `-addnode` or the `addnode` RPC dialled, is neither discouraged
         nor dropped, and neither is a peer holding `NO_BAN`. An addr-fetch
@@ -1382,7 +1384,7 @@ class P2pManager(threading.Thread):
 
         Whatever the connection's kind, a manual one included, and
         answering whether any matched (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         with self._connections_lock:
             held = (*self.connections.values(), *self.pending_connections.values())
@@ -1402,8 +1404,8 @@ class P2pManager(threading.Thread):
         `ThreadSocketHandler` and dropping every node it holds --
         inbound, pending and outbound alike, a manual one included --
         for as long as `fNetworkActive` reads false, not only the pass
-        it first does (`src/net.cpp:1931-1939`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `set_network_active`
+        it first does (`src/net.cpp:1955-1963`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). `set_network_active`
         below calls this once, at once, on the flip itself, the same
         shortcut `disconnect_subnet` above already takes for a bulk
         drop; `manage_connections` calls it again every pass while
@@ -1461,7 +1463,7 @@ class P2pManager(threading.Thread):
         Core's `CConnman::AddConnection` checks the per-type cap, takes a
         `semOutbound` grant and runs `OpenNetworkConnection`
         synchronously, so its next call already counts the node the last
-        one added (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        one added (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag). Here the dial runs later, on this manager's loop, and
         registers only once it connects: a check of held connections
         alone would let two callers in a row pass a cap only one of them
@@ -1576,15 +1578,15 @@ class P2pManager(threading.Thread):
 
         Refuses silently where `network_active` is false, the same
         `OpenNetworkConnection`'s own `if (!fNetworkActive) { return
-        false; }` does (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag) -- no log line there either, only the refusal.
+        false; }` does (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag) -- no log line there either, only the refusal.
         """
         if not self.network_active:
             return
         client = await dial(address)
         # Core's `ConnectNode` calls `Attempt` for every connection it
         # tries, a `-connect` or `-addnode` one too (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         self.peer_db.attempt(address)
         if client:
             self.create_connection(
@@ -1607,12 +1609,13 @@ class P2pManager(threading.Thread):
     async def _resolve_peer_host(self, host: str, port: int) -> list[Any] | None:
         """Return `host`'s `getaddrinfo` answers, `None` where it has none.
 
-        `LookupIntern` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag) hands an empty host to `getaddrinfo(name, nullptr)`,
-        which finds no address for it: `bitcoind` v31.1.0 on macOS makes no
-        connection for `:28995` (Linux was not measured). Python's own
-        `getaddrinfo("", port)` answers loopback on macOS, so the empty
-        host is refused here, on every platform (btclib-org/btclib-node#1608).
+        `LookupIntern` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag) hands an empty host to `getaddrinfo(name, nullptr)`, which
+        finds no address for it: `bitcoind`, at the release
+        `integration-bitcoind.yml` pins, makes no connection on macOS for
+        `:28995` (Linux was not measured). Python's own `getaddrinfo("",
+        port)` answers loopback on macOS, so the empty host is refused here,
+        on every platform (btclib-org/btclib-node#1608).
         """
         if not host:
             return None
@@ -1651,14 +1654,14 @@ class P2pManager(threading.Thread):
         resolves to nothing (btclib-org/btclib-node#1292).
 
         `OpenNetworkConnection`'s own `AlreadyConnectedToHost(pszDest)`
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         runs on the unresolved string first, before any resolve:
         compared against `m_addr_name`, not an address, because no
         address exists yet to key on. `addr_name` (`p2p/connection.py`)
         is this tree's own record of that string, held only by a
         connection this method itself dialled -- every other dial route
         leaves it `None`. Past that check, `ConnectNode` resolves
-        `pszDest` (`src/net.cpp:404-424`, same sha), an internal answer
+        `pszDest` (`src/net.cpp:411-431`, same sha), an internal answer
         dropped and the rest capped at `_MAX_RESOLVED_ADDRESSES`, in
         that order, before any of it is shuffled
         (btclib-org/btclib-node#1466): every answer shuffled, then
@@ -1792,7 +1795,7 @@ class P2pManager(threading.Thread):
                 continue
             # Checked first and unconditionally, idle or not: Core's own
             # `SendMessages` (`net_processing.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns on this
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) returns on this
             # same check before ever reaching `MaybeSendPing`, so a
             # chatty addr-fetch peer is still cut at this bound, from
             # `m_connected` rather than from its last message
@@ -1834,7 +1837,7 @@ class P2pManager(threading.Thread):
         """Queue `address`, gossiped by `originator`, for one or two peers.
 
         `RelayAddress` (`src/net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an address on a
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): an address on a
         network this node does not reach is relayed only if
         `is_relayable`. Only a peer taking part in address relay is
         chosen, and one that can carry `address`: `IsAddrCompatible`.
@@ -1864,7 +1867,7 @@ class P2pManager(threading.Thread):
         """Tell `conn` where this node is reached, as `MaybeSendAddr` does.
 
         `MaybeSendAddr` and `GetLocalAddrForPeer` (`src/net_processing.cpp`
-        and `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        and `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
         to a peer that takes part in address relay, while listening and
         out of initial block download, once its turn has come -- at once
         for a new connection, then after an exponential wait of 24 hours
@@ -1924,7 +1927,7 @@ class P2pManager(threading.Thread):
         """Send `conn` the queued addresses, as `MaybeSendAddr` does.
 
         `MaybeSendAddr` (`src/net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): once the wait since
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): once the wait since
         the last send, 30 seconds on average, is over, whatever
         `conn.addr_known` does not hold is sent in one message and
         recorded in it.
@@ -1950,7 +1953,7 @@ class P2pManager(threading.Thread):
 
         `MaybeSendPing` and `CConnman::InactivityCheck`
         (`src/net_processing.cpp` and `src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a peer whose
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): a peer whose
         `last_receive` or `last_send` is `_TIMEOUT_INTERVAL` old, or whose
         `pong` is that overdue, is dropped; otherwise it is sent a `ping`
         once `_PING_INTERVAL` has passed since the last and none is
@@ -1990,7 +1993,7 @@ class P2pManager(threading.Thread):
         """Add the chain's fixed seeds for every reachable network held empty.
 
         `CConnman::ThreadOpenConnections`'s own step ahead of its draw
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
         once `_FIXED_SEEDS_DELAY` has passed, or at once where DNS
         seeding is off and neither `-addnode` nor `-seednode` was given,
         and once only.
@@ -2032,7 +2035,7 @@ class P2pManager(threading.Thread):
         # time_penalty=0, not `add_addresses`'s own gossip default:
         # `ThreadOpenConnections` calls `addrman.get().Add(seed_addrs,
         # local)` with no third argument (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
         # `AddrManImpl::Add`'s own default for that argument is `0s`
         # (`src/addrman.h`, same sha) -- a fixed seed already carries
         # `fixed_seed_addresses`'s own one-to-two-week backdating
@@ -2077,7 +2080,7 @@ class P2pManager(threading.Thread):
         `conn.automatic` because `_process_addr_fetch`'s own dial
         (`addr_fetch=True`) never sets the latter, though
         `ProcessAddrFetch` takes the identical grant for it
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         Locked for the reason `_maybe_dial_more_peers` gives.
         """
         with self._connections_lock:
@@ -2108,7 +2111,7 @@ class P2pManager(threading.Thread):
         """Return every held connection's own peer address, `ip_and_port` text.
 
         Core's `mapConnected[pnode->addr]` (`GetAddedNodeInfo`,
-        `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
         built from every held connection's own resolved address,
         whatever route opened it -- inbound, an automatic outbound
         dial, or a manual one -- unlike `_held_addr_names` above, which
@@ -2139,8 +2142,8 @@ class P2pManager(threading.Thread):
     def _is_held(self, node_str: str, by_address: set[str], by_name: set[str]) -> bool:
         """Whether `node_str` is already held, Core's own literal/name split.
 
-        `GetAddedNodeInfo` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag) runs `LookupNumeric` on the spec first: where it
+        `GetAddedNodeInfo` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag) runs `LookupNumeric` on the spec first: where it
         answers a valid `CService` -- `node_str` names an address,
         `_numeric_endpoint`'s own question -- the spec is matched
         against `mapConnected`, every held connection's own resolved
@@ -2167,7 +2170,7 @@ class P2pManager(threading.Thread):
         """Return Core's `GetFullOutboundConnCount`: handshaken, full-relay.
 
         `fSuccessfullyConnected && IsFullOutboundConn()` (`src/net.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a connection past
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a connection past
         its handshake -- promoted into `connections`, `pending_connections`
         left out unlike `_automatic_outbound` above -- that is automatic
         and neither block-relay-only, a feeler nor an addr-fetch. Locked
@@ -2213,8 +2216,8 @@ class P2pManager(threading.Thread):
         # `m_interrupt_net->sleep_for(500ms)` runs once per iteration of
         # `ThreadOpenConnections`'s `while` loop, ahead of "Choose an
         # address to connect to", with no earlier exit from that loop
-        # skipping it (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). So this (re)start's first pass waits
+        # skipping it (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag). So this (re)start's first pass waits
         # `_AUTOMATIC_DIAL_INTERVAL` too, the same as every pass after
         # it -- no shortcut for a loop armed a while after this manager
         # was built (btclib-org/btclib-node#1379, review round 2).
@@ -2236,8 +2239,8 @@ class P2pManager(threading.Thread):
         """Queue one `-seednode` value onto `_addr_fetches`, drip-fed.
 
         Core's own `add_addr_fetch`/`seed_node_timer` in
-        `ThreadOpenConnections` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag): the first value is queued as soon as this pass
+        `ThreadOpenConnections` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag): the first value is queued as soon as this pass
         starts where `peer_db` holds no address at all yet
         (`_arm_dial_loop`'s own `_seednode_addr_fetch_due`), and one more
         every `_ADD_SEEDNODE_INTERVAL` seconds while fewer than
@@ -2298,8 +2301,8 @@ class P2pManager(threading.Thread):
         # ones included: `CConnman::ThreadOpenConnections` counts
         # `IsFullOutboundConn()` and `IsBlockOnlyConn()` peers in
         # `m_nodes`, handshake finished or not, and leaves inbound and
-        # `MANUAL` ones out (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag). Inbound connections cost an attacker nothing, so
+        # `MANUAL` ones out (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag). Inbound connections cost an attacker nothing, so
         # counting them would let enough of them stop this node choosing
         # any peer of its own. A dial still in flight is in neither table
         # and in neither count: `ThreadOpenConnections` finishes its own
@@ -2348,7 +2351,7 @@ class P2pManager(threading.Thread):
                 return
             # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
             # compares each node's address with no port (`src/net.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a host this
             # node holds any connection with, an inbound one on its
             # ephemeral port included, is not dialled again on another
             # port.
@@ -2369,7 +2372,7 @@ class P2pManager(threading.Thread):
             # `IsOutboundOrBlockRelayConn` answers false for `ADDR_FETCH`
             # too (`src/net.h`, same sha). A peer off IPv4 and IPv6 adds
             # no group, as Core adds none for Tor, I2P or CJDNS
-            # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+            # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
             # tag).
             outbound = [
                 conn.address
@@ -2448,7 +2451,7 @@ class P2pManager(threading.Thread):
         if not self.network_active:
             return
         # `OpenNetworkConnection` (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
         # (btclib-org/btclib-node#283). `already_connected` is by host,
@@ -2677,7 +2680,7 @@ class P2pManager(threading.Thread):
         A feeler's draw is held to `MayHaveUsefulAddressDB` where any
         other is held to `HasAllDesirableServiceFlags`, as in Core's loop.
         Its four `continue`s after the network-group one, in its order
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         Its invalid-or-local `break`, between the two, is the caller's,
         which reads `local_addresses`; an invalid address never reaches
         it, `_storable` keeping out of the table every address
@@ -2741,7 +2744,7 @@ class P2pManager(threading.Thread):
         """Dial every `-connect` peer in turn, forever, as Core's loop does.
 
         `ThreadOpenConnections`'s own `-connect` arm (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): one pass dials each
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): one pass dials each
         address in order -- `async_connect_host` passing over one
         already held, by `addr_name` -- with the sleeps the constants
         above name.
@@ -2764,7 +2767,7 @@ class P2pManager(threading.Thread):
 
         `_maybe_add_fixed_seeds`'s own read of Core's live
         `m_added_node_params.empty()` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), rather than a value
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), rather than a value
         fixed at startup: `add_added_peer` can fill an initially empty
         list at any later time (btclib-org/btclib-node#1350).
         """
@@ -2792,7 +2795,7 @@ class P2pManager(threading.Thread):
         """Dial each `-addnode` peer not held, as Core's loop does.
 
         `ThreadOpenAddedConnections` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) over
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) over
         `GetAddedNodeInfo(include_connected=false)`: a `semAddnode`
         grant is free while fewer than `_MAX_ADDNODE_CONNECTIONS` added
         peers are held, checked again before every dial in the pass so a
@@ -2847,8 +2850,8 @@ class P2pManager(threading.Thread):
         No name is resolved: an IP address, an onion name or an I2P name
         is an address, and anything else is not, whatever its port.
         `AddNode` and `GetAddedNodeInfo` read `GetDefaultPort(node_str)`
-        as its default port (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag): `I2P_SAM31_PORT`, 0, for an I2P name given
+        as its default port (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag): `I2P_SAM31_PORT`, 0, for an I2P name given
         without a port, the chain's own for every other spec.
         """
         special = SpecialAddress.parse(node_str)
@@ -2867,7 +2870,7 @@ class P2pManager(threading.Thread):
     def add_added_peer(self, node_str: str, *, use_v2transport: bool = False) -> bool:
         """Add `node_str` to the `-addnode` list, Core's own `AddNode`.
 
-        `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag) refuses a duplicate two ways: the identical string already
         held, or -- where both `node_str` and an existing entry name an
         address -- the same `LookupNumeric` resolution,
@@ -2907,7 +2910,7 @@ class P2pManager(threading.Thread):
         """Give `-seednode` up to `_SEEDNODE_TIMEOUT` before the DNS seeds.
 
         `ThreadDNSAddressSeed`'s own wait, ahead of its DNS-seed loop
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
         no-op where `-seednode` was never given (`use_seednodes`, fixed
         for this manager's life once set at construction), otherwise
         polled every `_SEEDNODE_POLL_INTERVAL` until either
@@ -2933,7 +2936,7 @@ class P2pManager(threading.Thread):
         """Ask the chain's DNS seeds on Core's own schedule, `-seednode` first.
 
         Ports `ThreadDNSAddressSeed` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_wait_for_seednode_peers`
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): `_wait_for_seednode_peers`
         above is this coroutine's own first step, Core's own `-seednode`
         wait sitting ahead of the DNS-seed loop in the one function.
         Once it returns, the chain's seeds are shuffled, then asked
@@ -2987,7 +2990,7 @@ class P2pManager(threading.Thread):
             # Core's "hold off on querying seeds if P2P network
             # deactivated", ahead of every seed query, logged once and
             # polled once a second (`src/net.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A plain
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A plain
             # poll of the flag `set_network_active` sets on `Node`'s
             # thread, where an `asyncio.Event` (ruff's ASYNC110) would
             # need that thread to signal this loop.
@@ -3005,8 +3008,8 @@ class P2pManager(threading.Thread):
     async def _process_addr_fetch(self) -> None:
         """Dial the addr-fetch queue's first entry, an addr-fetch connection.
 
-        Core's `ProcessAddrFetch` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag): the entry leaves the queue whether or not it is
+        Core's `ProcessAddrFetch` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag): the entry leaves the queue whether or not it is
         dialled, as it does there, where the pop comes before the
         `CountingSemaphoreGrant<> grant(*semOutbound, /*fTry=*/true)`
         the dial is refused without. `ADDR_FETCH` has no per-type cap
@@ -3089,7 +3092,7 @@ class P2pManager(threading.Thread):
         """Dial the addr-fetch queue, one entry a pass, forever.
 
         `ProcessAddrFetch`'s own place in `ThreadOpenConnections`
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
         called once a pass, followed by the same 500ms
         (`_MANUAL_STEP`) sleep the constant is already named for. Its
         own standing task, scheduled from `run` beside
@@ -3123,9 +3126,9 @@ class P2pManager(threading.Thread):
         up, and `start_listener` answers that it is not listening.
 
         The `OSError` raised says which call failed, and why, in the words
-        of Core's `CConnman::BindListenPort` (`src/net.cpp:3307-3373`, at
-        bitcoin/bitcoin@9be056a8a7): the message `run` keeps as
-        `bind_error`.
+        of Core's `CConnman::BindListenPort` (`src/net.cpp:3387-3453`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the message `run`
+        keeps as `bind_error`.
         """
         # Core's `CService::ToStringAddrPort`, brackets around an IPv6 host
         address = f"[{host}]" if family == socket.AF_INET6 else host
@@ -3148,7 +3151,8 @@ class P2pManager(threading.Thread):
                 # gossiped -- and `server` below has no unmapping of its
                 # own to give such a connection the network id #151
                 # would ask for. Core sets the same option on its own
-                # "::" listener for the same reason (net.cpp, 58a7869f86).
+                # "::" listener for the same reason (net.cpp,
+                # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
                 server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             try:
                 server_socket.bind((host, port))
@@ -3190,10 +3194,11 @@ class P2pManager(threading.Thread):
         """Keep `host` as one of this node's own addresses, as `AddLocal` does.
 
         `AddLocal` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag) keeps a routable address on a reachable network, and
-        under `-discover=0` only a `LOCAL_MANUAL` one. A known address
-        takes the new port and a score one above the new one, where that
-        is not lower than its own.
+        v31.1 tag, which this node follows until ISS 2249) keeps a
+        routable address on a reachable network, and under `-discover=0`
+        only a `LOCAL_MANUAL` one. A known address takes the new port
+        and a score one above the new one, where that is not lower than
+        its own.
         """
         if isinstance(host, SpecialAddress):
             return False
@@ -3216,8 +3221,8 @@ class P2pManager(threading.Thread):
     def seen_local(self, host: IPv4Address | IPv6Address) -> bool:
         """Raise the score of `host`, one of our own, as `SeenLocal` does.
 
-        `SeenLocal` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag) adds one to the score of a known address, by host
+        `SeenLocal` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag) adds one to the score of a known address, by host
         alone, and answers whether it knew it. Called from `Node`'s
         thread: `local_info` is under `_local_lock` for that.
         """
@@ -3238,11 +3243,12 @@ class P2pManager(threading.Thread):
         """Record every `-externalip` as a local address, as `AppInitMain` does.
 
         Each is looked up at `_listen_port` (`src/init.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), as `cli` has already
-        resolved it. An address `AddLocal` refuses is skipped without
-        a word, there as here; since bitcoin/bitcoin@8c87e32bd3, not in
-        v31.1, Core also keeps one on a network `-onlynet` leaves
-        unreachable, which only an onion or I2P address can be here.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
+        follows until ISS 2249), as `cli` has already resolved it. An
+        address `AddLocal` refuses is skipped without a word, there as
+        here; since bitcoin/bitcoin@8c87e32bd3, not in v31.1, Core also
+        keeps one on a network `-onlynet` leaves unreachable, which only
+        an onion or I2P address can be here.
         """
         for value in self.externalip:
             service = lookup_service(value, self._listen_port())
@@ -3255,19 +3261,19 @@ class P2pManager(threading.Thread):
         """Record this machine's routable addresses, as Core's `Discover` does.
 
         `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
-        (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
-        node would bind every interface, which is to say no `-bind` or
-        `-whitebind` was given -- never off `fListen`, which is why `run`
-        below calls this off `self.discover` rather than off `self.listen`:
-        an explicit `-discover=1` still records these addresses under
-        `-listen=0`
-        (btclib-org/btclib-node#1330). `self.discover` is itself Core's
-        own soft `-discover=0` under `-listen=0` or `-externalip`
-        (`Config.discover`'s own comment; this node has no `-proxy`).
-        Each address goes to `AddLocal` at the listening port, which
-        keeps a routable one on a reachable network; IPv4 and IPv6 are
-        both reachable here.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+        until ISS 2249) off `bind_on_any` (`src/init.cpp:2163`,
+        `:2193-2196`, same sha) -- whether the node would bind every
+        interface, which is to say no `-bind` or `-whitebind` was given --
+        never off `fListen`, which is why `run` below calls this off
+        `self.discover` rather than off `self.listen`: an explicit
+        `-discover=1` still records these addresses under `-listen=0`
+        (btclib-org/btclib-node#1330). `self.discover` is itself Core's own
+        soft `-discover=0` under `-listen=0` or `-externalip`
+        (`Config.discover`'s own comment; this node has no `-proxy`). Each
+        address goes to `AddLocal` at the listening port, which keeps a
+        routable one on a reachable network; IPv4 and IPv6 are both
+        reachable here.
         """
         port = self._listen_port()
         for ip in local_addresses():
@@ -3279,11 +3285,12 @@ class P2pManager(threading.Thread):
 
         The IPv6 one is not: a host with no IPv6 route or with it turned
         off at the kernel fails the bind above, and that is not this
-        node's own defect to end `run` on, unlike a taken IPv4
-        port. Core's `InitBinds` treats its own "::" the same way --
-        "Don't consider errors to bind on IPv6 '::' fatal because the
-        host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
-        a failure to bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
+        node's own defect to end `run` on, unlike a taken IPv4 port.
+        Core's `InitBinds` treats its own "::" the same way -- "Don't
+        consider errors to bind on IPv6 '::' fatal because the host OS
+        may not have IPv6 support" (net.cpp, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- while a failure to
+        bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
 
         With a `-bind` or a `-whitebind` it is those addresses alone that
         are bound, as `InitBinds` has it, each required: a failure of any
@@ -3418,11 +3425,11 @@ class P2pManager(threading.Thread):
 
         `accept` can answer no address: on macOS it does for an IPv6
         peer that reset before the accept. Core's
-        `CConnman::AcceptConnection` (`src/net.cpp`, at
-        bitcoin/bitcoin@cce32b1687) warns "Unknown socket family" and goes
-        on with the address unset, `[::]:0`, and so does this loop
-        (btclib-org/btclib-node#1981). `server` reads a host and a port
-        off every address it takes.
+        `CConnman::AcceptConnection` (`src/net.cpp:1773`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) warns "Unknown socket
+        family" and goes on with the address unset, `[::]:0`, and so
+        does this loop (btclib-org/btclib-node#1981). `server` reads a
+        host and a port off every address it takes.
 
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
@@ -3609,7 +3616,7 @@ class P2pManager(threading.Thread):
                         bound[1],
                     ) in self._onion_binds
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
-                    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
+                    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), on one
                     # count of the inbound peers: `fNetworkActive` false
                     # refuses every accepted socket outright, ahead of the
                     # ban check below -- that function's own order, the
@@ -3775,7 +3782,7 @@ class P2pManager(threading.Thread):
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self._dns_address_seed(), loop)
         # Core's own log line
-        # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag): `-connect=0` alone dials nobody but is still the
         # `-connect` arm, so this checks `node.config.connect`'s own
         # truthiness rather than `connect_given`, the same distinction
@@ -3799,7 +3806,7 @@ class P2pManager(threading.Thread):
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         # Core's `CConnman::Start` starts `ThreadOpenAddedConnections`
         # and then `ThreadOpenConnections` (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); these are their
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); these are their
         # standing tasks, each its own coroutine rather than a thread,
         # never awaited by anything here -- `stop`'s own sweep of
         # `asyncio.all_tasks` is what ends them.

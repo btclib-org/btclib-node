@@ -282,7 +282,7 @@ def _count_past(msg: bytes, bound: int, entry_size: int, offset: int = 0) -> int
     Zero where it does not, or where the rest of `msg` does not hold
     that many entries of `entry_size` octets: Core reads the whole
     vector before comparing its size with the bound
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so such a payload throws first and is only logged, and it is
     left to btclib's own parse here too. btclib's parsers refuse a count
     past the bound as they refuse a truncated payload, which is why the
@@ -333,8 +333,8 @@ def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bo
     """Answer whether `msg_type` from `conn` is dropped as the blocks load.
 
     Core's `LoadingBlocks()` returns in `ProcessMessage`
-    (`net_processing.cpp:4557`, `:4805`, `:4819` and `:4860`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a `cmpctblock`,
+    (`net_processing.cpp:4787`, `:5052`, `:5066` and `:5107`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a `cmpctblock`,
     `blocktxn`, `headers` or `block` is dropped unread while the stored
     blocks connect, which is `NodeStatus.Reindexing` here, and the peer
     is kept. btclib-org/btclib-node#1915
@@ -359,7 +359,7 @@ def has_all_desirable_services(node: Node, services: int) -> bool:
 
 
 # Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in seconds: how long a
 # `getheaders` a peer has not answered holds off the next one to it.
 _HEADERS_RESPONSE_TIME = 2 * 60
 
@@ -368,7 +368,7 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
     """Send `conn` a `getheaders` unless one to it is still in flight.
 
     Core's `MaybeSendGetHeaders` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), through which every
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), through which every
     `getheaders` this node sends goes. A request is in flight from when it
     is sent until `headers` clears it or `_HEADERS_RESPONSE_TIME` passes.
     Returns whether it was sent.
@@ -384,7 +384,7 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 
 # The common version at or below which `version` sends the final
 # `alert`: Core's literal 70012 (`src/net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), named for nothing else.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), named for nothing else.
 _FINAL_ALERT_VERSION = 70012
 
 
@@ -393,8 +393,8 @@ def _expects_services(conn: Connection) -> bool:
 
     False for `INBOUND`, `MANUAL` and `FEELER`; true for
     `OUTBOUND_FULL_RELAY`, `BLOCK_RELAY`, `ADDR_FETCH` and
-    `PRIVATE_BROADCAST` (`src/net.h:838-848`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Of this node's own
+    `PRIVATE_BROADCAST` (`src/net.h:851-861`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Of this node's own
     connections that is `conn.automatic` -- what `_maybe_dial_more_peers`
     dials, a feeler excepted below, and never a `-connect` or `-addnode`
     peer (btclib-org/btclib-node#725) -- or `conn.addr_fetch`, this tree
@@ -409,7 +409,7 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     The refusals of Core's `VERSION` handling, which answers a
     self-connect, an obsolete version and missing services with
     `fDisconnect` alone (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Records whether the peer
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Records whether the peer
     has every service this node wants, once the refusals ahead of that
     check have kept it.
     """
@@ -515,7 +515,7 @@ def _see_local(node: Node, conn: Connection, version_msg: Version) -> None:
     """Raise the score of the address an inbound peer says it reached us at.
 
     Core's `SeenLocal` of a routable `addrMe`, ahead of `PushNodeVersion`
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag).
     """
     if conn.inbound:
@@ -530,11 +530,11 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     A second `version` ahead of this connection's own `verack` is
     ignored outright -- Core's own guard, `pfrom.nVersion != 0`
-    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
-    logs and returns before doing anything else. `conn.status` stays
-    `Open` until `verack` promotes it, so a repeat sent before that
-    point reaches this callback, and unguarded would resend
-    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
+    (`net_processing.cpp:3838`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), which logs and returns before doing anything else.
+    `conn.status` stays `Open` until `verack` promotes it, so a repeat
+    sent before that point reaches this callback, and unguarded would
+    resend `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
     btclib-org/btclib-node#482
 
     An inbound peer that `_over_tx_relay_capacity` drops is sent no
@@ -551,7 +551,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     which may never come (#1169); and recording whether the peer asked
     to have transactions relayed. A feeler is then dropped once those
     are written, as Core's `VERSION` handler ends one
-    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag).
     """
     if conn.version_message is not None:
@@ -561,7 +561,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     conn.version_message = version_msg
     # Core's `SetServices` of an outbound peer's own services, ahead of
     # every refusal below (`src/net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a table row gossip
     # mislabelled is corrected here, the peer dropped or not
     if not conn.inbound:
         node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
@@ -602,7 +602,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
     # for a peer this node dialled (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), under
     # `!pfrom.IsInboundConn()` alone -- not waiting for this connection's
     # own `verack`, which a peer that answers `version` and then stalls
     # never sends, and which `manager.py`'s own 60-second drop of a
@@ -631,7 +631,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's. A block-relay-only connection or a feeler relays no
     # transaction whatever the peer asked for: Core's `VERSION` handler
     # builds no `TxRelay` for either (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is announced
     # to it and a `getdata` of its for a transaction goes unanswered.
     conn.relay_tx = (
         version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
@@ -677,7 +677,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
 
     Ignores a `verack` ahead of `version`, as Core's `ProcessMessage`
     ignores any message there (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A peer that sent no
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A peer that sent no
     `wtxidrelay` ahead of it completes its handshake all the same, and
     has transactions relayed by txid, as in Core.
     """
@@ -699,15 +699,14 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(SendCmpct(announce=False, version=CMPCTBLOCKS_VERSION))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (src/btclib_node/download.py) reaches every connected connection on the
-    # very next step(), Connection.next_feefilter_send_time defaulting to
-    # 0.0, "never scheduled", the same convention next_inv_send_time
-    # already uses -- so a second, special-cased first send here would
-    # duplicate rather than precede it. Core does not send one from its
-    # own verack handler either: PeerManagerImpl::MaybeSendFeefilter
-    # (net_processing.cpp, at bitcoin/bitcoin@58a7869f86) is reached from
-    # the ordinary per-peer message loop once a peer is
-    # fSuccessfullyConnected, not from a one-time handshake action.
-    # btclib-org/btclib-node#275
+    # very next step(), Connection.next_feefilter_send_time defaulting to 0.0,
+    # "never scheduled", the same convention next_inv_send_time already uses --
+    # so a second, special-cased first send here would duplicate rather than
+    # precede it. Core does not send one from its own verack handler either:
+    # PeerManagerImpl::MaybeSendFeefilter (net_processing.cpp,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is reached from the
+    # ordinary per-peer message loop once a peer is fSuccessfullyConnected, not
+    # from a one-time handshake action. btclib-org/btclib-node#275
     conn.send_ping()
     # No `getaddr` here either: `version` sends it, as Core's does.
     # No `getheaders` here: whether this peer is asked for headers is
@@ -719,10 +718,10 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # id-keyed lines everywhere else resolvable back to a peer -- #526's
     # own four verdict lines among them. Core pairs them the other way
     # round and only on request: `CNode::LogPeer` (`src/net.cpp`,
-    # at bitcoin/bitcoin@05e49b342f) writes `peer=%d` alone and appends
-    # `peeraddr=` only under `fLogIPs`, whose default is off. This tree
-    # logs the address here already, so withholding the id bought no
-    # privacy and only cost the correlation. What this line marks is the
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) writes `peer=%d` alone
+    # and appends `peeraddr=` only under `fLogIPs`, whose default is off.
+    # This tree logs the address here already, so withholding the id bought
+    # no privacy and only cost the correlation. What this line marks is the
     # handshake completing, not the pairing: `P2pManager.create_connection`
     # logs the same id beside the same address as soon as the connection
     # exists, which is what makes an id resolvable for a handshake that
@@ -802,8 +801,8 @@ def ping(node: Node, msg: bytes, conn: Connection) -> None:
     Unanswered at a common version of `BIP0031_VERSION` or below, whose
     `ping` carries no nonce and which Core does not answer either.
 
-    Core's `PING` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) reads the nonce off the payload's first eight octets
+    Core's `PING` (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) reads the nonce off the payload's first eight octets
     and answers whatever follows them. A payload too short to hold a
     nonce goes unanswered: Core's read throws, as `Ping.parse` raises.
     """
@@ -818,8 +817,8 @@ def ping(node: Node, msg: bytes, conn: Connection) -> None:
 def pong(node: Node, msg: bytes, conn: Connection) -> None:
     """Finish the outstanding `ping` a `pong` answers, recording the round trip.
 
-    Core's `PONG` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) punishes no peer for a `pong`. A nonce matching no
+    Core's `PONG` (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) punishes no peer for a `pong`. A nonce matching no
     outstanding `ping` leaves it outstanding, mismatches being "normal
     when pings are overlapping"; a zero nonce, or a payload too short to
     hold one, finishes it with no round trip recorded; and a `pong` with
@@ -843,23 +842,25 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
         conn.ping_nonce = 0
         if nonce:
             # Core's `CNode::PongReceived` (`src/net.h`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
-            # trip and keeps the lowest for eviction, and `ProcessMessage`
-            # calls it only for a round trip that is not negative: a clock
-            # stepped back between ping and pong finishes the ping and
-            # records nothing. Both ends are on the wall clock, and the
-            # round trip ends when the pong was read off the socket, not
-            # when `Node`'s loop reached it: `ping_end = time_received`
-            # there, `Connection.time_received` here.
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) records the
+            # round trip and keeps the lowest for eviction, and
+            # `ProcessPong` calls it only for a round trip that is not
+            # negative: a clock stepped back between ping and pong
+            # finishes the ping and records nothing. Both ends are on
+            # the wall clock, and the round trip ends when the pong was
+            # read off the socket, not when `Node`'s loop reached it:
+            # `ping_end = time_received` there,
+            # `Connection.time_received` here.
             ping_time = conn.time_received - ping_sent
             if ping_time >= 0:
                 conn.latency = ping_time
                 conn.min_ping_time = min(conn.min_ping_time, ping_time)
 
 
-# Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
-# answering with the whole table on demand is what an observer mapping
-# the network wants, so a getaddr answer is a sample of it instead.
+# Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): answering with the
+# whole table on demand is what an observer mapping the network wants,
+# so a getaddr answer is a sample of it instead.
 # btclib-org/btclib-node#71
 _MAX_PCT_ADDR_TO_SEND = 23
 
@@ -869,13 +870,14 @@ _MAX_PCT_ADDR_TO_SEND = 23
 # once-per-connection flag already stops one peer asking twice, this is
 # what stops two peers connecting close together from being handed two
 # different draws to compare. Core's own CachedAddrResponse expiration
-# (src/net.cpp, 58a7869f86): held for `_ADDR_SAMPLE_LIFETIME` plus a fresh
-# random point across `_ADDR_SAMPLE_JITTER` drawn again every time the
-# cache is recomputed, rather than a fixed lifetime alone. A refresh
-# landing at a predictable wall-clock offset would itself be a signal to
-# whatever is scraping this answer over time, the same attacker Core's own
-# comment there reasons about for the duration alone -- the cache exists
-# to be unpredictable, not merely stable. btclib-org/btclib-node#71
+# (src/net.cpp, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): held for
+# `_ADDR_SAMPLE_LIFETIME` plus a fresh random point across
+# `_ADDR_SAMPLE_JITTER` drawn again every time the cache is recomputed,
+# rather than a fixed lifetime alone. A refresh landing at a predictable
+# wall-clock offset would itself be a signal to whatever is scraping this
+# answer over time, the same attacker Core's own comment there reasons
+# about for the duration alone -- the cache exists to be unpredictable,
+# not merely stable. btclib-org/btclib-node#71
 _ADDR_SAMPLE_LIFETIME = 3600 * 21
 _ADDR_SAMPLE_JITTER = 3600 * 6
 
@@ -884,7 +886,7 @@ def _draw_sample(node: Node) -> list[NetworkAddressV2]:
     """Draw what a `getaddr` answers, without a discouraged or banned host.
 
     Core's `GetAddressesUnsafe` (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) filters what addrman drew
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) filters what addrman drew
     the same way.
     """
     manager = node.p2p_manager
@@ -933,7 +935,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     lifetime and jitter expire -- `_cached_sample` argues why -- and
     kept one per `conn.addr_cache_key` rather than one for every
     connection. Core's `CConnman::GetAddresses` (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) keys
     `m_addr_response_caches` by `requestor.m_network_key`, itself keyed
     by the connection's network (onion for an inbound onion listener,
     `Connection.inbound_onion`) and the local bind address and port the
@@ -953,7 +955,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     triples land on two different dict entries.
     """
     # Core's `GETADDR` handler (`src/net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) ignores one from a
     # connection it opened itself: answering it would let a peer plant
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
@@ -1032,7 +1034,7 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 # Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`
-# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 # tag): the rate a peer's address tokens refill at, and the ceiling that
 # refill stops at, which the `MAX_ADDR_TO_SEND` added by `version`'s own
 # `getaddr` may exceed.
@@ -1041,7 +1043,7 @@ _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
 
 
 # `ProcessMessage`'s plausibility bounds for a gossiped time
-# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 # tag): at or before this, or more than ten minutes ahead of the clock,
 # it is replaced by five days ago
 _GOSSIP_MIN_TIME = 100_000_000
@@ -1081,7 +1083,7 @@ def _store_gossip(
     """Merge gossiped `addresses` into the table, in Core's order of filters.
 
     Core's `ADDR`/`ADDRV2` loop (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) tops up the peer's
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) tops up the peer's
     `m_addr_token_bucket`, shuffles the message, and then takes each
     address in turn: one without a token is dropped and counted in
     `m_addr_rate_limited`, unless the peer holds `ADDR`; one with a token
@@ -1164,11 +1166,11 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     #
     # Core assigns a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    # consensus/amount.h's MoneyRange, at bitcoin/bitcoin@9be056a8a7) --
-    # and leaves the filter it already holds in place for a rate outside
-    # it. valid_sats_amount is that same range with its upper bound
-    # un-exported by name (btclib.amount's own _MAX_SATOSHI), so it is
-    # what stands in for MoneyRange here.
+    # consensus/amount.h's MoneyRange, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag) -- and leaves the filter it already holds in place
+    # for a rate outside it. valid_sats_amount is that same range with
+    # its upper bound un-exported by name (btclib.amount's own
+    # _MAX_SATOSHI), so it is what stands in for MoneyRange here.
     try:
         conn.feefilter = valid_sats_amount(FeeFilter.parse(msg).feerate)
     except BTClibValueError:
@@ -1190,7 +1192,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     A block-relay-only peer sending one is disconnected, and not
     discouraged, as Core's `TX` handler does first of all where
     `RejectIncomingTxs` holds (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if conn.block_relay:
         node.logger.log_debug(
@@ -1200,7 +1202,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         return
     # Core's own early return in IBD, before it even parses the payload:
     # "we don't have enough information to validate it yet"
-    # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     # tag) -- the utxo set is still catching up, so a prevout this
     # rejects for lacking may only be missing because sync has not
     # reached it. An unsolicited transaction this early is not a
@@ -1267,21 +1269,20 @@ def _pre_verify(
         # A `TxRejectedError`, and so a `BTClibValueError`, is every other
         # refusal `pre_verify_mempool_acceptance` can make, and a script
         # refusal `settle_tx` reads -- a relay-policy-only one
-        # (`NonStandardTxError`, or a fee below
-        # either floor) exactly as much as a genuine consensus one
-        # (non-final, a coinbase spent too soon, a bad sequence lock, or
-        # a script failure `_consensus_accepts` also refuses). Core
-        # punishes neither: "Tx failures never trigger
-        # disconnections/bans ... either due to non-consensus relay
-        # policies ... or due to new consensus rules introduced in soft
-        # forks" (`src/validation.cpp:2112-2117`,
-        # at bitcoin/bitcoin@4519933391), and
-        # `PeerManagerImpl::ProcessInvalidTx` (`src/net_processing.cpp`, same
-        # commit) calls nothing punitive for a transaction failure -- there is
-        # no `MaybePunishNodeForTx`, where `MaybePunishNodeForBlock` exists and
-        # is called. None of these is a `MisbehavingError`, so
-        # `p2p.main.handle_p2p` would not discourage the peer either; caught
-        # here for the record in `_rejected`. btclib-org/btclib-node#843
+        # (`NonStandardTxError`, or a fee below either floor) exactly as much
+        # as a genuine consensus one (non-final, a coinbase spent too soon, a
+        # bad sequence lock, or a script failure `_consensus_accepts` also
+        # refuses). Core punishes neither: "Tx failures never trigger
+        # disconnections/bans ... either due to non-consensus relay policies
+        # ... or due to new consensus rules introduced in soft forks"
+        # (`src/validation.cpp:2112-2117`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag), and `PeerManagerImpl::ProcessInvalidTx`
+        # (`src/net_processing.cpp`, same commit) calls nothing punitive for a
+        # transaction failure -- there is no `MaybePunishNodeForTx`, where
+        # `MaybePunishNodeForBlock` exists and is called. None of these is a
+        # `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage the
+        # peer either; caught here for the record in `_rejected`.
+        # btclib-org/btclib-node#843
         _rejected(node, tx, refusal, conn, first_time=first_time)
         return None
 
@@ -1366,7 +1367,7 @@ def _package_refused(
     Core's `ProcessPackageResult` for an invalid package: its hash is not
     tried again, and each transaction with a result is taken in, the child
     first, so that the parent is no longer an orphan's missing input
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node.mempool.mark_rejected_reconsiderable(package_hash([parent.hash, child.hash]))
     for member in (child, parent):
@@ -1379,7 +1380,7 @@ def process_orphan(node: Node, conn: Connection) -> bool:
     """Take up an orphan `conn` is to reconsider, as far as its scripts.
 
     Core's `ProcessOrphanTx` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the oldest is verified, and
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the oldest is verified, and
     one still missing an input stays an orphan and the next is tried.
     Answers whether one was refused or queued for its scripts, as Core
     answers that it processed one.
@@ -1452,7 +1453,7 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     if check.first_time:
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
-        # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # `ProcessMessage`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         conn.last_novel_tx_time = int(clock.now())
     _accepted(node, tx, conn, replaced)
 
@@ -1461,7 +1462,7 @@ def _replaced_txs(node: Node, replaced: Iterable[bytes]) -> list[Tx]:
     """Return the held transactions `replaced` names, by internal txid.
 
     Core's order for them, `CTxMemPool::setEntries` (`src/txmempool.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     mempool = node.mempool
     wtxids = sorted(replaced, key=lambda wtxid: mempool.txids[wtxid][::-1])
@@ -1480,8 +1481,8 @@ def _add_package(
     with the parent's result, which carries it in Core's `SubmitPackage`.
 
     `AcceptPackage` trims once after adding, and refuses "mempool full" only
-    the members the trim took (`src/validation.cpp:1748`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): not `TxRejectedError`, so
+    the members the trim took (`src/validation.cpp:1740`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): not `TxRejectedError`, so
     not reconsiderable. `ProcessPackageResult` then takes each result in,
     the child first, so that the child leaves the orphanage before it can
     be marked for reconsidering, and marks the package hash if any was
@@ -1562,8 +1563,8 @@ def _settle_package(
 def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     """Whether a block nobody asked for is left unprocessed, as Core leaves it.
 
-    Core's `AcceptBlock` (`validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) returns without storing an unrequested block with less
+    Core's `AcceptBlock` (`validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) returns without storing an unrequested block with less
     work than the active tip, more than `MIN_BLOCKS_TO_KEEP` above it, or
     below the minimum chain work. Its other refusal, a block processed
     before and pruned since, falls under the first: pruning stays
@@ -1586,7 +1587,8 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
     block_index = node.chainstate.block_index
     # Core's `BLOCK` arm refuses a mutated body before the header is
     # looked at, once the parent is known, and punishes the peer without
-    # touching the index (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # touching the index (`net_processing.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     parent = block_index.header_dict.get(block.header.previous_block_hash)
     segwit = parent is not None and (
         parent.index + 1 >= node.chain.consensus.segwit_height
@@ -1611,7 +1613,7 @@ def _check_block(
 
     Neither costs the peer where `via_compact_block`: Core's
     `MaybePunishNodeForBlock` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) punishes nobody for such a
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) punishes nobody for such a
     block that came through `cmpctblock`, BIP152 letting a peer relay a
     block whose header alone it checked.
     """
@@ -1619,10 +1621,11 @@ def _check_block(
     # Core's `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock`, so a
     # body failing it is refused, and its peer punished, before its header
     # is indexed or its being unrequested is looked at; Core never marks
-    # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7).
-    # The refusal is `assert_valid_block`'s text, which asks the header's
-    # proof of work and, on signet, the solution before the merkle root, in
-    # the order of Core's own `CheckBlock`.
+    # such a block failed (`src/validation.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The refusal is
+    # `assert_valid_block`'s text, which asks the header's proof of work
+    # and, on signet, the solution before the merkle root, in the order of
+    # Core's own `CheckBlock`.
     if not passes_check_block(block, node.chain):
         try:
             assert_valid_block(block, node.chain)
@@ -1640,7 +1643,7 @@ def _min_pow_checked(node: Node, header: BlockHeader) -> bool:
     """Whether a block's chain clears the anti-DoS work threshold.
 
     Core's `min_pow_checked` in its `BLOCK` arm (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the parent is indexed,
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the parent is indexed,
     and its work plus the block's own reaches `_anti_dos_work_threshold`.
     """
     block_index = node.chainstate.block_index
@@ -1669,15 +1672,15 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     An unsolicited block whose own header this node has never indexed is not
     read as though `getdata` or `headers` already vouched for it:
     `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
-    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every block
-    through `ChainstateManager::AcceptBlock` once `ProcessNewBlock`'s
-    `CheckBlock` has passed -- which this function asks first too, in
-    `_refuse_before_indexing` -- and `AcceptBlock` calls `AcceptBlockHeader`
-    (`validation.cpp`, same sha) on the block's own header before the body's
-    remaining checks -- a header already known is accepted outright, and one
-    that is not has its own parent looked up, refused with
-    `BLOCK_MISSING_PREV` where that parent is unknown too. Core punishes
-    that refusal: `MaybePunishNodeForBlock`'s own switch
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+    runs every block through `ChainstateManager::AcceptBlock` once
+    `ProcessNewBlock`'s `CheckBlock` has passed -- which this function asks
+    first too, in `_refuse_before_indexing` -- and `AcceptBlock` calls
+    `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
+    header before the body's remaining checks -- a header already known is
+    accepted outright, and one that is not has its own parent looked up,
+    refused with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
+    punishes that refusal: `MaybePunishNodeForBlock`'s own switch
     (`net_processing.cpp`, same sha) calls `Misbehaving` for
     `BLOCK_MISSING_PREV`, unlike an unconnecting *headers* batch, which
     `ProcessHeadersMessage`'s own `HandleUnconnectingHeaders` answers by
@@ -1725,7 +1728,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     )
     # no longer awaited from this peer, whatever it turns out to be: the
     # `RemoveBlockRequest` of Core's `BLOCK` handling (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     remove_block_request(connections, block_hash, clock.now(), conn.id)
 
     block_index = node.chainstate.block_index
@@ -1814,14 +1817,14 @@ def _accept_block(
     # novel, past its own checks and on disk: what Core's own
     # `m_last_block_time` records for eviction, whether or not the
     # block later connects (`PeerManagerImpl::ProcessBlock`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     conn.last_novel_block_time = int(clock.now())
     node.logger.info("Received new block with hash:%s", block_hash.hex())
     block_index.set_downloaded(block_hash)
     # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
     # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
-    # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
-    # (`net_processing.cpp`, the v31.1 tag)
+    # `RemoveBlockRequest` below, at bitcoin/bitcoin@f0de87f040
+    # (`net_processing.cpp`, the v32.1 tag)
     new_pow_valid_block(node, block)
     # stored, so awaited from nobody: Core's `ProcessBlock`
     connections = list(node.p2p_manager.connections.values())
@@ -1860,7 +1863,7 @@ def inv(  # sourcery skip: low-code-quality
     """Ask for headers behind an announced block, queue missing transactions.
 
     The `INV` branch of Core's `ProcessMessage` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The last block announced
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The last block announced
     that has no header here is asked for with a `getheaders` from the best
     header, whatever the sync state, where `sync_headers` has already asked
     this peer for headers; where it has not, once per peer and once per
@@ -1869,7 +1872,7 @@ def inv(  # sourcery skip: low-code-quality
     to this peer is in flight, and a peer not yet syncing has its turn
     spent all the same, as in Core. While the stored blocks connect,
     `NodeStatus.Reindexing`, no block announced asks for headers, as
-    Core's `LoadingBlocks()` gates it (`net_processing.cpp:4158`, same
+    Core's `LoadingBlocks()` gates it (`net_processing.cpp:4382`, same
     sha; btclib-org/btclib-node#1915). Transactions are queued only out
     of initial block download, where Core calls `AddTxAnnouncement`.
 
@@ -1916,7 +1919,7 @@ def inv(  # sourcery skip: low-code-quality
     # Core skips `MSG_TX` from a peer that sent `wtxidrelay` and `MSG_WTX`
     # from one that did not, and reads `MSG_WITNESS_TX` as a txid from
     # either (`net_processing.cpp` and `protocol.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The announcement keeps
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The announcement keeps
     # which of the two it is: a wtxid-relay peer's `MSG_WITNESS_TX` is
     # looked up and asked for as a txid. btclib-org/btclib-node#1774
     skipped = (
@@ -1964,11 +1967,11 @@ _GETDATA_BLOCK_TYPES = (
     InventoryType.MSG_FILTERED_BLOCK,
 )
 
-# BIP152's compact blocks as Core serves them (`net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
-# the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
-# instead, and the depth past which a `getblocktxn` is answered with the
-# full block too
+# BIP152's compact blocks as Core serves them (`net_processing.h` and
+# `net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# the one version Core speaks, the depth past which a `MSG_CMPCT_BLOCK`
+# is answered with the full block instead, and the depth past which a
+# `getblocktxn` is answered with the full block too
 CMPCTBLOCKS_VERSION = 2
 MAX_CMPCTBLOCK_DEPTH = 5
 MAX_BLOCKTXN_DEPTH = 10
@@ -2009,7 +2012,7 @@ def _read_stored(node: Node, item: Inventory) -> bytes | None:
     """Return the octets `node.block_db` holds for `item`, or `None`.
 
     Read as Core's `ProcessGetBlockData` reads them
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). A `MSG_WITNESS_BLOCK` is read with `ReadRawBlock`, which checks
     nothing of the block. Every other item is read with `ReadBlock(...,
     inv.hash)`, which `read_checked_raw` follows.
@@ -2074,20 +2077,20 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     """Whether `block_hash` falls more than `MIN_BLOCKS_TO_KEEP` behind the tip.
 
     Core's own `ProcessGetBlockData` (`net_processing.cpp`, at
-    bitcoin/bitcoin@ca7162cde5): "Avoid leaking prune-height by never
-    sending blocks below the NODE_NETWORK_LIMITED threshold", checked
-    against `peer.m_our_services` -- what this node told the requesting
-    peer during its own handshake -- rather than what is actually still
-    on disk, and fired whether or not the block asked for happens to
-    still be there: a pruned node that still holds it this once is not
-    to be relied on for it the next time either. Every connection of a
-    pruned node is told the same `NODE_NETWORK_LIMITED`-only services
-    (`connection.py`'s own `own_version`, gated on `Config.pruned`
-    the identical way), so this reads `node.config.pruned` directly
-    rather than a per-connection record of what was sent. `+ 2` is
-    Core's own buffer, "for possible races". `block_hash` is indexed:
-    `_serve_getdata_block` has already answered Core's own `if (!pindex)
-    return;`.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): "Avoid leaking
+    prune-height by never sending blocks below the NODE_NETWORK_LIMITED
+    threshold", checked against `peer.m_our_services` -- what this node
+    told the requesting peer during its own handshake -- rather than
+    what is actually still on disk, and fired whether or not the block
+    asked for happens to still be there: a pruned node that still holds
+    it this once is not to be relied on for it the next time either.
+    Every connection of a pruned node is told the same
+    `NODE_NETWORK_LIMITED`-only services (`connection.py`'s own
+    `own_version`, gated on `Config.pruned` the identical way), so this
+    reads `node.config.pruned` directly rather than a per-connection
+    record of what was sent. `+ 2` is Core's own buffer, "for possible
+    races". `block_hash` is indexed: `_serve_getdata_block` has already
+    answered Core's own `if (!pindex) return;`.
     """
     block_index = node.chainstate.block_index
     block_info = block_index.get_block_info(block_hash)
@@ -2128,8 +2131,8 @@ def _serve_getdata_tx(
         )
         conn.send(TxMsg(tx, include_witness=include_witness))
         # Core's own `m_mempool.RemoveUnbroadcastTx(tx->GetHash())`
-        # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag): this peer's own `getdata` is the
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag): this peer's own `getdata` is the
         # acknowledgment `getmempoolinfo`'s own `unbroadcastcount`
         # waits for. `tx->GetHash()` is a txid, matching what
         # `mark_broadcast` reads `tx.id` by, not `item.hash`, which
@@ -2143,8 +2146,8 @@ def _serve_getdata_tx(
 def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     """Serve one block item, as Core's `ProcessGetBlockData` does.
 
-    Core (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
-    ignores a block it has no index entry for, then one
+    Core (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) ignores a block it has no index entry for, then one
     `BlockRequestAllowed` refuses -- off the active chain and not
     recently valid -- before the prune threshold.
 
@@ -2179,7 +2182,8 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
         answer = _block_answer(node, item)
     except BTClibValueError as e:
         # Core logs a block it cannot read and drops the peer
-        # (`ProcessGetBlockData`, at bitcoin/bitcoin@9be056a8a7)
+        # (`ProcessGetBlockData`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag)
         node.logger.error(  # noqa: TRY400
             "Cannot load block from disk (%.200s), disconnecting peer=%d", e, conn.id
         )
@@ -2205,7 +2209,7 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     now empty.
 
     Core's `ProcessGetData` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) serves the transactions
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) serves the transactions
     at the front, then one other item, checking `fPauseSend` before each:
     "the send buffer provides backpressure". `conn.pause_send` is that
     flag. `conn.send` counts each item on this thread before scheduling
@@ -2267,7 +2271,7 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     `node.pending_getdata` what it could not finish.
 
     Core's `ProcessMessages` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns before
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) returns before
     `PollMessage` whenever `m_getdata_requests` is non-empty or
     `fPauseSend` is set: "this maintains the order of responses and
     prevents m_getdata_requests to grow unbounded". It never backlogs more
@@ -2297,7 +2301,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     """Index a batch of headers, ask for more, or mark header sync finished.
 
     Core's `ProcessHeadersMessage` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order. An empty
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order. An empty
     batch is the peer having nothing to give: it ends a low-work sync
     with it and asks for nothing more. A batch is checked for proof of
     work and continuity, then handed to the peer's low-work sync where
@@ -2446,7 +2450,7 @@ def _is_continuation_of_low_work_headers_sync(
     """Hand `headers` to `conn`'s low-work sync, where one runs.
 
     Core's `IsContinuationOfLowWorkHeadersSync` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Answers whether the sync
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Answers whether the sync
     took the batch, and the headers left for `headers` to process: those
     the sync released for indexing where it took the batch, none of them
     in `PRESYNC`, and the batch itself where no sync runs or the sync
@@ -2511,7 +2515,7 @@ def _try_low_work_headers_sync(
     """Keep a low-work batch out of the index, syncing its chain where it may.
 
     Core's `TryLowWorkHeadersSync` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `chain_start`, where the
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `chain_start`, where the
     batch connects, plus the work the batch claims, below
     `_anti_dos_work_threshold` is a chain this node does not index yet. A
     full batch starts `conn`'s low-work sync from `chain_start`, towards
@@ -2583,7 +2587,7 @@ def _ask_for_more_headers(
 
 
 # Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): how old, in time and in
 # proof-equivalent time, a block off the active chain may be and still
 # be served.
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
@@ -2593,7 +2597,7 @@ def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """Return the last block of the active chain the locator names.
 
     Core's `Chainstate::FindForkInGlobalIndex` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the first entry known
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the first entry known
     here that is on the active chain, or the active tip where the entry
     descends from it, and genesis where no entry is either.
     """
@@ -2645,7 +2649,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getheaders` off the active chain, as Core does.
 
     The `GETHEADERS` branch of Core's `ProcessMessage`
-    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). An active chain with less work than the minimum chain work is
     answered with an empty `headers`, unless the peer holds `DOWNLOAD`. An
     empty locator asks for the
@@ -2716,7 +2720,7 @@ def getblocks(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getblocks` with an `inv`, as Core does.
 
     The `GETBLOCKS` branch of Core's `ProcessMessage`
-    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). A locator past `MAX_LOCATOR_SZ` drops the peer, undiscouraged.
     Any other first activates the best chain, so that a block just
     announced is on it, and is answered with the `MSG_BLOCK` hashes of the
@@ -2803,8 +2807,8 @@ def _ancestor(block_index: BlockIndex, block_hash: bytes, height: int) -> bytes:
 
 
 # Core's own `PrepareBlockFilterRequest` passes this for `getcfcheckpt`'s
-# `max_height_diff` (`net_processing.cpp:3400`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a checkpoint chain has
+# `max_height_diff` (`net_processing.cpp:3653`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a checkpoint chain has
 # no range bound of its own, BIP157 answering only "the chain's length
 # is the bound" (`get_cfcheckpt`'s own comment below), so the range
 # check `_prepare_filter_request` shares with `getcfilters`/
@@ -2823,8 +2827,8 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
 ) -> int | None:
     """Validate a BIP157 filter request, answering the stop block's height.
 
-    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3265-3312`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): each of the four
+    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3518-3565`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): each of the four
     checks below disconnects the peer rather than answering silently,
     logging the line Core logs for it (ISS 1477). A fifth check of
     Core's, the filter index for a supported type not existing, is not
@@ -2923,7 +2927,7 @@ def _filter_range(  # noqa: PLR0913, PLR0917
     reorged away from still names a chain, the one Core's own
     `ProcessGetCFilters`/`ProcessGetCFHeaders` resolve the same way, from
     `stop_index` rather than from `ActiveChain()` (`net_processing.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). BIP157 names it "the
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). BIP157 names it "the
     chain terminating in StopHash" and asks only that the hash be "known
     to belong to a block accepted by the receiving peer" -- which a
     block this node has reorged away from still is (ISS 1476).
@@ -2950,8 +2954,8 @@ def _log_missing_filters(
     writes lost, or that a rebuild of the store did not build again
     (`chainstate.filter_index`'s module docstring). Core's
     `ProcessGetCFilters`, `ProcessGetCFHeaders` and `ProcessGetCFCheckPt`
-    (`src/net_processing.cpp:3336-3340`, `:3368-3372`, `:3376-3379` and
-    `:3415-3418`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) then write
+    (`src/net_processing.cpp:3589-3593`, `:3621-3625`, `:3629-3632` and
+    `:3668-3671`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) then write
     this `net` line, send nothing and keep the peer, having looked the
     whole range up before sending any of it. Only the basic type reaches
     here (`_prepare_filter_request`).
@@ -2984,7 +2988,7 @@ def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -
     the same `deque`. Answers whether `block_hashes` is now empty.
 
     Core's `ProcessGetCFilters` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) queues every filter of
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) queues every filter of
     the answer at once, and `ProcessMessages` reads nothing more from the
     peer until its send buffer is back within `nSendBufferMaxSize`. This
     checks `conn.pause_send` before each filter instead, as
@@ -3171,7 +3175,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer the transactions of a block a peer's `cmpctblock` lacked.
 
     Core's `GETBLOCKTXN` handling (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): silence for a block not
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): silence for a block not
     held; a `blocktxn` for `node.most_recent_block`, ahead of any lookup,
     or for one at most `MAX_BLOCKTXN_DEPTH` below the tip, an index past
     its last transaction being misbehaviour; and for an older one the
@@ -3231,7 +3235,7 @@ def _blocktxn_block(node: Node, block_hash: bytes, height: int) -> Block | None:
     """Return the block a `getblocktxn` names, kept if at or below the tip.
 
     Core reads the block from disk for every `getblocktxn` (`ReadBlock`,
-    `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     Here that read parses the whole block on the node thread. A request
     is a few dozen bytes and its `blocktxn` can be about 100, so
     `conn.pause_send` does not pace a peer repeating it. The block read
@@ -3292,7 +3296,7 @@ def _reconstruct(node: Node, compact: CmpctBlock) -> PartialBlock | None:
     """Rebuild what `compact` can from the mempool and the extra transactions.
 
     Core's `PartiallyDownloadedBlock::InitData` (`blockencodings.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which reads the mempool
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), which reads the mempool
     and then `DownloadManager.extra_txns`. `None` for a short-id
     collision, Core's `READ_STATUS_FAILED`.
 
@@ -3349,7 +3353,7 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     """Rebuild a block from a `cmpctblock`, and ask for what it lacks.
 
     Core's `CMPCTBLOCK` handler (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its header is taken
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Its header is taken
     first (`_index_compact_header`), and the block goes further only
     where it is not held, has more work than the tip, and is in flight
     or the tip is recent.
@@ -3368,21 +3372,19 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     Core's deserializer throws "indexes overflowed 16 bits".
 
     A peer that never sent `sendcmpct` is ignored before the message is
-    read. The v31.1 handler has no such return; bitcoin/bitcoin#32606
-    added it at bitcoin/bitcoin@4bacf21a13 (`net_processing.cpp:4799-4802`,
-    first in v32.0rc1). This node asks for a `cmpctblock` only of a peer
-    that sent `sendcmpct`, so the return drops nothing it asked for.
+    read, as Core's handler ignores it (`net_processing.cpp:4798-4801`).
+    This node asks for a `cmpctblock` only of a peer that sent
+    `sendcmpct`, so the return drops nothing it asked for.
 
     A block not asked of this peer, from a peer not marked high-bandwidth
-    (`bip152_highbandwidth_to`), is ignored once its header is taken. The
-    v31.1 handler has no such return either; bitcoin/bitcoin#32606 added
-    it at bitcoin/bitcoin@4bacf21a13 (`net_processing.cpp:4888-4891`,
-    first in v32.0rc1). A peer is marked only where this node sent it
-    `sendcmpct(1)`, and a block this node asked of a peer is in its
-    `download_queue`, so the return drops only what neither asked for.
+    (`bip152_highbandwidth_to`), is ignored once its header is taken, as
+    Core's handler ignores it (`net_processing.cpp:4887-4890`). A peer is
+    marked only where this node sent it `sendcmpct(1)`, and a block this
+    node asked of a peer is in its `download_queue`, so the return drops
+    only what neither asked for.
 
     While the stored blocks connect, the message is dropped unread
-    before anything else (`_ignored_while_reindexing`), as v31.1 does.
+    before anything else (`_ignored_while_reindexing`), as Core does.
     """
     # deferred: `download` imports this module
     from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
@@ -3550,7 +3552,7 @@ def blocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     """Finish the block a `cmpctblock` from this peer left short.
 
     Core's `BLOCKTXN` handler (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The transactions are read
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The transactions are read
     unchecked, as Core's deserializer reads them: one that is not valid
     leaves a block `_check_block` refuses.
 
@@ -3569,7 +3571,7 @@ def _process_compact_block_txns(
     """Fill the partial block `conn` is rebuilding, and take the block.
 
     Core's `ProcessCompactBlockTxns` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Ignored for a block with
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Ignored for a block with
     no partial block from this peer, and a `MisbehavingError` for one
     already filled, or for transactions other than those missing. A block
     its header does not commit to may be a short-id collision: it is
@@ -3622,7 +3624,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """
     missing = NotFound.parse(msg)
     # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
-    # (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a `notfound` for a
+    # (at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a `notfound` for a
     # transaction this node asked for completes that announcement, so the
     # next announcer is asked instead of the node waiting out the request.
     # `DownloadManager.received_not_found` reads only the transaction
@@ -3632,8 +3634,9 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     node.download_manager.received_not_found(conn.id, missing.items)
     # A count at debug rather than the items: Core's one line for a
     # `notfound` is ProcessMessage's own `received: notfound (N bytes)`,
-    # under `-debug=net` (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7),
-    # and the items are the peer's to size.
+    # under `-debug=net` (net_processing.cpp,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and the items are
+    # the peer's to size.
     node.logger.log_debug("net", "notfound of %d items", len(missing.items))
 
 

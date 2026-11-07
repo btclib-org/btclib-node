@@ -104,10 +104,10 @@ _DATA_STREAM_BYTES = 32
 
 
 # Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the commands
-# `bytes_recv_per_msg` keys by name, every other one being counted under
-# `NET_MESSAGE_TYPE_OTHER`, so that a peer inventing commands cannot grow
-# the table.
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+# until ISS 2250): the commands `bytes_recv_per_msg` keys by name, every
+# other one being counted under `NET_MESSAGE_TYPE_OTHER`, so that a peer
+# inventing commands cannot grow the table.
 _MESSAGE_TYPES = frozenset(
     (
         "version",
@@ -150,12 +150,12 @@ _MESSAGE_TYPES = frozenset(
 _MESSAGE_TYPE_OTHER = "*other*"
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
-# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
-# as `/Satoshi:29.0.0/` -- the one thing this node says about itself to
-# every peer it meets, and what a crawler reporting the composition of
-# the network parses. `constants.USER_AGENT` is where this string is
-# computed and argued, once, for this module's wire bytes and
-# `rpc.callbacks`'s own `getnetworkinfo` answer alike
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag) and sends as `/Satoshi:29.0.0/` -- the one thing this node
+# says about itself to every peer it meets, and what a crawler reporting
+# the composition of the network parses. `constants.USER_AGENT` is where
+# this string is computed and argued, once, for this module's wire bytes
+# and `rpc.callbacks`'s own `getnetworkinfo` answer alike
 # (btclib-org/btclib-node#1009).
 _USER_AGENT = USER_AGENT.encode()
 
@@ -175,7 +175,7 @@ def _send_memusage(message: SerializedMessage) -> int:
 
     The struct, no allocation for a command short enough for the string's
     own buffer, and `MallocUsage` of the payload (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core reads the vector's
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Core reads the vector's
     capacity, which its standard library's growth can leave above the
     payload's length, by less than the length again; this takes the length.
     """
@@ -187,8 +187,8 @@ def _recv_memusage(message: NetMessage) -> int:
 
     The struct, no allocation for a short command, and the stream's own
     `GetMemoryUsage`: its struct and `MallocUsage` of the payload
-    (`src/net.cpp` and `src/streams.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). Core reads the vector's capacity; this takes the
+    (`src/net.cpp` and `src/streams.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). Core reads the vector's capacity; this takes the
     length, as `_send_memusage` does.
     """
     return _NET_MESSAGE_BYTES + _DATA_STREAM_BYTES + _malloc_usage(len(message.payload))
@@ -222,19 +222,20 @@ def local_services(config: Config) -> ServiceFlags:
 
     `NODE_NETWORK_LIMITED` is set unconditionally and `NODE_NETWORK`
     only where this node is not pruned, matching Core's own
-    `g_local_services` (`src/init.cpp`, at bitcoin/bitcoin@ca7162cde5):
-    `NODE_NETWORK_LIMITED | NODE_WITNESS` from the start, gaining
-    `NODE_NETWORK` only once `!chainman.m_blockman.IsPruneMode()`
-    (`:2026-2028`). `Config.pruned` answers that check here, one fixed
-    set of services for every connection rather than the per-chainstate
-    assumeutxo case Core's own comment there also covers -- this tree
-    has no counterpart to a background snapshot sync.
+    `g_local_services` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `NODE_NETWORK_LIMITED | NODE_WITNESS` from the
+    start, gaining `NODE_NETWORK` only once
+    `!chainman.m_blockman.IsPruneMode()` (`:2024-2026`). `Config.pruned`
+    answers that check here, one fixed set of services for every
+    connection rather than the per-chainstate assumeutxo case Core's own
+    comment there also covers -- this tree has no counterpart to a
+    background snapshot sync.
 
-    `NODE_COMPACT_FILTERS` is BIP157's, and saying it promises an
-    answer to `getcfilters`, `getcfheaders` and `getcfcheckpt` for every
-    block of the chain. `Config.peerblockfilters` is Core's own
-    `-peerblockfilters` (`src/init.cpp:992-998`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), off by default there
+    `NODE_COMPACT_FILTERS` is BIP157's, and saying it promises an answer
+    to `getcfilters`, `getcfheaders` and `getcfcheckpt` for every block
+    of the chain. `Config.peerblockfilters` is Core's own
+    `-peerblockfilters` (`src/init.cpp:1022-1028`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), off by default there
     (`DEFAULT_PEERBLOCKFILTERS`, `src/net_processing.h`) as it is here.
     The filter index is caught up before the node starts listening and
     kept up as blocks connect, so the promise holds whenever
@@ -286,8 +287,8 @@ class KnownTxInventory(RollingBloomFilter):
     """The latest transaction hashes a peer announced to this node or was sent.
 
     Core's `TxRelay::m_tx_inventory_known_filter`, a `CRollingBloomFilter{50000,
-    0.000001}` (`src/net_processing.cpp:307`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). Like Core's, it withholds a transaction from a peer that
+    0.000001}` (`src/net_processing.cpp:303`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). Like Core's, it withholds a transaction from a peer that
     lacks it about once in a million queries.
 
     A txid for a peer without wtxid relay and a wtxid otherwise, as Core's
@@ -307,8 +308,8 @@ class AddrKnown(RollingBloomFilter):
     """The addresses a peer sent this node or was sent, by `service_key`.
 
     Core's `Peer::m_addr_known`, a `CRollingBloomFilter{5000, 0.001}`
-    (`src/net_processing.cpp:5707`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). Like Core's, it leaves out of a `getaddr` answer up to one
+    (`src/net_processing.cpp:5966`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). Like Core's, it leaves out of a `getaddr` answer up to one
     in a thousand of the addresses the peer neither sent nor was sent.
 
     Reached from `Node`'s thread, by the `addr`, `addrv2` and `getaddr`
@@ -364,7 +365,7 @@ class Connection:
     # A class default for the same reason as `time_received`.
     answered_getaddr: bool = False
     # Core's `Peer::m_addr_token_bucket` (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): how many gossiped
     # addresses this peer may still have taken in, one to start with so
     # that it can announce itself. Written and read on `Node`'s thread
     # alone, by `callbacks.version`, `addr` and `addrv2`; a class default
@@ -410,7 +411,7 @@ class Connection:
     # Core's `CNode::m_addr_name`: the destination string this connection
     # was dialled by, where it was dialled by one rather than by a
     # resolved address -- `pszDest` in `ConnectNode` (`src/net.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `None` for a connection
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `None` for a connection
     # accepted or dialled straight to an address:
     # `P2pManager.async_connect_host` is this tree's one setter, its own
     # `dest` argument becoming this field verbatim -- port included
@@ -431,12 +432,12 @@ class Connection:
     # gives.
     last_block_announcement: int = 0
     # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
-    # address relay. Set where Core calls `SetupAddressRelay`: by
-    # `callbacks.version` for a peer this node dialled, and by `addr`,
-    # `addrv2` and `getaddr` for one that dialled in. Read by
-    # `getpeerinfo`; a class default for the same reason as
-    # `time_received`.
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): whether this peer
+    # takes part in address relay. Set where Core calls
+    # `SetupAddressRelay`: by `callbacks.version` for a peer this node
+    # dialled, and by `addr`, `addrv2` and `getaddr` for one that
+    # dialled in. Read by `getpeerinfo`; a class default for the same
+    # reason as `time_received`.
     addr_relay_enabled: bool = False
     # Core's `Peer::m_next_local_addr_send`: when `P2pManager` next tells
     # this peer the address it is reached at, 0 for the first time.
@@ -588,7 +589,7 @@ class Connection:
         # `P2pManager.create_connection` sets it; nothing changes it after.
         self.prefer_evict: bool = False
         # Core's `CNode::m_network_key` (`src/net.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the key
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the key
         # `callbacks.getaddr` caches its answer under -- the BIP155 id of
         # the peer's network (Tor's for an `inbound_onion` one) and the
         # host and port of the accepted socket's local address, which on
@@ -634,8 +635,8 @@ class Connection:
         # `time.monotonic()`: Core's `m_last_recv`, `m_last_send`,
         # `m_ping_start`, `m_connected`, `m_last_block_time` and
         # `m_last_tx_time` are all read off `NodeClock`, its mockable
-        # system clock (`src/util/time.h`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag).
+        # system clock (`src/util/time.h`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag).
         self.last_receive: float = clock.now()
         self.last_send: float = clock.now()
         self.ping_nonce: int | None = None
@@ -660,17 +661,17 @@ class Connection:
         # `CNode` fields `m_connected`, `m_min_ping_time`,
         # `m_last_block_time`, `m_last_tx_time`, `m_has_all_wanted_services`
         # and `nKeyedNetGroup` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag), in whole seconds as Core keeps them, the ping
-        # aside. `connected_time` is set here and the netgroup by
-        # `P2pManager.create_connection`, both before this connection's
-        # task is scheduled; `callbacks.version`, `pong`, `block` and `tx`
-        # write the rest from `Node`'s thread, and `P2pManager.server`
-        # reads them all from its own. One writer per field, storing one
-        # immutable value, so the reader sees the old value or the new one
-        # and nothing between, which is what Core's `std::atomic` fields
-        # give its own reader. `callbacks.pong` updates `min_ping_time`
-        # inside its `_ping_lock` block, where it reads the `ping_sent` the
-        # round trip is measured from.
+        # the v31.1 tag, which this node follows until ISS 2252), in whole
+        # seconds as Core keeps them, the ping aside. `connected_time` is
+        # set here and the netgroup by `P2pManager.create_connection`, both
+        # before this connection's task is scheduled; `callbacks.version`,
+        # `pong`, `block` and `tx` write the rest from `Node`'s thread, and
+        # `P2pManager.server` reads them all from its own. One writer per
+        # field, storing one immutable value, so the reader sees the old
+        # value or the new one and nothing between, which is what Core's
+        # `std::atomic` fields give its own reader. `callbacks.pong` updates
+        # `min_ping_time` inside its `_ping_lock` block, where it reads the
+        # `ping_sent` the round trip is measured from.
         self.connected_time: int = int(clock.now())
         self.min_ping_time: float = math.inf
         self.last_novel_block_time: int = 0
@@ -722,9 +723,9 @@ class Connection:
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own
         # `Peer::m_fee_filter_sent`/`m_next_send_feefilter`
-        # (`net_processing.cpp`, at bitcoin/bitcoin@58a7869f86), both
-        # initialized the same way there: 0 is a rate nothing is
-        # withheld under, so the first comparison in
+        # (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag), both initialized the same way there: 0 is a rate
+        # nothing is withheld under, so the first comparison in
         # `DownloadManager._send_due_feefilters` never mistakes "never
         # sent" for "sent zero on purpose", and 0.0 is "never
         # scheduled", the same convention `next_inv_send_time` above
@@ -785,7 +786,7 @@ class Connection:
         # Core sets `fPauseRecv` (`MarkReceivedMsgsForProcessing`) and
         # selects the socket for no more reads until `PollMessage` takes
         # its queue back within it (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag); `run` below waits on
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); `run` below waits on
         # `_recv_resume` for the same. It pauses rather than drops: a peer
         # past it has sent valid messages faster than this node handles
         # them, Core's flood-control case.
@@ -1029,8 +1030,8 @@ class Connection:
                     # `ConnectionAbortedError` -- is `sock_recv` raising
                     # rather than the empty read the `if not data:` arm
                     # below answers for; Core's own `SocketHandler`
-                    # (`src/net.cpp` at bitcoin/bitcoin@ca7162cde5)
-                    # treats every `Recv` failure that is not
+                    # (`src/net.cpp` at bitcoin/bitcoin@f0de87f040, the
+                    # v32.1 tag) treats every `Recv` failure that is not
                     # `WOULDBLOCK`/`MSGSIZE`/`EINTR`/`EINPROGRESS` the
                     # same way it treats a `nBytes == 0` graceful close:
                     # `CloseSocketDisconnect`, not a crash -- so this is
@@ -1056,8 +1057,8 @@ class Connection:
                         )
                 except V1PeerRefusedError:
                     # Core's wording for a v2 transport error
-                    # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-                    # v31.1 tag), for what `-v1transport` refuses: no
+                    # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+                    # v32.1 tag), for what `-v1transport` refuses: no
                     # discouragement. SECURITY.md's *Where this node
                     # departs from Bitcoin Core* argues the refusal.
                     self.node.logger.log_debug(
@@ -1085,7 +1086,7 @@ class Connection:
                     # node's own bug. Core's `ReceiveMsgBytes` answers
                     # the first by dropping the connection and
                     # discourages nobody (`src/net.cpp`,
-                    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+                    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
                     return self.stop(cancel_task=False)
         finally:
             self.stop(cancel_task=False)
@@ -1097,8 +1098,8 @@ class Connection:
         order, as `_frame` returns it.
 
         Core stamps `m_last_send` on every `send()` that takes octets
-        (`SocketSendData`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag), so a peer reading one long message slowly is not
+        (`SocketSendData`, `src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag), so a peer reading one long message slowly is not
         dropped for send inactivity while it reads. `sock_sendall`
         reports only that all of `data` is taken, and asyncio has no
         `sock_send`, so `last_send` is stamped after each `_SEND_CHUNK`
@@ -1379,7 +1380,7 @@ class Connection:
         `callbacks.version` to an inbound peer whose own `version` it
         has accepted, which is where Core's `ProcessMessage` calls
         `PushNodeVersion` for each (`src/net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         services = local_services(self.manager.node.config)
         # over the whole 64-bit field, as Core draws it: this nonce is
@@ -1424,8 +1425,8 @@ class Connection:
             start_height=self.manager.node.best_height,
             # Core's own `fRelay` is `!RejectIncomingTxs` -- false for a
             # block-relay-only peer, a feeler and under `-blocksonly`
-            # (src/net_processing.cpp, at bitcoin/bitcoin@9be056a8a7, the
-            # v31.1 tag) -- and never about `IsInitialBlockDownload()`.
+            # (src/net_processing.cpp, at bitcoin/bitcoin@f0de87f040, the
+            # v32.1 tag) -- and never about `IsInitialBlockDownload()`.
             # Of those this node has the first two, so the flag never
             # has to be revised once the node catches up: what a peer
             # sends before then is dropped on arrival instead,
@@ -1444,8 +1445,8 @@ class Connection:
 
         At a common version of `BIP0031_VERSION` or below it is a
         `NoncelessPing`, as in Core's `MaybeSendPing`
-        (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag): no `pong` answers it, so nothing is recorded as
+        (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag): no `pong` answers it, so nothing is recorded as
         outstanding. btclib-org/btclib-node#1204
         """
         self.ping_start = clock.now()
@@ -1488,7 +1489,7 @@ class Connection:
         btclib-org/btclib-node#1657
 
         Core's `ReceiveMsgBytes` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the transport refusing
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the transport refusing
         octets raises, and the connection is dropped by `run`. A message
         it rejects is counted and the connection goes on.
         """

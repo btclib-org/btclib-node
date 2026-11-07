@@ -5,7 +5,7 @@
 """The block-relay-only peers kept across a restart, in `anchors.dat`.
 
 `dump_anchors` is Core's `DumpAnchors` and `read_anchors` its
-`ReadAnchors` (`src/addrdb.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+`ReadAnchors` (`src/addrdb.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag), in the same file format, so that either program reads the other's:
 the network magic, a `CompactSize` count, each address as
 `CAddress::V2_DISK` writes it -- a four-octet disk version, then the

@@ -13,8 +13,8 @@ into objects and written out again.
 what `Block.parse` refuses with `check_validity=False`, with the same
 `BTClibValueError`: a block that does not parse is not served. Core serves
 a stored witness block unread (`ReadRawBlock` in `ProcessGetBlockData`,
-`src/net_processing.cpp` at bitcoin/bitcoin@9be056a8a7); this node checks
-it first.
+`src/net_processing.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1 tag);
+this node checks it first.
 """
 
 from dataclasses import dataclass

@@ -793,7 +793,7 @@ def test_a_dns_seed_s_answer_is_backdated_with_no_extra_penalty(
     `add_addresses`'s own gossip default instead of its explicit `0`,
     this would land at `stamp - 2 * 3600` instead of `stamp`. Core's own
     `addrman.get().Add(vAdd, resolveSource)` (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) passes no `time_penalty`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) passes no `time_penalty`
     of its own either, taking `AddrMan::Add`'s default, `0s`.
     """
     peer_db = a_peer_db(a_chain(["one.example"]))
@@ -809,8 +809,8 @@ def test_a_dns_seed_s_answer_is_backdated_with_no_extra_penalty(
 def test_the_dns_seed_timestamp_is_uniform_between_three_and_seven_days_old() -> None:
     """`_dns_seed_timestamp`'s own range, Core's `rand_uniform_delay`.
 
-    `ThreadDNSAddressSeed` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h,
+    `ThreadDNSAddressSeed` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h,
     -4 * 24h)`, uniform over `[now - 7d, now - 3d]`.
     """
     before = time.time()
@@ -1430,7 +1430,7 @@ def test_a_gossiped_address_is_kept_with_a_two_hour_penalty() -> None:
     """Core's own flat discount for a whole gossiped batch.
 
     `AddrManImpl::AddSingle` (`src/addrman.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `pinfo->nTime =
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `pinfo->nTime =
     max(0, addr.nTime - time_penalty)`, `time_penalty` the two hours
     `net_processing.cpp`'s `ADDR`/`ADDRV2` handler passes for the whole
     batch, `add_addresses`'s own default. btclib-org/btclib-node#1380
@@ -1488,7 +1488,7 @@ def test_a_self_announcement_on_a_different_port_still_costs_no_penalty() -> Non
     comparison never sees either port: `AddrManImpl::AddSingle`'s `addr
     == source` slices `addr`, a `CAddress`, down to its own `CNetAddr`
     base before `CNetAddr::operator==` ever runs (`src/addrman.cpp` and
-    `src/netaddress.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    `src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     so the exemption still applies (btclib-org/btclib-node#1380, review
     round 2).
     """
@@ -2032,7 +2032,7 @@ def test_a_try_does_not_survive_a_restart(tmp_path: Path) -> None:
 
     `AddrInfo`'s `SERIALIZE_METHODS` writes `m_last_success` and
     `nAttempts` beside the address and its source, and not `m_last_try`
-    (`src/addrman_impl.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/addrman_impl.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     first = a_peer_db(data_dir=tmp_path)
     address = peer_address("1.2.3.4", 8333)
@@ -2122,7 +2122,7 @@ def test_size_counts_a_gossiped_and_answered_address_once_each(
     restart, and `size` counts the endpoint once, as Core's
     `addrman.Size()` counts a tried entry once and never as a new one
     too (`AddrManImpl::Good_` moves it rather than duplicating it,
-    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     This tree's own two-table split leaves the row in both `addresses`
     and `active_addresses` (`address_sampler`'s own docstring says so),
     so counting the union of their keys, not the sum of their lengths,
@@ -2152,7 +2152,7 @@ def test_size_stays_put_across_a_handshake_with_a_gossiped_endpoint(
     endpoint, read `size` again. Core's `addrman.Size()` does not grow
     across `Good_` either -- it moves the entry from the new table to
     the tried one rather than adding a second (`AddrManImpl::Good_`,
-    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     peer_db = a_peer_db(data_dir=tmp_path)
     address = peer_address("1.2.3.4", 8333)
@@ -2352,7 +2352,7 @@ def test_a_fixed_seed_is_backdated_one_to_two_weeks() -> None:
     """#1571: Core's `ConvertSeeds` gives each seed a random past time.
 
     `rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week)`
-    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) draws
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) draws
     uniform over `[now - 14d, now - 7d]`; measured around the call
     rather than pinned, since the draw is a real one and not faked here.
     """
@@ -2475,7 +2475,7 @@ def test_the_buckets_are_those_cores_own_tests_expect() -> None:
     With `nKey1 = (HashWriter{} << 1).GetHash()`, tried bucket 40 for
     250.1.1.1:8333 and new bucket 786 for 250.1.2.1:8333 from a source of
     its own address (`src/test/addrman_tests.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and a different key
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and a different key
     puts them elsewhere.
     """
     key1 = sha256d((1).to_bytes(4, "little"))

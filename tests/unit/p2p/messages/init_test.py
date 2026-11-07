@@ -442,7 +442,7 @@ def test_the_final_alert_is_core_s_octets_under_alert() -> None:
     """ISS 1205: Core's `finalAlert`, verbatim, framed under "alert".
 
     The hex is copied from `src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     """
     core = bytes.fromhex(
         "60010000000000000000000000ffffff7f00000000ffffff7ffeffff7f01ffffff7f"

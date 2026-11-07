@@ -8,6 +8,8 @@ The functional tests connect two nodes that stay connected. What this
 is about is the housekeeping around that: a peer that has gone quiet, a
 peer that cannot be dialled, an address already connected to, and the
 messages addressed to a connection that is no longer there.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import asyncio
@@ -442,16 +444,16 @@ async def one_pass(manager: P2pManager) -> bool:
     own -- which is a wait on the scheduler, and #46's shape.
 
     Core's own first dial pass waits its full 500ms before its first
-    draw, the same as every later one
-    (`_AUTOMATIC_DIAL_INTERVAL`'s own comment, at
-    bitcoin/bitcoin@9be056a8a7), so production code carries no
-    immediate-first-pass shortcut around that. This helper is the
-    test-side clock advance instead: it wraps `_arm_dial_loop` for the
-    life of this one call so that the instant it runs, `_last_dial_pass`
-    is already `_AUTOMATIC_DIAL_INTERVAL` in the past, which is what
-    lets the dozens of tests below drive a single pass that still dials,
-    without a production divergence earning its keep only for them
-    (btclib-org/btclib-node#1379, review round 2).
+    draw, the same as every later one (`_AUTOMATIC_DIAL_INTERVAL`'s own
+    comment, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+    production code carries no immediate-first-pass shortcut around
+    that. This helper is the test-side clock advance instead: it wraps
+    `_arm_dial_loop` for the life of this one call so that the instant
+    it runs, `_last_dial_pass` is already `_AUTOMATIC_DIAL_INTERVAL` in
+    the past, which is what lets the dozens of tests below drive a
+    single pass that still dials, without a production divergence
+    earning its keep only for them (btclib-org/btclib-node#1379, review
+    round 2).
     """
 
     def armed_and_due() -> None:
@@ -1171,7 +1173,7 @@ def test_the_first_dial_pass_waits_out_its_interval_like_every_later_one(
     Core's own `ThreadOpenConnections` sleeps its full 500ms ahead of
     "Choose an address to connect to" once a pass, with no earlier exit
     from its `while` loop skipping that sleep on the very first
-    iteration (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    iteration (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag) -- so `_last_dial_pass` starts anchored at `_arm_dial_loop`'s
     own "now" rather than at `0.0`, and 0.2s real elapsed, well under
     the interval, is not enough for even one pass to be due. Without
@@ -1705,7 +1707,7 @@ def test_a_fixed_seed_s_own_backdating_is_not_penalized_again(
     `ADDR`/`ADDRV2` handler, which is the only caller `AddrMan::Add`'s
     default does not already suit. `ThreadOpenConnections`'s own
     `addrman.get().Add(seed_addrs, local)` passes no third argument
-    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a
     fixed seed's own one-to-two-week backdating must reach `peer_db`
     whole. A real `PeerDB`, not the stub used elsewhere in this file: the
     stub only records what it was handed and never runs the penalty
@@ -3142,7 +3144,7 @@ def test_dns_address_seed_waits_for_setnetworkactive_reactivation(
 
     `ThreadDNSAddressSeed` logs once and polls once a second until the
     network is active again, before it asks the seed
-    (`src/net.cpp:2357-2361`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net.cpp:2397-2401`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). `asyncio.sleep` is patched to that poll and reactivates the
     network on its second call, so the log line is shown to come once
     per wait rather than once per poll.
@@ -3485,7 +3487,7 @@ def test_dns_address_seed_wait_length_is_fixed_once_at_entry(
     boundary, as a real answered seed growing the table during the
     first wait would leave it. Core's own `seeds_wait_time` is a
     `const std::chrono::seconds` read once before its loop
-    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
     both waits recorded here are `_DNS_SEEDS_DELAY_FEW_PEERS` -- a
     recomputation at the second boundary would answer
     `_DNS_SEEDS_DELAY_MANY_PEERS` instead.
@@ -3646,7 +3648,7 @@ def test_process_addr_fetch_refuses_past_the_shared_pool(
     Core's own `ProcessAddrFetch` takes the same `semOutbound` grant
     every other automatic dial does (`CountingSemaphoreGrant<>
     grant(*semOutbound, /*fTry=*/true)`, `src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and gives up quietly
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and gives up quietly
     where none is free rather than dialling anyway. `dial` itself would
     fail this test if reached, the same proof
     `test_process_addr_fetch_is_a_noop_on_an_empty_queue` above uses;
@@ -3689,7 +3691,7 @@ def test_process_addr_fetch_skips_a_queued_host_already_held_by_name(
 
     Core's own check runs on the unresolved string alone
     (`OpenNetworkConnection`, `src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a queued host already
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a queued host already
     held by name never reaches the resolver at all -- unlike the two
     post-resolve checks below, which see every candidate an already-held
     endpoint could still hide behind.
@@ -3830,7 +3832,7 @@ def test_process_addr_fetch_refuses_an_invalid_resolved_address(
     ISS 1466: `is_internal` (`_legacy_ipv6` reading the answer as
     `CNetAddr` would) drops it before the candidate list is even built,
     matching `LookupIntern`'s own collection-time filter
-    (`src/netbase.cpp:144-168`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/netbase.cpp:144-168`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag) -- the later `is_valid` pass, which would refuse it too, never
     gets the chance to.
     """
@@ -3862,8 +3864,8 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     order `Lookup` (shuffled) gave it, before dialling any of them, and
     returns on the first either check refuses -- so a dialable answer
     ahead of a bad one in that same order is never reached, exactly as
-    one behind it never would be (`src/net.cpp:404-424`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The bad answer is a
+    one behind it never would be (`src/net.cpp:411-431`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The bad answer is a
     documentation-range one (RFC3849, `2001:db8::/32`) rather than an
     internal one: ISS 1466's `is_internal` filter drops an internal
     answer before this pass ever runs, so it could no longer reach this
@@ -4284,7 +4286,7 @@ def test_the_added_loop_dials_a_value_with_no_valid_port_as_a_name(
     looked up as a name, and its own loop marks `tried` and spends this
     pass's 500ms step on it before `OpenNetworkConnection` ever resolves
     its `pszDest` (`ThreadOpenAddedConnections`, `src/net.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the rest of the list is
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the rest of the list is
     dialled after it (btclib-org/btclib-node#1350).
     """
     manager = a_manager(addnode_args=["1.2.3.4:99999", "5.6.7.8:8333"])
@@ -4320,7 +4322,7 @@ def test_the_added_loop_retries_a_list_with_no_valid_port_at_the_tried_interval(
 def test_a_spec_with_no_valid_port_is_looked_up_whole(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, spec: str
 ) -> None:
-    """ISS 1292: `bitcoind` v31.1.0 never connects such a peer.
+    """ISS 1292: `bitcoind` never connects such a peer.
 
     `async_connect_host` asks the resolver for the whole spec, at the
     default port, and returns when it answers nothing.
@@ -4347,9 +4349,9 @@ def test_add_added_peer_refuses_an_onion_name_given_twice(
 ) -> None:
     """ISS 1369: `LookupNumeric` reads the name as an address.
 
-    Measured against `bitcoind` v31.1.0 on regtest: the name, then the
-    name with `:18444`, is `RPC_CLIENT_NODE_ALREADY_ADDED`, and with
-    `:1` it is added.
+    Measured against `bitcoind` on regtest: the name, then the name with
+    `:18444`, is `RPC_CLIENT_NODE_ALREADY_ADDED`, and with `:1` it is
+    added.
     """
     manager = a_manager()
     assert manager.add_added_peer(_ONION_NAME) is True
@@ -4383,7 +4385,7 @@ def test_add_added_peer_compares_a_name_that_is_no_address_as_text(
 def test_add_added_peer_strips_one_pair_of_brackets_alone(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1292: `bitcoind` v31.1.0 adds `[[1.2.3.4]]` beside `1.2.3.4`.
+    """ISS 1292: `bitcoind` adds `[[1.2.3.4]]` beside `1.2.3.4`.
 
     `SplitHostPort` strips one pair and `LookupIntern` none, so the
     doubled form is no address, and neither is `[[::1]]:80`.
@@ -4417,7 +4419,7 @@ def test_an_onion_or_i2p_entry_is_never_held_and_does_not_raise(
 def test_an_empty_host_is_not_resolved(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1608: `:80` resolves to nothing, as in `bitcoind` v31.1.0.
+    """ISS 1608: `:80` resolves to nothing, as in `bitcoind`.
 
     Python's `getaddrinfo("", 80)` answers loopback on macOS.
     """
@@ -4819,7 +4821,7 @@ def test_the_added_loop_skips_a_literal_ip_held_by_a_different_route(
     `"1.2.3.4:<port>"`, never equal to the bare `-addnode=1.2.3.4`
     spec's own raw string -- the check that regressed. Core's own
     `mapConnected` (`GetAddedNodeInfo`, `src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys on the resolved
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) keys on the resolved
     address instead, whatever route opened the connection, which is
     what this is held by here.
     """
@@ -4878,8 +4880,8 @@ def test_the_added_loop_dials_a_name_not_matched_by_resolved_address(
     `held`'s own resolved address coincides with where `peer.example`
     would dial, and its `addr_name` does not match the spec: Core's own
     `mapConnectedByName` arm never consults `mapConnected` for a name
-    (`GetAddedNodeInfo`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), so this is dialled rather than skipped.
+    (`GetAddedNodeInfo`, `src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), so this is dialled rather than skipped.
     """
     held = a_conn(
         1, address=peer_address("1.2.3.4", RegTest().port), addr_name="other.example"
@@ -4972,7 +4974,7 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
     invalid-candidate test above. `_MAX_RESOLVED_ADDRESSES` drops it
     before that pass ever runs, so the first pass sees only the 256
     valid answers, clears them, and the second pass dials the first
-    (`src/net.cpp:413`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/net.cpp:413`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     ours, theirs = socket.socketpair()
 
@@ -5014,7 +5016,7 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
 
     `LookupIntern` drops an `IsInternal` answer at collection time and
     never counts it toward `nMaxSolutions` (`src/netbase.cpp:144-168`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). 257 raw answers: one
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). 257 raw answers: one
     internal, then 256 valid -- `dial` connects on the last of those 256
     alone, refusing every one ahead of it, so a dial only ever reaches
     it by trying every other valid candidate first and finding none of
@@ -6270,7 +6272,7 @@ def test_an_eviction_candidate_reads_relay_off_the_version_message() -> None:
 @pytest.mark.parametrize(
     ("max_connections", "percent", "share"),
     [
-        # v32.1's defaults: half of 189 inbound slots, truncated
+        # Core's defaults: half of 189 inbound slots, truncated
         (DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_FULL_RELAY_INBOUND_PCT, 94),
         (15, 50, 2),
         (15, 100, 4),
@@ -6608,9 +6610,9 @@ def test_a_failed_bind_says_which_call_failed_and_why_as_core_does(
 
     A taken port, any other `bind` error, a failed `listen` and a socket
     that could not be opened each have a message of their own there
-    (`src/net.cpp:3307-3373`, at bitcoin/bitcoin@9be056a8a7), and an IPv6
-    address is written in brackets. The socket is closed whenever it
-    was opened.
+    (`src/net.cpp:3387-3453`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), and an IPv6 address is written in brackets. The socket is
+    closed whenever it was opened.
     """
     manager = a_manager(port=8333)
     stand_in = RefusingSocket(refused, error)
@@ -8973,8 +8975,8 @@ def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
     itself returns -- after the flip, and after that one-shot sweep has
     already run and found nothing. Core's own `DisconnectNodes` answers
     this by running every pass of `ThreadSocketHandler` while
-    `!fNetworkActive` (`src/net.cpp:1931-1939`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather than once on the
+    `!fNetworkActive` (`src/net.cpp:1955-1963`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) rather than once on the
     flip; `manage_connections`'s own repeated sweep, once every 0.1s
     pass, is this tree's match for it, and is what this test is for:
     `connect` is called while still active, the flip follows once `dial`
@@ -9194,7 +9196,7 @@ def test_an_inactive_network_still_seeds_and_releases_the_grant(
 
     Only `OpenNetworkConnection` refuses while the network is inactive,
     past the grant, the fixed seeds and the `-seednode` queue
-    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Both
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Both
     seeding steps run, nothing is dialled, and the grant is released.
     """
     address = a_full_node("5.6.7.8", 8333)

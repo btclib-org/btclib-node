@@ -4,20 +4,22 @@
 
 """The ban list: Core's `CSubNet`, `LookupSubNet` and `BanMan`.
 
-Read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, the cases come from:
+Read at bitcoin/bitcoin@f0de87f040, the v32.1 tag, the cases come from:
 
 - `subnet_test` (`src/test/netbase_tests.cpp`), its IP subnets and its
   onion one;
 - `netbase_dont_resolve_strings_with_embedded_nul_characters`, the same
   file;
 - the onion and I2P vectors of `src/test/net_tests.cpp`;
-- what a regtest bitcoind v31.1 on macOS answered to `setban`: the
-  forms `getaddrinfo` reads, trailing whitespace, a scope, an onion
-  name in upper case or with a wrong checksum, and the order of the list.
+- what a regtest bitcoind on macOS answered to `setban`: the forms
+  `getaddrinfo` reads, trailing whitespace, a scope, an onion name in
+  upper case or with a wrong checksum, and the order of the list.
 
 The rest are built here, not taken from Core: an onion or I2P host
 with a prefix or as a netmask, a padded onion name, an I2P name with
 bits left over, and an onion suffix in upper case.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import json
@@ -267,7 +269,7 @@ def test_lookup_host_asks_for_a_name_only_where_it_may(
     ],
 )
 def test_lookup_host_reads_what_getaddrinfo_reads(text: str, expected: str) -> None:
-    """ISS 1220: `inet_aton`'s forms, as bitcoind v31.1 bans them on macOS."""
+    """ISS 1220: `inet_aton`'s forms, as bitcoind bans them on macOS."""
     assert lookup_host(text) == IPv4Address(expected)
 
 
@@ -278,7 +280,7 @@ def test_lookup_host_reads_what_getaddrinfo_reads(text: str, expected: str) -> N
         ("[fe80::3%1]", "fe80::3%1/128"),
         ("fe80::4%1/64", "fe80::%1/64"),
         ("fe80::5%1/ffff:ffff:ffff:ffff::", "fe80::%1/64"),
-        # bitcoind v31.1 keeps the scope of a Tor v2 address it unsets
+        # bitcoind keeps the scope of a Tor v2 address it unsets
         ("fd87:d87e:eb43::1%1", "::%1/128"),
     ],
 )
@@ -289,7 +291,7 @@ def test_a_scope_is_kept_and_written(text: str, expected: str) -> None:
 
 @_ATON
 def test_a_scope_named_by_its_interface_is_written_as_its_index() -> None:
-    """ISS 1220: `fe80::2%lo0` is `fe80::2%1/128` to bitcoind v31.1 on macOS."""
+    """ISS 1220: `fe80::2%lo0` is `fe80::2%1/128` to bitcoind on macOS."""
     index, name = socket.if_nameindex()[0]
     assert str(a_subnet(f"fe80::2%{name}")) == f"fe80::2%{index}/128"
 
@@ -384,7 +386,7 @@ def test_a_banned_onion_peer_is_banned() -> None:
 def test_subnets_are_listed_in_core_s_order() -> None:
     """IPv4, IPv6, onion, I2P; then by octets, the wider netmask first.
 
-    bitcoind v31.1 lists an I2P ban after its IPv6 ones.
+    bitcoind lists an I2P ban after its IPv6 ones.
     """
     ban_man = BanMan(None, _LOGGER)
     texts = [_I2P, _ONION, "::1", "1.2.3.4/32", "1.2.3.0/24", "1.2.3.0/25", "0.0.0.0/0"]
@@ -433,7 +435,7 @@ def test_a_ban_is_only_replaced_by_one_ending_later(a_clock: list[int]) -> None:
 def test_a_ban_past_int64_is_not_taken_and_the_list_still_loads(
     tmp_path: Path,
 ) -> None:
-    """`Ban` wraps an end past `int64_t`, as bitcoind v31.1.0 does.
+    """`Ban` wraps an end past `int64_t`, as bitcoind does.
 
     Measured there: `setban` succeeds for an offset reaching one second or
     more past the maximum, and the ban is not listed, while an end at the
@@ -545,8 +547,8 @@ def test_a_key_twice_in_an_entry_is_read_as_univalue_reads_it(
 ) -> None:
     """The first value under a key is read, and an object's values all.
 
-    Measured on bitcoind v31.1.0: `1.2.3.4` alone for the first file,
-    both addresses for the second.
+    Measured on bitcoind: `1.2.3.4` alone for the first file, both
+    addresses for the second.
     """
     path = tmp_path / "banlist.json"
     kept = '"version": 1, "ban_created": 1, "banned_until": 1800000000'

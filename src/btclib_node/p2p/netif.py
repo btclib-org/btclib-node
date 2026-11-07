@@ -5,7 +5,7 @@
 """This machine's own interface addresses, Core's `GetLocalAddresses`.
 
 `local_addresses` is `GetLocalAddresses` (`src/common/netif.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every address of an
+bitcoin/bitcoin@f0de87f040, the v32.1 tag): every address of an
 interface that is up and not a loopback one, IPv4 and IPv6 alone, as its
 `FromSockAddr` reads them. Where Core asks `getifaddrs` this does, and
 on Windows, where Core asks `GetAdaptersAddresses`, so does this. Both

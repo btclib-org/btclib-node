@@ -5,7 +5,7 @@
 """Whether an outbound peer keeps up with this node's chain.
 
 `ChainSyncTimeoutState` is Core's `CNodeState::m_chain_sync`
-(`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+(`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag), and the two functions below are the two of Core's that write it:
 `consider_eviction` is `ConsiderEviction`, which `DownloadManager.step`
 runs for every connected peer as Core's `SendMessages` does, and

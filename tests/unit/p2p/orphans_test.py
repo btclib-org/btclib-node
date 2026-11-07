@@ -160,8 +160,8 @@ def test_a_confirmed_transaction_is_refused_as_known_and_not_kept_as_an_orphan(
 
     The inputs of a transaction the chain confirmed are spent, but one of
     its outputs is not (`MemPoolAccept::PreChecks`,
-    `src/validation.cpp:864-873`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). btclib-org/btclib-node#1779
+    `src/validation.cpp:854-863`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). btclib-org/btclib-node#1779
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
@@ -361,7 +361,7 @@ def test_a_package_over_the_weight_limit_leaves_the_child_an_orphan(
     """Core's "package-too-large" answers for neither member.
 
     `IsWellFormedPackage` (`src/policy/packages.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the pair is recorded and
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the pair is recorded and
     the child is not refused, as it would be for a cluster too large.
     """
     pair = a_pair(regtest_node)
@@ -385,7 +385,7 @@ def test_a_package_refused_by_the_truc_rules_leaves_the_child_an_orphan(
     """Core's `PackageTRUCChecks` answers for neither member.
 
     `ProcessPackageResult` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) passes the child its answer
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) passes the child its answer
     from when it was tried alone, a missing input, so it stays an orphan
     and is not recorded as refused. The pair is recorded.
     """
@@ -451,8 +451,8 @@ def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orpha
 
     The child also spends what a held transaction spends. Where the package
     does not improve the feerate diagram, Core fails it in
-    `PackageRBFChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) with no result for either transaction, so
+    `PackageRBFChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) with no result for either transaction, so
     `ProcessPackageResult` passes the child its answer from alone, a
     missing input: it stays an orphan.
     """
@@ -534,7 +534,8 @@ def test_a_package_the_mempool_cannot_hold_is_refused_as_full(
 
     `AcceptPackage` makes it `TX_MEMPOOL_POLICY`, not the
     `TX_RECONSIDERABLE` of a single transaction
-    (`src/validation.cpp:1748`, at bitcoin/bitcoin@9be056a8a7).
+    (`src/validation.cpp:1740`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
     """
     pair = a_pair(regtest_node)
     node, peer = pair.node, a_connected_peer(pair.node)

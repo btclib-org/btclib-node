@@ -70,8 +70,8 @@ __all__ = [
     "service_key",
 ]
 
-# Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): ports other services listen on, which an automatic
+# Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag): ports other services listen on, which an automatic
 # dial passes over while `_BAD_PORT_DRAWS` has not been reached, and
 # which `-bind` and `-port` are warned of.
 BAD_PORTS = frozenset(
@@ -165,7 +165,7 @@ BAD_PORTS = frozenset(
 )
 
 # Core's `INTERNAL_IN_IPV6_PREFIX` (`src/netaddress.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _INTERNAL_PREFIX = bytes.fromhex("fd6b88c08724")
 
 # the two networks this node has a dial for, and the whole of what
@@ -196,16 +196,18 @@ def peer_address(
 
 
 # Core's `SeedsServiceFlags` (`src/protocol.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the services a fixed seed
-# and a DNS seed's answer are recorded with, which the dial loop requires.
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+# until ISS 2238): the services a fixed seed and a DNS seed's answer are
+# recorded with, which the dial loop requires.
 SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 # `ThreadDNSAddressSeed`'s `nMaxIPs`: how many answers one seed's `x9.`
-# subdomain may add (`src/net.cpp`, same sha).
+# subdomain may add (`src/net.cpp:2421`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag).
 _MAX_SEED_ANSWERS = 32
 
 # Core's own flat discount for a whole gossiped `ADDR`/`ADDRV2` batch
 # (`net_processing.cpp`'s `m_addrman.Add(vAddrOk, pfrom.addr,
-# /*time_penalty=*/2h)`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# /*time_penalty=*/2h)`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # `add_addresses`' own default `time_penalty`.
 _GOSSIP_TIME_PENALTY = 2 * 3600
 # `ThreadDNSAddressSeed`'s own backdating of a DNS seed's answer,
@@ -225,11 +227,14 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     """Decode a chain's `fixed_seeds`, as Core's `ConvertSeeds` does.
 
     Each endpoint is a BIP155 network id, a compact-size length, the
-    address and a big-endian port (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and is given Core's
-    `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`, and
+    address and a big-endian port, and is given
     `_fixed_seed_timestamp`'s own draw for Core's random time one to two
-    weeks past (`ConvertSeeds`, same sha) -- btclib-org/btclib-node#1571.
+    weeks past (`ConvertSeeds`, `src/net.cpp:196-215`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) --
+    btclib-org/btclib-node#1571. Its services are Core's
+    `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`
+    (`src/net.cpp:208`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
+    which this node follows until ISS 2238).
     """
     services = SEEDS_SERVICE_FLAGS
     stream = BytesIO(seeds)
@@ -250,7 +255,7 @@ def internal_source(name: str) -> NetworkAddressV2:
     """Return the source Core gives what it learns from `name`: `SetInternal`.
 
     `CNetAddr::SetInternal` (`src/netaddress.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is the first ten octets of
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) is the first ten octets of
     the SHA-256 of `name`, held in IPv6 under `INTERNAL_IN_IPV6_PREFIX`.
     `ThreadDNSAddressSeed` passes one per DNS seed, and
     `ThreadOpenConnections` one named `fixedseeds`, to `addrman.Add`, so
@@ -304,10 +309,10 @@ def ip_and_port(ip: str, port: int) -> str:
 
 
 # Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h
-# at bitcoin/bitcoin@ca7162cde5), not the old poll loop's ten-passes-at-0.1s
-# budget this constant carried until ISS 681: that budget was never
-# itself checked against Core, and it was too tight for what
-# `loop.sock_connect` needs on Windows' Proactor loop to notice a
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), not the old poll loop's
+# ten-passes-at-0.1s budget this constant carried until ISS 681: that
+# budget was never itself checked against Core, and it was too tight for
+# what `loop.sock_connect` needs on Windows' Proactor loop to notice a
 # refused loopback connect -- measured on this tree's own
 # instrumentation, in btclib-org/btclib-node run 33271519023, at
 # elapsed=2.017810 for a `ConnectionRefusedError` the run's own kernel
@@ -339,11 +344,11 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     `sock_connect` a slow or refusing peer does, landing on the same
     `None` `P2pManager` already treats as "try someone else" either way.
     Core's `ConnectDirectly` (`src/netbase.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) answers the same way: a
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers the same way: a
     `CreateSock` that comes back null is logged and returned as the same
     `{}` a failed `Connect` answers with, one `nullptr` for both. Core's
-    own default reachability check (`ReachableNets`, src/netbase.h at
-    58a7869f86: "Everything is reachable by default") is the same bet --
+    own default reachability check (`ReachableNets`, `src/netbase.h`,
+    same sha: "Everything is reachable by default") is the same bet --
     reachability is what a dial's outcome says it is, not a property
     guessed at beforehand -- so there is nothing here for a heavier check
     to buy.
@@ -419,8 +424,8 @@ _SOURCE = b"source-"
 _STATS = b"stats-"
 _BUCKET_KEY = b"bucket-key"
 
-# Core's addrman geometry (`src/addrman_impl.h` and `src/addrman.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a bucket holds
+# Core's addrman geometry (`src/addrman_impl.h` and `src/addrman.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a bucket holds
 # `ADDRMAN_BUCKET_SIZE` positions, the new table has
 # `ADDRMAN_NEW_BUCKET_COUNT` buckets and the tried table
 # `ADDRMAN_TRIED_BUCKET_COUNT`. What one source group gives spreads over
@@ -441,15 +446,16 @@ _ADDRMAN_REPLACEMENT = 4 * 3600
 _ADDRMAN_TEST_WINDOW = 40 * 60
 
 # `ThreadOpenConnections`' own window (`src/net.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a draw tried less than
 # this long ago is passed over, and `GetChance` weighs it down.
 RECENT_TRY_SECONDS = 10 * 60
 
-# Core's `ADDRMAN_HORIZON` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): an address not seen for this long is terrible
+# Core's `ADDRMAN_HORIZON` (`src/addrman.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): an address not seen for
+# this long is terrible
 _ADDRMAN_HORIZON = 30 * 24 * 3600
 # how far ahead of the clock a timestamp may be before it is terrible,
-# `IsTerrible`'s "flying DeLorean" (same file and sha)
+# `IsTerrible`'s "flying DeLorean" (`src/addrman.cpp`, same sha)
 _ADDRMAN_FUTURE_SLACK = 10 * 60
 # `IsTerrible`'s own grace, ahead of the tests below (same file and
 # sha): "never remove things tried in the last minute". `PeerDB._last_try`
@@ -486,7 +492,7 @@ class _Stats:
 
     `m_last_success`, `nAttempts` and `m_last_count_attempt`, which
     `Good_` and `Attempt_` keep (`src/addrman_impl.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `m_last_count_attempt` is
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `m_last_count_attempt` is
     not in `peers.dat`, nor is it here.
     """
 
@@ -508,8 +514,8 @@ def _aged_out(
 ) -> bool:
     """Whether `address` is terrible, `AddrInfo::IsTerrible`.
 
-    `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) checks `last_try` first: tried within
+    `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) checks `last_try` first: tried within
     `_ADDRMAN_RECENT_TRY_GRACE`, an address is never terrible, whatever
     its timestamp says. Past that grace, its two time tests: stamped
     more than ten minutes ahead of `now`, or older than
@@ -538,7 +544,7 @@ def _aged_out(
 def _chance(now: float, last_try: float, attempts: int) -> float:
     """Return `AddrInfo::GetChance`: how likely a draw of the address is kept.
 
-    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: a
+    `src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: a
     hundredth for an address tried in the last ten minutes, and
     two thirds of that for each failed attempt, the eighth the last.
     """
@@ -568,7 +574,7 @@ def _held_time(
     A new entry has the gossiped time less `penalty`, floored at zero. An
     entry held keeps its own unless the gossip is newer by more than an
     update interval: an hour where the gossip is under a day old, a day
-    otherwise (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    otherwise (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag).
     """
     gossiped = max(0, int(address.timestamp - penalty))
@@ -588,7 +594,7 @@ def _storable(address: NetworkAddressV2) -> bool:
     """Whether Core's addrman would hold `address` at all.
 
     `AddrManImpl::AddSingle` returns early for an address `IsRoutable`
-    refuses (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    refuses (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), and BIP155's embedded-IPv6 records are ignored before they
     reach it. `AddrManImpl::Good_` only updates an entry already held,
     so an address this refuses is never recorded as answered either.
@@ -600,7 +606,7 @@ def _dns_seed_timestamp() -> int:
     """Return a whole second, uniform between three and seven days ago.
 
     Core's `ThreadDNSAddressSeed` (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `addr.nTime =
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `addr.nTime =
     rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h, -4 * 24h)`, a
     draw uniform over `[now - 7d, now - 3d]`.
     `secrets.SystemRandom().uniform`, the same draw
@@ -618,8 +624,8 @@ def _dns_seed_timestamp() -> int:
 def _fixed_seed_timestamp() -> int:
     """Return a whole second, uniform between one and two weeks ago.
 
-    Core's `ConvertSeeds` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `addr.nTime = rng.rand_uniform_delay(Now<NodeSeconds>()
+    Core's `ConvertSeeds` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `addr.nTime = rng.rand_uniform_delay(Now<NodeSeconds>()
     - one_week, -one_week)` with `one_week = 7 * 24h`, a draw uniform
     over `[now - 14d, now - 7d]` -- "It'll only connect to one or two
     seed nodes because once it connects, it'll get a pile of addresses
@@ -673,7 +679,7 @@ def _select(tried: _Side | None, new: _Side | None) -> NetworkAddressV2 | None:
     """Draw from one table, a fair coin deciding where both hold something.
 
     Core's `AddrManImpl::Select_` (`src/addrman.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) searches the tried table
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) searches the tried table
     or the new table with `randbool()` when both hold an address that
     fits, and whichever one does otherwise. In the table it draws a
     bucket, then the first address that fits from a random position in it,
@@ -722,7 +728,7 @@ def _host(address: NetworkAddressV2) -> tuple[int, bytes]:
     """Return the fields Core's `CNetAddr::operator==` compares: no port.
 
     `bool operator==(const CNetAddr& a, const CNetAddr& b)` (`src/
-    netaddress.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is
+    netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is
     `a.m_net == b.m_net && a.m_addr == b.m_addr` -- `host_key` below is
     `GetAddrBytes()`'s own octets alone, `m_addr`, and is paired with
     `network_id` here for `m_net`: `AddrManImpl::AddSingle`'s `addr ==
@@ -738,7 +744,7 @@ def host_key(address: NetworkAddressV2) -> bytes:
     """Return the octets Core's `CNetAddr::GetAddrBytes` gives: no port.
 
     What `P2pManager.discourage` keys on, as Core's `BanMan::Discourage`
-    does (`src/banman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    does (`src/banman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so every peer on one host shares one entry whatever port it
     connects from. An address an `addr` entry can carry is that entry's
     sixteen octets, an IPv4 one mapped, which makes an IPv4 peer and the
@@ -754,7 +760,7 @@ def service_key(address: NetworkAddressV2) -> bytes:
     """Return the octets Core's `CService::GetKey` gives: the port added.
 
     `host_key`, then the port big-endian (`src/netaddress.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). What
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). What
     `Connection.addr_known` keys on, as Core's `m_addr_known` does.
     """
     return host_key(address) + address.port.to_bytes(2, "big")
@@ -773,7 +779,7 @@ def _new_bucket_key() -> bytes:
 def _cheap_hash(*fields: bytes) -> int:
     """Return `(HashWriter{} << fields...).GetCheapHash()`.
 
-    `src/hash.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the first
+    `src/hash.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: the first
     eight octets, little-endian, of the double SHA-256 of what was
     written. `fields` are already serialized.
     """
@@ -812,7 +818,7 @@ def _new_slot(
     """Return the bucket and position of the new table that `address` maps to.
 
     Core's `AddrInfo::GetNewBucket` and `GetBucketPosition`
-    (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
     the address's group and its source's group pick one of
     `_NEW_BUCKETS_PER_SOURCE_GROUP` buckets out of the source group's own,
     and the endpoint picks the position in it. `key` is Core's `nKey`, this
@@ -889,7 +895,7 @@ class AddrResponseCache:
     """One `getaddr` cache entry: a sample, and until when it is good for.
 
     Core's `CConnman::CachedAddrResponse` (`src/net.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `m_addrs_response_cache`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `m_addrs_response_cache`
     and `m_cache_entry_expiration`. `PeerDB.addr_response_caches` holds
     one of these per key, in place of the one shared sample this table
     used to hold -- `callbacks.getaddr`'s own docstring is where the key
@@ -905,8 +911,8 @@ class AddrResponseCache:
 class PeerDB:
     """The table of addresses this node knows of, gossiped and self-confirmed.
 
-    Core's addrman (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). `addresses` is its `mapInfo`, every address heard about,
+    Core's addrman (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `addresses` is its `mapInfo`, every address heard about,
     and `active_addresses` is its tried table, the subset this node has
     itself dialled and heard back from. Each is behind its own lock,
     taken separately and never nested -- the comment beside each lock's
@@ -1008,7 +1014,7 @@ class PeerDB:
         # node last tried to connect to an endpoint either table holds.
         # In memory only, as `AddrInfo`'s serialization leaves
         # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `attempt` writes it
         # from `P2pManager`'s thread alone. `last_try` reads it from
         # there too, and from `get_addr`'s call into
         # `_aged_out`'s grace check, reachable from
@@ -1237,7 +1243,7 @@ class PeerDB:
         """Give an endpoint a slot of the new table from `group`, if it can.
 
         Core's slot insertion in `AddrManImpl::AddSingle` (`src/addrman.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether it
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), answering whether it
         did. A slot the endpoint holds already is not a new insertion. A
         slot another endpoint holds goes to this one if its holder is
         terrible, or is in several buckets and this endpoint in none;
@@ -1356,7 +1362,7 @@ class PeerDB:
         `requiredServiceBits`, `SeedsServiceFlags()` (`x9.` for
         `NODE_NETWORK | NODE_WITNESS`), on which a seed answers only with
         peers it believes offer those services -- `src/net.cpp` and
-        `src/protocol.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag --
+        `src/protocol.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag --
         and keeps at most `nMaxIPs`, 32, of the answers. One seed at a
         time, rather than every one of them in a single call, is what
         lets `P2pManager._dns_address_seed` wait between batches of
@@ -1400,7 +1406,7 @@ class PeerDB:
         # default, since `_dns_seed_timestamp` below already backdates
         # the entry the way Core's own caller does before it ever
         # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         self.add_addresses(
             (
                 peer_address(
@@ -1421,7 +1427,7 @@ class PeerDB:
         """Return Core's `addrman.Size()`: every distinct endpoint known.
 
         Core's `vRandom.size()` (`AddrManImpl::Size_`, `src/addrman.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) counts one entry
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag) counts one entry
         per address, new or tried, because `Good_` *moves* an entry from
         the new table to the tried one rather than copying it -- the two
         never hold the one address at once there. This table's own
@@ -1468,7 +1474,7 @@ class PeerDB:
 
         Core's `addrman.Size(net) != 0`, which `GetReachableEmptyNetworks`
         asks of each reachable network (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Each table is read
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Each table is read
         under its own lock, one after the other.
         """
         with self._addresses_lock:
@@ -1503,7 +1509,7 @@ class PeerDB:
         which an extra network peer makes.
 
         A terrible entry is not left out of a draw: Core's `Select_`
-        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         never calls `IsTerrible`, only `GetAddr_`'s serving and
         `AddSingle`'s overwrite of a slot do (btclib-org/btclib-node#1434).
         A terrible tried entry stays in the tried table until another
@@ -1583,7 +1589,7 @@ class PeerDB:
         is newer by more than an hour, a day where it is a day old
         itself (btclib-org/btclib-node#1603) -- Core's
         `AddrManImpl::AddSingle` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `pinfo->nTime =
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): `pinfo->nTime =
         max(0, addr.nTime - time_penalty)`. `time_penalty` defaults to
         `_GOSSIP_TIME_PENALTY`, the flat two hours Core's own `ADDR`/
         `ADDRV2` handler passes `AddrMan::Add` for a whole gossiped batch
@@ -1604,7 +1610,7 @@ class PeerDB:
         a `CNetAddr`, not a `CAddress`, and `addr == source` slices
         `addr` down to its own `CNetAddr` base first
         (`AddrManImpl::AddSingle`, `src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- `_host`'s own
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- `_host`'s own
         docstring is where `CNetAddr::operator==` itself is read. An
         inbound `source` carries the peer's ephemeral source port from
         `sock.accept()`'s own peername (`callbacks.py`'s own `version`
@@ -1640,8 +1646,8 @@ class PeerDB:
                 existing = self._rows.get(endpoint)
                 # a gossip adds services to an endpoint already held and
                 # never takes one away, as Core's `AddSingle` ORs them in
-                # (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-                # v31.1 tag)
+                # (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the
+                # v32.1 tag)
                 services = address.services
                 if existing is not None:
                     services |= existing.services
@@ -1685,8 +1691,8 @@ class PeerDB:
     ) -> bool:
         """Give a held endpoint a further slot from `group`, if Core would.
 
-        `AddSingle` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag) does so for an endpoint whose gossip is newer than the
+        `AddSingle` (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag) does so for an endpoint whose gossip is newer than the
         time it now holds, that is not in the tried table and holds fewer
         than `_NEW_BUCKETS_PER_ADDRESS` slots, and then at odds of one to
         two to the power of the slots held. The caller holds
@@ -1722,7 +1728,7 @@ class PeerDB:
 
         Core's `AddrMan::SetServices`, which `ProcessMessage` calls with
         an outbound peer's own `version` (`src/net_processing.cpp`,
-        `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag): what a gossip only adds to, the peer's own word replaces.
         The known row and the answered row are both written, standing for
         Core's one entry, and an endpoint neither holds is not recorded.
@@ -1768,7 +1774,7 @@ class PeerDB:
         """Record a try to connect to `address`, as Core's `Attempt_` does.
 
         `AddrManImpl::Attempt_` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sets `m_last_try` on
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) sets `m_last_try` on
         the entry addrman holds for the address, and does nothing where
         it holds none; so is an endpoint `_known_keys` does not hold left
         out here, an answered one being known too. With `count_failure`
@@ -1806,7 +1812,7 @@ class PeerDB:
         """Return a random sample of the known addresses, the terrible left out.
 
         Core's `AddrManImpl::GetAddr_` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the answer is sized
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the answer is sized
         from every entry, new and tried -- here `addresses`, which holds
         every answered endpoint too -- as `max_pct` percent of them, `0`
         for all, then at most `max_addresses`, `0` for no limit. Entries
@@ -1845,7 +1851,7 @@ class PeerDB:
         """Record `addr` as answered, and say whether it moved to the tried one.
 
         Core's `AddrManImpl::Good_` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry is marked
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the entry is marked
         as connected to now, its attempts are reset, and `nTime` is left
         alone, "to avoid leaking information about currently-connected
         peers" -- the known row is not written, and the answered row is
@@ -2032,7 +2038,7 @@ class PeerDB:
         """Move the time of `address`'s endpoint forward to now, if it is stale.
 
         Core's `AddrManImpl::Connected_` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), which
         `FinalizeNode` calls for a full outbound peer alone: `nTime` moves
         only where it is older than `_CONNECTED_UPDATE_INTERVAL`, and an
         endpoint the table does not hold is left out. Only the known row

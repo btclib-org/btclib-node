@@ -66,10 +66,10 @@ __all__ = [
 
 # Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
 # `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
-# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-# `sendheaders` and `sendcmpct` are the two of them `callbacks` holds:
-# `wtxidrelay` and `sendaddrv2` are `handshake_callbacks`', and this node
-# does not handle `sendtxrcncl`.
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
+# which this node follows until ISS 2250). `sendheaders` and `sendcmpct`
+# are the two of them `callbacks` holds: `wtxidrelay` and `sendaddrv2` are
+# `handshake_callbacks`', and this node does not handle `sendtxrcncl`.
 _BEFORE_VERACK = frozenset({"sendheaders", "sendcmpct"})
 
 
@@ -117,7 +117,7 @@ def _hold_message(
     received, decides a `tx` before it reads the next one, and reads
     nothing more from a peer while its `getdata` requests are unserved
     or its send buffer is full (`ProcessMessages`,
-    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so a `pong` tells the peer its `tx` was handled and its items
     were sent (btclib-org/btclib-node#1739, btclib-org/btclib-node#1775,
     btclib-org/btclib-node#1789, btclib-org/btclib-node#1796).
@@ -148,8 +148,8 @@ def _after_verack(conn: Connection, msg_type: str) -> None:
 
     A second `version` or `verack` is ignored, and a `wtxidrelay` or
     `sendaddrv2` drops the peer undiscouraged, as Core's `ProcessMessage`
-    does (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag).
+    does (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
     """
     if msg_type in {"wtxidrelay", "sendaddrv2"}:
         conn.stop()
@@ -167,7 +167,7 @@ def handle_p2p_handshake(node: Node) -> None:
     Once `verack` has promoted the connection, a second `version` or
     `verack` is ignored and a `wtxidrelay` or `sendaddrv2` drops the
     peer undiscouraged, as Core's `ProcessMessage` answers each
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). A callback that raises is `_drop`'s.
 
     Weighs the item's own weight back off the connection's
@@ -216,14 +216,14 @@ def handle_p2p_handshake(node: Node) -> None:
             # writes to `debug.log` whether or not this peer is at
             # fault. Core keys the same judgment the same way:
             # `PeerManagerImpl::Misbehaving` (`src/net_processing.cpp`,
-            # at bitcoin/bitcoin@05e49b342f) logs `peer=%d` and nothing
-            # else, and `CNode::LogPeer` appends the address only under
-            # `fLogIPs`, off by default. An id here resolves to a
-            # peer whether or not the handshake ever finished:
-            # `P2pManager.create_connection` logs it beside the address
-            # as soon as the connection exists, which is what this
-            # block -- where a handshake that raised before `verack`
-            # lands -- needs it to (btclib-org/btclib-node#611)
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) logs
+            # `peer=%d` and nothing else, and `CNode::LogPeer` appends
+            # the address only under `fLogIPs`, off by default. An id
+            # here resolves to a peer whether or not the handshake ever
+            # finished: `P2pManager.create_connection` logs it beside
+            # the address as soon as the connection exists, which is
+            # what this block -- where a handshake that raised before
+            # `verack` lands -- needs it to (btclib-org/btclib-node#611)
             # logged as `_dispatch`'s `except` below logs it
             if isinstance(e, BTClibValueError):
                 node.logger.log_debug(
@@ -271,14 +271,14 @@ def _dispatch(
         # peer kept: Core's `ProcessMessages` catches every exception
         # out of `ProcessMessage`, `catch (...)` included, logs it and
         # keeps the peer (`src/net_processing.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag;
         # btclib-org/btclib-node#1170, btclib-org/btclib-node#1233).
         discourage = _drop(manager, conn, e)
         # `conn_id`, not `conn.address`: same reasoning as
         # `handle_p2p_handshake` above (#526)
         # Core's `ProcessMessages` logs what `ProcessMessage` throws as one
         # `net` debug line, text only (`src/net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). A
         # `BTClibValueError` is btclib's refusal of a payload and gets
         # that line, cut at 200 characters (this node's own cut, not
         # Core's); anything else is this node's own code failing and
@@ -306,9 +306,10 @@ def handle_p2p(node: Node) -> None:
 
     A message ahead of `verack` is ignored, as Core's `ProcessMessage`
     ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), except a `sendheaders` or a `sendcmpct` after
-    `version`, which Core records there. A callback that raises is
-    `_drop`'s, the comment below arguing its split.
+    the v31.1 tag, which this node follows until ISS 2250), except a
+    `sendheaders` or a `sendcmpct` after `version`, which Core records
+    there. A callback that raises is `_drop`'s, the comment below
+    arguing its split.
 
     Weighs the item's own weight back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it
