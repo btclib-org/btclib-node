@@ -6,7 +6,7 @@ r"""`settings.json`: Core's read-write settings file, and the JSON it holds.
 
 `common::ReadSettings` and `common::WriteSettings` (`src/common/settings.cpp`)
 and `ArgsManager::WriteSettingsFile` (`src/common/args.cpp`), all at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag. The file is one JSON object, read
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. The file is one JSON object, read
 at every start and written back whole, under a `_warning_` key Core adds and
 drops again on the next read.
 
@@ -428,8 +428,8 @@ def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
     named twice as `quote` returns it, because a refusal reaches stderr and
     logs and the file may hold a password (ASSURANCE_CASE.md, "Common
     implementation weaknesses"). Core writes both whole
-    (`src/common/settings.cpp:102` and `:111`, at
-    bitcoin/bitcoin@9be056a8a7). `cli.py`, which knows the sensitive
+    (`src/common/settings.cpp:101` and `:110`, at
+    bitcoin/bitcoin@f0de87f040). `cli.py`, which knows the sensitive
     options, passes `_quoted_line` as `quote`.
 
     Core opens a directory and reads nothing from it, so a directory is not

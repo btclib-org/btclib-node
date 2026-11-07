@@ -2,7 +2,11 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`Config`'s chain resolution, path arithmetic, ports and feerate floor."""
+"""`Config`'s chain resolution, path arithmetic, ports and feerate floor.
+
+`bitcoind` in these tests is the Bitcoin Core release
+`integration-bitcoind.yml` pins.
+"""
 
 import os
 import re
@@ -107,7 +111,7 @@ def test_default_rpc_port_is_cores_own(chain_name: str, core_chain_name: str) ->
 
 def test_min_relay_feerate_defaults_to_cores_own_floor() -> None:
     """`min_relay_feerate` defaults to Core's own floor, 100 sat/kvB."""
-    # at bitcoin/bitcoin@58a7869f86's DEFAULT_MIN_RELAY_TX_FEE,
+    # at bitcoin/bitcoin@f0de87f040's DEFAULT_MIN_RELAY_TX_FEE,
     # src/policy/policy.h
     assert Config(chain="regtest").min_relay_feerate == DEFAULT_MIN_RELAY_FEERATE
     assert DEFAULT_MIN_RELAY_FEERATE.sats_per_kvbyte == 100
@@ -120,7 +124,7 @@ def test_min_relay_feerate_is_configurable() -> None:
 
 
 def test_relay_policy_options_default_to_cores_own() -> None:
-    """Core's defaults, `src/policy/policy.h` at bitcoin/bitcoin@9be056a8a7."""
+    """Core's defaults, `src/policy/policy.h` at bitcoin/bitcoin@f0de87f040."""
     config = Config(chain="regtest")
     assert config.incremental_relay_feerate.sats_per_kvbyte == 100
     assert config.dust_relay_feerate.sats_per_kvbyte == 3000
@@ -196,8 +200,8 @@ def test_connect_zero_dials_nobody_but_still_counts_as_given() -> None:
     `ip_address("0")` is not a valid literal, so `_resolve_peers` never
     sees it -- `Config` special-cases the one-element `["0"]` list the
     same way `CConnman`'s own options builder does
-    (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
-    at bitcoin/bitcoin@ca7162cde5) before resolving anything.
+    (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2336`,
+    at bitcoin/bitcoin@f0de87f040) before resolving anything.
     `connect_given` stays `True`: this is still the `-connect` arm,
     dialling nobody rather than never having been asked to.
     """
@@ -456,7 +460,7 @@ def test_seednode_takes_a_hostname() -> None:
 
     Core resolves `-seednode`'s own value at dial time
     (`CConnman::ThreadOpenConnections`, `src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this node does the same,
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); this node does the same,
     on `P2pManager`'s own loop, so `Config` itself refuses nothing here.
     """
     config = Config(chain="regtest", seednode=["example.com"])
@@ -543,8 +547,8 @@ def test_split_host_port_rejects_a_port_past_the_ceiling() -> None:
 def test_split_host_port_reads_ascii_digits_alone(port: str) -> None:
     """`ToIntegral<uint16_t>`: what `int` reads beyond ASCII digits is refused.
 
-    Each refused by `bitcoind` v31.1.0 as `-rpcbind=127.0.0.1:<port>`, the
-    last two read from `std::from_chars` rather than measured.
+    Each refused by `bitcoind` as `-rpcbind=127.0.0.1:<port>`, the last
+    two read from `std::from_chars` rather than measured.
     """
     with pytest.raises(ValueError, match="invalid port"):
         split_host_port(f"127.0.0.1:{port}", 8333)
@@ -581,7 +585,7 @@ def test_lookup_host_port_reads_a_bad_port_as_part_of_the_name(
 
 
 def test_split_host_port_reads_leading_zeros() -> None:
-    """`bitcoind` v31.1.0 binds `-rpcbind=127.0.0.1:031301` at port 31301."""
+    """`bitcoind` binds `-rpcbind=127.0.0.1:031301` at port 31301."""
     assert split_host_port("127.0.0.1:031301", 8333) == ("127.0.0.1", 31301)
     assert split_host_port("127.0.0.1:0000000000000000045000", 1) == (
         "127.0.0.1",
@@ -589,8 +593,8 @@ def test_split_host_port_reads_leading_zeros() -> None:
     )
 
 
-def test_max_connections_and_the_relay_share_default_to_v32_1_s() -> None:
-    """ISS 1769: v32.1's `DEFAULT_MAX_PEER_CONNECTIONS` and relay share."""
+def test_max_connections_and_the_relay_share_default_to_core_s() -> None:
+    """ISS 1769: Core's `DEFAULT_MAX_PEER_CONNECTIONS` and relay share."""
     assert DEFAULT_MAX_PEER_CONNECTIONS == 200
     assert DEFAULT_FULL_RELAY_INBOUND_PCT == 50
     config = Config(chain="regtest")
@@ -612,7 +616,7 @@ def test_max_connections_negative_raises() -> None:
 
 
 def test_forcednsseed_defaults_to_false() -> None:
-    """Core's own `DEFAULT_FORCEDNSSEED`, at bitcoin/bitcoin@9be056a8a7."""
+    """Core's own `DEFAULT_FORCEDNSSEED`, at bitcoin/bitcoin@f0de87f040."""
     assert Config(chain="regtest").forcednsseed is False
 
 
@@ -649,7 +653,7 @@ def test_an_explicit_dnsseed_true_wins_over_connects_soft_set_off() -> None:
     """`-dnsseed=1 -forcednsseed=1 -connect=x`: no refusal, both on.
 
     `InitParameterInteraction`'s own `SoftSetBoolArg` (`src/init.cpp`,
-    at bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    at bitcoin/bitcoin@f0de87f040) never overwrites an arg already set,
     so `-connect`'s soft-set-off of `-dnsseed` never reaches an explicit
     `-dnsseed=1` -- `AppInitParameterInteraction`'s own forcednsseed
     check (same sha) then reads that explicit `True` back, past
@@ -728,7 +732,7 @@ def test_the_cookie_s_tmp_is_core_s_get_auth_cookie_file_true(
 ) -> None:
     """`.tmp` appended to the normalised value, then resolved.
 
-    `bitcoind` v31.1.0 writes `-rpccookiefile=.` and `=a/..` to
+    `bitcoind` writes `-rpccookiefile=.` and `=a/..` to
     `<chain dir>/..tmp`, inside the chain directory it then cannot
     rename it over.
     """
@@ -740,7 +744,7 @@ def test_the_cookie_s_tmp_is_core_s_get_auth_cookie_file_true(
 def test_the_tmp_of_an_absolute_rpccookiefile_is_beside_it(tmp_path: Path) -> None:
     """`/` is `/.tmp`, and the chain directory's own path its sibling.
 
-    As `bitcoind` v31.1.0 names both, in the warning it logs before
+    As `bitcoind` names both, in the warning it logs before
     refusing to start.
     """
     config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile="/")
@@ -789,7 +793,7 @@ def test_rpcwhitelistdefault_defaults_to_whether_a_whitelist_is_set() -> None:
 def test_rpccookiefile_is_normalised_as_core_s_get_path_arg(
     tmp_path: Path, value: str, name: str
 ) -> None:
-    """Lexical, as `lexically_normal`: `bitcoind` v31.1.0 writes `mycookie`.
+    """Lexical, as `lexically_normal`: `bitcoind` writes `mycookie`.
 
     Measured there with `-rpccookiefile=nonexist/../mycookie` and
     `-rpccookiefile=sub/`, the second writing a file named `sub`.
@@ -804,8 +808,8 @@ def test_a_leading_double_slash_is_collapsed_as_lexically_normal_does(
 ) -> None:
     """`GetPathArg` names `//<X>/c` as `/<X>/c`, where `normpath` keeps `//`.
 
-    Measured on `bitcoind` v31.1.0 with `-conf` under `-datadir=//<X>/d`,
-    named "/<X>/d/missing.conf"; three slashes are one to both.
+    Measured on `bitcoind` with `-conf` under `-datadir=//<X>/d`, named
+    "/<X>/d/missing.conf"; three slashes are one to both.
     """
     assert get_path_arg(f"/{tmp_path}/c") == f"{tmp_path}/c"
     assert get_path_arg(f"//{tmp_path}/c") == f"{tmp_path}/c"
@@ -855,7 +859,7 @@ def test_parse_whitebind_reads_permissions_an_address_and_a_port(
     ],
 )
 def test_parse_whitebind_refuses_in_core_s_words(arg: str, message: str) -> None:
-    """ISS 1625: the texts are those of `bitcoind` v31.1.0."""
+    """ISS 1625: the texts are those of `bitcoind`."""
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         parse_whitebind(arg)
 

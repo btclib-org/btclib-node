@@ -5,7 +5,7 @@
 """`main`, the command line `pip install btclib-node` installs.
 
 The command line is read the way Core's `ArgsManager::ParseParameters`
-reads it (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7), and
+reads it (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040), and
 `_parse_parameters` below is that function ported over `_OPTIONS`, the
 table of the options this module knows. A value follows `=` and never
 the next argument; `--name` is `-name`; `-noname` is `-name` negated,
@@ -21,22 +21,18 @@ Each option is registered with the flags `SetupServerArgs`
 (`src/init.cpp`, same sha), `SetupChainParamsBaseOptions`
 (`src/chainparamsbase.cpp`) and `AddLoggingArgs` (`src/init/common.cpp`)
 give it, and each is read the way Core's own code reads it --
-`build_config` below names the reader at each one. An option v32.1
-added, `-inboundrelaypercent` and `-rpcmaxconnections` among them, is
-registered in `src/init.cpp` at bitcoin/bitcoin@f0de87f040 -- v32.1, the
-release `integration-bitcoind.yml` pins, rather than at that sha.
-`-server` is `Config.allow_rpc`, on unless negated or set false, as
-`bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
-that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and
-`-dustrelayfee` are BTC/kvB, as Core's, and `Config`'s
-`min_relay_feerate`, `incremental_relay_feerate` and
-`dust_relay_feerate` the same rates in sat/kvB. Two `Config` fields have
-no option here: `log_path` (this command always takes `Config`'s own
-default -- a file under the data directory -- an operator who wants
-console output can read it from there), and `allow_p2p` (the P2P
-listener is always requested; `-listen=0` is what keeps it from
-accepting connections).
+`build_config` below names the reader at each one. `-server` is
+`Config.allow_rpc`, on unless negated or set false, as `bitcoind`
+soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener that cannot
+start stops the node, `main` below exiting `1`, as Core's init aborts.
+`-minrelaytxfee`, `-incrementalrelayfee` and `-dustrelayfee` are
+BTC/kvB, as Core's, and `Config`'s `min_relay_feerate`,
+`incremental_relay_feerate` and `dust_relay_feerate` the same rates in
+sat/kvB. Two `Config` fields have no option here: `log_path` (this
+command always takes `Config`'s own default -- a file under the data
+directory -- an operator who wants console output can read it from
+there), and `allow_p2p` (the P2P listener is always requested;
+`-listen=0` is what keeps it from accepting connections).
 
 `-debug=<category>` takes Core's logging category names
 (`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040,
@@ -55,7 +51,7 @@ when it is not given -- unlike `-datadir`, it is read from
 the way it depends on `-datadir`. `-blocksdir` naming a directory that
 does not already exist is fatal, `Config.__init__`'s own refusal,
 matching Core's "Specified blocks directory ... does not exist"
-(`src/init.cpp:1006`, same sha) rather than creating one silently.
+(`src/init.cpp:999`, same sha) rather than creating one silently.
 
 Reading Core's own `blk*.dat` is not implemented, and is not started
 here either: the files are Core's format and the validation order is
@@ -87,7 +83,7 @@ interpreter's own source rather than assumed.
 ## `bitcoin.conf`
 
 Read the way Core's own `ReadConfigFiles`/`ReadConfigStream`
-(`src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7) read it, the
+(`src/common/config.cpp`, at bitcoin/bitcoin@f0de87f040) read it, the
 default path itself computed by `ArgsManager::GetConfigFilePath`
 (`src/common/args.cpp`, same sha): a `key=value` line per option, named
 without the leading `-` an option carries on the command line; `#`
@@ -261,10 +257,11 @@ if TYPE_CHECKING:
 
 __all__ = ["build_config", "main"]
 
-# Core's own default filename, `BITCOIN_CONF_FILENAME` (`src/init.cpp`,
-# at bitcoin/bitcoin@ca7162cde5) -- kept so that an operator's existing
-# `bitcoin.conf` is the file this command reads without being told to,
-# which is the whole point of it reading one at all.
+# Core's own default filename, `BITCOIN_CONF_FILENAME`
+# (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040) -- kept so that
+# an operator's existing `bitcoin.conf` is the file this command reads
+# without being told to, which is the whole point of it reading one at
+# all.
 _DEFAULT_CONF_FILENAME = "bitcoin.conf"
 
 # Every chain this node has a section for, `main` included -- Core's
@@ -396,8 +393,8 @@ def _format_money(amount: int) -> str:
     return f"{whole}.{f'{fraction:08d}'.rstrip('0').ljust(2, '0')}"
 
 
-# `uint256::size() * 2` (`src/uint256.h`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): the most hex digits `-minimumchainwork` accepts, and
+# `uint256::size() * 2` (`src/uint256.h`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag): the most hex digits `-minimumchainwork` accepts, and
 # what Core's own refusal of a longer value names.
 _MIN_WORK_HEX_DIGITS = 64
 
@@ -423,7 +420,7 @@ _ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
 def _parse_hex_uint256(value: str) -> int | None:
     """Return Core's `uint256::FromUserHex` of `value`, `None` where it fails.
 
-    `src/uint256.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: an
+    `src/uint256.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: an
     optional literal `0x` prefix (lowercase only, `RemovePrefixView`
     being a plain `starts_with`) is dropped, and what is left is refused
     past `_MIN_WORK_HEX_DIGITS` hex digits or containing anything but
@@ -750,8 +747,8 @@ _OPTIONS: dict[str, _Option] = {
         _CHAINPARAMS_TITLE,
         debug_only=True,
     ),
-    # Core's text (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    # v31.1 tag) where it is true here: the blocks are this node's own
+    # Core's text (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag) where it is true here: the blocks are this node's own
     # store, never Core's blk*.dat files (btclib-org/btclib-node#573),
     # and no assumeutxo snapshot can be loaded
     "reindex-chainstate": _Option(
@@ -1023,7 +1020,7 @@ def _interpret_value(
     Raises `ValueError` on a negation `option` forbids. A double
     negative, `-nofoo=0`, is `True`, and its warning is appended to
     `warnings`, for the log alone, as Core's `LogWarning`
-    (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040).
     """
     if not info.negated:
         return "" if value is None else value
@@ -1057,7 +1054,7 @@ def _parse_parameters(
     `warnings` is `_interpret_value`'s.
 
     `ArgsManager::ParseParameters` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): a lone `-` or the first argument not
+    bitcoin/bitcoin@f0de87f040): a lone `-` or the first argument not
     starting with `-` ends the options, and `--name` is `-name`. Raises
     `ValueError` under `ParseArgs`'s own prefix on an unknown option or
     one naming a section -- "Invalid parameter", the argument quoted by
@@ -1142,7 +1139,7 @@ def _config_options(
     `sections`.
 
     Core's own config-file grammar (`GetConfigOptions`,
-    `src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7): a key under
+    `src/common/config.cpp`, at bitcoin/bitcoin@f0de87f040): a key under
     a `[section]` line is returned as `section.key`. Raises `ValueError`
     in Core's words on a line that is neither `key=value` nor
     `[section]`, on one starting with `-` (an option is named without it
@@ -1207,7 +1204,7 @@ def _parse_conf_text(
     `_interpret_value`'s.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
+    bitcoin/bitcoin@f0de87f040) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
     option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
@@ -1325,7 +1322,7 @@ def _load_conf_tree(  # noqa: PLR0913
 ) -> _RoConfig:
     """Read `conf_path`, then every `includeconf` it names for its chain.
 
-    `ReadConfigFiles` (`src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    `ReadConfigFiles` (`src/common/config.cpp`, at bitcoin/bitcoin@f0de87f040)
     in its order: the root file, then the `includeconf` values of the
     section of the chain `command_line` and the root file select, then
     those of the default section. A negated `includeconf` discards the
@@ -1514,7 +1511,7 @@ def _setting_to_write_str(value: _Value) -> str:
     """Return Core's `SettingsValue::write()`: `true`/`false`, else JSON.
 
     `ArgsManager::LogArgs`'s own `logArgsPrefix` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) writes a negation's `bool` this way, and a
+    bitcoin/bitcoin@f0de87f040) writes a negation's `bool` this way, and a
     plain string as a JSON string literal -- unlike `_setting_to_str`
     above, which is `GetArg`'s own `SettingToString`, a different Core
     function reached by a different reader.
@@ -1528,7 +1525,7 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     """Return Core's `LogArgs` lines: config file, settings file, command line.
 
     `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
+    bitcoin/bitcoin@f0de87f040): `std::map` order -- a section, then a
     name inside it, each sorted, and each value in the order it was
     read -- masked to `****` where `_Option.sensitive` is Core's own
     `SENSITIVE` flag. Every config-file and command-line name reaching this
@@ -1607,7 +1604,7 @@ def _get_bool(settings: _Settings, name: str) -> bool | None:
 def _atoi64(text: str) -> int:
     """Return Core's `LocaleIndependentAtoi<int64_t>` of `text`.
 
-    `src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7: the
+    `src/util/strencodings.h`, at bitcoin/bitcoin@f0de87f040: the
     whitespace `TrimStringView` trims is dropped, then one leading `+`
     (and `+-` is `0`), then `std::from_chars` reads the ASCII digits it
     starts with, an optional `-` ahead of them, ignoring whatever
@@ -1630,7 +1627,7 @@ def _get_int(settings: _Settings, name: str) -> int | None:
 
     `0` negated and `1` doubly so, and a string `_atoi64`, as
     `SettingTo<int64_t>` reads it (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7).
+    bitcoin/bitcoin@f0de87f040).
     """
     value = _get_setting(settings, name)
     if value is None or isinstance(value, bool):
@@ -1652,7 +1649,9 @@ def _to_int(value: int) -> int:
     """Return C++'s conversion of the `int64_t` `value` to a 32-bit `int`.
 
     Modular since C++20, which is how `AppInitParameterInteraction` reads
-    `-maxconnections` into its `int user_max_connection`.
+    `-maxconnections` into its `int user_max_connection`
+    (`src/init.cpp:1033`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
+    which this node follows until ISS 2127).
     """
     return (value - _INT_MIN) % 2**32 + _INT_MIN
 
@@ -1660,7 +1659,7 @@ def _to_int(value: int) -> int:
 def _get_rpcmaxconnections(settings: _Settings) -> int:
     """Return `-rpcmaxconnections` as Core's `GetArg<int>` reads it.
 
-    `SettingTo<int>` (`src/common/args.cpp`, at bitcoin/bitcoin@649bc0a645)
+    `SettingTo<int>` (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040)
     reads a JSON number with `UniValue::getInt<int>`, which refuses one
     past a 32-bit `int` as "JSON integer out of range". A string past it
     saturates, as `LocaleIndependentAtoi<int>` does
@@ -1680,10 +1679,9 @@ def _get_rpcmaxconnections(settings: _Settings) -> int:
 def _get_inboundrelaypercent(settings: _Settings) -> int:
     """Return `-inboundrelaypercent` as `AppInitMain` reads it.
 
-    `std::clamp<int>` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040 --
-    v32.1, the release `integration-bitcoind.yml` pins) narrows the
-    `int64_t` to an `int` first, as `_to_int` does, then clamps it to 0
-    to 100.
+    `std::clamp<int>` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) narrows the `int64_t` to an `int` first, as `_to_int`
+    does, then clamps it to 0 to 100.
     """
     value = _get_int(settings, "inboundrelaypercent")
     if value is None:
@@ -1696,7 +1694,7 @@ def _get_thousands(settings: _Settings, name: str, default: int) -> int:
 
     How `AppInitMain` reads `-maxsendbuffer` and `-maxreceivebuffer` into
     `nSendBufferMaxSize` and `nReceiveFloodSize` (`src/init.cpp` and
-    `src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a negative
+    `src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a negative
     value wraps, as it does there.
     """
     value = _get_int(settings, name)
@@ -1706,7 +1704,7 @@ def _get_thousands(settings: _Settings, name: str, default: int) -> int:
 def _get_port(settings: _Settings, name: str) -> int | None:
     """Return `name` as a port, `None` where nothing sets it.
 
-    `CheckHostPortOptions` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
+    `CheckHostPortOptions` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040):
     anything but the digits of a number from 1 to 65535 is refused, `0`
     -- which a negation reads as -- included.
     """
@@ -1742,7 +1740,7 @@ class _ChainError(ValueError):
     """The combination of chain selectors `GetChainArg` refuses.
 
     Thrown rather than returned in Core (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), so `InitConfig` shows it without the
+    bitcoin/bitcoin@f0de87f040), so `InitConfig` shows it without the
     prefix it puts on a `ReadConfigFiles` refusal, even where
     `ReadConfigFiles` asks first, through `GetChainTypeString`.
     """
@@ -1759,7 +1757,7 @@ def _chain_arg(settings: _Settings) -> str:
     `chain`/`testnet`/`signet`/`regtest`/`testnet4` are read from the
     file's default section only, never a chain's own section -- Core's
     own `get_net` lambda passes an empty section for exactly this lookup
-    (`GetChainArg`, `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7),
+    (`GetChainArg`, `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040),
     which is what lets a file decide the chain before any section but
     the default one can mean anything; and a selector negated at any
     level is skipped there, as Core skips it. At most one of the
@@ -1801,7 +1799,7 @@ def _resolve_chain_name(settings: _Settings) -> str:
     """Return `_chain_arg`'s chain, refusing one Core does not know.
 
     `GetChainType`'s refusal (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), asked once the files are read: Core's
+    bitcoin/bitcoin@f0de87f040), asked once the files are read: Core's
     own `strprintf("Unknown chain %s.", ...)`, the name written in as
     given rather than quoted (btclib-org/btclib-node#1311).
     """
@@ -1909,7 +1907,7 @@ def _get_activation_heights(settings: _Settings) -> dict[str, int]:
 def _help_message(*, show_debug: bool) -> str:
     """Return the help `-h` prints: `GetHelpMessage`'s groups and layout.
 
-    `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7: a title per
+    `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040: a title per
     category, the options under it in name order, each on its own line
     indented two spaces with its text below indented seven and wrapped
     to the width `HelpMessageOpt` wraps it to. An option registered
@@ -1931,10 +1929,10 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     """Refuse an explicit `-datadir` that is not an existing directory.
 
     Core's own `CheckDataDirOption` (`src/common/args.cpp:891`, at
-    bitcoin/bitcoin@ca7162cde5) -- `datadir.empty() ||
+    bitcoin/bitcoin@f0de87f040) -- `datadir.empty() ||
     fs::is_directory(fs::absolute(datadir))` -- validates `-datadir` as
     a directory separately from reading the config file, and
-    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     answers "Specified data directory ... does not exist." when it
     fails, naming `datadir` as it was given; `ReadConfigFiles` checks
     again because a `datadir=` line inside the config file can still
@@ -1971,7 +1969,7 @@ def _check_ignored_conf(
 ) -> None:
     """Refuse a `bitcoin.conf` in `base_dir` that `-conf` leaves unread.
 
-    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7), and
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040), and
     its message. `conf_path`, the file read, `None` under `-noconf`, is
     compared with `base_dir`'s own as `fs::equivalent` compares them, and an
     `OSError` is refused as `InitConfig`'s `catch` refuses an exception, in
@@ -2031,7 +2029,7 @@ def _settings_path(settings: _Settings, net_dir: str) -> str | None:
     """Return Core's `GetSettingsPath`; `None` under `-nosettings`.
 
     `GetPathArg("-settings", "settings.json")` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) joined to the chain's data directory
+    bitcoin/bitcoin@f0de87f040) joined to the chain's data directory
     `net_dir`, an absolute `-settings` standing as it is.
     """
     if _is_negated(settings, "settings"):
@@ -2057,7 +2055,7 @@ def _make_data_dirs(net_dir: str) -> None:
 def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     """Read `settings.json`, warn of its unknown names, and write it back.
 
-    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     over `ArgsManager::ReadSettingsFile` and `WriteSettingsFile`
     (`src/common/args.cpp`), each failure refused in Core's words: "Settings
     file could not be read", or "written", and what `settings_file.py` says.
@@ -2099,7 +2097,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
 def _parse_money(value: str) -> int | None:
     """Return Core's `ParseMoney` of `value` in satoshi, `None` where it fails.
 
-    `src/util/moneystr.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/util/moneystr.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag: whitespace trimmed at either end, then ASCII digits with at
     most one `.` and eight digits after it, at most ten before it, and a
     total within `MAX_MONEY`. No sign and no exponent; `.` alone is `0`.
@@ -2123,7 +2121,7 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
     """Return `-minimumchainwork` as an int, `None` where it is not given.
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `uint256::FromUserHex`
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
     through `_parse_hex_uint256`, refused in Core's own words. A `None`
     return is `Config.__init__`'s own to default, to the chain's own
     `minimum_chain_work` -- which chain that is is not decided until
@@ -2146,7 +2144,7 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
     """Return `-assumevalid` as a block hash, `None` where it is off.
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `uint256::FromUserHex`
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
     through `_parse_hex_uint256`, refused in Core's own words. Zero --
     `0`, `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all",
     and is `None` here, as is a value not given, until Core's default
@@ -2169,8 +2167,8 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
 def _get_max_tip_age(settings: _Settings) -> int:
     """Return `-maxtipage` in seconds, Core's `ApplyArgsManOptions`.
 
-    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag: `GetIntArg`, through `_get_int` above, which already
+    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag: `GetIntArg`, through `_get_int` above, which already
     reads a negation as `0` and a double negation as `1` the way Core's
     own `SettingToInt` does.
     """
@@ -2182,7 +2180,7 @@ def _get_feerate(settings: _Settings, name: str) -> FeeRate | None:
     """Return `-name` as a rate, `None` where it is not given.
 
     BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s words
-    (`src/common/messages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/common/messages.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag); a negation reads as `0`.
     """
     value = _get_arg(settings, name)
@@ -2214,7 +2212,7 @@ class _MempoolOptions:
 def _get_mempool_options(settings: _Settings, chain_name: str) -> _MempoolOptions:
     """Return the mempool's options, Core's `ApplyArgsManOptions`.
 
-    `src/node/mempool_args.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/node/mempool_args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag, in its order of refusals: `-incrementalrelayfee`, `-minrelaytxfee`,
     `-dustrelayfee`, then `-acceptnonstdtxn` on a chain that is not a test
     chain. `-incrementalrelayfee` above `-minrelaytxfee` raises it where
@@ -2267,13 +2265,13 @@ def _prune_target_mib(prune: int) -> int:
     """Return the MiB `-prune` asks for, refusing what Core refuses.
 
     `ApplyArgsManOptions` (`node/blockmanager_args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) multiplies it by a MiB into a `uint64_t`,
+    bitcoin/bitcoin@f0de87f040) multiplies it by a MiB into a `uint64_t`,
     which wraps: the target is `prune` modulo `_PRUNE_MIB_WRAP` MiB, `0`
     being no pruning. `1` is manual pruning, and returned as it is.
     """
     if prune < 0:
         # Core's own wording, node::ApplyArgsManOptions
-        # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@ca7162cde5):
+        # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@f0de87f040):
         # `if (nPruneArg < 0) return util::Error{_("Prune cannot be
         # configured with a negative value.")};` -- bitcoind refuses to
         # start rather than treating a negative value as "pruning is on".
@@ -2284,7 +2282,7 @@ def _prune_target_mib(prune: int) -> int:
     target_mib = prune % _PRUNE_MIB_WRAP
     if 0 < target_mib < MIN_PRUNE_TARGET_MIB:
         # Core's own wording, node::ApplyArgsManOptions
-        # (node/blockmanager_args.cpp:31-33, at bitcoin/bitcoin@ca7162cde5):
+        # (node/blockmanager_args.cpp:31-33, at bitcoin/bitcoin@f0de87f040):
         # `return util::Error{strprintf(_("Prune configured below the
         # minimum of %d MiB.  Please use a higher number."),
         # MIN_DISK_SPACE_FOR_BLOCK_FILES / 1_MiB)};` -- 1 is manual
@@ -2303,7 +2301,7 @@ def _read_settings(
 ) -> tuple[_Settings, Path, str, dict[str, int]]:
     """Return `argv`'s settings, file included, data directory and chain.
 
-    `ParseArgs` (`src/bitcoind.cpp`, at bitcoin/bitcoin@9be056a8a7) in
+    `ParseArgs` (`src/bitcoind.cpp`, at bitcoin/bitcoin@f0de87f040) in
     its order: the command line, then the file and the chain it selects,
     then the refusal of an argument that is not an option; and after it
     `ProcessInitCommands`'s help, printed to stdout with exit `0`.
@@ -2320,7 +2318,7 @@ def _read_settings(
     # before the file system is asked anything: `missing/..` and
     # `symlink/..` are the directory they are written in. `-datadir` is
     # made absolute as `GetDataDir` makes it (`src/common/args.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
+    # at bitcoin/bitcoin@f0de87f040). A value that is `.` once normal is
     # where a path a refusal names still differed from Core's: Core joins
     # the `.` on (`fs::absolute`, `AbsPathForConfigVal`, both a literal
     # `operator/` with no lexical pass of their own) and `pathlib.Path`
@@ -2440,7 +2438,7 @@ class _BeforeLock:
 def _resolve_listen(settings: _Settings, max_connections_arg: int) -> bool:
     """Return `-listen` as `InitParameterInteraction` leaves it.
 
-    `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7: a `-bind` or a
+    `src/init.cpp`, at bitcoin/bitcoin@f0de87f040: a `-bind` or a
     `-whitebind` soft-sets it on, ahead of `-connect` or a `-maxconnections`
     of zero or less soft-setting it off, and an explicit value wins over
     both.
@@ -2461,7 +2459,7 @@ def _resolve_listen(settings: _Settings, max_connections_arg: int) -> bool:
 
 
 def _unsuitable_section_only_args(settings: _Settings) -> list[str]:
-    """Return Core's `GetUnsuitableSectionOnlyArgs` (`common/args.cpp:134`).
+    """Return Core's `GetUnsuitableSectionOnlyArgs` (`common/args.cpp:132`).
 
     `main`'s own default section is never questioned, its own early
     return there; off `main`, a `network_only` name whose only non-empty
@@ -2500,13 +2498,13 @@ def _check_network_only_args(settings: _Settings) -> None:
     r"""Refuse a `NETWORK_ONLY` option set only in the default section.
 
     `AppInitParameterInteraction`'s own loop over
-    `GetUnsuitableSectionOnlyArgs` (`src/init.cpp:936-950`, at
-    bitcoin/bitcoin@9be056a8a7), asked before the unrecognised-section
+    `GetUnsuitableSectionOnlyArgs` (`src/init.cpp:966-980`, at
+    bitcoin/bitcoin@f0de87f040), asked before the unrecognised-section
     warning below, as Core asks it. One line per option, in Core's own
     words, each ending in the newline that loop's own
     `+ Untranslated("\n")` appends: `main`'s own `f"Error: {error}\n"`
     around this refusal is what turns a single line's own trailing
-    newline into the blank line `bitcoind` v31.1.0 shows after it
+    newline into the blank line `bitcoind` shows after it
     (btclib-org/btclib-node#1327). `-bind` is among Core's own
     `NETWORK_ONLY` options, as it is among this node's.
     """
@@ -2526,7 +2524,7 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     """Warn of every section that names no chain, as Core does.
 
     `AppInitParameterInteraction`'s one `InitWarning` over
-    `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
+    `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040):
     a line per section, each ending in a newline, printed after
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
     prints it, and set as `settings.section_warning` too, that function
@@ -2547,18 +2545,17 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`,
-    at bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY`
+    at bitcoin/bitcoin@f0de87f040) in its order: a `NETWORK_ONLY`
     option set only in the default section off `main`, the warning
     about a section naming no chain, a missing blocks directory,
     `-prune` beside `-reindex-chainstate`, `-forcednsseed` beside
     a `-dnsseed` that is off, a negative `-maxconnections`, a
-    `-rpcmaxconnections` below one (where Core's `master` refuses
-    it, at bitcoin/bitcoin@649bc0a645), `-debug`'s categories,
+    `-rpcmaxconnections` below one, `-debug`'s categories,
     `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040,
     the v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage`
     (the order `node::ApplyArgsManOptions`'s own chainstate-manager
     options are read in, `src/node/chainstatemanager_args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), `-prune`, the mempool's options.
+    bitcoin/bitcoin@f0de87f040), `-prune`, the mempool's options.
     """
     settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
@@ -2641,7 +2638,7 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     """Lock the directories `Node.__init__` locks, as `Node.__init__` does.
 
     Core's `AppInitLockDirectories` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), between `_before_lock` and `_after_lock`.
+    bitcoin/bitcoin@f0de87f040), between `_before_lock` and `_after_lock`.
     `Node.__init__` takes the same locks again, which a process already
     holding them is granted (`dirlock`), so `main` releases these once
     the `Node` holds its own.
@@ -2655,7 +2652,7 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
 def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
     """Return every `-externalip` value as an address and port, looked up.
 
-    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7): each
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040): each
     value is looked up at `-port`, names allowed (`-dns`'s default), and
     refused where nothing answers or the address is not valid. The port
     is `GetListenPort`'s, which `listen_port` reads.
@@ -2673,7 +2670,7 @@ def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
 def _warn_bad_port(option: str, port: int) -> None:
     """Warn of a port other services listen on, as `BadPortWarning` does.
 
-    `InitWarning` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) prints
+    `InitWarning` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040) prints
     `Warning: ` and the text on stderr, as `noui_ThreadSafeMessageBox`
     does. Core logs it too, which is not done here.
     """
@@ -2693,7 +2690,7 @@ def _check_bind(
 
     `AppInitMain`'s `-bind` and `-whitebind` loops and
     `CheckBindingConflicts` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), which sees the `-whitebind` addresses,
+    bitcoin/bitcoin@f0de87f040), which sees the `-whitebind` addresses,
     then the plain binds, then the `=onion` ones, the default one among
     them, and compares address and port. The loop warns of each plain
     `-bind` on a bad port, and then of `-port` where it is given and
@@ -2731,7 +2728,7 @@ def _check_bind(
 def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quality
     """Refuse what Core refuses after its lock, and return the `Config`.
 
-    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040) in its
     order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`,
     `-rpcbind` and `-whitebind`, then the `-externalip` and `-bind` values
     nothing resolves, a `-whitebind` Core refuses, and an address bound
@@ -2745,7 +2742,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
     # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
     # tag; `RpcManager` binds the second beside `-rpcallowip`, as
-    # `HTTPBindAddresses` (`src/httpserver.cpp`, same sha) does
+    # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does
     bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
     whitebind = _get_args(settings, "whitebind")
@@ -2770,7 +2767,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
 
     connect = _get_args(settings, "connect")
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and
-    # nobody named (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # nobody named (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     connect_negated = _is_negated(settings, "connect")
     # `InitParameterInteraction`'s soft-set, which an explicit value wins
     # over (`src/init.cpp`, same sha)
@@ -2812,7 +2809,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     )
     server = _get_bool(settings, "server")
     # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
-    # (`src/init.cpp:1644`, same sha)
+    # (`src/init.cpp:1716`, same sha)
     ban_time = _get_int(settings, "bantime")
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
@@ -2912,12 +2909,12 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
 
 
 # Core's `SetupEnvironment` (`src/common/system.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which `bitcoind`'s own
 # `main` calls right after building its `interfaces::Init`
 # (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
 # everywhere but Windows, so every directory and file it creates is its
 # owner's alone.
-# Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
+# Core has no option, `-sysperms` or another, to keep the caller's.
 _PRIVATE_UMASK = 0o077
 
 
@@ -2943,8 +2940,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     where the node's start-up failed, is printed as `Error: <message>` and
     the exit status is `1`: Core's `InitError`, and `CConnman`'s own
     `MSG_ERROR` for a failed bind, reach stderr through
-    `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
-    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`. A
+    `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:20-45`, at
+    bitcoin/bitcoin@f0de87f040), and `bitcoind` exits `EXIT_FAILURE`. A
     refusal after the lock reaches `history.log` too, `open_history_log`
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
@@ -2974,7 +2971,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             # `AppInitMain`'s own refusals -- `CheckHostPortOptions`'s,
             # which raises this one -- come after `init::StartLogging`
-            # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), so the log
+            # (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040), so the log
             # is already open by the time one of them fires, and
             # `LogError`, reached through `noui_ThreadSafeMessageBox`,
             # puts the message in it too

@@ -88,13 +88,13 @@ __all__ = [
 ]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
-# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. The floor
+# read at bitcoin/bitcoin@f0de87f040): 100 sat/kvB. The floor
 # `main.verify_mempool_acceptance` refuses a candidate under
 # (btclib-org/btclib-node#1245), and the one this node tells a peer about
 # in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 100 sat/kvB, the default of
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag): 100 sat/kvB, the default of
 # `-incrementalrelayfee`. Core keeps it apart from the floor above, the two
 # merely sharing a value.
 DEFAULT_INCREMENTAL_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
@@ -107,9 +107,9 @@ DEFAULT_DUST_RELAY_FEERATE = FeeRate(sats_per_kvbyte=3000)
 DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # Core's own `-maxconnections` and `-inboundrelaypercent` defaults,
 # `DEFAULT_MAX_PEER_CONNECTIONS` and `DEFAULT_FULL_RELAY_INBOUND_PCT`
-# (`src/net.h`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
-# `integration-bitcoind.yml` pins): the automatic connections, and the
-# percentage of the inbound slots transaction-relaying peers may hold.
+# (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
+# automatic connections, and the percentage of the inbound slots
+# transaction-relaying peers may hold.
 DEFAULT_MAX_PEER_CONNECTIONS = 200
 DEFAULT_FULL_RELAY_INBOUND_PCT = 50
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
@@ -124,7 +124,7 @@ DEFAULT_MAX_HTTP_CONNECTIONS = 16
 # reason.
 DEFAULT_CHAIN = Main()
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) in seconds, which is what
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag) in seconds, which is what
 # `-maxtipage`'s own default is measured in: `constants.py`'s `MAX_TIP_AGE`
 # is the same span as a `timedelta`, for `update_ibd_status`'s own
 # unoverridden default before this option existed, and is read here
@@ -135,15 +135,15 @@ DEFAULT_MAX_TIP_AGE = int(MAX_TIP_AGE.total_seconds())
 def get_path_arg(value: str) -> str:
     """Return `value` normalised as Core's `GetPathArg` normalises a path.
 
-    `GetPathArg` (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag) is `lexically_normal` and a trailing-slash strip, and
+    `GetPathArg` (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) is `lexically_normal` and a trailing-slash strip, and
     `os.path.normpath` is both, lexical too, so `missing/../name` is
     `name` whether or not `missing` exists. A leading `//` is the one
     difference: POSIX lets `normpath` keep it, `lexically_normal`
     collapses it to `/`, and it is collapsed here, so that a path a
-    refusal names is the one `bitcoind` v31.1.0 names. `normpath` gives
-    back no other leading `//`: it collapses three or more slashes to
-    one, and on Windows it writes backslashes.
+    refusal names is the one `bitcoind` names. `normpath` gives back no
+    other leading `//`: it collapses three or more slashes to one, and
+    on Windows it writes backslashes.
     """
     path = os.path.normpath(value)
     return path[1:] if path.startswith("//") else path
@@ -156,7 +156,7 @@ def _split(spec: str, default_port: int) -> tuple[str, int, bool]:
     """Return `spec`'s host, port and whether Core's `SplitHostPort` is true.
 
     `SplitHostPort` (`src/util/strencodings.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) takes the last colon as
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) takes the last colon as
     the port separator, unless it is not the only one and does not close
     an IPv6 literal's own `[...]`: an IPv6 address given without
     brackets and without a port is read whole. The port is
@@ -195,7 +195,7 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     `default_port` is what a spec naming none falls back to: Core's own
     callers pre-fill the port before calling `SplitHostPort`, which only
     overwrites it when the spec actually names one (`ConnectNode`,
-    `src/net.cpp:505-507`, at bitcoin/bitcoin@ca7162cde5) --
+    `src/net.cpp:505-507`, at bitcoin/bitcoin@f0de87f040) --
     `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's own
     default P2P port this way. This is for a caller whose option Core
     checks at init, `-rpcbind`; a peer spec is `lookup_host_port`'s.
@@ -210,7 +210,7 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
 def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:
     """Split "host[:port]" as Core's `Lookup` does, valid or not.
 
-    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag) ignores what `SplitHostPort` returns and looks up the host it
     left. A spec whose port is no port is therefore a host name that
     resolves to nothing: `bitcoind` starts with `-connect=127.0.0.1:+80`
@@ -226,8 +226,8 @@ def lookup_service(
 ) -> tuple[Host, int] | None:
     """Return the address and port `spec` names, as Core's `Lookup`, or `None`.
 
-    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) splits the spec as `lookup_host_port` does and resolves the
+    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) splits the spec as `lookup_host_port` does and resolves the
     host it left: a name only where `allow_lookup`, a numeric address
     otherwise (`-bind`'s, `-externalip`'s being `-dns`'s default).
     """
@@ -253,7 +253,7 @@ class BindAddress:
 def onion_port(default_port: int) -> int:
     """Return the port an `=onion` bind takes where it names none.
 
-    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag) holds `default_port + 1` in a `uint16_t`, so `-port=65535` gives 0,
     which binds a port the kernel picks.
     """
@@ -275,8 +275,8 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
     Core's warning for a bad port (`BadPortWarning`, same sha) is not
     given: btclib-org/btclib-node#1645.
 
-    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) looks a numeric address up, at `default_port` where the
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) looks a numeric address up, at `default_port` where the
     value names none; one tagged `=onion` takes `onion_port` instead, and
     any other tag resolves nothing. Raises `ValueError` in Core's words
     where the address is none.
@@ -307,7 +307,7 @@ def parse_whitebind(arg: str) -> WhitebindAddress:
     """Return the address and permissions `-whitebind=<arg>` names.
 
     `NetWhitebindPermissions::TryParse` (`src/net_permissions.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a numeric address, which
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a numeric address, which
     has to name a port. Raises `ValueError` in Core's words.
     """
     flags, spec = parse_whitebind_permissions(arg)
@@ -326,8 +326,8 @@ def listen_port(
 ) -> int:
     """Return the port this node is said to listen on, as `GetListenPort` does.
 
-    `GetListenPort` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) is the port of the first `-bind` that names one, then that
+    `GetListenPort` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) is the port of the first `-bind` that names one, then that
     of the first `-whitebind` that grants no `noban`, and `default_port`
     otherwise. A `-whitebind` naming no permission is not one that grants
     `noban`: it is granted it later. An `=onion` value resolves to nothing
@@ -353,7 +353,7 @@ def _refuse_bind_without_listen(
     """Refuse a `-bind` or `-whitebind` beside `-listen=0`, in Core's words.
 
     `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if (bind or whitebind) and not listen:
         err_msg = "Cannot set -bind or -whitebind together with -listen=0"
@@ -364,7 +364,8 @@ def _refuse_rpcmaxconnections(rpcmaxconnections: int) -> None:
     """Refuse a `-rpcmaxconnections` below one, in Core's words.
 
     `AppInitParameterInteraction` refuses it whatever `-server` says
-    (`src/init.cpp`, at bitcoin/bitcoin@649bc0a645).
+    (`src/init.cpp:1080-1082`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
     """
     if rpcmaxconnections < 1:
         err_msg = (
@@ -381,7 +382,7 @@ def _refuse_reindex_chainstate_when_pruned(
 
     `AppInitParameterInteraction` refuses it after a missing blocks
     directory and before `-forcednsseed` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node has no
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node has no
     `-reindex` yet: btclib-org/btclib-node#1415.
     """
     if pruned and reindex_chainstate:
@@ -399,7 +400,7 @@ def _split_peers(
 
     Core's own `-connect`/`-addnode`/`-seednode` reach
     `CConnman::ConnectNode` as a name and resolve it via `Resolve`
-    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) at
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) at
     every dial, same as any other peer -- so neither a hostname nor a
     malformed port is an error here, only a value nothing resolves
     until then (btclib-org/btclib-node#1264,
@@ -446,9 +447,9 @@ def _resolve_cookie_file(
     `temp` is `GetAuthCookieFile(true)`, the file the cookie is written
     to before its rename: `.tmp` appended to the normalised value before
     it is resolved, so `.` is `<chain dir>/..tmp` and `/` is `/.tmp`, as
-    `bitcoind` v31.1.0 names them. `Path` drops a trailing `.`, so the
-    cookie itself for `.` is the chain directory, where Core's warning
-    names `<chain dir>/.`, and `.tmp` appended to that would be
+    `bitcoind` names them. `Path` drops a trailing `.`, so the cookie
+    itself for `.` is the chain directory, where Core's warning names
+    `<chain dir>/.`, and `.tmp` appended to that would be
     `<chain dir>.tmp`.
     """
     if value is None:
@@ -486,7 +487,7 @@ def _dnsseed(
     """Return `-dnsseed` after its soft-set; refused off with `-forcednsseed`.
 
     `AppInitParameterInteraction`'s own order (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): the soft-set runs first -- off under
+    bitcoin/bitcoin@f0de87f040): the soft-set runs first -- off under
     `-connect` or a non-positive `-maxconnections`, an explicit
     `dnsseed` winning over it -- and only then is `-forcednsseed`
     refused against the result, in Core's own wording.
@@ -536,7 +537,7 @@ class Config:
     # of it does path arithmetic on
     data_dir: Path
     # `None`, Core's own "default: <datadir>" (`-blocksdir=<dir>`'s own
-    # help text, `src/init.cpp:514`, at bitcoin/bitcoin@ca7162cde5),
+    # help text, `src/init.cpp:506`, at bitcoin/bitcoin@f0de87f040),
     # unless a caller names a base directory of its own for `BlockDB`'s
     # files -- chain-suffixed here the same way `data_dir` above is,
     # matching `ArgsManager::GetBlocksDirPath`'s own append of the
@@ -687,7 +688,7 @@ class Config:
     # Core's own `-persistmempool`, `DEFAULT_PERSIST_MEMPOOL` true, and
     # `-persistmempoolv1`, `DEFAULT_PERSIST_V1_DAT` false
     # (`src/node/mempool_persist_args.h` and `src/kernel/mempool_options.h`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): whether `Node` loads
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): whether `Node` loads
     # `mempool.dat` at start and writes it at shutdown, and whether it
     # writes version 1, with no obfuscation key (`mempool_persist`).
     persist_mempool: bool
@@ -705,8 +706,8 @@ class Config:
     # above is; a value given is read exactly as given, an operator's
     # override not being clamped to the chain's own floor or ceiling,
     # matching `ChainstateManager::MinimumChainWork`'s own unconditional
-    # return (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
-    # v31.1 tag).
+    # return (`src/validation.h`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag).
     minimum_chain_work: int
     # Core's own `-assumevalid`: the hash of a block whose ancestors
     # script verification may skip, `None` where it is off (`0`,
@@ -730,11 +731,11 @@ class Config:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
     # every automatically-drawn outbound connection
-    # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
-    # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
-    # both at bitcoin/bitcoin@ca7162cde5). Empty for `-connect=0` too --
+    # (`InitParameterInteraction`, `src/init.cpp:807-812`, and
+    # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2334`,
+    # both at bitcoin/bitcoin@f0de87f040). Empty for `-connect=0` too --
     # Core's own "dial nobody, but still on the -connect arm" spelling
-    # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
+    # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2336`,
     # same sha) -- which is why `connect_given` below, not this tuple's
     # truthiness, is what `P2pManager` reads to decide the two above.
     connect: tuple[tuple[str, int], ...]
@@ -745,7 +746,7 @@ class Config:
     connect_given: bool
     # `-connect`, each exactly as given: Core's own `connect`
     # (`connOptions.m_specified_outgoing`, `src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), passed whole as
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), passed whole as
     # `pszDest` (`ThreadOpenConnections`, `src/net.cpp`, same sha).
     # `P2pManager._connect_peers` reads this, not `connect` above, so a
     # spec naming its own port reaches `addr_name` with it still on
@@ -761,32 +762,33 @@ class Config:
     # value split once here could not follow (btclib-org/btclib-node#1350).
     addnode: tuple[tuple[str, int], ...]
     # `-addnode`, each as given: Core's own `m_added_node_params`
-    # (`connOptions.m_added_nodes`, `src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), dialled alongside the
-    # ordinary draw and compared, as text, against a drawn address by
-    # `AddedNodesContain` (`src/net.cpp`, same sha) -- both
-    # `P2pManager._open_added_peers` and `_added_node` read this, not
-    # `addnode` above, since `add_added_peer`/`remove_added_peer` mutate
-    # it at runtime (btclib-org/btclib-node#1350).
+    # (`connOptions.m_added_nodes`, `src/init.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+    # until ISS 2248), dialled alongside the ordinary draw and compared,
+    # as text, against a drawn address by `AddedNodesContain`
+    # (`src/net.cpp`, same sha) -- both `P2pManager._open_added_peers` and
+    # `_added_node` read this, not `addnode` above, since
+    # `add_added_peer`/`remove_added_peer` mutate it at runtime
+    # (btclib-org/btclib-node#1350).
     addnode_args: tuple[str, ...]
     # Core's own `-seednode`: peers `P2pManager` opens an `ADDR_FETCH`
     # connection to, one at a time, to draw a `getaddr` answer and
     # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
-    # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    # `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     # Split by `_split_peers` the same as `connect` and `addnode` above,
     # host unresolved -- for its own eager malformed-port refusal alone,
     # the same reason `connect` above is kept beside `connect_args`.
     seednode: tuple[tuple[str, int], ...]
     # `-seednode`, each exactly as given, passed whole as `pszDest`
-    # (`ProcessAddrFetch`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag): `P2pManager._seednodes` reads this, not `seednode`
+    # (`ProcessAddrFetch`, `src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag): `P2pManager._seednodes` reads this, not `seednode`
     # above, for the same reason `connect_args` exists beside `connect`
     # (btclib-org/btclib-node#1493).
     seednode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) soft-sets it false --
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) soft-sets it false --
     # a default `cli.py`'s own `build_config` computes the same way, an
     # explicit `-listen`/`-nolisten` always winning over it. `False` here means
     # Core's own `-listen=0`: no bound listening socket, outbound
@@ -797,7 +799,7 @@ class Config:
     # Core's own `-bind` values, as given: `cli` refuses a malformed one
     # and `parse_bind` reads each. With any, `P2pManager` binds those
     # and not every interface (`bind_on_any`, `src/init.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core refuses one beside
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag). Core refuses one beside
     # `-listen=0`.
     bind: tuple[str, ...]
     # Core's own `-whitebind` values, as given: `cli` refuses a malformed
@@ -808,37 +810,38 @@ class Config:
     # Core's own `-externalip` values, each an address `lookup_service`
     # reads without a lookup: `cli` resolves a name before it gets here.
     # `P2pManager` records each as a local address, as `AddLocal` at
-    # `LOCAL_MANUAL` does (`src/init.cpp`, same sha).
+    # `LOCAL_MANUAL` does (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag, which this node follows until ISS 2249).
     externalip: tuple[str, ...]
     # Core's own `-discover`: whether `P2pManager` records this
     # machine's own interface addresses at all (`p2p.netif.local_addresses`,
     # btclib-org/btclib-node#1238). `InitParameterInteraction`
     # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag) soft-sets it off under `-proxy`, `-listen=0` or `-externalip`;
-    # this node has no `-proxy`, so `-listen` and `externalip` are the
-    # conditions `__init__` reads, `-listen` off `self.listen` rather than
-    # off the `listen` parameter, so that an explicit `-listen`'s own
-    # soft-set (above) is what this one sees. `None` here is the
-    # sentinel `dnsseed` above already uses for a soft default an
-    # explicit value wins over. Discovery runs whether or not `_bind`
-    # itself goes on to succeed, as Core's `Discover()`
-    # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
-    # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
-    # `fListen`, so `P2pManager` calls it unless `bind` or `whitebind`
-    # above is given.
+    # tag, which this node follows until ISS 2249) soft-sets it off under
+    # `-proxy`, `-listen=0` or `-externalip`; this node has no `-proxy`,
+    # so `-listen` and `externalip` are the conditions `__init__` reads,
+    # `-listen` off `self.listen` rather than off the `listen` parameter,
+    # so that an explicit `-listen`'s own soft-set (above) is what this
+    # one sees. `None` here is the sentinel `dnsseed` above already uses
+    # for a soft default an explicit value wins over. Discovery runs
+    # whether or not `_bind` itself goes on to succeed, as Core's
+    # `Discover()` (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain`
+    # calls it off `bind_on_any` (`src/init.cpp:2163`, same sha), never
+    # off `fListen`, so `P2pManager` calls it unless `bind` or
+    # `whitebind` above is given.
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered
     # rather than refused (`p2p.connection.local_services`,
     # `p2p.callbacks._filter_range` and `.get_cfcheckpt`). Core also
-    # requires `-blockfilterindex=basic` (`src/init.cpp:992-998`, same
-    # sha as above) and refuses `-peerblockfilters` without it; this
-    # node keeps the basic filter index unconditionally
-    # (`chainstate.filter_index.FilterIndex`), so that refusal never
-    # applies here.
+    # requires `-blockfilterindex=basic` (`src/init.cpp:1022-1028`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) and refuses
+    # `-peerblockfilters` without it; this node keeps the basic filter
+    # index unconditionally (`chainstate.filter_index.FilterIndex`), so
+    # that refusal never applies here.
     peerblockfilters: bool
     # Core's own `-v2transport`, `DEFAULT_V2_TRANSPORT` (`src/net.h`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) true: whether this node
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) true: whether this node
     # speaks BIP324 and says so with `NODE_P2P_V2`
     # (`p2p.connection.local_services`).
     v2transport: bool
@@ -860,7 +863,7 @@ class Config:
     # into a count.
     inbound_relay_percent: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
-    # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     # soft-sets it off under `-connect` or a `-maxconnections` whose
     # `int64_t` is not positive; `__init__` below computes that soft-set
     # from `max_connections` where `dnsseed` is given `None`, and takes
@@ -1028,7 +1031,7 @@ class Config:
             # Core's own check, before the chain-specific subdirectory
             # below is ever appended to it (`GetBlocksDirPath`, same
             # citation as the field comment): "Specified blocks directory
-            # ... does not exist" (`src/init.cpp:1006`, same sha) is fatal
+            # ... does not exist" (`src/init.cpp:999`, same sha) is fatal
             # there too, not a silent `mkdir` -- unlike `data_dir` above,
             # which every caller here is content to have created on first
             # use. The path asked about is `get_path_arg`'s, as
@@ -1049,8 +1052,8 @@ class Config:
         # nobody named to dial -- `_split_peers` never sees the "0"
         # itself, checked here the same way Core's own options builder
         # special-cases the value ahead of resolving anything
-        # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
-        # at bitcoin/bitcoin@ca7162cde5).
+        # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2336`,
+        # at bitcoin/bitcoin@f0de87f040).
         self.connect = (
             () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
@@ -1126,7 +1129,7 @@ class Config:
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both
-        # at bitcoin/bitcoin@9be056a8a7): with no RPC listener a malformed
+        # at bitcoin/bitcoin@f0de87f040): with no RPC listener a malformed
         # value refuses nothing
         if not allow_rpc:
             rpcauth, rpccookieperms, rpcwhitelist = (), None, ()
