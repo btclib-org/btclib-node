@@ -22,6 +22,33 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.7
+
+Everything below is measured against `v2026.11.4`. `CHANGELOG.md`'s own
+`v2026.11.7` section is the record of what went into it.
+
+The public API is unchanged: griffe 2.2.0 and btclib-org/.github's
+`api_gaps.py` report no finding against `v2026.11.4`.
+
+### Worth knowing
+
+- **`bip32-descriptors` is required at 2026.11.2 or later** (closes #2104),
+  where 2026.10.31 was enough. An environment that pins it lower no longer
+  resolves.
+- **So `scantxoutset` gives a key spelled twice in one fragment the origin
+  bitcoind v32.1 gives it** (closes #2104). For
+  `wsh(multi(1,[aaaaaaaa/5]K/0/*,[bbbbbbbb/7]K/0/1))` at range `[1,1]` it
+  answers `[bbbbbbbb/7/0/1]`. Under a `bip32-descriptors` below 2026.11.2 it
+  answered `[bbbbbbbb/7/5/0/1]`, as bitcoind v31.1 does.
+- **The same floor makes `scantxoutset` accept `raw(...)` inside `sh()`,
+  `wsh()` and a `tr()` tree, `rawpkh(...)`, and `rawnode(...)` and
+  `rawleaf(...)` in a `tr()` tree, which bitcoind v32.1 refuses with -5**
+  (issue #2231). Under a `bip32-descriptors` below 2026.11.2 it refused each of
+  them with -5 too.
+- **The index links `homepage` to <https://btclib.org/btclib-node/>**
+  (closes #2191). The documentation stays at
+  <https://btclib-node.readthedocs.io/>.
+
 ## v2026.11.4
 
 Everything below is measured against `v2026.11.2`. `CHANGELOG.md`'s own
