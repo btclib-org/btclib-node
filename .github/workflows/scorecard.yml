@@ -30,9 +30,7 @@ on:
   schedule:
     # weekly, at the day and hour section 10's calendar gives this
     # workflow and the minute it gives this repository, and not this
-    # line's to restate. That row is the calendar's last, which is what
-    # section 2 puts the Scorecard badge at the head of the OpenSSF line
-    # for.
+    # line's to restate.
     # The push trigger above already runs the analysis on every push to
     # main, which is what feeds the badge and the published score between
     # scheduled runs; this covers what push cannot -- a week with none.
