@@ -8,7 +8,7 @@
 r"""Write `src/btclib_node/_chainparamsseeds.py` from the lists beside it.
 
 Bitcoin Core's `contrib/seeds/generate-seeds.py` (at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which writes
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), which writes
 `src/chainparamsseeds.h`: the same parsing and the same BIP155
 serialization of each `(networkID, addr, port)` tuple, one line per
 seed, emitted as Python rather than as C. The four inputs are Core's
