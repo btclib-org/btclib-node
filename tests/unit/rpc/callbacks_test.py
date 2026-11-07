@@ -7625,8 +7625,7 @@ def test_submit_block_refuses_a_body_with_no_transactions_at_its_merkle_root(
 
     result = submit_block(node, _CONN, [empty.serialize(check_validity=False).hex()])
 
-    assert result is not None
-    assert result.startswith("invalid merkle root")
+    assert result == "bad-txnmrklroot"
 
 
 def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
@@ -8089,7 +8088,7 @@ def a_block_marked_invalid(node: Node, block: Block) -> str:
     [
         ("valid", "duplicate-invalid"),
         ("over-the-weight", "duplicate-invalid"),
-        ("bad-cb-multiple", "more than one coinbase"),
+        ("bad-cb-multiple", "bad-cb-multiple"),
     ],
 )
 def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
@@ -8140,7 +8139,7 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
 
     result = submit_block(node, _CONN, [twice.serialize(check_validity=False).hex()])
 
-    assert result == "more than one coinbase"
+    assert result == "bad-cb-multiple"
     assert twice.header.hash not in node.chainstate.block_index.header_dict
 
 
@@ -8163,7 +8162,7 @@ def test_submit_block_answers_check_block_failure_over_prev_blk_not_found(
 
     result = submit_block(node, _CONN, [orphan.serialize(check_validity=False).hex()])
 
-    assert result == "more than one coinbase"
+    assert result == "bad-cb-multiple"
     assert orphan.header.hash not in node.chainstate.block_index.header_dict
 
 

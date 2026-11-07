@@ -32,10 +32,11 @@ Where this module differs from Core:
   `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB, are left out.
 - A reject reason is Core's `GetRejectReason`, the word BIP22 answers
   and never the debug text after it: `TxRejectedError.reason` for what
-  connecting refuses, and Core's word where `_check_block`,
+  connecting refuses, and Core's word where `check_block_reason`,
   `_contextual_header_reason`, `main.contextual_check_block` and
-  `_CONNECT_REASONS` have one. The rest is the exception's own text, as
-  `submitblock` answers.
+  `_CONNECT_REASONS` have one, and the word alone where a connect
+  failure's text opens with one before `: `. The rest is the exception's
+  own text, as `submitblock` answers.
 """
 
 from __future__ import annotations
@@ -97,7 +98,9 @@ __all__ = [
     "BlockTemplate",
     "TemplateError",
     "accept_block",
+    "block_reject_reason",
     "block_with_transactions",
+    "check_block_reason",
     "check_block_validity",
     "chunk_feerates",
     "contextual_block_reason",
@@ -449,7 +452,7 @@ def _merkle_reason(block: Block) -> str | None:
     return None
 
 
-def _check_block(block: Block, *, check_merkle_root: bool) -> str | None:
+def check_block_reason(block: Block, *, check_merkle_root: bool) -> str | None:
     """Return why `block` fails Core's `CheckBlock`, proof of work apart."""
     if check_merkle_root and (reason := _merkle_reason(block)) is not None:
         return reason
@@ -524,24 +527,27 @@ def contextual_block_reason(node: Node, block: Block, height: int) -> str | None
     return None
 
 
+def block_reject_reason(error: BaseException) -> str:
+    """Return why connecting a block failed, Core's word where there is one."""
+    if isinstance(error, TxRejectedError):
+        # what BIP22 answers, not `ToString`
+        return error.reason
+    message = str(error)
+    # a reason in Core's words, followed by the detail Core logs apart
+    word, _, _ = message.partition(": ")
+    return _CONNECT_REASONS.get(message, word if _REASON.fullmatch(word) else message)
+
+
 def _connect_reason(node: Node, block: Block, height: int) -> str | None:
     """Return why `block` does not connect at `height`."""
     try:
         try_connect_block(node, block, height)
-    except TxRejectedError as error:
-        # Core's `GetRejectReason`, which BIP22 answers, not `ToString`
-        return error.reason
     except (
         BTClibException,
         InvalidBlockInputError,
         PrevoutCountMismatchError,
     ) as error:
-        message = str(error)
-        # a reason in Core's words, followed by the detail Core logs apart
-        word, _, _ = message.partition(": ")
-        return _CONNECT_REASONS.get(
-            message, word if _REASON.fullmatch(word) else message
-        )
+        return block_reject_reason(error)
     return None
 
 
@@ -563,7 +569,7 @@ def check_block_validity(
         return "inconclusive-not-best-prevblk"
     height = len(active_chain)
     return (
-        _check_block(block, check_merkle_root=check_merkle_root)
+        check_block_reason(block, check_merkle_root=check_merkle_root)
         or _contextual_header_reason(node, block.header)
         or contextual_block_reason(node, block, height)
         or _connect_reason(node, block, height)

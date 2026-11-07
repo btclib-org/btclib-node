@@ -10,6 +10,7 @@ expected value wherever a test says so; the rest is what these handlers
 add where Core has no rule to copy.
 """
 
+import copy
 import json
 from collections.abc import Generator
 from dataclasses import replace
@@ -34,7 +35,7 @@ from btclib_node.mining import (
     create_new_block,
     solve_block,
 )
-from btclib_node.rpc.callbacks import arg_names, callbacks
+from btclib_node.rpc.callbacks import arg_names, callbacks, submit_block
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.mining import (
@@ -51,6 +52,7 @@ from tests import (
     anyone_can_spend,
     anyone_can_spend_script_sig,
     finish,
+    generate_coinbase,
     generate_random_transaction,
 )
 
@@ -703,6 +705,152 @@ def test_a_proposal_of_the_genesis_block_is_inconclusive(node: Node) -> None:
     genesis = node.block_db.get_block(node.chain.genesis.hash)
     assert genesis is not None
     assert proposal(node, genesis) == "duplicate-inconclusive"
+
+
+def coinbase_prevout_plus_one(block: Block) -> None:
+    """Add one to the coinbase's prevout hash, as Core's test does."""
+    prev_out = block.transactions[0].vin[0].prev_out
+    tx_id = (int.from_bytes(prev_out.tx_id, "big") + 1).to_bytes(32, "big")
+    block.transactions[0].vin[0].prev_out = OutPoint(tx_id, prev_out.vout)
+
+
+def duplicated_spend(block: Block) -> None:
+    """Repeat a transaction as its own sibling, CVE-2012-2459's mutation."""
+    tx = generate_random_transaction()
+    block.transactions.extend([generate_random_transaction(), tx, tx])
+
+
+def checksigs(count: int) -> Callable[[Block], None]:
+    """Return a change giving the coinbase an output of `count` OP_CHECKSIG."""
+
+    def change(block: Block) -> None:
+        block.transactions[0].vout.append(TxOut(0, b"\xac" * count))
+
+    return change
+
+
+# 20,000 legacy sigops, at WITNESS_SCALE_FACTOR each, are MAX_BLOCK_SIGOPS_COST
+CHECK_BLOCK_REASONS: list[tuple[Callable[[Block], None], str]] = [
+    (coinbase_prevout_plus_one, "bad-cb-missing"),
+    (
+        lambda block: block.transactions.insert(0, generate_random_transaction()),
+        "bad-cb-missing",
+    ),
+    (lambda block: block.transactions.append(generate_coinbase()), "bad-cb-multiple"),
+    (lambda block: block.transactions.clear(), "bad-blk-length"),
+    (duplicated_spend, "bad-txns-duplicate"),
+    (checksigs(20_001), "bad-blk-sigops"),
+]
+
+
+def proposed_and_submitted(
+    node: Node, change: Callable[[Block], None]
+) -> tuple[object, object, Block]:
+    """Propose a changed block on the tip, then submit it solved.
+
+    Core's `assert_template` (`test/functional/mining_template_verification.py`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) does the same, and expects
+    the same word from both.
+    """
+    block = create_new_block(node, SCRIPT).block
+    change(block)
+    block.header.merkle_root = merkle_root_and_mutated_from_transactions(
+        block.transactions
+    )[0]
+    proposed = proposal(node, block)
+    submitted = solved(node, block).serialize(check_validity=False).hex()
+    return proposed, submit_block(node, CONN, [submitted]), block
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    CHECK_BLOCK_REASONS,
+    ids=[
+        "coinbase-prevout",
+        "spend-first",
+        "second-coinbase",
+        "empty",
+        "duplicate",
+        "sigops",
+    ],
+)
+def test_a_proposal_and_its_submission_answer_core_s_check_block_word(
+    node: Node, change: Callable[[Block], None], reason: str
+) -> None:
+    """ISS 2167: both answer `CheckBlock`'s word, and nothing is stored.
+
+    Core's test proposes first the block whose coinbase prevout hash is
+    one higher.
+    """
+    proposed, submitted, block = proposed_and_submitted(node, change)
+
+    assert (proposed, submitted) == (reason, reason)
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+
+
+def test_a_block_at_the_sigop_limit_is_proposed_and_submitted(node: Node) -> None:
+    """ISS 2167: a block at the limit passes `bad-blk-sigops`, and lands."""
+    proposed, submitted, block = proposed_and_submitted(node, checksigs(20_000))
+
+    assert proposed is None
+    assert submitted is None
+    assert tip(node) == block.header.hash
+
+
+def spend_from_thin_air(block: Block) -> Tx:
+    """Return a copy of the coinbase spending a coin no block made.
+
+    Core's test names that coin by the prevout hash 255.
+    """
+    spend = copy.deepcopy(block.transactions[0])
+    vout = spend.vin[0].prev_out.vout
+    spend.vin[0].prev_out = OutPoint((255).to_bytes(32, "big"), vout)
+    return spend
+
+
+def appended(make: Callable[[Block], Tx]) -> Callable[[Block], None]:
+    """Return a change adding the transaction `make` builds, recommitted."""
+
+    def change(block: Block) -> None:
+        block.transactions.append(make(block))
+        block.transactions[0].vout[1] = witness_commitment_output(
+            block.transactions, bytes(32)
+        )
+
+    return change
+
+
+def richer_coinbase(block: Block) -> None:
+    """Have the coinbase claim one satoshi more than it may."""
+    payout = block.transactions[0].vout[0]
+    block.transactions[0].vout[0] = TxOut(payout.value + 1, payout.script_pub_key)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        (appended(spend_from_thin_air), "bad-txns-inputs-missingorspent"),
+        (
+            appended(lambda _block: generate_random_transaction()),
+            "bad-txns-inputs-missingorspent",
+        ),
+        (richer_coinbase, "bad-cb-amount"),
+    ],
+    ids=["thin-air", "random", "amount"],
+)
+def test_a_proposal_and_its_submission_answer_core_s_word_when_connecting(
+    node: Node, change: Callable[[Block], None], reason: str
+) -> None:
+    """ISS 2167: both answer the word, without the detail btclib adds to it.
+
+    btclib's text for the amount is `bad-cb-amount: <detail>`.
+    """
+    before = tip(node)
+
+    proposed, submitted, _ = proposed_and_submitted(node, change)
+
+    assert (proposed, submitted) == (reason, reason)
+    assert tip(node) == before
 
 
 def block_with_bad_amount(node: Node) -> Block:
