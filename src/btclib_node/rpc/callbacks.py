@@ -32,7 +32,6 @@ from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, network_address
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
 from btclib.script.solver import solver
@@ -92,6 +91,7 @@ from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid
 from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
+from btclib_node.p2p.protocol_version import PROTOCOL_VERSION
 from btclib_node.p2p.selfannounce import LocalService, host_record
 from btclib_node.rpc.connection import COIN, RawJSON, btc_amount, univalue_float
 from btclib_node.rpc.errors import (
@@ -1703,9 +1703,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     together -- `get_peer_info` above answers the matching `subver` a
     peer sees on the wire, both reading `constants.USER_AGENT`
     (btclib-org/btclib-node#1009) rather than each computing their own.
-    `protocolversion` is `PROTOCOL_VERSION` (`btclib.p2p.limits`), the
-    same constant every `version` this node sends and every
-    `getheaders` it builds already carries.
+    `protocolversion` is `p2p.protocol_version.PROTOCOL_VERSION`, the
+    same constant every `version` this node sends carries.
 
     `localservices` and `localservicesnames` are
     `p2p.connection.local_services` (`rpc/net.cpp:749-751`, same sha) -- the

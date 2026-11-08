@@ -65,10 +65,10 @@ __all__ = [
 ]
 
 # Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
-# `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
-# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
-# which this node follows until ISS 2250). `sendheaders` and `sendcmpct`
-# are the two of them `callbacks` holds: `wtxidrelay` and `sendaddrv2` are
+# `sendaddrv2`, `feature` and `sendtxrcncl` after `version` and before
+# `verack` (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag). `sendheaders` and `sendcmpct` are the two of them `callbacks`
+# holds: `wtxidrelay`, `sendaddrv2` and `feature` are
 # `handshake_callbacks`', and this node does not handle `sendtxrcncl`.
 _BEFORE_VERACK = frozenset({"sendheaders", "sendcmpct"})
 
@@ -146,12 +146,12 @@ def _hold_message(
 def _after_verack(conn: Connection, msg_type: str) -> None:
     """Answer a handshake command from a connection past its `verack`.
 
-    A second `version` or `verack` is ignored, and a `wtxidrelay` or
-    `sendaddrv2` drops the peer undiscouraged, as Core's `ProcessMessage`
-    does (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag).
+    A second `version` or `verack` is ignored, and a `wtxidrelay`,
+    `sendaddrv2` or `feature` drops the peer undiscouraged, as Core's
+    `ProcessMessage` does (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
-    if msg_type in {"wtxidrelay", "sendaddrv2"}:
+    if msg_type in {"wtxidrelay", "sendaddrv2", "feature"}:
         conn.stop()
 
 
@@ -165,8 +165,8 @@ def handle_p2p_handshake(node: Node) -> None:
     btclib-org/btclib-node#1657
 
     Once `verack` has promoted the connection, a second `version` or
-    `verack` is ignored and a `wtxidrelay` or `sendaddrv2` drops the
-    peer undiscouraged, as Core's `ProcessMessage` answers each
+    `verack` is ignored and a `wtxidrelay`, `sendaddrv2` or `feature`
+    drops the peer undiscouraged, as Core's `ProcessMessage` answers each
     (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). A callback that raises is `_drop`'s.
 
@@ -181,8 +181,8 @@ def handle_p2p_handshake(node: Node) -> None:
     )
     manager = node.p2p_manager
     # a connection still finishing its handshake, which is where every
-    # one of these four commands is answered, or one already promoted
-    # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
+    # one of these commands is answered, or one already promoted that a
+    # peer sent a second one of them to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
         if _hold_message(node, conn, conn_id, (msg_type, msg, size, received)):
@@ -305,11 +305,10 @@ def handle_p2p(node: Node) -> None:
     """Pop one queued message and dispatch it, once its handshake is done.
 
     A message ahead of `verack` is ignored, as Core's `ProcessMessage`
-    ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag, which this node follows until ISS 2250), except a
-    `sendheaders` or a `sendcmpct` after `version`, which Core records
-    there. A callback that raises is `_drop`'s, the comment below
-    arguing its split.
+    ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), except a `sendheaders` or a `sendcmpct` after
+    `version`, which Core records there. A callback that raises is
+    `_drop`'s, the comment below arguing its split.
 
     Weighs the item's own weight back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it

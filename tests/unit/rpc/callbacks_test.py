@@ -39,7 +39,6 @@ from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.headers_sync import ChainStart, HeadersSyncState, State
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import (
     ScriptPubKey,
@@ -5261,7 +5260,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     }
     assert reported == {
         "subversion": USER_AGENT,
-        "protocolversion": PROTOCOL_VERSION,
+        # Core v32.1's, ahead of btclib's (btclib-org/btclib#2995)
+        "protocolversion": 70017,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
         "networkactive": True,

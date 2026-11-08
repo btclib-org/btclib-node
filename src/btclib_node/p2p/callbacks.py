@@ -86,9 +86,8 @@ from btclib.p2p.limits import (
     MAX_HEADERS_RESULTS,
     MAX_INV_SZ,
     MAX_LOCATOR_SZ,
-    PROTOCOL_VERSION,
 )
-from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
+from btclib.p2p.negotiation import Feature, FeeFilter, GetAddr, WtxidRelay
 
 from btclib_node import clock
 from btclib_node.chainstate.block_index import (
@@ -147,6 +146,7 @@ from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
+    FEATURE_VERSION,
     MIN_PEER_PROTO_VERSION,
     SHORT_IDS_BLOCKS_VERSION,
     WTXID_RELAY_VERSION,
@@ -182,6 +182,7 @@ __all__ = [
     "blocktxn",
     "callbacks",
     "cmpctblock",
+    "feature",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
@@ -429,6 +430,12 @@ def has_all_desirable_services(node: Node, services: int) -> bool:
 # `getheaders` a peer has not answered holds off the next one to it.
 _HEADERS_RESPONSE_TIME = 2 * 60
 
+# The version a `getheaders` locator carries: Core's
+# `CBlockLocator::DUMMY_VERSION` (`src/primitives/block.h:125`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which no reader reads
+# and which stays 70016 where Core's own `PROTOCOL_VERSION` is 70017.
+_LOCATOR_VERSION = 70016
+
 
 def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) -> bool:
     """Send `conn` a `getheaders` unless one to it is still in flight.
@@ -442,7 +449,7 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
     now = clock.now()
     timestamps = node.download_manager.last_getheaders_timestamps
     if now - timestamps.get(conn.id, 0.0) > _HEADERS_RESPONSE_TIME:
-        conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
+        conn.send(GetHeaders(_LOCATOR_VERSION, locator, b"\x00" * 32))
         timestamps[conn.id] = now
         return True
     return False
@@ -787,6 +794,49 @@ def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
 def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
     """Record that the peer wants `addrv2` gossip rather than `addr`."""
     conn.prefer_addressv2 = True
+
+
+def feature(node: Node, msg: bytes, conn: Connection) -> None:
+    """Ignore a peer's BIP434 `feature`, or drop the peer it does not suit.
+
+    Core's `FEATURE` handler (`src/net_processing.cpp:4225-4262`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) knows no feature, so a
+    well-formed one is logged and ignored. It drops the peer, without
+    discouraging it, where their common version is below
+    `FEATURE_VERSION` or the payload is not one `Feature` parses: a
+    `featureid` of 4 to 80 octets and a `featuredata` of at most 512,
+    nothing after them. One ahead of `version` is ignored here, and
+    `p2p.main` drops a peer that sends one after `verack`, as Core does.
+
+    Over v2, a `feature` sent by its BIP324 short id, 37, does not reach
+    this handler: the btclib this tree pins refuses that id, so
+    `Connection.parse_messages` counts the message, drops it and keeps
+    the peer, after `verack` too, where Core reads it as `feature`
+    (btclib-org/btclib-node#2302). One sent under its full name reaches
+    it as over v1.
+    """
+    if conn.version_message is None:
+        return
+    if common_version(conn) < FEATURE_VERSION:
+        node.logger.log_debug(
+            "net",
+            "feature received with incompatible version %d, disconnecting peer=%d",
+            common_version(conn),
+            conn.id,
+        )
+        conn.stop()
+        return
+    try:
+        # `msg` itself, not `_fields(msg)`: Core refuses octets past the
+        # two fields here
+        feature_id = Feature.parse(msg).feature_id
+    except BTClibValueError:
+        node.logger.log_debug(
+            "net", "invalid feature payload, disconnecting peer=%d", conn.id
+        )
+        conn.stop()
+        return
+    node.logger.log_debug("net", "unknown feature advertised: %r", feature_id)
 
 
 def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
@@ -3688,6 +3738,7 @@ handshake_callbacks = {
     "verack": verack,
     "wtxidrelay": wtxidrelay,
     "sendaddrv2": sendaddrv2,
+    "feature": feature,
 }
 
 callbacks = {

@@ -165,7 +165,6 @@ from typing import TYPE_CHECKING, override
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.handshake import Version
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node import Node
@@ -175,6 +174,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
+from btclib_node.p2p.protocol_version import PROTOCOL_VERSION
 
 if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager

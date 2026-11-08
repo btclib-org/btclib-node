@@ -32,7 +32,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import can_addrv1, network_address
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
+from btclib.p2p.limits import MAX_ADDR_TO_SEND
 
 from btclib_node import clock
 from btclib_node.constants import (
@@ -49,7 +49,11 @@ from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.eviction import Network, net_class
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.permissions import NetPermissionFlags
-from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
+from btclib_node.p2p.protocol_version import (
+    BIP0031_VERSION,
+    PROTOCOL_VERSION,
+    common_version,
+)
 from btclib_node.p2p.transport import (
     NetMessage,
     SerializedMessage,
@@ -104,10 +108,10 @@ _DATA_STREAM_BYTES = 32
 
 
 # Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-# until ISS 2250): the commands `bytes_recv_per_msg` keys by name, every
-# other one being counted under `NET_MESSAGE_TYPE_OTHER`, so that a peer
-# inventing commands cannot grow the table.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the commands
+# `bytes_recv_per_msg` keys by name, every other one being counted under
+# `NET_MESSAGE_TYPE_OTHER`, so that a peer inventing commands cannot grow
+# the table.
 _MESSAGE_TYPES = frozenset(
     (
         "version",
@@ -145,6 +149,7 @@ _MESSAGE_TYPES = frozenset(
         "cfcheckpt",
         "wtxidrelay",
         "sendtxrcncl",
+        "feature",
     )
 )
 _MESSAGE_TYPE_OTHER = "*other*"

@@ -84,7 +84,7 @@ from btclib.p2p.limits import (
     MAX_LOCATOR_SZ,
     PROTOCOL_VERSION,
 )
-from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
+from btclib.p2p.negotiation import Feature, FeeFilter, GetAddr, WtxidRelay
 from btclib.script.witness import Witness
 
 import btclib_node.p2p.address as address_module
@@ -124,6 +124,7 @@ from btclib_node.p2p.callbacks import (
     addrv2,
     advance_cfilters,
     advance_getdata,
+    feature,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
@@ -165,6 +166,7 @@ from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
+    FEATURE_VERSION,
     MIN_PEER_PROTO_VERSION,
     SHORT_IDS_BLOCKS_VERSION,
     WTXID_RELAY_VERSION,
@@ -2008,6 +2010,71 @@ def test_a_wtxidrelay_below_wtxid_relay_version_is_ignored() -> None:
     peer = a_peer(version_message=old)
     wtxidrelay(a_handshake_node(), b"", peer)
     assert not peer.wtxidrelay_received
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        Feature(b"BIP999", b"\x01").serialize(),
+        Feature(b"B" * 80, bytes(512)).serialize(),
+        Feature(b"BIP9").serialize(),
+    ],
+    ids=["BIP999", "at the bounds", "empty data"],
+)
+def test_a_feature_at_feature_version_is_ignored(payload: bytes) -> None:
+    """ISS 2250: Core v32.1 ignores a well-formed `feature` it does not know."""
+    peer = a_peer(version_message=a_parsed_version(protocol=FEATURE_VERSION))
+    node = a_handshake_node()
+    feature(node, payload, peer)
+    assert not peer.stopped
+    assert not peer.sent
+    assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b"\x03BIP\x00",
+        b"\x51" + b"B" * 81 + b"\x00",
+        b"\x06BIP999\xfd\x01\x02" + bytes(513),
+        Feature(b"BIP999").serialize() + b"\x00",
+        b"\xfd\x06\x00BIP999\x00",
+        b"\x06BIP999",
+    ],
+    ids=[
+        "empty",
+        "id of 3",
+        "id of 81",
+        "data of 513",
+        "trailing octet",
+        "non-canonical length",
+        "no data",
+    ],
+)
+def test_a_feature_payload_core_refuses_drops_the_peer(payload: bytes) -> None:
+    """ISS 2250: Core v32.1 drops the peer, undiscouraged, as measured."""
+    peer = a_peer(version_message=a_parsed_version(protocol=FEATURE_VERSION))
+    node = a_handshake_node()
+    feature(node, payload, peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_feature_below_feature_version_drops_the_peer() -> None:
+    """ISS 2250: Core v32.1 drops a peer at a common version below 70017."""
+    peer = a_peer(version_message=a_parsed_version(protocol=70016))
+    node = a_handshake_node()
+    feature(node, Feature(b"BIP999").serialize(), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_feature_ahead_of_version_is_ignored() -> None:
+    """Core's `ProcessMessage` ignores any message ahead of `version`."""
+    peer = a_peer()
+    feature(a_handshake_node(), b"", peer)
+    assert not peer.stopped
 
 
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
@@ -4034,6 +4101,8 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
     assert isinstance(answer, GetHeaders)
     assert answer.hash_stop == b"\x00" * 32
     assert answer.locator == (_HELD,)
+    # Core's `CBlockLocator::DUMMY_VERSION`, not its `PROTOCOL_VERSION`
+    assert answer.version == 70016
 
 
 def test_a_block_announced_with_octets_past_the_items_is_answered() -> None:

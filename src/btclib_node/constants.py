@@ -8,8 +8,8 @@
 `NodeStatus` for what stage of startup, sync or shutdown the node as a
 whole is in, and `MAX_TIP_AGE`. `COINBASE_MATURITY` is
 `btclib.tx.limits`'s own, a function of a `Coin`'s own arguments rather
-than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
-`btclib.p2p.limits`'s own the same way (btclib-org/btclib#1582).
+than a node's knob (btclib-org/btclib#1580). `PROTOCOL_VERSION` is
+`p2p.protocol_version`'s.
 """
 
 import enum
