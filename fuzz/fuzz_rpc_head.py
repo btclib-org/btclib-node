@@ -14,7 +14,7 @@ request's body, which is stdlib's own business and not this node's.
 `rpc.connection.parse_request_head` is that arithmetic pulled into a
 function of octets alone, scoped the way
 Core's own `http_request.cpp` fuzz target is scoped
-(at bitcoin/bitcoin@ca7162cde5): a raw `http_buffer` fed to
+(at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a raw `http_buffer` fed to
 `HTTPRequest::LoadControlData`/`LoadHeaders`/`LoadBody`, control-line
 and header framing only, never reaching UniValue or JSON-RPC content
 decoding -- `parse_request_head`'s own docstring is where that scoping

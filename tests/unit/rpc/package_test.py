@@ -5,8 +5,10 @@
 """`submitpackage`, and the package evaluation under it.
 
 `tests/integration/submitpackage_test.py` holds the answers equal to
-bitcoind v31.1's, in the shapes and the refusals each test here names. A
-test says so where the answer is one that only bitcoind's is measured for.
+bitcoind's, in the shapes and the refusals each test here names. A test
+says so where the answer is one that only bitcoind's is measured for.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from dataclasses import replace
@@ -392,7 +394,7 @@ def test_a_package_that_is_not_a_child_with_its_parents_is_refused(node: Node) -
 
 
 def test_the_arguments_are_refused_in_core_s_order(node: Node) -> None:
-    """Each with its code and its words, `bitcoind` v31.1's."""
+    """Each with its code and its words, `bitcoind`'s."""
     tx = funded_spends(node, 1)[0]
     raw = hexes([tx])[0]
     usage = refused([], node)

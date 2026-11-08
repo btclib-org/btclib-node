@@ -5,7 +5,9 @@
 """`prioritisetransaction` and `getprioritisedtransactions`.
 
 The refusals, their order and their words were measured against bitcoind
-v31.1.0 on regtest.
+on regtest.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import secrets
@@ -90,7 +92,7 @@ def test_both_are_served_under_the_names_and_arguments_core_gives() -> None:
 
 
 def test_a_delta_is_added_and_the_answer_is_true() -> None:
-    """Deltas stack, as `bitcoind` v31.1 answers `-5` after `5` and `-1`."""
+    """Deltas stack, as `bitcoind` answers `-4` after `5`, `-10` and `1`."""
     node = a_node()
     assert prioritise_transaction(node, _CONN, [_TXID, None, 5]) is True
     assert prioritise_transaction(node, _CONN, [_TXID, 0, -10]) is True

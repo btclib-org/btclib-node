@@ -5,8 +5,10 @@
 """`savemempool` and `importmempool`.
 
 The refusals, their order and their words were measured against bitcoind
-v31.1.0 on regtest; `tests/integration/mempool_persist_test.py` asks
-bitcoind the same calls.
+on regtest; `tests/integration/mempool_persist_test.py` asks bitcoind the
+same calls.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import errno

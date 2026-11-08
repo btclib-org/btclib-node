@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`getnodeaddresses` and `addpeeraddress`, Core's RPCs over the table."""
+"""`getnodeaddresses` and `addpeeraddress`, Core's RPCs over the table.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import time
 from types import SimpleNamespace
@@ -173,7 +176,7 @@ def test_getnodeaddresses_refuses_a_network_it_does_not_know(network: str) -> No
 def test_getnodeaddresses_refuses_a_count_out_of_range(
     params: list[Any], code: RPCErrorCode, message: str
 ) -> None:
-    """ISS 1443: Core's two refusals of `count`, as bitcoind v31.1.0 answers."""
+    """ISS 1443: Core's two refusals of `count`, as bitcoind answers."""
     node, _ = a_node()
     with pytest.raises(RpcError) as raised:
         get_node_addresses(node, _CONN, params)
@@ -268,7 +271,7 @@ def test_addpeeraddress_takes_an_onion_and_an_ipv6_host() -> None:
 
 
 def test_addpeeraddress_refuses_a_host_it_cannot_read() -> None:
-    """ISS 1443: `RPC_CLIENT_INVALID_IP_OR_SUBNET`, as bitcoind v31.1.0."""
+    """ISS 1443: `RPC_CLIENT_INVALID_IP_OR_SUBNET`, as bitcoind."""
     node, _ = a_node()
     with pytest.raises(RpcError) as raised:
         add_peer_address(node, _CONN, ["bad", 8333])
@@ -315,7 +318,7 @@ def test_what_addpeeraddress_adds_getnodeaddresses_answers() -> None:
 
 
 def test_getnodeaddresses_names_a_6to4_and_teredo_address_ipv4() -> None:
-    """ISS 1443: `GetNetClass`, as bitcoind v31.1.0, in field and filter."""
+    """ISS 1443: `GetNetClass`, as bitcoind, in field and filter."""
     node, peer_db = a_node()
     known(peer_db, seen("2002:102:304::1"), seen("2001:0:102:304::1"))
     answered = get_node_addresses(node, _CONN, [0, "ipv4"])

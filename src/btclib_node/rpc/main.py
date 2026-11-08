@@ -5,11 +5,11 @@
 """`handle_rpc` and `resume_rpc`, called on each pass of `Node`'s loop.
 
 `handle_rpc` pops one decoded request body off `RpcManager.messages`,
-reads it the way Core's `HTTPReq_JSONRPC` does (`src/httprpc.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and dispatches each request
-through `rpc.callbacks.callbacks` by method name. `rpc.jsonrpc` is
-where a request is parsed and where the answer's envelope and HTTP
-status come from.
+reads it the way Core's `HTTPReq_JSONRPC` and `ExecuteHTTPRPC` do
+(`src/httprpc.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
+dispatches each request through `rpc.callbacks.callbacks` by method
+name. `rpc.jsonrpc` is where a request is parsed and where the answer's
+envelope and HTTP status come from.
 
 Core runs each request on an HTTP worker thread of its own, so a method
 that waits for the tip, or searches nonces, holds that thread alone.
@@ -88,22 +88,22 @@ def _execute(
     Named parameters are mapped onto positions once the method is found,
     as `ExecuteCommand` maps them.
 
-    A call carrying more positional arguments than the method declares
-    is refused here, before the callback ever runs -- `IsValidNumArgs`'s
-    own `num_args <= m_args.size()` (`src/rpc/util.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), checked once for every
+    A call carrying more positional arguments than the method declares is
+    refused here, before the callback ever runs -- `IsValidNumArgs`'s own
+    `num_args <= m_args.size()` (`src/rpc/util.cpp`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), checked once for every
     method rather than by each callback's own body: `RPCMethod::
-    HandleRequest` makes this same check ahead of every declared
-    argument's own type check, and ahead of the handler running at all,
-    for every method alike, so there is exactly one place for it here
-    too. `arg_names[request.method]`'s own length is that method's
-    declared count, named positions and positional-only alike, which is
-    what `IsValidNumArgs` compares `num_args` against. The refusal
-    itself is `HelpResult{ToString()}`, caught by `ExecuteCommand`
-    (`src/rpc/server.cpp:874-887`, at bitcoin/bitcoin@b91d983f66) and
-    turned into `RPC_MISC_ERROR` carrying the method's own full help
-    text, matching `disconnect_node`'s own such check before this
-    function carried it for every method (btclib-org/btclib-node#1424).
+    HandleRequest` makes this same check ahead of every declared argument's
+    own type check, and ahead of the handler running at all, for every
+    method alike, so there is exactly one place for it here too.
+    `arg_names[request.method]`'s own length is that method's declared
+    count, named positions and positional-only alike, which is what
+    `IsValidNumArgs` compares `num_args` against. The refusal itself is
+    `HelpResult{ToString()}`, caught by `ExecuteCommand`
+    (`src/rpc/server.cpp:879-892`, same sha) and turned into
+    `RPC_MISC_ERROR` carrying the method's own full help text, matching
+    `disconnect_node`'s own such check before this function carried it for
+    every method (btclib-org/btclib-node#1424).
 
     A method that waits returns a generator, which this runs to its end,
     yielding as it yields (the module docstring).
@@ -119,7 +119,7 @@ def _execute(
     # the method already resolved to a command as `ExecuteCommand` is
     # only ever reached for one, to this function's own return or raise,
     # which is where that guard's destructor runs
-    # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # (`src/rpc/server.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     # tag) -- the argument-count refusal below included, `HandleRequest`
     # throwing its own `HelpResult` from inside that same guard's scope.
     # Removed by value, since a waiting request can end after one that
@@ -193,8 +193,8 @@ def _answer_one(node: Node, conn: RpcConnection, body: dict[str, Any]) -> Job:
     `stop` is true only where `reply` carries no error: a refused call
     -- too many arguments, an unknown named one, any `RpcError` `_exec`
     catches -- never reaches `stop`'s own handler, matching Core's
-    `stop()` (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), whose handler calls `shutdown_request` only once
+    `stop()` (`src/rpc/server.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), whose handler calls `shutdown_request` only once
     `RPCMethod::HandleRequest`'s own argument checks have passed
     (`src/rpc/util.cpp`, same tag): a throw from those checks propagates
     out of `ExecuteCommand` before the handler lambda is ever entered
@@ -208,9 +208,10 @@ def _answer_one(node: Node, conn: RpcConnection, body: dict[str, Any]) -> Job:
         reply = yield from _exec(node, conn, request, catch_errors=request.v2)
     except RpcError as error:
         # Core's `JSONErrorReply` `Assume`s this is never a 2.0 request,
-        # which a release build does not enforce, and a 2.0 request
-        # `parse` refuses reaches it: `bitcoind` v31.1.0 answers it in
-        # the 2.0 envelope with the legacy status
+        # which a release build does not enforce, and a 2.0 request `parse`
+        # refuses reaches it: `bitcoind`, the release
+        # `integration-bitcoind.yml` pins, answers it in the 2.0 envelope
+        # with the legacy status
         return (
             HttpReply(error_status(error.code), request.reply(error=error)),
             False,

@@ -5,7 +5,8 @@
 """`getmempoolancestors`, `getmempooldescendants` and `gettxspendingprevout`.
 
 The refusals and the order of an answer were measured against bitcoind
-v31.1.0 on regtest.
+v31.1.0 on regtest: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this
+node follows until ISS 2257.
 """
 
 import json
@@ -426,7 +427,7 @@ _OUT = {"txid": _ZERO, "vout": 1}
 def test_the_refusals_are_cores(
     params: list[Any], code: RPCErrorCode, message: str
 ) -> None:
-    """Each was measured against bitcoind v31.1.0: its code and its message."""
+    """Each was measured against bitcoind: its code and its message."""
     error = refusal(params)
     assert error.code == code
     assert error.message == message
@@ -483,7 +484,7 @@ def named(**params: Any) -> list[Any]:
 def test_named_options_are_gathered_into_the_options_object(
     params: dict[str, Any], positions: list[Any]
 ) -> None:
-    """Measured against bitcoind v31.1.0: the options fill the second place."""
+    """Measured against bitcoind: the options fill the second place."""
     assert named(**params) == positions
 
 

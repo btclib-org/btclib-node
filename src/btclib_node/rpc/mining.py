@@ -8,7 +8,7 @@ Core's `generatetoaddress`, `generateblock` and `getblocktemplate` are in
 `src/rpc/mining.cpp`, and `waitfornewblock`, `waitforblock` and
 `waitforblockheight` in `src/rpc/blockchain.cpp`, where each waits
 through the mining interface's `waitTipChanged`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Each handler has
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. Each handler has
 `rpc.callbacks`' signature and runs on `Node`'s thread, so it may build a
 block and hand it to `update_chain` without a lock (`ARCHITECTURE.md`).
 `btclib_node.mining` builds and checks the blocks.
@@ -78,13 +78,14 @@ _INT_RANGE = range(-(2**31), 2**31)
 
 _UINT64_MASK = 2**64 - 1
 
-# `MAX_BLOCK_SERIALIZED_SIZE` (`src/consensus/consensus.h`, at
-# bitcoin/bitcoin@9be056a8a7), which `btclib.block.limits` leaves out
+# `MAX_BLOCK_SERIALIZED_SIZE` (`src/consensus/consensus.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which `btclib.block.limits`
+# leaves out
 _MAX_BLOCK_SERIALIZED_SIZE = 4_000_000
 
 # A long poll's first look at the mempool, and every one after it, in
-# seconds (`getblocktemplate`, `src/rpc/mining.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# seconds (`getblocktemplate`, `src/rpc/mining.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _LONG_POLL_FIRST_CHECK = 60
 _LONG_POLL_CHECK = 10
 
@@ -728,7 +729,7 @@ def _wait_for_tip(
     and moves on within one pass is never seen, where Core's
     `WaitTipChanged` wakes on a condition variable and misses only a
     notification that arrives before the waiter runs
-    (`src/node/miner.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    (`src/node/miner.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 
     A timeout answers the tip. Where the node stops, which Core's
     `WaitTipChanged` reports as no tip, the answer is the tip

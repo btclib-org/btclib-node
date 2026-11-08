@@ -106,16 +106,16 @@ _SEND_CHUNK = 0x10000
 class RawJSON:
     """A JSON number written to the wire exactly as given, not from a `float`.
 
-    Core's own `UniValue(UniValue::VNUM, "<string>")` does the same:
-    the value is built from a string and written out verbatim, whatever
-    that string was, rather than round-tripped through a floating-point
-    type on the way out. `ValueFromAmount` (`src/core_io.cpp:283-293`,
-    at bitcoin/bitcoin@58a7869f86) is the caller this exists for --
-    `rpc.callbacks.get_mempool_info`'s own `mempoolminfee`, an exact
-    eight-decimal BTC amount a Python `float` cannot always carry:
-    `repr` fixes no decimal places and emits exponent notation
-    (`1e-06`) at a magnitude ordinary for a feerate, which Core's own
-    `%d.%08d` format never does.
+    Core's own `UniValue(UniValue::VNUM, "<string>")` does the same: the
+    value is built from a string and written out verbatim, whatever that
+    string was, rather than round-tripped through a floating-point type on
+    the way out. `ValueFromAmount` (`src/core_io.cpp:283-293`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is the caller this exists
+    for -- `rpc.callbacks.get_mempool_info`'s own `mempoolminfee`, an exact
+    eight-decimal BTC amount a Python `float` cannot always carry: `repr`
+    fixes no decimal places and emits exponent notation (`1e-06`) at a
+    magnitude ordinary for a feerate, which Core's own `%d.%08d` format
+    never does.
 
     `json.JSONEncoder.default` cannot return this directly -- its
     return value is re-encoded through the same machinery rather than
@@ -142,15 +142,16 @@ class RawJSON:
         self.text = text
 
 
-# Core's own `COIN` (`src/consensus/amount.h`, at bitcoin/bitcoin@9be056a8a7)
+# Core's own `COIN` (`src/consensus/amount.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 COIN = 100_000_000
 
 
 def btc_amount(sats: int) -> RawJSON:
     """Format a satoshi amount as Core's own exact BTC string.
 
-    Core's own `ValueFromAmount` (`src/core_io.cpp:285-296`,
-    at bitcoin/bitcoin@9be056a8a7): integer `amount / COIN` and
+    Core's own `ValueFromAmount` (`src/core_io.cpp:283-294`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): integer `amount / COIN` and
     `amount % COIN`, formatted `%d.%08d` -- exact at every magnitude,
     where a Python float division (`sats / 1e8`) serializes through
     `repr`, which fixes no decimal places and emits exponent notation
@@ -647,14 +648,14 @@ def parse_request_head(data: bytes) -> RequestHead:
     """Parse one request's header section off the front of `data`.
 
     The framing half of what `RpcConnection.run` does, pulled out so
-    `fuzz/fuzz_rpc_head.py` can drive it over raw octets the way Core's
-    own `http_request.cpp` fuzz target drives
-    `HTTPRequest::LoadControlData`/`LoadHeaders` over a raw
-    `http_buffer` (at bitcoin/bitcoin@ca7162cde5) -- scoped the same
-    way that target is: request-line and header-field framing and the
-    `Content-Length` drawn from them, never the JSON-RPC body those
-    bytes go on to carry, which is stdlib `json`'s own business (`run`
-    below) and not this node's.
+    `fuzz/fuzz_rpc_head.py` can drive it over raw octets the way Core's own
+    `http_request.cpp` fuzz target drives
+    `HTTPRequest::LoadControlData`/`LoadHeaders` over a raw `http_buffer`
+    (at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- scoped the same way
+    that target is: request-line and header-field framing and the
+    `Content-Length` drawn from them, never the JSON-RPC body those bytes go
+    on to carry, which is stdlib `json`'s own business (`run` below) and not
+    this node's.
 
     Read as `_HeadReader` reads a section. Raises
     `IncompleteRequestHeadError` where `data` holds no whole section and
@@ -783,22 +784,21 @@ class RpcConnection:
     def close(self) -> None:
         """Close `client`.
 
-        Cancelling whatever this connection is doing -- reading a
-        request, writing a reply -- is `RpcManager.stop`'s own job:
-        its `asyncio.all_tasks(self.loop)` sweep already reaches
-        whichever task is actually live for this connection, cancelled
-        and driven to completion before this is ever called, so this
-        method does not need a handle of its own to end one -- an
-        earlier version kept one anyway (`self.task`), set once at
-        accept and never again, so past a connection's first request
-        it named a long-finished `Future` and cancelled nothing
-        (issue #714). Core's own per-connection object,
+        Cancelling whatever this connection is doing -- reading a request,
+        writing a reply -- is `RpcManager.stop`'s own job: its
+        `asyncio.all_tasks(self.loop)` sweep already reaches whichever task
+        is actually live for this connection, cancelled and driven to
+        completion before this is ever called, so this method does not need
+        a handle of its own to end one -- an earlier version kept one anyway
+        (`self.task`), set once at accept and never again, so past a
+        connection's first request it named a long-finished `Future` and
+        cancelled nothing (issue #714). Core's own per-connection object,
         `HTTPRemoteClient`, carries no such handle either:
-        `HTTPServer::ClearConnectedClients` (`src/httpserver.cpp:1160-1167`,
-        at bitcoin/bitcoin@ca7162cde5), its own shutdown-time sweep,
-        drops whatever is left in `m_connected` the same unconditional
-        way, once its own socket-handling thread has already been
-        joined, rather than reaching into a live worker to end it.
+        `HTTPServer::ClearConnectedClients` (`src/httpserver.cpp:1213-1220`,
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), its own shutdown-time
+        sweep, drops whatever is left in `m_connected` the same
+        unconditional way, once its own socket-handling thread has already
+        been joined, rather than reaching into a live worker to end it.
         """
         self.client.close()
 
@@ -858,20 +858,21 @@ class RpcConnection:
     async def _recv(self) -> None:
         """Add what `client` sends to `self.buffer`; at its end, raise."""
         # 64 KB, matching Core's own HTTP server:
-        # `HTTPServer::SocketHandlerConnected` (`src/httpserver.cpp:904`,
-        # at bitcoin/bitcoin@b91d983f66) reads into `char buf[0x10000]`,
-        # "typical socket buffer is 8K-64K" by its own comment there --
-        # the hand-written raw-socket read loop that server uses in
-        # place of libevent's `evhttp` (`doc/release-notes-35182.md`).
-        # Not a second, independent reason to reuse this tree's own
-        # p2p `Connection.run`'s read size (`pchBuf`, `src/net.cpp`,
-        # same commit -- btclib-org/btclib-node#438): Core's own
-        # `SocketHandlerConnected` is "adapted from CConnman"
-        # (`net.cpp`'s own class, `pchBuf`'s home) by its own commit
-        # message (at bitcoin/bitcoin@80e1cfe5a2), and the comment
-        # above is copied verbatim between the two files -- one
-        # Core design decision, applied to both of its own read
-        # loops, cited here the same way it is on the p2p side.
+        # `HTTPRemoteClient::Receive` (`src/httpserver.cpp:933`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) reads into
+        # `char buf[0x10000]`, "typical socket buffer is 8K-64K" by its
+        # own comment there -- the hand-written raw-socket read loop
+        # that server uses in place of libevent's `evhttp`
+        # (`doc/release-notes.md`, same sha). Not a second, independent
+        # reason to reuse this tree's own p2p `Connection.run`'s read
+        # size (`pchBuf`, `src/net.cpp`, same sha --
+        # btclib-org/btclib-node#438): Core's raw-socket read loop is
+        # "adapted from CConnman" (`net.cpp`'s own class, `pchBuf`'s
+        # home) by the message of the commit that wrote it
+        # (bitcoin/bitcoin@80e1cfe5a2), and the comment above is copied
+        # verbatim between the two files -- one Core design decision,
+        # applied to both of its own read loops, cited here the same way
+        # it is on the p2p side.
         data = await self.loop.sock_recv(self.client, 65536)
         if not data:
             raise ConnectionError
@@ -965,8 +966,8 @@ class RpcConnection:
                 return
             # Core's `ThreadPool::Submit` reads `m_interrupt` and queues
             # under the one `m_mutex` `Interrupt` sets it under
-            # (`src/util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
-            # v31.1 tag), so a request is either queued before
+            # (`src/util/threadpool.h`, at bitcoin/bitcoin@f0de87f040, the
+            # v32.1 tag), so a request is either queued before
             # `RpcManager.interrupt` returns, and drained, or refused
             # here. Held through the credential check below as well,
             # which Core makes on a worker, after `Submit`.
@@ -1051,8 +1052,8 @@ class RpcConnection:
             # `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, thrown before
             # any request is read, so `JSONErrorReply` answers it
             # 500 in the legacy envelope with `"id":null`
-            # (`src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-            # v31.1 tag). `ValueError` and
+            # (`src/httprpc.cpp`, at bitcoin/bitcoin@f0de87f040, the
+            # v32.1 tag). `ValueError` and
             # not `json.JSONDecodeError` alone, since malformed
             # bytes `json.loads` cannot even decode as text raise
             # the stdlib's own `UnicodeDecodeError`, a `ValueError`
@@ -1063,7 +1064,7 @@ class RpcConnection:
             # keep-alive is
             # honoured here exactly as it is for a dispatched reply,
             # matching Core's own `HTTPReq_JSONRPC`
-            # (`src/httprpc.cpp:232-244`, at bitcoin/bitcoin@ca7162cde5),
+            # (`src/httprpc.cpp:232-244`, same sha),
             # which negotiates keep-alive on a parse error the same
             # way it does on any other reply -- so where it says to,
             # `async_send` calls back into `run` for a further
@@ -1271,11 +1272,12 @@ class RpcConnection:
     async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
         """Answer `refusal`, a request `-rpcwhitelist` refuses.
 
-        Measured against a real `bitcoind` v32.1.0: a 403 has no body,
-        and a request Core refuses before its whitelist check is its
-        JSON-RPC error object on one line, as `application/json`, framed
-        as `_frame` frames it. The `Content-Type` Core adds to a 403 is
-        not written, as `_send_unauthorized` does not write it.
+        Measured against a real `bitcoind`, the release
+        `integration-bitcoind.yml` pins: a 403 has no body, and a request
+        Core refuses before its whitelist check is its JSON-RPC error object
+        on one line, as `application/json`, framed as `_frame` frames it.
+        The `Content-Type` Core adds to a 403 is not written, as
+        `_send_unauthorized` does not write it.
         """
         fields: tuple[str, ...] = ()
         body = b""
@@ -1291,7 +1293,8 @@ class RpcConnection:
     async def _send_unauthorized(self, delay: float) -> None:
         """Answer 401 with Core's `WWW-Authenticate`, `delay` seconds from now.
 
-        Measured against a real `bitcoind` v32.1.0: `401 Unauthorized`,
+        Measured against a real `bitcoind`, the release
+        `integration-bitcoind.yml` pins: `401 Unauthorized`,
         `WWW-Authenticate: Basic realm="jsonrpc"` and no body, after 0.25
         seconds for a wrong credential and at once for none, framed as
         `_frame` frames it. Core's reply also carries a `Content-Type`,

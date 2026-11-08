@@ -4,11 +4,11 @@
 
 """`RpcAuth`, who may call the JSON-RPC listener, and which methods.
 
-Bitcoin Core's own scheme, read at bitcoin/bitcoin@9be056a8a7, the v31.1
-tag: `InitRPCAuthentication`,
-`RPCAuthorized`, `CheckUserAuthorized` and `HTTPReq_JSONRPC` in
-`src/httprpc.cpp`, `GetAuthCookieFile`, `GenerateAuthCookie` and
-`DeleteAuthCookie` in `src/rpc/request.cpp`. Every request carries HTTP
+Bitcoin Core's own scheme, read at bitcoin/bitcoin@f0de87f040, the v32.1
+tag: `InitRPCAuthentication`, `RPCAuthorized`, `CheckUserAuthorized`,
+`HTTPReq_JSONRPC` and `ExecuteHTTPRPC` in `src/httprpc.cpp`,
+`GetAuthCookieFile`, `GenerateAuthCookie` and `DeleteAuthCookie` in
+`src/rpc/request.cpp`. Every request carries HTTP
 Basic credentials, checked against a list of `RpcAuthEntry`, each a
 user, a salt and the HMAC-SHA256 of the password keyed by that salt.
 `-rpcauth=<user>:<salt>$<hmac>` adds one as written; `-rpcuser` and
@@ -235,7 +235,7 @@ def _batch_error(code: RPCErrorCode, message: str) -> Refusal:
 def _request_refusal(
     name: str, allowed: frozenset[str], request: Mapping[str, Any]
 ) -> Refusal | None:
-    """Return what `HTTPReq_JSONRPC` refuses a whitelisted user's request with.
+    """Return what `ExecuteHTTPRPC` refuses a whitelisted user's request with.
 
     `jreq.parse` first, and a 403 only for a request it accepts.
     """
@@ -252,7 +252,7 @@ def _request_refusal(
 def _batch_refusal(
     name: str, allowed: frozenset[str], batch: list[Any]
 ) -> Refusal | None:
-    """Return what `HTTPReq_JSONRPC` refuses a whitelisted user's batch with.
+    """Return what `ExecuteHTTPRPC` refuses a whitelisted user's batch with.
 
     Every entry is checked, in order, before any runs: an entry that is
     not an object is a 400, one whose method is not a string a 500, and
@@ -400,12 +400,13 @@ class RpcAuth:
         is removed first, since `O_CREAT`'s mode applies only to a file
         it creates.
 
-        Raises `OSError` with `GenerateAuthCookie`'s own warning where
-        the file cannot be opened, renamed or given `perms`, the
-        `.tmp` left where the rename fails, as Core leaves it. A path
-        holding a NUL byte is refused as one that cannot be opened, the
-        `ValueError` Python raises for it forcing a divergence:
-        `bitcoind` v31.1.0 writes to the path cut at that byte instead.
+        Raises `OSError` with `GenerateAuthCookie`'s own warning where the
+        file cannot be opened, renamed or given `perms`, the `.tmp` left
+        where the rename fails, as Core leaves it. A path holding a NUL byte
+        is refused as one that cannot be opened, the `ValueError` Python
+        raises for it forcing a divergence: `bitcoind`, the release
+        `integration-bitcoind.yml` pins, writes to the path cut at that byte
+        instead.
         """
         tmp = Path(f"{path}.tmp") if tmp is None else tmp
         password = secrets.token_hex(_COOKIE_SIZE)
@@ -481,7 +482,7 @@ class RpcAuth:
     def refusal(self, user: bytes, request: object) -> Refusal | None:
         """Return how `-rpcwhitelist` refuses `user`'s decoded `request`, if so.
 
-        `HTTPReq_JSONRPC`'s check, run once the body has parsed as JSON:
+        `ExecuteHTTPRPC`'s check, run once the body has parsed as JSON:
         a user with no whitelist may call every method, unless
         `-rpcwhitelistdefault` holds, which refuses it everything with a
         403. A whitelisted user's lone request is parsed first, answered

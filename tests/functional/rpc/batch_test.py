@@ -61,8 +61,8 @@ def test_a_one_member_batch_still_answers_as_an_array(rpc_node: Node) -> None:
     one-member batch's reply the same way it unwraps a lone request's,
     with nothing left by then to tell the two apart. Matches Core's own
     `ExecuteHTTPRPC`, which answers an array of any size as an array
-    (`HTTPReq_JSONRPC`, `src/httprpc.cpp:135-169`, at
-    bitcoin/bitcoin@ca7162cde5) -- never unwrapped for having only one
+    (`src/httprpc.cpp:135-169`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag) -- never unwrapped for having only one
     member (issue #653).
     """
     node = rpc_node

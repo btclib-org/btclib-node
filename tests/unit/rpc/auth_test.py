@@ -5,6 +5,8 @@
 """What `rpc.auth.RpcAuth` accepts, and the cookie it writes and deletes.
 
 What it lets an accepted user call is `whitelist_test.py`'s.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import base64
@@ -216,7 +218,7 @@ def test_the_cookie_is_mode_0600_on_posix(tmp_path: Path) -> None:
 def test_generate_cookie_raises_where_it_cannot_write(tmp_path: Path) -> None:
     """A data directory that is not there raises, and leaves no cookie.
 
-    With the warning `bitcoind` v31.1.0 logs for a `-rpccookiefile`
+    With the warning `bitcoind` logs for a `-rpccookiefile`
     whose directory is missing.
     """
     auth = RpcAuth()
@@ -243,7 +245,7 @@ def test_a_path_holding_a_nul_byte_cannot_be_opened(tmp_path: Path) -> None:
     os.name == "nt" or os.geteuid() == 0, reason="`/` writable by the user"
 )  # pragma: no cover -- skipped where / is writable
 def test_the_root_directory_cannot_be_a_cookie() -> None:
-    """`/` is written as `/.tmp`, which `bitcoind` v31.1.0 cannot open."""
+    """`/` is written as `/.tmp`, which `bitcoind` cannot open."""
     auth = RpcAuth()
     err_msg = r"^Unable to open cookie authentication file /\.tmp for writing$"
     with pytest.raises(OSError, match=err_msg):
@@ -254,7 +256,7 @@ def test_the_root_directory_cannot_be_a_cookie() -> None:
 def test_a_cookie_that_cannot_be_renamed_leaves_its_tmp(tmp_path: Path) -> None:
     """The chain directory as the cookie: Core's `.tmp` inside it, left there.
 
-    `-rpccookiefile=.` makes `bitcoind` v31.1.0 write `<chain dir>/..tmp`
+    `-rpccookiefile=.` makes `bitcoind` write `<chain dir>/..tmp`
     and refuse to rename it over the chain directory, logging both paths.
     """
     auth = RpcAuth()
@@ -332,7 +334,7 @@ def test_cookie_perms_refuses_anything_else(value: str) -> None:
 def test_rpccookieperms_sets_the_cookie_s_mode_on_posix(
     tmp_path: Path, value: str
 ) -> None:
-    """The mode `bitcoind` v31.1.0 leaves on its cookie for each value.
+    """The mode `bitcoind` leaves on its cookie for each value.
 
     Measured there: 0600, 0640 and 0644. Under a umask of 0o077, the one
     Core sets, so a mode wider than 0600 is the explicit one's.
@@ -388,7 +390,7 @@ def start(
 def test_a_byte_utf8_refuses_is_the_byte_a_client_sends() -> None:
     """ISS 1290: `rpcuser`/`rpcpassword` and `rpcauth` hold the file's bytes.
 
-    `bitcoind` v31.1.0 with `rpcuser=u<0xe9>` and `rpcpassword=p<0xe9>`
+    `bitcoind` with `rpcuser=u<0xe9>` and `rpcpassword=p<0xe9>`
     in `bitcoin.conf` accepts `u<0xe9>:p<0xe9>` and refuses the same
     user and password sent as UTF-8.
     """
@@ -426,7 +428,7 @@ def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
     """`InitRPCAuthentication`'s `LogWarning`, after the cookie it wrote.
 
     With no well-formed value at all, "Using rpcauth authentication."
-    still comes first, as `bitcoind` v31.1.0 logs it for `-rpcauth=bogus`.
+    still comes first, as `bitcoind` logs it for `-rpcauth=bogus`.
     """
     path = tmp_path / COOKIE_FILE
     auth = RpcAuth(cookie_file=path, rpcauth_invalid=True)
@@ -487,7 +489,7 @@ def test_rpcpassword_stops_the_cookie_and_is_warned_about(tmp_path: Path) -> Non
 
 
 def test_rpcpassword_s_warning_is_core_s_wording() -> None:
-    """`InitRPCAuthentication`'s own warning, as `bitcoind` v31.1.0 logs it."""
+    """`InitRPCAuthentication`'s own warning, as `bitcoind` logs it."""
     assert RPCPASSWORD_WARNING == (
         "The use of rpcuser/rpcpassword is less secure, because credentials are "
         "configured in plain text. It is recommended that locally-run instances "

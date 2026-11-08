@@ -5,7 +5,7 @@
 """`-rpcallowip`: which sources the JSON-RPC listener answers.
 
 Core's `InitHTTPAllowList` and `ClientAllowed` (`src/httpserver.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A value is read by
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). A value is read by
 `lookup_subnet`, the ban list's `LookupSubNet`, as `setban` reads one in
 Core; loopback is always allowed.
 """

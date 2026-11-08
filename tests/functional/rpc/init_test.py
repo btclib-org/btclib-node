@@ -156,7 +156,7 @@ def test_a_request_queued_when_shutdown_starts_is_still_answered(
 
     Core's `ThreadPool::Stop` runs every task already on its own work
     queue -- "Help draining queue", `while (ProcessTask()) {}`,
-    `src/util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/util/threadpool.h`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag -- before `StopHTTPServer` unlistens its sockets
     (`src/httpserver.cpp`, same tag), so a request already parsed when
     shutdown begins is executed and answered rather than left on a

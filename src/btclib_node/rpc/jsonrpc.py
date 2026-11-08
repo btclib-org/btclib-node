@@ -4,7 +4,7 @@
 
 """Core's JSON-RPC envelope: what a request is read as, and how it is answered.
 
-Read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: `JSONRPCRequest`
+Read at bitcoin/bitcoin@f0de87f040, the v32.1 tag: `JSONRPCRequest`
 and `JSONRPCReplyObj` in `src/rpc/request.h` and `src/rpc/request.cpp`,
 and `JSONErrorReply` in `src/httprpc.cpp`. Core answers a request by the
 version it names. A request with no `jsonrpc`, or with `"1.0"`, gets
@@ -45,8 +45,8 @@ class JsonObject(dict[str, Any]):
     `UniValue::read` keeps every pair in the order the text gives them,
     and `find_value`, what `JSONRPCRequest::parse` reads each field
     through, answers the first pair holding a key; `UniValue::write`
-    writes every pair back (`src/univalue/lib/`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). So a lookup here answers a key's first value, and
+    writes every pair back (`src/univalue/lib/`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). So a lookup here answers a key's first value, and
     `items`, which `json.dumps` writes an object from, answers every pair.
 
     Every other view -- iteration, `keys`, `values`, `len`, `repr` --
@@ -71,12 +71,12 @@ def get_real(value: float) -> float:
     """Return a JSON number as `UniValue::get_real` does.
 
     Raises the `RPC_MISC_ERROR` Core throws where no double holds it
-    (`src/univalue/lib/univalue_get.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `1e400`, or a whole number as large. `ParseDouble`
+    (`src/univalue/lib/univalue_get.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `1e400`, or a whole number as large. `ParseDouble`
     reads with `istream >> double`, which in libstdc++ fails on overflow
     only, so `1e-400` reads as 0. A macOS build of Core (libc++)
     refuses that too; this tree follows the Linux release, which links
-    libstdc++ statically (`contrib/guix/libexec/build.sh:234`). The
+    libstdc++ statically (`contrib/guix/libexec/build_linux.sh:61`). The
     caller has checked it is a number.
     """
     # a JSON integer arrives as an int, which the float annotation admits;
@@ -105,7 +105,7 @@ def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     with no low surrogate after it, and a UTF-8 encoding of one, as a
     one-character string. Core's `JSONUTF8StringFilter` refuses both
     (`src/univalue/include/univalue_utffilter.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `HTTPReq_JSONRPC`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and `HTTPReq_JSONRPC`
     answers the whole body as a parse error.
     """
     value = json.loads(body, object_pairs_hook=JsonObject, parse_constant=_no_constant)
@@ -252,7 +252,7 @@ def transform_named_arguments(
 ) -> list[Any]:
     """Map `params`' keys onto positions as `transformNamedArguments` does.
 
-    `src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `src/rpc/server.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     `arg_names` is the method's own, `a|b` two names for one position.
     `named_only` are the names of an `OBJ_NAMED_PARAMS` argument's own
     options: those given are gathered into one object, which fills that
@@ -264,11 +264,11 @@ def transform_named_arguments(
     read, so a key named twice is refused, as it is in Core; so is a
     position given both ways, and a key no position names.
 
-    Core names the first unknown key its `std::unordered_map` iterates
-    over, an order the C++ standard leaves to the library, so no fixed
-    order matches Core's: `bitcoind` v31.1.0 on macOS names the last of
-    them in the request's own order for some sets of keys and not for
-    others. The last is the one named here.
+    Core names the first unknown key its `std::unordered_map` iterates over,
+    an order the C++ standard leaves to the library, so no fixed order
+    matches Core's: `bitcoind`, the release `integration-bitcoind.yml` pins,
+    on macOS names the last of them in the request's own order for some sets
+    of keys and not for others. The last is the one named here.
     """
     args_in: dict[str, Any] = {}
     for key, value in params.items():

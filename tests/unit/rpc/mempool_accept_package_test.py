@@ -5,7 +5,9 @@
 """`testmempoolaccept` of several transactions, judged as one package.
 
 `tests/integration/testmempoolaccept_test.py` holds the answers equal to
-bitcoind v31.1's.
+bitcoind's.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from dataclasses import replace

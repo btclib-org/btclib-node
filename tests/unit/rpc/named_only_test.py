@@ -6,9 +6,11 @@
 
 Core makes the inner arguments of an `OBJ_NAMED_PARAMS` one options object
 at the position of the object itself (`src/rpc/server.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The expected values are what
-`bitcoind` v31.1.0 answers for `dumptxoutset`, whose `rollback` is one
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). The expected values are what
+`bitcoind` answers for `dumptxoutset`, whose `rollback` is one
 (`tests/integration/dumptxoutset_test.py` sends the same requests).
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from typing import Any

@@ -5,9 +5,11 @@
 """What `generatetoaddress`, `generateblock` and `getblocktemplate` answer.
 
 Called as `rpc.main` calls them, on a regtest node built and driven in
-this thread. What `bitcoind` v31.1.0 answers for the same call is the
-expected value wherever a test says so; the rest is what these handlers
-add where Core has no rule to copy.
+this thread. What `bitcoind` answers for the same call is the expected
+value wherever a test says so; the rest is what these handlers add where
+Core has no rule to copy.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import copy
@@ -67,7 +69,7 @@ SCRIPT = ScriptPubKey(anyone_can_spend(), "regtest")
 ADDRESS = SCRIPT.address
 SUBSIDY = 50 * 10**8
 
-# the p2wpkh script of this key, as `bitcoind` v31.1.0 derives it
+# the p2wpkh script of this key, as `bitcoind` derives it
 COMPRESSED_KEY = "03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd"
 P2WPKH = bytes.fromhex("00149a1c78a507689f6f54b847ad1cef1e614ee23f1e")
 P2PKH_KEY = (
@@ -223,7 +225,7 @@ def test_generatetoaddress_fills_each_block_from_the_mempool(funded: Node) -> No
 def test_generatetoaddress_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The error codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    """The error codes and messages are `bitcoind`'s, on regtest."""
     assert refusal(lambda: generate_to_address(node, CONN, params)) == (code, message)
     assert height(node) == 0
 
@@ -463,7 +465,7 @@ def coinbase_script_of(node: Node, output: str) -> bytes:
 def test_generateblock_derives_a_hardened_step_from_an_extended_private_key(
     node: Node,
 ) -> None:
-    """The script is the one `bitcoind` v31.1.0 derives for `pkh(tprv/0h)`."""
+    """The script is the one `bitcoind` derives for `pkh(tprv/0h)`."""
     assert coinbase_script_of(node, f"pkh({TPRV}/0h)") == bytes.fromhex(
         "76a9145c1bd648ed23aa5fd50ba52b2457c11e9e80a6a788ac"
     )
@@ -561,7 +563,7 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
 def test_generateblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's."""
+    """The codes and messages are `bitcoind`'s."""
     assert refusal(lambda: generate_block(node, CONN, params)) == (code, message)
     assert height(node) == 0
 
@@ -884,7 +886,7 @@ def proposal_refusal(node: Node, data: object) -> tuple[int, str]:
 
 
 def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's."""
+    """The codes and messages are `bitcoind`'s."""
     assert refusal(lambda: get_block_template(node, CONN, [{"mode": "proposal"}])) == (
         -3,
         "Missing data String key for proposal",
@@ -951,7 +953,7 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
 def test_getblocktemplate_refuses_what_core_refuses(
     node: Node, request_: dict[str, Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's."""
+    """The codes and messages are `bitcoind`'s."""
     assert refusal(lambda: finish_template(node, request_)) == (code, message)
 
 
@@ -967,7 +969,7 @@ def test_getblocktemplate_needs_its_argument_as_an_object(node: Node) -> None:
 
 
 def test_the_template_has_the_keys_of_core_s_in_its_order(funded: Node) -> None:
-    """The shape of `bitcoind` v31.1.0's regtest answer, two transactions."""
+    """The shape of `bitcoind`'s regtest answer, two transactions."""
     parent = spend(coinbase_txid(funded, 1), SUBSIDY - 1_000)
     child = spend(parent.id, SUBSIDY - 3_000)
     assert funded.mempool.add_tx(parent, 1_000)
@@ -1069,7 +1071,7 @@ def stub(
 def test_the_version_and_deployments_follow_the_period_boundaries(node: Node) -> None:
     """Regtest's `testdummy` is `STARTED`, `LOCKED_IN`, `ACTIVE`, a period each.
 
-    The versions and `vbavailable` are those of `bitcoind` v31.1.0 from
+    The versions and `vbavailable` are those of `bitcoind` from
     its regtest height 144, and the blocks mined carry the template's
     version.
     """
@@ -1372,7 +1374,7 @@ def test_a_long_poll_id_is_read_as_core_reads_it(
 def test_the_long_poll_counter_starts_at_zero_and_counts_each_block(
     node: Node,
 ) -> None:
-    """As `bitcoind` v31.1.0's after a restart: 0, then one per block."""
+    """As `bitcoind`'s after a restart: 0, then one per block."""
     assert template(node)["longpollid"] == tip(node).hex() + "0"
 
     generate_to_address(node, CONN, [3, ADDRESS])
@@ -1440,7 +1442,7 @@ def wrong_type(*positions: tuple[int, str, str]) -> str:
 def test_waitforblockheight_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    """The codes and messages are `bitcoind`'s, on regtest."""
     assert refusal(lambda: wait_for_block_height(node, CONN, params)) == (
         code,
         message,
@@ -1558,7 +1560,7 @@ def test_the_other_waits_are_served_as_core_names_them() -> None:
 def test_waitfornewblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    """The codes and messages are `bitcoind`'s, on regtest."""
     assert refusal(lambda: wait_for_new_block(node, CONN, params)) == (code, message)
 
 
@@ -1664,7 +1666,7 @@ def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None
 def test_waitforblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    """The codes and messages are `bitcoind`'s, on regtest."""
     assert refusal(lambda: wait_for_block(node, CONN, params)) == (code, message)
 
 

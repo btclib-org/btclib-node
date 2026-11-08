@@ -8,6 +8,8 @@ What answers a request is `handle_rpc`, which the node's loop calls and
 tests/unit/rpc/main_test.py covers. What is left is everything between
 the port and that queue -- binding it, accepting a client, and letting
 go of both -- and until now only a functional test reached any of it.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import asyncio
@@ -261,7 +263,7 @@ def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -
 def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, taken: str
 ) -> None:
-    """ISS 2152: `bitcoind` v32.1.0 binds the other loopback and starts.
+    """ISS 2152: `bitcoind` binds the other loopback and starts.
 
     Measured with the one address held by another process: it logs
     "Binding RPC on address 127.0.0.1:<port> failed: Unable to bind to
@@ -427,7 +429,7 @@ def test_a_host_that_is_no_address_is_not_looked_up(
 ) -> None:
     """ISS 2135: `Lookup(address, port, false)` reads a numeric address alone.
 
-    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and each
+    Measured on bitcoind with `-rpcallowip=127.0.0.1` and each
     host as `-rpcbind`: it logs "Could not bind RPC on address <host>
     port <port>: Address lookup failed." and binds nothing there. Here
     the system's lookup answers every name with `127.0.0.1`, as a
@@ -459,7 +461,7 @@ def test_a_host_of_no_ip_network_is_warned_over(
 ) -> None:
     """ISS 2152: an onion name is looked up, its bind refused in Core's words.
 
-    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and the
+    Measured on bitcoind with `-rpcallowip=127.0.0.1` and the
     onion name as `-rpcbind`: "Binding RPC on address <onion>:<port>
     failed: Bind address family for <onion>:<port> not supported".
     """
@@ -518,7 +520,7 @@ def test_bind_and_listen_binds_an_ipv6_host_with_its_scope(
 def test_a_scoped_ipv6_host_binds_at_its_scope(a_manager: AManagerFactory) -> None:
     """ISS 2152: `fe80::1%<lo0's index>` binds on lo0, its scope kept.
 
-    Measured on bitcoind v32.1.0 on macOS: `-rpcbind=[fe80::1%1]
+    Measured on bitcoind on macOS: `-rpcbind=[fe80::1%1]
     -rpcallowip=fe80::/10` binds, and a client reaches it at
     `fe80::1%lo0`.
     """
@@ -570,7 +572,7 @@ def test_bind_warns_as_cores_init_http_server(
 ) -> None:
     """ISS 1211: `InitHTTPServer`'s warnings, and its "Binding RPC" line.
 
-    Measured on bitcoind v32.1.0: `-rpcbind=0.0.0.0` without
+    Measured on bitcoind: `-rpcbind=0.0.0.0` without
     `-rpcallowip` logs the first warning and binds loopback. The second
     is logged for an address naming every interface, before its bind,
     and the third for a name.
@@ -597,7 +599,7 @@ _ALLOW_ALONE = (
 def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: measured on bitcoind v31.1.0, which binds both loopbacks."""
+    """ISS 1268: measured on bitcoind, which binds both loopbacks."""
     manager = a_manager(get_random_port(), rpcallowip=("10.0.0.0/8",))
     warnings: list[tuple[object, ...]] = []
     debugs: list[tuple[object, ...]] = []
@@ -620,12 +622,12 @@ def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
 def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: `HTTPBindAddresses`'s other branch, one socket an endpoint.
+    """ISS 1268: `GetBindAddresses`'s other branch, one socket an endpoint.
 
-    That function is Core's at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag. Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1
-    -rpcallowip=127.0.0.1` listens on `127.0.0.1` at `-rpcport`, and a
-    port given overrides it.
+    That function is Core's (`src/httpserver.cpp:208-239`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Measured on bitcoind:
+    `-rpcbind=127.0.0.1 -rpcallowip=127.0.0.1` listens on `127.0.0.1` at
+    `-rpcport`, and a port given overrides it.
     """
     port, other = get_random_port(), get_random_port()
     manager = a_manager(
@@ -650,7 +652,7 @@ def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
 ) -> None:
     """ISS 2152: `a..b` is no address, and `127.0.0.1` still listens.
 
-    Measured on bitcoind v32.1.0 with `-rpcbind=a..b -rpcbind=127.0.0.1
+    Measured on bitcoind with `-rpcbind=a..b -rpcbind=127.0.0.1
     -rpcallowip=127.0.0.1`: it starts, and warns "Could not bind RPC on
     address a..b port <port>: Address lookup failed.".
     """
@@ -692,7 +694,7 @@ def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
 ) -> None:
     """ISS 1268: refused before any bind, as `InitHTTPServer` refuses it.
 
-    Measured on bitcoind v31.1.0: `-rpcallowip=bogus` exits 1 with the
+    Measured on bitcoind: `-rpcallowip=bogus` exits 1 with the
     message naming the value, and then "Unable to start HTTP server". The
     first is `init_error`, which `Node` shows ahead of the second.
     """
@@ -771,8 +773,8 @@ def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
     deterministic by driving the loop by hand rather than racing it from
     a second thread the way the real listener would. Core waits for this
     reply, `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, as for any other
-    (`StopHTTPServer`, `src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it arrives whole,
+    (`StopHTTPServer`, `src/httpserver.cpp:1417-1450`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so it arrives whole,
     and the connection it kept alive is closed after it
     (btclib-org/btclib-node#1539).
     """
@@ -1456,9 +1458,10 @@ def test_stop_finishes_a_reply_written_once_shutdown_began(
     still waiting on the socket when `stop` sweeps the loop's tasks:
     this side reads only once the manager's own thread has ended, when
     `stop`'s sweep is the only thing left driving the loop. Core's
-    `StopHTTPServer` waits for every reply it tracks to be sent before
-    it frees the event base (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request asked for
+    `StopHTTPServer` runs every queued request and then keeps each
+    connection with a reply still unsent until it is sent, for up to 30
+    seconds (`src/httpserver.cpp:1417-1450` and `:1165-1211`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The request asked for
     keep-alive, and the connection still closes after the reply, with no
     `Connection: close` (`RpcConnection._shutting_down`).
     """
@@ -1612,7 +1615,7 @@ def test_manager_takes_idle_timeout_from_rpcservertimeout(
 
     ISS 2152: a value of 0 or less arms none, and past `INT64_MAX`
     nanoseconds the value wraps as Core's does, below 0 at `9223372037`
-    and back above it at `18446744074`. Measured on bitcoind v32.1.0:
+    and back above it at `18446744074`. Measured on bitcoind:
     with `-rpcservertimeout=1` an idle connection is closed within two
     seconds, and with `0` or `-5` it is still open after 6.
     """
@@ -1691,10 +1694,11 @@ def test_stop_finishes_a_401_asleep_in_its_failed_attempt_delay(
 
     A wrong credential is answered 401 after `FAILED_ATTEMPT_DELAY`, by
     a task `RpcConnection.run` schedules itself, never through
-    `handle_rpc`. Core registers the request with `g_requests` before
-    its first check and answers it on a worker `ThreadPool::Stop` joins,
-    so `StopHTTPServer` waits for that 401 too (`src/httpserver.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The manager's loop is
+    `handle_rpc`. Core answers it on a worker of the pool
+    `StopHTTPServer` drains with `ThreadPool::Stop`, so it waits for
+    that 401 too (`src/httpserver.cpp:1417-1450` and
+    `src/util/threadpool.h:128-153`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). The manager's loop is
     held from the 401's first step until `stop` joins it, so the 401 is
     still unwritten when `stop` sweeps, however long the hold lasted.
     """
@@ -2333,7 +2337,7 @@ def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
 def test_an_rpccookiefile_core_cannot_write_stops_the_listener(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """Refused on `_listen`'s own path, as `bitcoind` v31.1.0 refuses to start.
+    """Refused on `_listen`'s own path, as `bitcoind` refuses to start.
 
     `/` cannot be opened as `/.tmp`, and the chain directory named as
     `.` is written to `<chain dir>/..tmp` and cannot be renamed over.

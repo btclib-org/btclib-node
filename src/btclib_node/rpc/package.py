@@ -5,7 +5,7 @@
 """`submitpackage`: a child and its parents, or one transaction, to the mempool.
 
 Core's `submitpackage` (`src/rpc/mempool.cpp`) over `AcceptPackage`
-(`src/validation.cpp`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. The
+(`src/validation.cpp`), at bitcoin/bitcoin@f0de87f040, the v32.1 tag. The
 handler has `rpc.callbacks`' signature and runs on `Node`'s thread, so it
 checks scripts and changes the mempool without a lock (`ARCHITECTURE.md`).
 `rpc.callbacks` imports this module, so its helpers are imported inside the
@@ -109,7 +109,7 @@ def submit_package(
     announces it for `submitpackage`. None is marked unbroadcast: Core
     holds each in the mempool already when it calls `BroadcastTransaction`,
     which marks only what it adds itself (`src/node/transaction.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 
     `replaced-transactions` are the txids each transaction taken
     replaced, by their internal bytes, as Core's `std::set<Txid>` orders
@@ -249,7 +249,7 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
     """Take what passes of `call.txs`, and return the message and each outcome.
 
     Core's `AcceptPackage` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A package
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A package
     `package_refusal` refuses answers each transaction "package-not-validated".
     Otherwise each is taken or refused alone, in turn: one the mempool holds, or
     holds under another witness, is answered as such, and one that is taken
