@@ -435,9 +435,6 @@ def _inactivity_checks_due(conn: Connection, now: float) -> bool:
     closed. So a peer connected under `_PEER_CONNECT_TIMEOUT` ago, whose
     `last_receive` was stamped under a mock time set back, is not judged on
     it the moment the clock is released. An older peer is, as in Core.
-
-    `connected_time` is in whole seconds, rounded down, where Core's
-    `m_connected` is not, so the timeout can end up to a second early.
     """
     return conn.connected_time + _PEER_CONNECT_TIMEOUT < now
 

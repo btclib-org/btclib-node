@@ -37,6 +37,7 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import DEFAULT_MAXSENDBUFFER, NodeStatus, P2pConnStatus
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
+from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
     advance_getdata,
@@ -613,6 +614,23 @@ def test_a_connection_is_stamped_connected_at_the_mock_time() -> None:
     connection, _ = a_connection()
     with connection.client:
         assert connection.connected_time == 1_296_688_602
+
+
+def test_the_connect_timeout_counts_from_the_fraction_of_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2252: Core's `m_connected` is a `NodeClock` time point.
+
+    So `_inactivity_checks_due` (`p2p/manager.py`) counts the timeout from
+    the moment of connecting, not from the whole second before it.
+    """
+    connected = 1_296_688_602.5
+    monkeypatch.setattr(clock_module, "now", lambda: connected)
+    connection, _ = a_connection()
+    with connection.client:
+        due = connected + manager_module._PEER_CONNECT_TIMEOUT
+        assert not manager_module._inactivity_checks_due(connection, due - 0.25)
+        assert manager_module._inactivity_checks_due(connection, due + 0.25)
 
 
 def test_a_connection_whose_socket_is_gone_says_so() -> None:
