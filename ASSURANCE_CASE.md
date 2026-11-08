@@ -406,9 +406,11 @@ and what counters each.
   never by the value (`settings_file.py`'s `read_settings`). A malformed
   RPC header field is named by its index and its length
   (`rpc/connection.py`'s `_FieldReader`), and the reprs of `RequestHead`
-  and `_Settings` leave out the fields that hold a credential. The callers
-  under `tests/unit/` (`git grep assert_secret_free -- tests/unit`) are the
-  tests of those refusals, warnings and log lines.
+  and `_Settings` leave out the fields that hold a credential. A
+  `scantxoutset` refusal of a function Core does not read quotes none of
+  its arguments (`rpc/utxo_set.py`'s `_parse`). The callers under
+  `tests/unit/` (`git grep assert_secret_free -- tests/unit`) are the tests
+  of those refusals, warnings and log lines.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
