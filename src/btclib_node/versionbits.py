@@ -6,12 +6,13 @@
 
 `UnknownActivations` is `VersionBitsCache::CheckUnknownActivations` with
 its `WarningBitsConditionChecker` (`src/versionbits.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-ISS 2278): a BIP9 state machine per version bit, counting over each
-period the blocks that signal a bit no deployment in `_DEPLOYMENTS`
+bitcoin/bitcoin@f0de87f040, the v32.1 tag, from bitcoin/bitcoin#34779 and
+bitcoin/bitcoin@74f71c5054): a BIP9 state machine per version bit, counting
+over each period the blocks that signal a bit no deployment in `_DEPLOYMENTS`
 uses, a bit being unknown from `Chain.min_bip9_warning_height` on. It
 reaches `LOCKED_IN` and then `ACTIVE` as any deployment does, with the
-same threshold and period.
+same threshold and period. Bits 5 to 28 are reserved nonce space under
+BIP 323, so only bits 0 to 4 are checked.
 
 `check_unknown_activations` is what `main._after_tip_change` calls out
 of initial block download, where `Chainstate::UpdateTip`
@@ -21,7 +22,7 @@ warning, which runs `-alertnotify` the first time, and one that is
 
 `UnknownActivations.status` is `ComputeBlockVersion` and `GBTStatus`
 (same file and sha): the version a block on the tip carries, and the
-deployments `getblocktemplate` reports. Core's two deployments are both
+deployments `getblocktemplate` reports. Core's deployment is
 `gbt_optional_rule`, so a client's `rules` change neither the version nor
 the answer.
 
@@ -55,7 +56,8 @@ __all__ = ["DeploymentStatus", "UnknownActivations", "check_unknown_activations"
 # `VERSIONBITS_NUM_BITS` (`src/versionbits.h`, same sha)
 _TOP_BITS = 0x20000000
 _TOP_MASK = 0xE0000000
-_NUM_BITS = 29
+_NUM_BITS = 5
+_TOTAL_BITS = 29
 
 # `std::numeric_limits<int64_t>::max()`, the end time of a deployment
 # that never times out, and of the warning checker
@@ -88,15 +90,12 @@ class _Deployment:
     min_activation_height: int
 
 
-# `src/kernel/chainparams.cpp`, same sha, `DEPLOYMENT_TAPROOT` on main
-# (`:111-113`) and on testnet (`:242-244`), `DEPLOYMENT_TESTDUMMY` on
-# regtest (`:582-585`). Signet and testnet4 carry neither one alone: their
-# `DEPLOYMENT_TAPROOT` is always active and `DEPLOYMENT_TESTDUMMY` never.
-_TAPROOT_BIT = 2
+# `src/kernel/chainparams.cpp`, same sha, `DEPLOYMENT_TESTDUMMY` on
+# regtest (`:554-558`). Mainnet, testnet, signet and testnet4 carry no
+# deployments in `vDeployments` Core still counts signals for: taproot
+# was dropped at bitcoin/bitcoin@74f71c5054.
 _TESTDUMMY_BIT = 28
 _DEPLOYMENTS: Mapping[str, tuple[_Deployment, ...]] = {
-    "mainnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 709632),),
-    "testnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 0),),
     "regtest": (_Deployment("testdummy", _TESTDUMMY_BIT, 0, _NO_TIMEOUT, 0),),
 }
 
@@ -279,7 +278,7 @@ class UnknownActivations:
             )
             if state in {_State.STARTED, _State.LOCKED_IN}
         }
-        counts = [0] * _NUM_BITS
+        counts = [0] * _TOTAL_BITS
         warning_counts = [0] * _NUM_BITS
         if end >= self._min_height or known:
             for height in range(previous_end + 1, end + 1):
@@ -291,7 +290,11 @@ class UnknownActivations:
                     low = signals & -signals
                     bit = low.bit_length() - 1
                     counts[bit] += 1
-                    if height >= self._min_height and bit not in known:
+                    if (
+                        height >= self._min_height
+                        and bit < _NUM_BITS
+                        and bit not in known
+                    ):
                         warning_counts[bit] += 1
                     signals ^= low
         return _Boundary(
@@ -314,8 +317,8 @@ def check_unknown_activations(node: Node, blocks: int) -> None:
     """Warn of each unknown bit after each of the last `blocks` blocks.
 
     `Chainstate::UpdateTip`'s own loop (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-    ISS 2278), run for each block a commit connected, as `ConnectTip` does.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), run for each block a commit
+    connected, as `ConnectTip` does.
     A bit that is `ACTIVE` sets the warning, `node.warnings.set_warning`'s
     dedup running `-alertnotify` once, as `KernelNotifications::warningSet`
     does. One that is `LOCKED_IN` goes to the log at info level, where Core

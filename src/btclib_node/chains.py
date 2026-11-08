@@ -235,8 +235,9 @@ class Main(Chain):
         self.fixed_seeds = CHAINPARAMS_SEED_MAIN
         # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 100000
-        # src/kernel/chainparams.cpp:95, at bitcoin/bitcoin@9be056a8a7
-        self.min_bip9_warning_height = 483840
+        # src/kernel/chainparams.cpp:120, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
+        self.min_bip9_warning_height = 711648
 
 
 @dataclass
@@ -259,8 +260,9 @@ class TestNet(Chain):
         self.fixed_seeds = CHAINPARAMS_SEED_TEST
         # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:226, at bitcoin/bitcoin@9be056a8a7
-        self.min_bip9_warning_height = 836640
+        # src/kernel/chainparams.cpp:229, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
+        self.min_bip9_warning_height = 2013984
 
 
 @dataclass
@@ -285,7 +287,8 @@ class SigNet(Chain):
         self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
         # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:490, at bitcoin/bitcoin@9be056a8a7
+        # src/kernel/chainparams.cpp:474, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.min_bip9_warning_height = 0
 
 
@@ -317,7 +320,8 @@ class RegTest(Chain):
         # `-fastprune`, Core's own knob for a lower regtest value in its
         # test suite, so 1000 is the one value that applies here
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:574, at bitcoin/bitcoin@9be056a8a7
+        # src/kernel/chainparams.cpp:550, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.min_bip9_warning_height = 0
 
 
@@ -346,5 +350,6 @@ class TestNet4(Chain):
         self.fixed_seeds = CHAINPARAMS_SEED_TESTNET4
         # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:333, at bitcoin/bitcoin@9be056a8a7
+        # src/kernel/chainparams.cpp:328, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.min_bip9_warning_height = 0

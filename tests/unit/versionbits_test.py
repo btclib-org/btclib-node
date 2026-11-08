@@ -31,7 +31,7 @@ _PERIOD = 144
 _THRESHOLD = 108
 _TOP = 0x20000000
 # a bit no deployment uses, the one `feature_versionbits_warning.py` picks
-_UNKNOWN = 27
+_UNKNOWN = 3
 _TESTDUMMY = 28
 _START = datetime.fromtimestamp(1_700_000_000, UTC)
 
@@ -118,17 +118,33 @@ def test_a_block_without_the_top_bits_signals_nothing() -> None:
     assert check(versions) == []
 
 
-def test_a_bit_a_started_deployment_uses_is_not_unknown() -> None:
-    """`ComputeBlockVersion` sets `TESTDUMMY`'s bit while it is started.
+def test_a_bit_a_started_deployment_uses_is_not_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ComputeBlockVersion` sets a deployment's bit while it is started.
 
-    Regtest's `DEPLOYMENT_TESTDUMMY` is bit 28, `STARTED` from the first
-    boundary. Signalled through that period and the `LOCKED_IN` one, the
-    bit warns of nothing; once it is `ACTIVE` it is not set any more, and
-    a period that signals it locks in the warning.
+    A deployment on bit 3, `STARTED` from the first boundary. Signalled
+    through that period and the `LOCKED_IN` one, the bit warns of nothing;
+    once it is `ACTIVE` it is not set any more, and a period that signals
+    it locks in the warning.
     """
-    versions = periods(0, bit(_TESTDUMMY), bit(_TESTDUMMY), bit(_TESTDUMMY))
+    deployment = versionbits._Deployment(
+        "unknown", _UNKNOWN, 0, versionbits._NO_TIMEOUT, 0
+    )
+    monkeypatch.setitem(versionbits._DEPLOYMENTS, "regtest", (deployment,))
+    versions = periods(0, bit(_UNKNOWN), bit(_UNKNOWN), bit(_UNKNOWN))
     assert check(versions[: 3 * _PERIOD]) == []
-    assert check(versions) == [(_TESTDUMMY, False)]
+    assert check(versions) == [(_UNKNOWN, False)]
+
+
+@pytest.mark.parametrize("ignored_bit", [5, 27, 28])
+def test_signals_on_bits_five_to_twenty_eight_warn_of_nothing(
+    ignored_bit: int,
+) -> None:
+    """BIP 323: bits 5 to 28 are nonce space, so signals on them never warn."""
+    signalling = [bit(ignored_bit)] * _THRESHOLD + [_TOP] * (_PERIOD - _THRESHOLD)
+    versions = periods(0) + signalling + periods(0, 0)
+    assert check(versions) == []
 
 
 def test_no_block_below_the_warning_height_counts() -> None:
@@ -144,29 +160,34 @@ def test_no_block_below_the_warning_height_counts() -> None:
     assert check(versions[: 2 * _PERIOD], chain) == []
 
 
-def test_main_counts_taproot_s_bit_as_a_known_one() -> None:
-    """ISS 1475: `DEPLOYMENT_TAPROOT` is bit 2, signalled in 2021 on main.
+def test_taproot_is_no_longer_a_counted_deployment() -> None:
+    """Core v32.1 dropped taproot from vDeployments, bumping warning heights.
 
-    The same blocks on a chain with no such deployment warn: signet's is
-    always active, which is not `STARTED`.
+    Without a warning height (min_bip9_warning_height=0), signalling bit 2
+    warns on mainnet as an unknown bit. At mainnet's real warning height
+    (711648), it warns of nothing.
     """
-    # 2021-04-24, taproot's `nStartTime`, and the two periods mainnet
-    # signalled it through
     start = datetime.fromtimestamp(1619222400 + 100_000, UTC)
     versions = [_TOP] * 2016 + [bit(2)] * 2016 * 2 + [_TOP] * 2016 * 2
     active_chain, header_dict = a_chain(versions, start=start)
-    for name, length, expected in (
-        ("mainnet", 4032, []),
-        ("mainnet", 6048, []),
-        ("signet", 4032, [(2, False)]),
-    ):
-        chain = cast("Chain", SimpleNamespace(name=name, min_bip9_warning_height=0))
-        found = UnknownActivations(chain).check(active_chain[:length], header_dict)
-        assert found == expected, (name, length)
+    zero_height = cast(
+        "Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=0)
+    )
+    assert UnknownActivations(zero_height).check(
+        active_chain[:4032], header_dict
+    ) == [(2, False)]
+
+    real_height = cast(
+        "Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=711648)
+    )
+    assert (
+        UnknownActivations(real_height).check(active_chain[:4032], header_dict)
+        == []
+    )
 
 
 def test_taproot_is_active_where_core_has_it_always_active() -> None:
-    """`GBTStatus`: main's taproot is tracked, signet's is always active."""
+    """`GBTStatus`: main's taproot is not tracked, signet's is always active."""
     active_chain, header_dict = a_chain([_TOP] * 2016)
     found = {}
     for name in ("mainnet", "testnet", "signet", "testnet4", "regtest"):
@@ -174,8 +195,9 @@ def test_taproot_is_active_where_core_has_it_always_active() -> None:
         found[name] = UnknownActivations(chain).status(active_chain, header_dict)
 
     assert found["mainnet"].active == []
-    assert found["mainnet"].signalling == {"taproot": 2}
+    assert found["mainnet"].signalling == {}
     assert found["testnet"].active == []
+    assert found["testnet"].signalling == {}
     assert found["signet"].active == ["taproot"]
     assert found["testnet4"].active == ["taproot"]
     assert found["regtest"].active == ["taproot"]
