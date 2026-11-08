@@ -58,7 +58,7 @@ def test_no_id(rpc_node: Node) -> None:
 def test_invalid_method(rpc_node: Node) -> None:
     """An unknown method is answered Method not found, live.
 
-    404 for a legacy request and 200 for a 2.0 one, as `bitcoind` v31.1.0
+    404 for a legacy request and 200 for a 2.0 one, as `bitcoind`
     answers them (issue #1109).
     """
     node = rpc_node
@@ -104,7 +104,8 @@ def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
     that "fails to be recognized... as an Array with at least one
     value" -- but Core's own `ExecuteHTTPRPC` does not read it that way,
     answering an empty client-sent array with an empty array instead
-    (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5), and
+    (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), and
     CONTRIBUTING.md's Following Bitcoin Core section leaves no room for a
     convention of this tree's own on an axis Core's own behaviour
     already decides (issue #669).
@@ -219,7 +220,7 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
 def test_an_object_argument_is_named_an_object(rpc_node: Node) -> None:
     """`getblockhash` given an object is Core's type error, live (issue #1151).
 
-    Measured against a real `bitcoind` v31.1.0: -3, naming the object
+    Measured against a real `bitcoind`: -3, naming the object
     `object`, a key named twice in it or not.
     """
     node = rpc_node

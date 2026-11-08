@@ -134,12 +134,12 @@ def test_get_peer_info(tmp_path: Path) -> None:
 def test_addnode_onetry_dials_and_connects_the_other_node(tmp_path: Path) -> None:
     """`addnode "host:port" "onetry"`, live, is `connect_nodes`'s own dial.
 
-    `test_framework.py`'s own `connect_nodes` (`:568-594`, at
-    bitcoin/bitcoin@bb529657) calls exactly this shape -- an IP:port
-    literal, the string `"onetry"` -- to wire two nodes together, and
-    this is that call driven over a real RPC socket rather than through
-    `P2pManager.connect` directly the way `test_get_connection_count`
-    and `test_get_peer_info` above do.
+    `test_framework.py`'s own `connect_nodes` (`:568-594`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) calls exactly this shape
+    -- an IP:port literal, the string `"onetry"` -- to wire two nodes
+    together, and this is that call driven over a real RPC socket rather
+    than through `P2pManager.connect` directly the way
+    `test_get_connection_count` and `test_get_peer_info` above do.
     """
     with (
         node_context(tmp_path / "node1") as node1,

@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Tests for `btclib_node.rpc.allow`, Core's `-rpcallowip`."""
+"""Tests for `btclib_node.rpc.allow`, Core's `-rpcallowip`.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import os
 import re
@@ -31,7 +34,7 @@ _ATON = pytest.mark.skipif(os.name == "nt", reason="the resolver's own forms")
         ("2001:db8::1/64", "2001:db8::/64"),
         ("2001:db8::1/ffff:ffff::", "2001:db8::/32"),
         ("[::1]", "::1/128"),
-        # what `getaddrinfo` reads as an address, as bitcoind v31.1.0 does
+        # what `getaddrinfo` reads as an address, as bitcoind does
         # on macOS: a mask past 255 is not a prefix length and is read as
         # an address, `255.0.0.0` here. The platform's own resolver decides
         pytest.param("127.1", "127.0.0.1/32", marks=_ATON),
@@ -41,7 +44,7 @@ _ATON = pytest.mark.skipif(os.name == "nt", reason="the resolver's own forms")
         ("::ffff:1.2.3.4", "1.2.3.4/32"),
         ("::ffff:1.2.3.4/24", "1.2.3.0/24"),
         ("fd87:d87e:eb43::1", "::/128"),
-        # measured on bitcoind v31.1.0, which logs these subnets so:
+        # measured on bitcoind, which logs these subnets so:
         # `SetSpecial`'s names, and an IPv6 scope `CSubNet` writes
         (_ONION, _ONION),
         (f"[{_ONION}]", _ONION),
@@ -60,7 +63,7 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
 @pytest.mark.parametrize(
     "value",
     [
-        # refused by bitcoind v31.1.0, measured
+        # refused by bitcoind, measured
         "bogus",
         "1.2.3.4/33",
         "1.2.3.4/255.0.255.0",
@@ -81,7 +84,7 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
         "a/b/1.2.3.4",
         "fd6b:88c0:8724::1",
         "1.2.3.4\0",
-        # refused by bitcoind v31.1.0, measured: a Tor host takes no mask,
+        # refused by bitcoind, measured: a Tor host takes no mask,
         # and an IPv4 address no scope
         f"{_ONION}/32",
         f"{_ONION}/255.255.255.255",

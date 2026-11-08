@@ -4,17 +4,16 @@
 
 """Every served RPC's own Core help text, and `help` itself.
 
-`HELP_TEXT` is `RPCHelpMan::ToString`'s own literal answer for each
-method this node serves (`src/rpc/blockchain.cpp`, `src/rpc/net.cpp`,
-`src/rpc/mempool.cpp`, `src/rpc/mining.cpp`, `src/rpc/server.cpp`, at
-bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- read back from a regtest
-bitcoind v32.1.0's own `help <command>`, the way `disconnectnode`'s own
-help text already was before this module existed
+`HELP_TEXT` is `RPCMethod::ToString`'s own literal answer for each method
+this node serves (`src/rpc/blockchain.cpp`, `src/rpc/net.cpp`,
+`src/rpc/mempool.cpp`, `src/rpc/mining.cpp`, `src/rpc/server.cpp`,
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- read back from a regtest
+bitcoind's own `help <command>`, at that release, the way
+`disconnectnode`'s own help text already was before this module existed
 (btclib-org/btclib-node#1193). `rpc.main._execute` raises this same text
 under `RPC_MISC_ERROR` for a call outside its method's declared argument
 count -- `RPCMethod::HandleRequest`'s own `HelpResult`, caught by
-`ExecuteCommand` (`src/rpc/server.cpp:874-887`, at
-bitcoin/bitcoin@b91d983f66) -- and every
+`ExecuteCommand` (`src/rpc/server.cpp:879-892`, same sha) -- and every
 callback in `rpc.callbacks` raises it in place of its own former one-line
 usage string for a call short of a required argument or carrying a value
 `self.ToString()` refuses in Core, both being the identical
@@ -24,26 +23,24 @@ below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
 `stop`'s text names this node, as the comment above `_HELP_STOP` says.
-`estimatesmartfee`'s is written from v32.1's source by the rules of
-`RPCMethod::ToString`, and `fee_estimation_test.py` compares it with
+`estimatesmartfee`'s is written from the source at that sha by the rules
+of `RPCMethod::ToString`, and `fee_estimation_test.py` compares it with
 bitcoind's.
 
-`CATEGORY` is each command's own heading in Core's `help`'s bare
-listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), sorted the way that
-function sorts `vCommands`: by category, and by
-name within it. `help_rpc` groups this node's own served commands
-under those same headings and in that same order, the way Core's own
-bare listing would if run against a `bitcoind` serving only this
-node's own method table -- the entries `CATEGORY` marks `"hidden"` being
-this table's hidden ones, `category == "hidden"` is left out of that
-listing the same way Core's own bare listing leaves a `category ==
-"hidden"` entry out of its
-(`answer_help`'s own docstring is where that check is
-argued, `_BARE_LISTING`'s own comment where it is made real). A hidden
-command's own help still answers in full for `help <command>` named
-explicitly -- `HELP_TEXT` carries every served method alike, hidden or
-not, and only the bare listing's own construction reads `CATEGORY`.
+`CATEGORY` is each command's own heading in Core's `help`'s bare listing
+(`CRPCTable::help`, `src/rpc/server.cpp:77-125`, same sha), sorted the way
+that function sorts `vCommands`: by category, and by name within it.
+`help_rpc` groups this node's own served commands under those same
+headings and in that same order, the way Core's own bare listing would if
+run against a `bitcoind` serving only this node's own method table -- the
+entries `CATEGORY` marks `"hidden"` being this table's hidden ones,
+`category == "hidden"` is left out of that listing the same way Core's own
+bare listing leaves a `category == "hidden"` entry out of its
+(`answer_help`'s own docstring is where that check is argued,
+`_BARE_LISTING`'s own comment where it is made real). A hidden command's
+own help still answers in full for `help <command>` named explicitly --
+`HELP_TEXT` carries every served method alike, hidden or not, and only the
+bare listing's own construction reads `CATEGORY`.
 """
 
 from typing import Any
@@ -1237,8 +1234,8 @@ _HELP_HELP = (
 # Core's own `stop()` builds both lines from one `CLIENT_NAME` --
 # `static const std::string RESULT{CLIENT_NAME " stopping"}` and
 # `"Request a graceful shutdown of " CLIENT_NAME "."`
-# (`src/rpc/server.cpp:145-170`, `bitcoin/bitcoin@9be056a8a7`, the
-# v31.1 tag). A real bitcoind's own `help stop` therefore answers with
+# (`src/rpc/server.cpp:156-181`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag). A real bitcoind's own `help stop` therefore answers with
 # *its* `CLIENT_NAME`, "Bitcoin Core" -- copying that reading verbatim
 # here would describe a string this node's own `stop` never returns.
 # `callbacks.stop`'s own literal `"Btclib node stopping"` is what
@@ -2476,7 +2473,7 @@ CATEGORY: dict[str, str] = {
     # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`) and
     # `generatetoaddress` and `generateblock` (`src/rpc/mining.cpp`) and
     # `setmocktime` (`src/rpc/node.cpp`), at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag: no heading of its own
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag: no heading of its own
     # in the bare listing, `_BARE_LISTING`'s own construction excluding
     # this category rather than sorting it in alphabetically where
     # "hidden" would fall. `help addconnection` still answers its own
@@ -2500,14 +2497,14 @@ CATEGORY: dict[str, str] = {
 }
 
 # `CRPCTable::help`'s own sort key, `category + name`
-# (`src/rpc/server.cpp:78-79`, at bitcoin/bitcoin@9be056a8a7, the
-# v31.1 tag) -- category first, alphabetically, and
+# (`src/rpc/server.cpp:86-87`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag) -- category first, alphabetically, and
 # name within it -- rebuilt here from `CATEGORY` and `HELP_TEXT` rather
 # than written out by hand a second time, which is what would go stale
 # the day a served method's category changes and this list does not.
 # `category == "hidden"` is left out of the category set itself, the
 # same `continue` `CRPCTable::help`'s own loop makes on that exact
-# string for the bare listing (`src/rpc/server.cpp:87`, same sha, its
+# string for the bare listing (`src/rpc/server.cpp:95`, same sha, its
 # `strCommand == ""` arm) before it ever reaches the sort this line
 # reproduces.
 _BARE_LISTING = "\n\n".join(
@@ -2537,14 +2534,14 @@ def answer_help(params: list[Any]) -> str:
     construction (module level, below `CATEGORY`) drops that category
     from the set it sorts headings out of, the same `continue`
     `CRPCTable::help`'s own loop makes on `pcmd->category == "hidden"`
-    for its `strCommand == ""` arm (`src/rpc/server.cpp:87`, same tag).
+    for its `strCommand == ""` arm (`src/rpc/server.cpp:95`, same tag).
     With a command's name, that command's own untruncated help --
     `addconnection`, `invalidateblock` and `reconsiderblock` included,
     Core's own loop answering a named hidden
     command exactly as it answers any other, that same line's `||`
     never reached once `strMethod == strCommand` -- or, for a name
     nothing here serves, Core's own literal `"help: unknown command:
-    %s"` (`src/rpc/server.cpp:114`) -- a successful reply, not a
+    %s"` (`src/rpc/server.cpp:122`, same tag) -- a successful reply, not a
     refusal, matching Core answering it as `RPCResult::Type::STR`
     rather than raising. `rpc.callbacks.help_rpc` is the
     shared-signature wrapper `handle_rpc` actually dispatches to, this

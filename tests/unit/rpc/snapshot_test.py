@@ -5,8 +5,10 @@
 """What `dumptxoutset` answers, called as `rpc.main` calls it.
 
 On a regtest node built and driven in this thread. The refusals, and the
-shape of the answer, are what `bitcoind` v32.1.0 says for the same call
+shape of the answer, are what `bitcoind` says for the same call
 (`tests/integration/dumptxoutset_test.py` asks it, and compares the files).
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import contextlib

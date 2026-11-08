@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Tests for `btclib_node.rpc.help`: `HELP_TEXT`, `CATEGORY`, `answer_help`."""
+"""Tests for `btclib_node.rpc.help`: `HELP_TEXT`, `CATEGORY`, `answer_help`.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import re
 from typing import TYPE_CHECKING, cast
@@ -17,7 +20,7 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
 
-# The bare listing a real regtest bitcoind v32.1.0's own `help` answers,
+# The bare listing a real regtest bitcoind's own `help` answers,
 # cut down to exactly the commands this node serves, each line the first
 # of its `HELP_TEXT` entry -- reproduced here as the regression:
 # `_BARE_LISTING`'s own construction (`rpc.help`'s module level) is what
@@ -94,7 +97,7 @@ _EXPECTED_BARE_LISTING = (
 
 
 # `HELP_TEXT["disconnectnode"]` and `HELP_TEXT["addnode"]`, read back
-# from a real regtest bitcoind v32.1.0's own `help disconnectnode` and
+# from a real regtest bitcoind's own `help disconnectnode` and
 # `help addnode`, kept here as a literal independent of `HELP_TEXT`
 # itself: every other test in this module and in `callbacks_test.py`
 # compares a callback's own refusal against `HELP_TEXT[name]`, which
@@ -195,7 +198,7 @@ _GETRPCINFO_HELP = (
 def test_disconnectnode_addnode_and_getrpcinfo_help_match_a_real_bitcoind() -> None:
     """`HELP_TEXT`'s own content, not merely its agreement with itself.
 
-    Read back from a regtest bitcoind v32.1.0's own `help disconnectnode`,
+    Read back from a regtest bitcoind's own `help disconnectnode`,
     `help addnode` and `help getrpcinfo`, byte for byte (ISS 1486).
     """
     assert HELP_TEXT["disconnectnode"] == _DISCONNECTNODE_HELP
@@ -262,7 +265,8 @@ def test_a_known_command_answers_its_own_untruncated_help(name: str) -> None:
 
     `CRPCTable::help`'s own `strRet.substr(0, strRet.size()-1)` drops
     exactly the one trailing newline `help <command>` would otherwise
-    carry (`src/rpc/server.cpp:115`, at bitcoin/bitcoin@9be056a8a7).
+    carry (`src/rpc/server.cpp:123`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
     """
     assert answer_help([name]) == HELP_TEXT[name].rstrip("\n")
 
@@ -314,7 +318,9 @@ def test_mempool_help_lists_the_three_vsize_fields_in_core_s_order(
 ) -> None:
     """Each mempool RPC's help lists the sizes in Core's `RPCResult` order.
 
-    `MempoolEntryDescription` and `testmempoolaccept`'s result list, at
-    bitcoin/bitcoin@aef8a04966 (btclib-org/btclib-node#1757).
+    `MempoolEntryDescription` and `testmempoolaccept`'s result list
+    (`src/rpc/mempool.cpp:492-496` and `:346-349`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag;
+    btclib-org/btclib-node#1757).
     """
     assert re.findall(r'"(vsize\w*)" :', HELP_TEXT[command]) == order

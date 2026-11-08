@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Whom a real node's RPC listener answers, and what it lets them call."""
+"""Whom a real node's RPC listener answers, and what it lets them call.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import base64
 import json
@@ -186,7 +189,7 @@ def test_rpccookiefile_places_the_cookie_a_client_then_reads(tmp_path: Path) -> 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_rpccookieperms_widens_the_cookie_a_node_writes(tmp_path: Path) -> None:
-    """`-rpccookieperms=group` is mode 0640, as `bitcoind` v31.1.0 leaves it."""
+    """`-rpccookieperms=group` is mode 0640, as `bitcoind` leaves it."""
     node = regtest_node(tmp_path, rpccookieperms="group")
     node.start()
     try:
@@ -200,7 +203,7 @@ def test_rpccookieperms_widens_the_cookie_a_node_writes(tmp_path: Path) -> None:
 def test_an_rpccookiefile_through_a_missing_directory_still_starts(
     tmp_path: Path,
 ) -> None:
-    """`missing/../mycookie` is `mycookie`, as `bitcoind` v31.1.0 writes it."""
+    """`missing/../mycookie` is `mycookie`, as `bitcoind` writes it."""
     node = regtest_node(tmp_path, rpccookiefile="missing/../mycookie")
     node.start()
     try:

@@ -4,9 +4,9 @@
 
 """What `decode` refuses as JSON, and what `get_real` refuses as a double.
 
-Overflow and the constants are held to bitcoind v31.1.0 by
-`tests/integration/json_double_test.py`. Underflow follows Core's Linux
-release, as `get_real`'s docstring says why.
+Overflow and the constants are held to bitcoind, the release
+`integration-bitcoind.yml` pins, by `tests/integration/json_double_test.py`.
+Underflow follows Core's Linux release, as `get_real`'s docstring says why.
 """
 
 import pytest

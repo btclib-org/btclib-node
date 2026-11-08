@@ -6,8 +6,10 @@
 
 `Node.run` calls it without a guard of its own, so a request it cannot
 answer has to end the request rather than the node. The answers are
-`bitcoind` v31.1.0's, whose envelope and HTTP status follow the version
-a request names (`rpc.jsonrpc`).
+`bitcoind`'s, whose envelope and HTTP status follow the version a
+request names (`rpc.jsonrpc`).
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import threading
@@ -119,7 +121,7 @@ def test_active_rpc_commands_holds_the_call_only_while_it_runs() -> None:
     `ping`, a `time.monotonic()` start -- is there while `ping_all` runs,
     and gone once `handle_rpc` has returned, matching Core's own
     `RPCCommandExecution` living only for the length of `ExecuteCommand`
-    (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/rpc/server.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     active: list[tuple[str, float]] = []
     seen: list[list[tuple[str, float]]] = []
@@ -155,7 +157,7 @@ def test_a_legacy_request_without_an_id_is_answered_without_one() -> None:
 def test_a_legacy_error_is_an_http_error_status() -> None:
     """`JSONErrorReply`: 400 for an invalid request, 404 for an unknown method.
 
-    The three bodies ISS 1109 measured against `bitcoind` v31.1.0; the
+    The three bodies ISS 1109 measured against `bitcoind`; the
     third, a request Core's parse refuses, is not run.
     """
     ran: list[Any] = []
@@ -186,7 +188,7 @@ def test_a_2_0_request_the_parse_refuses_gets_the_legacy_status() -> None:
     """Core answers a 2.0 request its parse refuses through `JSONErrorReply`.
 
     The envelope is 2.0, the version having been read before the refusal,
-    and the status is the legacy one, as `bitcoind` v31.1.0 answers it.
+    and the status is the legacy one, as `bitcoind` answers it.
     """
     node, sent, _, _ = make_node({"jsonrpc": "2.0", "id": 1, "method": ["a"]})
     handle_rpc(node)
@@ -248,7 +250,7 @@ def test_a_batch_is_answered_200_whatever_its_members_versions() -> None:
 
     A member that is not an object is refused before its own `id` is
     read, so it carries the previous member's `id` and version, as
-    `bitcoind` v31.1.0 answers `[{"id":7,...},5,...]`.
+    `bitcoind` answers `[{"id":7,...},5,...]`.
     """
     node, sent, _, stopped = make_node(
         [LEGACY_PING, "garbage", {"id": "b", "method": "nosuch"}]
@@ -569,8 +571,8 @@ def test_more_positional_arguments_than_declared_is_refused_with_help(
 
     `ping` and `getbestblockhash` declare none; `stop` declares one,
     `wait`, hidden from its own help text (Core's own `RPCArgOptions
-    {.hidden=true}`, `src/rpc/server.cpp:155`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) but still counted;
+    {.hidden=true}`, `src/rpc/server.cpp:166`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) but still counted;
     `disconnectnode` declares two. Each method's own real callback is
     replaced with one that raises: reaching it would answer Internal
     Error rather than the expected help refusal, so the assertion

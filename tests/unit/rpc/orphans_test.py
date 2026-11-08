@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`getorphantxs`, in Core's three verbosities and its refusals."""
+"""`getorphantxs`, in Core's three verbosities and its refusals.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 from types import SimpleNamespace
 from typing import Any, cast
@@ -65,7 +68,7 @@ def test_verbosity_1_answers_an_object_each_and_2_adds_the_hex() -> None:
 
 @pytest.mark.parametrize("verbosity", [3, -1])
 def test_another_number_is_an_invalid_parameter(verbosity: int) -> None:
-    """Measured against bitcoind v31.1.0: -8 and the number named."""
+    """Measured against bitcoind: -8 and the number named."""
     with pytest.raises(RpcError) as raised:
         get_orphan_txs(a_node(), _CONN, [verbosity])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
@@ -74,7 +77,7 @@ def test_another_number_is_an_invalid_parameter(verbosity: int) -> None:
 
 @pytest.mark.parametrize("verbosity", [True, False])
 def test_a_bool_is_refused_where_getrawmempool_takes_it(*, verbosity: bool) -> None:
-    """Measured against bitcoind v31.1.0: -3 and Core's message."""
+    """Measured against bitcoind: -3 and Core's message."""
     with pytest.raises(RpcError) as raised:
         get_orphan_txs(a_node(), _CONN, [verbosity])
     assert raised.value.code == RPCErrorCode.TYPE_ERROR

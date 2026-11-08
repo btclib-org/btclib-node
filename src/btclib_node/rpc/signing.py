@@ -10,8 +10,8 @@
 `combinerawtransaction` are Core's `src/rpc/rawtransaction.cpp`, with
 `ParsePrevouts` and `SignTransaction` of `src/rpc/rawtransaction_util.cpp`;
 `btclib_node.signing` is the signing itself. All are read at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, except where a docstring says
-otherwise. Each handler has `rpc.callbacks`' signature.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. Each handler has
+`rpc.callbacks`' signature.
 """
 
 from __future__ import annotations
@@ -471,10 +471,8 @@ def _spent_outputs(node: Node, tx: Tx) -> list[TxOut]:
 def combine_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     """Answer `combinerawtransaction`: one transaction holding every signature.
 
-    Read at Core's `master`, bitcoin/bitcoin@6d86184a8bcc, not at v31.1: at
-    least two transactions are needed, and each must be the first one once
-    its signatures are stripped. The v31.1 tag does neither, and copies an
-    unrelated transaction's complete inputs onto the first one.
+    At least two transactions are needed, and each must be the first one
+    once its signatures are stripped.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["combinerawtransaction"])

@@ -6,9 +6,10 @@
 
 The coins are coinbases the node mines to the scripts under test, on a
 regtest node built and driven in this thread. The shapes, the refusals
-and the descriptors are what `bitcoind` v31.1.0 answers for the same
-call, except where a comment beside a row says otherwise
+and the descriptors are what `bitcoind` answers for the same call
 (`tests/integration/scantxoutset_test.py` asks it).
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from collections.abc import Generator
@@ -39,7 +40,7 @@ KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 KEY2 = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 X_ONLY = KEY[2:]
 X_ONLY2 = KEY2[2:]
-# the fingerprints `bitcoind` v31.1.0 infers for these keys
+# the fingerprints `bitcoind` infers for these keys
 FINGERPRINT = "751e76e8"
 FINGERPRINT2 = "06afd46b"
 # BIP32 test vector 1's master key on a test chain, and the xpub of its `/0h`
@@ -252,13 +253,12 @@ def test_a_key_s_origin_is_the_first_index_s(node: Node) -> None:
     """The providers of a range merge in order, the first entry winning."""
     ranged = f"wsh(multi(1,[aaaaaaaa/5]{TPUB}/0/*,[bbbbbbbb/7]{TPUB}/0/1))"
     mine_scripts(node, ranged, 0, 1)
-    # what bitcoind v31.1.0 answers
+    # what bitcoind answers
     assert descs(scan(node, {"desc": ranged, "range": [0, 1]})) == [
         f"wsh(multi(1,[aaaaaaaa/5/0/0]{CHILD_00},[bbbbbbbb/7/0/1]{CHILD_01}))#ry2d83lg",
         f"wsh(multi(1,[bbbbbbbb/7/0/1]{CHILD_01},[bbbbbbbb/7/0/1]{CHILD_01}))#5xzh3ty0",
     ]
-    # v32.1's answer; v31.1.0 puts one origin in front of the other,
-    # [bbbbbbbb/7/5/0/1] (btclib-org/bip32-descriptors#20)
+    # no origin is put in front of another (btclib-org/bip32-descriptors#20)
     assert descs(scan(node, {"desc": ranged, "range": [1, 1]})) == [
         f"wsh(multi(1,[bbbbbbbb/7/0/1]{CHILD_01},[bbbbbbbb/7/0/1]{CHILD_01}))#5xzh3ty0",
     ]
@@ -268,7 +268,7 @@ def test_a_key_s_origin_is_the_first_path_s(node: Node) -> None:
     """The providers of a multipath descriptor merge in its paths' order."""
     crossed = f"wsh(multi(1,[aaaaaaaa]{TPUB}/<0;1>/0,[bbbbbbbb]{TPUB}/<1;0>/0))"
     mine_scripts(node, crossed, 0)
-    # what bitcoind v31.1.0 answers
+    # what bitcoind answers
     assert descs(scan(node, crossed)) == [
         f"wsh(multi(1,[aaaaaaaa/0/0]{CHILD_00},[bbbbbbbb/1/0]{CHILD_10}))#pjvqr79u",
         f"wsh(multi(1,[bbbbbbbb/1/0]{CHILD_10},[aaaaaaaa/0/0]{CHILD_00}))#lenvaan3",
@@ -281,7 +281,7 @@ def test_a_script_is_inferred_by_the_first_scan_object(node: Node) -> None:
     without = f"wpkh({TPUB}/0/5)"
     mine_to(node, without)
     key = "0364a609ea30f2f9e137c3069b387321e6949baa097168e6dbfea48f13fbbe9f79"
-    # what bitcoind v31.1.0 answers
+    # what bitcoind answers
     assert descs(scan(node, with_origin, without)) == [
         f"wpkh([abcdef01/1h/2/0/5]{key})#qd0f3dek"
     ]
@@ -354,8 +354,9 @@ WIF = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN87JcbXMTcA"
 def test_a_hardened_step_needs_its_private_key(node: Node, text: str) -> None:
     """An xpub cannot take it.
 
-    Core's rpc/util.cpp:1370 quotes the descriptor, private keys included;
-    this tree does not, as Core's rpc/mining.cpp:229 does not.
+    Core's rpc/util.cpp:1376 quotes the descriptor, private keys included;
+    this tree does not, as Core's rpc/mining.cpp:231 does not (both at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     assert refusal(node, "start", [text]) == (
         -5,
@@ -492,7 +493,6 @@ def test_a_record_that_does_not_parse_fails_the_scan(
         (["status", 5], -3, '"Position 2 (scanobjects)": "JSON value of type number'),
         (["bogus"], -8, "Invalid action 'bogus'"),
         (["start"], -1, "scanobjects argument is required for the start action"),
-        # v32.1's answer; v31.1.0 answers -3, for a null that is not an array
         (["start", None], -1, "scanobjects argument is required for the start action"),
         (["start", [1]], -8, "Scan object needs to be either a string or an object"),
         (["start", [None]], -8, "Scan object needs to be either a string"),

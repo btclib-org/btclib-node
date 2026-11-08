@@ -4,8 +4,9 @@
 
 """`getmempoolcluster`, `getmempoolfeeratediagram` and the chunk fields.
 
-`tests/integration/cluster_test.py` holds the same answers to bitcoind
-v31.1.0's.
+`tests/integration/cluster_test.py` holds the same answers to bitcoind's.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from typing import Any

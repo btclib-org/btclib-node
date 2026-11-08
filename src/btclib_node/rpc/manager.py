@@ -5,29 +5,28 @@
 """`RpcManager`, the thread listening for JSON-RPC connections.
 
 Runs its own asyncio loop, with a `RpcConnection` per socket
-`_accept_loop` accepts from an allowed source -- one request or
-several, `connection.RpcConnection`'s own docstring has the keep-alive
-that decides which -- and queuing what
-each one parses onto `messages` for `Node`'s own thread to read in
-`rpc.main.handle_rpc`. `listening` is what a caller waits on rather
-than `is_alive()` alone, that flag being true before anything is bound.
-`auth` is who may call it, and which methods. `run` binds, then writes
-the cookie where one is written, then sets `listening`, so a client that
-waits on `listening` finds the cookie there; `stop` deletes it. That is
-the order of Core's `AppInitServers` (`src/init.cpp:748-761`, at
-bitcoin/bitcoin@9be056a8a7): `InitHTTPServer` binds before
-`StartHTTPRPC` writes the cookie, so a bind that fails leaves no cookie
-behind. `start_listener` is how `Node` learns that
-either step failed, which Core turns into an `InitError`.
+`_accept_loop` accepts from an allowed source -- one request or several,
+`connection.RpcConnection`'s own docstring has the keep-alive that
+decides which -- and queuing what each one parses onto `messages` for
+`Node`'s own thread to read in `rpc.main.handle_rpc`. `listening` is
+what a caller waits on rather than `is_alive()` alone, that flag being
+true before anything is bound. `auth` is who may call it, and which
+methods. `run` binds, then writes the cookie where one is written, then
+sets `listening`, so a client that waits on `listening` finds the cookie
+there; `stop` deletes it. That is the order of Core's `AppInitServers`
+(`src/init.cpp:778-791`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+`InitHTTPServer` binds before `StartHTTPRPC` writes the cookie, so a
+bind that fails leaves no cookie behind. `start_listener` is how `Node`
+learns that either step failed, which Core turns into an `InitError`.
 
 At most `max_connections` clients are held at once, Core's
 `-rpcmaxconnections` (`config.DEFAULT_MAX_HTTP_CONNECTIONS` has the
 default and the version that sets it). At the limit the accept loops
 stop accepting, so a new client waits in the kernel's queue, holding no
 descriptor of this process, until a held one leaves, as
-`HTTPServer::GenerateWaitSockets` leaves it (`src/httpserver.cpp`, at
-bitcoin/bitcoin@649bc0a645). `_accept_loop` has the one client per
-listening socket that can be accepted past it.
+`HTTPServer::GenerateWaitSockets` leaves it (`src/httpserver.cpp`,
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `_accept_loop` has the
+one client per listening socket that can be accepted past it.
 """
 
 import asyncio
@@ -69,18 +68,18 @@ __all__ = ["RpcManager"]
 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
 
-# The seconds `StopHTTPServer` waits, once its workers have stopped, for
-# its clients to disconnect (`src/httpserver.cpp`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+# The seconds `StopHTTPServer` waits, once its workers have stopped, for its
+# clients to disconnect (`src/httpserver.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _DISCONNECT_WAIT = 30.0
 
 
-# What `accept` fails with where no descriptor is left, for this process
-# or for the system. A connection the kernel leaves queued makes the next
-# accept fail at once too. Core logs each failure at debug and tries
-# again on its loop's next pass (`HTTPServer::AcceptConnection`,
-# `src/httpserver.cpp`, at bitcoin/bitcoin@649bc0a645), a pass that can
-# come at once while the listening socket stays readable.
+# What `accept` fails with where no descriptor is left, for this process or
+# for the system. A connection the kernel leaves queued makes the next
+# accept fail at once too. Core logs each failure at debug and tries again
+# on its loop's next pass (`HTTPServer::AcceptConnection`,
+# `src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), a
+# pass that can come at once while the listening socket stays readable.
 # `_ACCEPT_RETRY_DELAY` is the seconds `_accept_loop` waits instead, a
 # departure so that it does not spin this manager's loop
 # (btclib-org/btclib-node#1953).
@@ -193,14 +192,15 @@ def _idle_timeout(seconds: int) -> float | None:
     """Return the idle timeout `-rpcservertimeout=<seconds>` sets, in seconds.
 
     `None` for none: Core arms it only for a value above 0
-    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag). There Core compares the
+    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). There Core compares the
     idle time, a duration of its steady clock in nanoseconds, with the
-    option's seconds, so it converts them to nanoseconds as a signed
-    64-bit count, which wraps past `INT64_MAX`. This wraps the same way.
-    A result below 0 closes a connection before it reads anything:
-    bitcoind v32.1.0 keeps an idle connection open at `9223372036` and
-    closes it at once at `9223372037` (btclib-org/btclib-node#2152).
+    option's seconds, so it converts them to nanoseconds as a signed 64-bit
+    count, which wraps past `INT64_MAX`. This wraps the same way. A result
+    below 0 closes a connection before it reads anything: bitcoind, the
+    release `integration-bitcoind.yml` pins, keeps an idle connection open
+    at `9223372036` and closes it at once at `9223372037`
+    (btclib-org/btclib-node#2152).
     """
     if seconds <= 0:
         return None
@@ -275,7 +275,7 @@ class RpcManager(threading.Thread):
         # set by `InterruptHTTPServer`'s call to
         # `g_threadpool_http.Interrupt()` ahead of `StopHTTPServer`'s own
         # `Stop()` (`src/httpserver.cpp`, `src/util/threadpool.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A `threading.Event`
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A `threading.Event`
         # rather than a plain attribute for the same reason `listening`
         # and `ever_listened` are: it is written on `Node`'s thread and
         # read on this manager's own. `stop` also sets it,
@@ -291,7 +291,7 @@ class RpcManager(threading.Thread):
         # (btclib-org/btclib-node#1515).
         self.queue_lock = threading.Lock()
         # Core's `fRPCInWarmup` and `rpcWarmupStatus` (`src/rpc/server.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): while `in_warmup`
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): while `in_warmup`
         # holds, every request is answered `RPC_IN_WARMUP` with
         # `warmup_status`, on this manager's thread, since `Node`'s is
         # busy opening the stores. Written under `queue_lock`, which
@@ -819,7 +819,7 @@ class RpcManager(threading.Thread):
         """Stop accepting new RPC work, without waiting for this thread.
 
         Core's `InterruptHTTPServer` (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): swaps in the request
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): swaps in the request
         callback that answers `503` and calls `g_threadpool_http.Interrupt()`,
         both ahead of `StopHTTPServer`'s own `Stop()`, so a request already
         queued keeps draining in the background while a new one is refused

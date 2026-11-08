@@ -5,9 +5,12 @@
 """`btclib_node.rpc.fees`: `estimatesmartfee` and `estimaterawfee`.
 
 Every refusal and every empty answer here without `options` is the text
-a regtest bitcoind v31.1.0 answered for the same parameters. Those of
-`options` are read from v32.1's `src/rpc/fees.cpp`, and
-`tests/integration/fee_estimation_test.py` compares them with bitcoind's.
+a regtest bitcoind answered for the same parameters. Those of `options`
+are read from `src/rpc/fees.cpp`, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag, and `tests/integration/fee_estimation_test.py` compares them
+with bitcoind's.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import json

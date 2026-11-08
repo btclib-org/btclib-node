@@ -9,6 +9,8 @@ functional tests already put a real HTTP client in front of a real
 server, and what they cannot reach from there is the half of this file
 that only a malformed request provokes -- a header section that never
 ends, a Content-Length no client would send, a body that is not JSON.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import asyncio
@@ -478,8 +480,9 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
     """`Connection: close` is honoured: one reply, then the socket closes.
 
     The reply says so too, matching Core's own explicit `Connection:
-    close` header (`HTTPRequest::WriteReply`, at
-    bitcoin/bitcoin@ca7162cde5) rather than a close `http.client` -- and
+    close` header (`HTTPRequest::WriteReply`, `src/httpserver.cpp:592-598`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) rather than a close
+    `http.client` -- and
     so `bitcoin_core_rpc.SessionTransport` -- has no way to tell from a
     still-open connection otherwise (issue #640).
     """
@@ -803,7 +806,7 @@ def test_several_malformed_bodies_over_one_kept_alive_connection_are_each_answer
     call stack by one frame each, and what lets each answer honour
     keep-alive instead of always closing (issue #640), matching Core's
     own `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
-    bitcoin/bitcoin@ca7162cde5).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
 
     async def main() -> tuple[int, bool]:
@@ -1532,7 +1535,7 @@ def test_a_method_or_a_path_core_refuses_is_refused_before_the_credential(
 ) -> None:
     """A method or a path `bitcoind` refuses gets its reply, credential or not.
 
-    Each row is what a real `bitcoind` v32.1.0 answers, with no
+    Each row is what a real `bitcoind` answers, with no
     `Authorization` as with a good one, and it keeps an HTTP/1.1
     connection open afterwards; a method it does not name is refused on
     any path, the order `_dispatch_refusal`'s own docstring cites. `body` is
@@ -1588,7 +1591,7 @@ def test_a_refusal_closes_where_the_request_asked_as_a_401_does() -> None:
     ],
 )
 def test_a_request_line_core_refuses_is_400_and_closes(line: bytes) -> None:
-    """A request line `bitcoind` v32.1.0 answers 400 is answered 400 here too.
+    """A request line `bitcoind` answers 400 is answered 400 here too.
 
     Before the credential and before any body is read, and the
     connection closed: the first two rows are ISS 1086's.
@@ -1606,7 +1609,7 @@ def test_a_request_line_core_refuses_is_400_and_closes(line: bytes) -> None:
 def test_an_empty_target_is_404() -> None:
     """Two spaces in a line of three words leave the target empty, not refused.
 
-    `bitcoind` v32.1.0 answers `POST  HTTP/1.1` 404, and keeps the
+    `bitcoind` answers `POST  HTTP/1.1` 404, and keeps the
     connection.
     """
     reply, closed = conversation(b"POST  HTTP/1.1\r\n\r\n" + THEN_CLOSE)
@@ -1660,7 +1663,7 @@ def test_a_content_length_core_refuses_is_400_and_closes(value: bytes) -> None:
     """A `Content-Length` `ToIntegral<uint64_t>` cannot read is answered 400.
 
     No sign, digits only, and no more than a `uint64_t` holds. `-1` and
-    `abc` are ISS 1086's rows, and `bitcoind` v32.1.0 answers `-0`,
+    `abc` are ISS 1086's rows, and `bitcoind` answers `-0`,
     `+33`, an empty value and `18446744073709551616` 400 too.
     """
     for auth in (b"", RPCAUTH_LINE):
@@ -1705,7 +1708,7 @@ def test_a_content_length_core_reads_is_read(fields: bytes) -> None:
 def test_content_length_values_that_differ_are_400() -> None:
     """A second `Content-Length` must be the first's text, not its number.
 
-    `bitcoind` v32.1.0 answers `33` then `033` 400.
+    `bitcoind` answers `33` then `033` 400.
     """
     fields = b"Content-Length: %d\r\nContent-Length: 0%d\r\n" % (len(BODY), len(BODY))
     with pytest.raises(MalformedRequestHeadError, match="differ"):
@@ -1714,7 +1717,7 @@ def test_content_length_values_that_differ_are_400() -> None:
 
 @pytest.mark.parametrize("method", [b"HEAD", b"GET", b"FOO"])
 def test_a_content_length_is_read_whatever_the_method(method: bytes) -> None:
-    """`LoadBody` reads a body for every method, as `bitcoind` v32.1.0 does.
+    """`LoadBody` reads a body for every method, as `bitcoind` does.
 
     A malformed `Content-Length` on a `HEAD` is 400, and a body sent with
     a method Core does not name is read before its 405.
@@ -1973,7 +1976,7 @@ def test_an_answer_is_written_in_its_request_s_version(
     Issue #1127: before HTTP/1.1, no `Content-Length` unless the request
     asked `keep-alive`, and the connection closed unless it did. A
     `Connection` value is read with its white space trimmed. Each row is
-    what `bitcoind` v32.1.0 answers.
+    what `bitcoind` answers.
     """
     reply, closed = conversation(data)
     assert reply == expected
@@ -2100,7 +2103,7 @@ def test_one_request_past_a_worker_s_close_is_answered_as_core_does(
     """Past a worker's reply that closes, Core reads one buffered request.
 
     It answers it where its socket thread does, and not where a worker
-    would: each row is what `bitcoind` v32.1.0 answered
+    would: each row is what `bitcoind` answered
     (btclib-org/btclib-node#2101), but two. For `worker-get` the worker
     races the disconnect and sometimes answers; the row is the more
     common outcome. `queue-full-503` follows the order of Core's
@@ -2141,7 +2144,7 @@ def test_a_refusal_a_worker_writes_is_read_past_as_an_answer_is(
 
     The dispatcher's own 404 is written on Core's socket thread, which
     reads nothing more once it closes. Each row is what `bitcoind`
-    v32.1.0 answered (btclib-org/btclib-node#2101).
+    answered (btclib-org/btclib-node#2101).
     """
     reply, closed = conversation(data)
     assert reply == expected
@@ -2160,7 +2163,7 @@ def test_a_request_sent_before_a_worker_s_close_is_read_past(
 
     Core's socket thread receives while the worker runs, its buffer
     empty, so the request is there when the reply closes;
-    `bitcoind` v32.1.0 answers it (btclib-org/btclib-node#2101).
+    `bitcoind` answers it (btclib-org/btclib-node#2101).
     """
     reply, closed = conversation(CLOSING, later=later)
     assert reply == CLOSING_ANSWER + no_store(status)
@@ -2170,7 +2173,7 @@ def test_a_request_sent_before_a_worker_s_close_is_read_past(
 def test_a_get_with_the_work_queue_full_is_503() -> None:
     """Core checks the queue before its worker answers a `GET` 405.
 
-    `bitcoind` v32.1.0 run with `-rpcthreads=1 -rpcworkqueue=1`, its
+    `bitcoind` run with `-rpcthreads=1 -rpcworkqueue=1`, its
     queue full, answers a `GET /` 503 "Work queue depth exceeded"
     (`MaybeDispatchRequestToWorker`, `src/httpserver.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag).
@@ -2214,7 +2217,7 @@ def test_a_request_core_cannot_read_is_answered_in_the_version_it_read(
 ) -> None:
     """A 400 is in the request's version, HTTP/1.1 where Core did not read one.
 
-    `HTTPVersion`'s default, as `bitcoind` v32.1.0 answers
+    `HTTPVersion`'s default, as `bitcoind` answers
     `http-1.0-length-abc`, `http-1.5-length-abc` and `http-0.9`; it
     closes after each.
     """
@@ -2347,7 +2350,7 @@ def test_a_request_target_is_read_as_given(target: bytes) -> None:
     """`LoadControlData` reads any word as the target, and parses none.
 
     So each of these is a 404, the connection kept, as `bitcoind`
-    v32.1.0 answers `target-colon-first` and `target-bad-ipv6`.
+    answers `target-colon-first` and `target-bad-ipv6`.
     """
     assert parse_request_head(b"POST " + target + b" HTTP/1.1\r\n\r\n").target == target
     reply, closed = conversation(b"POST " + target + b" HTTP/1.1\r\n\r\n" + THEN_CLOSE)
@@ -2361,7 +2364,7 @@ def test_a_request_target_is_read_as_given(target: bytes) -> None:
 def test_an_absolute_form_target_is_a_404_kept_open(fields: bytes) -> None:
     """An `http` target with an authority is no proxy request to Core.
 
-    `bitcoind` v32.1.0 answers it 404 and keeps the connection, a
+    `bitcoind` answers it 404 and keeps the connection, a
     `Proxy-Connection` read as any other field.
     """
     data = b"POST http://127.0.0.1:1/ HTTP/1.1\r\n" + fields + b"\r\n" + THEN_CLOSE
@@ -2395,7 +2398,7 @@ def test_an_absolute_form_target_is_a_404_kept_open(fields: bytes) -> None:
 def test_a_connect_is_framed_as_any_other_method(data: bytes, expected: bytes) -> None:
     """A `CONNECT` is a method Core does not name: a 405, its body read first.
 
-    What `bitcoind` v32.1.0 answers `connect`, `connect-1.0` and
+    What `bitcoind` answers `connect`, `connect-1.0` and
     `connect-length-abc`.
     """
     reply, closed = conversation(data)
@@ -2447,7 +2450,7 @@ def test_a_line_ended_by_a_bare_line_feed_is_read(data: bytes) -> None:
 def test_only_one_carriage_return_is_dropped_before_a_line_feed() -> None:
     r"""`POST / HTTP/1.1\r\r\n` keeps a CR in its version, and is 400.
 
-    What `bitcoind` v32.1.0 answers.
+    What `bitcoind` answers.
     """
     with pytest.raises(MalformedRequestHeadError, match="version"):
         parse_request_head(b"POST / HTTP/1.1\r\r\n\r\n")
@@ -2464,7 +2467,7 @@ def test_the_empty_line_ends_the_section_whatever_follows() -> None:
 def test_the_answer_to_stop_closes_a_kept_alive_connection() -> None:
     """`send_and_wait` closes once its answer is written, saying nothing of it.
 
-    What `bitcoind` v32.1.0 does with its answer to `stop` on a
+    What `bitcoind` does with its answer to `stop` on a
     connection it keeps otherwise: no `Connection: close`, and the
     connection closed.
     """
@@ -2571,7 +2574,7 @@ def test_a_field_is_read_as_core_reads_it(
     ],
 )
 def test_a_field_core_refuses_is_400_and_closes(fields: bytes) -> None:
-    """A field `HTTPHeaders::Read` refuses is 400, as in `bitcoind` v32.1.0."""
+    """A field `HTTPHeaders::Read` refuses is 400, as in `bitcoind`."""
     with pytest.raises(MalformedRequestHeadError):
         head_with(fields)
     # refused on the last octet sent, so that nothing is left unread
@@ -2600,7 +2603,7 @@ def sized(total: int, eol: bytes = b"\r\n") -> bytes:
 def test_a_section_s_size_counts_its_lines_with_their_endings() -> None:
     """`MAX_HEADER_BYTES` of field lines, their endings and the section's end.
 
-    The request line is not counted. `bitcoind` v32.1.0 answers 400 past
+    The request line is not counted. `bitcoind` answers 400 past
     8192, `size-8193-many-lines` among them (issue #1972).
     """
     assert parse_request_head(sized(MAX_HEADER_BYTES)).error is None
@@ -2642,7 +2645,7 @@ def test_a_line_past_its_limit_is_refused_before_it_ends() -> None:
 def test_a_refused_section_is_answered_by_the_fields_read_before_it() -> None:
     """A `Connection: close` read before the refused line frames the 400.
 
-    As `bitcoind` v32.1.0 answers `continuation-length`.
+    As `bitcoind` answers `continuation-length`.
     """
     fields = b"Connection: close\r\nbad\r\n"
     head = connection_module._HeadReader(
@@ -2745,7 +2748,7 @@ def test_a_chunk_size_is_read_as_to_integral_reads_it(
     ids=["one", "two", "extension", "upper-case", "trailer"],
 )
 def test_a_chunked_body_is_decoded_and_dispatched(body: bytes) -> None:
-    """The chunks' data, joined, is the body, as `bitcoind` v32.1.0 reads it.
+    """The chunks' data, joined, is the body, as `bitcoind` reads it.
 
     Sent three octets at a time, so each line is read across reads.
     `outcome` is asserted on too (issue #1278): `drive`'s own
@@ -2764,7 +2767,7 @@ def test_a_trailer_s_fields_are_read_and_dropped() -> None:
     """A trailer carries neither the credential nor a `Connection: close`.
 
     `LoadBody` reads the trailer with `write=false`, so what Core looks
-    up is the request's own fields: `bitcoind` v32.1.0 answers
+    up is the request's own fields: `bitcoind` answers
     `trailer-credential` 401 and keeps a connection whose trailer asks
     to close.
     """
@@ -2816,7 +2819,7 @@ def test_a_chunked_request_on_a_kept_alive_connection_leaves_the_next() -> None:
 def test_a_chunked_body_core_cannot_read_is_refused_and_closes(
     body: bytes, status: bytes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`bitcoind` v32.1.0 answers each so, as soon as it is read.
+    """`bitcoind` answers each so, as soon as it is read.
 
     400 for what it cannot read, and 413 past the cap, lowered to 0x40
     here so that a body at it is small to send.
@@ -2830,7 +2833,7 @@ def test_a_chunked_body_core_cannot_read_is_refused_and_closes(
 def test_a_size_line_past_its_limit_is_400() -> None:
     """A size line is a line, held to `MAX_HEADER_BYTES` as any other is.
 
-    `bitcoind` v32.1.0 answers one of 8193 octets before its line feed
+    `bitcoind` answers one of 8193 octets before its line feed
     400; one of 8192 is waited on.
     """
     outcome, messages, closed = drive(
@@ -2865,7 +2868,7 @@ def test_a_chunked_body_at_the_cap_is_read(monkeypatch: pytest.MonkeyPatch) -> N
 def test_a_trailer_is_counted_on_from_the_header_section() -> None:
     """`m_consumed` is the request's, so the trailer adds to it.
 
-    What `bitcoind` v32.1.0 answers `trailer-8192` and `trailer-8193`
+    What `bitcoind` answers `trailer-8192` and `trailer-8193`
     (issue #1972), the second 400. It is refused on the line that passes
     the count, the last sent, so that nothing is left unread.
     """
@@ -2906,7 +2909,7 @@ def test_a_refused_trailer_is_answered_by_the_request_s_own_fields(
 ) -> None:
     """Trailer fields read before the refusal are not kept, so frame nothing.
 
-    What `bitcoind` v32.1.0 answers `trailer-proxy-keep-alive-refused`
+    What `bitcoind` answers `trailer-proxy-keep-alive-refused`
     and `trailer-close-refused`: a 400 with no `Connection` field.
     """
     data = request(CHUNKED_FIELD, chunked(BODY)[:-2] + fields + b"bad\r\n")
@@ -2919,7 +2922,7 @@ def test_a_refused_trailer_is_answered_by_the_request_s_own_fields(
 def test_an_expectation_is_not_read(value: bytes) -> None:
     """`Expect` is a field like any other: no `100 Continue`, and no 417.
 
-    What `bitcoind` v32.1.0 answers either value with: the request's
+    What `bitcoind` answers either value with: the request's
     answer, with nothing before it.
     """
     fields = b"Expect: " + value + b"\r\nConnection: close\r\n"

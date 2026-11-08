@@ -9,6 +9,8 @@ real client. What is left is the rest of the table, and the branches a
 client reaches only by asking about a block at the tip or on a fork this
 node did not follow, a peer that goes away mid-lookup, or a transaction
 the mempool refuses.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import json
@@ -427,7 +429,7 @@ def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
     """ISS 1301: `addr` is `m_addr_name`, not the socket, once one is held.
 
     Core's `getpeerinfo` pushes `stats.m_addr_name`
-    (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    (`src/rpc/net.cpp:254`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     which is the destination string a peer was dialled by rather than a
     reformatting of the socket's own address -- a portless IP among
     them, the ordinary case a client dialling by name produces.
@@ -450,10 +452,10 @@ def test_a_peer_dialled_by_address_still_answers_the_formatted_socket() -> None:
 def test_a_peer_s_subver_is_its_own_announced_user_agent() -> None:
     """`getpeerinfo`'s `subver` is the wire bytes the peer's `version` carried.
 
-    `connect_nodes` (`test_framework.py:568-594`, at
-    bitcoin/bitcoin@bb529657) matches this against the local node's own
-    `getnetworkinfo`-reported `subversion` to find itself in a peer's
-    own list.
+    `connect_nodes` (`test_framework.py:568-594`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) matches this against the
+    local node's own `getnetworkinfo`-reported `subversion` to find itself
+    in a peer's own list.
     """
     node = a_node({7: a_peer(user_agent=b"/btclib:2026.9/")})
     (info,) = get_peer_info(node, _CONN, [])
@@ -1043,10 +1045,11 @@ def test_mempoolminfee_at_a_magnitude_a_float_would_write_in_exponent_notation()
 def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
     """`getrawmempool` with no flags, or both false, answers a plain array.
 
-    Matches `MempoolToJSON`'s own default shape (`src/rpc/mempool.cpp`
-    :624-634), not the `{"txids": [...]}` object this node used to
-    answer regardless of what was asked for -- that shape is owed only
-    where mempool_sequence is true, below (issue #219).
+    Matches `MempoolToJSON`'s own default shape
+    (`src/rpc/mempool.cpp:657-667`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), not the `{"txids": [...]}` object this node used to answer
+    regardless of what was asked for -- that shape is owed only where
+    mempool_sequence is true, below (issue #219).
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
@@ -1093,15 +1096,16 @@ def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
 
     `mempool_sequence` used to be silently ignored; `MempoolToJSON`'s own
     shape for it is an object carrying both the array and the count
-    (`src/rpc/mempool.cpp`:635-639), and the count advances with every
-    addition, starting at 1 like Core's own `m_sequence_number`
-    (issue #219).
+    (`src/rpc/mempool.cpp:666-673`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), and the count advances with every addition, starting at 1 like
+    Core's own `m_sequence_number` (issue #219).
     """
     mempool = Mempool(Logger(debug=True))
     node = a_node(mempool=mempool)
 
     # a fresh mempool answers 1, not 0: Core's own m_sequence_number
-    # starts at 1 (src/txmempool.h:202) and GetSequence (:598-600) is a
+    # starts at 1 (src/txmempool.h:202, at bitcoin/bitcoin@f0de87f040) and
+    # GetSequence (:598-600) is a
     # plain read of the current value, with zero add/remove events
     # behind it
     empty = get_raw_mempool(node, _CONN, [False, True])
@@ -1125,9 +1129,9 @@ def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
 def test_verbose_and_mempool_sequence_together_are_refused() -> None:
     """`getrawmempool` refuses verbose and mempool_sequence given together.
 
-    Matches `MempoolToJSON`'s own refusal (`src/rpc/mempool.cpp`
-    :608-611): the combination is refused outright, rather than
-    answering one and dropping the other.
+    Matches `MempoolToJSON`'s own refusal (`src/rpc/mempool.cpp:641-644`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the combination is
+    refused outright, rather than answering one and dropping the other.
     """
     node = a_node(mempool=Mempool(Logger(debug=True)))
     with pytest.raises(RpcError) as raised:
@@ -1141,9 +1145,10 @@ def test_verbose_and_mempool_sequence_together_are_refused() -> None:
 def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
     """`getrawmempool` names the JSON type of a wrong-typed boolean parameter.
 
-    The same check `RPCMethod::HandleRequest` makes (`src/rpc/util.cpp`
-    :653-661) against both of `getrawmempool`'s declared
-    `RPCArg::Type::BOOL` parameters (`src/rpc/mempool.cpp`:694-695).
+    The same check `RPCMethod::HandleRequest` makes
+    (`src/rpc/util.cpp:656-665`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag) against both of `getrawmempool`'s declared `RPCArg::Type::BOOL`
+    parameters (`src/rpc/mempool.cpp:727-728`, same sha).
     """
     node = a_node(mempool=Mempool(Logger(debug=True)))
 
@@ -1474,7 +1479,7 @@ def test_tx_out_set_info_answers_core_s_hash_over_a_real_chainstate(
 ) -> None:
     """A bare call over a real chainstate answers what Core's did.
 
-    `regtest_hash_serialized_3.json` is Core v31.1.0's own answer to
+    `regtest_hash_serialized_3.json` is `bitcoind`'s own answer to
     `gettxoutsetinfo`, `hash_serialized_3` and `muhash`, over the blocks
     the chainstate is fed, none of them yet written: the flush the call
     makes is what puts them in the store.
@@ -1838,7 +1843,7 @@ def test_get_tx_out_answers_anchor_type_and_addr_desc_for_a_p2a_coin(
     """A P2A coin's own `type` is `anchor`, `desc` still `addr(...)`.
 
     `Solver`'s own `TxoutType::ANCHOR` (`src/script/solver.cpp:167-171`,
-    at bitcoin/bitcoin@9be056a8a7) is a cut this library's own
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is a cut this library's own
     `type_and_payload` does not make -- the script answers
     "witness_unknown" there -- but `ExtractDestination` answers a
     destination for both the same way (`src/addresstype.cpp:90-93`,
@@ -1905,10 +1910,10 @@ def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
     """A valid-hex, wrong-length `txid` is refused before it is decoded.
 
     `ParseHashV` checks the string's own length before it ever tries to
-    decode it (`src/rpc/util.cpp:117-124`, at
-    bitcoin/bitcoin@9be056a8a7), so `"aabb"` -- four valid hex digits --
-    is refused for its length rather than silently decoding to a
-    two-byte `txid` nothing then finds.
+    decode it (`src/rpc/util.cpp:122-130`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), so `"aabb"` -- four valid hex digits -- is refused for
+    its length rather than silently decoding to a two-byte `txid` nothing
+    then finds.
     """
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
@@ -2087,7 +2092,8 @@ def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None
 
     `in_active_chain` is false and `confirmations` is 0, with no `time`
     or `blocktime`, for a block that holds the transaction but is not on
-    the active chain (`TxToJSON`, `src/rpc/rawtransaction.cpp`).
+    the active chain (`TxToJSON`, `src/rpc/rawtransaction.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
@@ -2114,7 +2120,8 @@ def test_getrawtransaction_verbosity_2_answers_fee_and_prevout(
     """Verbosity 2 and above answer `fee` and each input's `prevout`.
 
     From the block's undo data, as `getblock` does: `fee` before `hex`,
-    then the block's keys (`src/rpc/rawtransaction.cpp`).
+    then the block's keys (`src/rpc/rawtransaction.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node, block, _ = a_node_with_a_paying_spend(regtest_node)
     paying = block.transactions[1]
@@ -2240,8 +2247,8 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded(
     and the second does not, with nothing yet pruned
     (`block_db.pruned_up_to` at its own default), is a block never
     downloaded rather than one deleted -- Core's own
-    `CheckBlockDataAvailability` (`rpc/blockchain.cpp`, at
-    bitcoin/bitcoin@ca7162cde5) answers the same way for the same
+    `CheckBlockDataAvailability` (`rpc/blockchain.cpp:711`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers the same way for the same
     reason: `IsBlockPruned` false, `check_for_undo` false.
     """
     tx = a_tx()
@@ -2309,8 +2316,8 @@ def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
     """A valid-hex, wrong-length `txid` names "parameter 1", Core's own label.
 
     `ParseHashV` checks the string's own length before it ever tries to
-    decode it (`src/rpc/util.cpp:117-124`, at
-    bitcoin/bitcoin@9be056a8a7).
+    decode it (`src/rpc/util.cpp:122-130`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
@@ -2562,16 +2569,15 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
     """`testmempoolaccept` has no catch of its own for a storage fault.
 
     Neither `MissingPrevoutError` nor `BTClibValueError`, so
-    `StoreCorruptionError` -- the one exception
-    `verify_mempool_acceptance` can still raise for this node's own
-    storage rather than for `tx`'s content, once
-    btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin` raising
-    `ChainstateInconsistencyError` for the other, checksum-clean case
-    -- propagates out of `test_mempool_accept` uncaught, ending the
+    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
+    can still raise for this node's own storage rather than for `tx`'s
+    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
+    raising `ChainstateInconsistencyError` for the other, checksum-clean
+    case -- propagates out of `test_mempool_accept` uncaught, ending the
     whole batch rather than being folded into this one entry's own
     `"reject-reason"`. This matches Core's own `testmempoolaccept`
-    (`src/rpc/mempool.cpp:379-430`, at bitcoin/bitcoin@ca7162cde5),
-    whose per-tx loop has no catch-all of its own either
+    (`src/rpc/mempool.cpp:412-463`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), whose per-tx loop has no catch-all of its own either
     (btclib-org/btclib-node#668).
     """
 
@@ -2593,7 +2599,7 @@ def decode_failure(rawtx: str) -> str:
 def test_an_unparsable_transaction_ends_the_call() -> None:
     """A `rawtx` that does not decode is `-22` for the call, as in Core.
 
-    `bitcoind` v31.1 on regtest: `testmempoolaccept '["zz","00"]'` is
+    `bitcoind` on regtest: `testmempoolaccept '["zz","00"]'` is
     `-22` "TX decode failed: zz Make sure the tx has at least one input.",
     where this reported each entry "Invalid serialization"
     (btclib-org/btclib-node#1329).
@@ -2618,7 +2624,7 @@ def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
 def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
     """Core's `MAX_PACKAGE_COUNT`: `-8` for an empty or a 26-entry array.
 
-    `bitcoind` v31.1 on regtest answers both "Array must contain between
+    `bitcoind` on regtest answers both "Array must contain between
     1 and 25 transactions."
     """
     raw = a_tx().serialize(include_witness=True).hex()
@@ -2685,7 +2691,7 @@ def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
 ) -> None:
     """A `rawtx` that is not a string ends the call with Core's own message.
 
-    `bitcoind` v31.1 on regtest answers `-3` "JSON value of type number
+    `bitcoind` on regtest answers `-3` "JSON value of type number
     is not of expected type string" to `testmempoolaccept [[5]]`, and
     the same for the other JSON types, where this answered `-32603
     Internal Error` (btclib-org/btclib-node#1253). The valid entry ahead
@@ -2854,7 +2860,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     """`sendrawtransaction` does not report or broadcast a missing-prevouts tx.
 
     A refusal is not answered with the txid of a transaction this node
-    has neither kept nor sent (issue #83). `bitcoind` v31.1 on regtest
+    has neither kept nor sent (issue #83). `bitcoind` on regtest
     answers a spend of an unknown txid `-25`
     "bad-txns-inputs-missingorspent" (btclib-org/btclib-node#1328).
     """
@@ -2921,7 +2927,8 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     held.
     """
     # BroadcastTransaction's own early return for a txid already in the
-    # mempool (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86):
+    # mempool (node/transaction.cpp:63-71, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag):
     # resubmission is reannounced rather than refused for a fullness
     # this particular submission did not cause
     monkeypatch.setattr(
@@ -2958,7 +2965,8 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # Mempool.contains_tx is keyed by wtxid (Mempool.transactions), so it
     # does not recognise a txid already held under a different witness --
     # exactly the case BroadcastTransaction's own comment names
-    # (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86): "The mempool
+    # (node/transaction.cpp:69-70, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag): "The mempool
     # transaction may have the same or different witness (and wtxid) as
     # this transaction." The guard has to be txid-keyed
     # (Mempool.txid_index) to reannounce here instead of refusing a
@@ -3037,7 +3045,7 @@ def test_hex_with_whitespace_is_refused_like_core(
 ) -> None:
     """A rawtx with whitespace is a decode failure, where it used to decode.
 
-    `bitcoind` v31.1 on regtest refuses a rawtx with an embedded space
+    `bitcoind` on regtest refuses a rawtx with an embedded space
     or a leading/trailing one with `-22` "TX decode failed"; this used
     to decode it, `bytes.fromhex` tolerating exactly the whitespace
     `IsHex` refuses. btclib-org/btclib-node#1372
@@ -3145,7 +3153,7 @@ def test_a_structurally_invalid_tx_decodes_and_is_refused_by_reason(
 ) -> None:
     """Each of Core's own `CheckTransaction` reasons, one violation at a time.
 
-    `bitcoind` v31.1 on regtest, per btclib-org/btclib-node#1375's own
+    `bitcoind` on regtest, per btclib-org/btclib-node#1375's own
     table: a version-2 transaction with exactly one of these shapes
     decodes and is refused with exactly this reason, by both
     `sendrawtransaction` and `testmempoolaccept`.
@@ -3169,7 +3177,7 @@ def test_a_transaction_violating_two_rules_answers_cores_own_first_one() -> None
 
     Two inputs, one of them the null outpoint, and no outputs: Core's
     `CheckTransaction` (`src/consensus/tx_check.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) checks `vout.empty()`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) checks `vout.empty()`
     well ahead of the coinbase/prevout-null rule, so it answers
     `bad-txns-vout-empty`, not `bad-txns-prevout-null`. `Tx.assert_valid`
     (btclib 2026.9.30) checks in the same order since
@@ -3209,7 +3217,7 @@ def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> N
     """A transaction whose only fault is its size is refused as Core refuses it.
 
     `CheckTransaction` (`src/consensus/tx_check.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) checks `bad-txns-oversize`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) checks `bad-txns-oversize`
     -- a transaction's own stripped size, times `WITNESS_SCALE_FACTOR`,
     over `MAX_BLOCK_WEIGHT` -- ahead of the per-output amount checks;
     `Tx.assert_valid` (btclib 2026.9.30) raises its own message for the
@@ -3566,7 +3574,7 @@ def a_legacy_tx() -> Tx:
 def test_decoderawtransaction_iswitness_false_refuses_a_witness_tx() -> None:
     """`iswitness=false` refuses a witness-serialized tx, as Core's `DecodeTx`.
 
-    `bitcoind` v31.1.0 on regtest: the same rawtx decodes with `iswitness`
+    `bitcoind` on regtest: the same rawtx decodes with `iswitness`
     omitted or `true`, and answers `-22` "TX decode failed" with
     `iswitness=false`, the legacy reading of its octets not consuming
     them whole.
@@ -3583,8 +3591,8 @@ def test_decoderawtransaction_iswitness_false_refuses_a_witness_tx() -> None:
 def test_decoderawtransaction_iswitness_true_still_decodes_a_legacy_tx() -> None:
     """`iswitness=true` still decodes a transaction that carries no witness.
 
-    Core's own `DecodeTx` (`src/core_io.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): the extended reading it tries alone under
+    Core's own `DecodeTx` (`src/core_io.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): the extended reading it tries alone under
     `iswitness=true` auto-detects the marker the same way `Tx.parse`
     does, so a legacy transaction -- no marker present -- decodes the
     same as it does by default.
@@ -3618,7 +3626,7 @@ def test_decoderawtransaction_reads_a_transaction_without_inputs() -> None:
     """The legacy reading answers where the extended one cannot.
 
     `01000000 00 01 <value 0> 00 00000000` is a transaction of no input
-    and one output. `bitcoind` v31.1.0 on regtest decodes it with
+    and one output. `bitcoind` on regtest decodes it with
     `iswitness` omitted or `false`, and answers `-22` "TX decode
     failed" with `true`. btclib-org/btclib#2462
     """
@@ -3637,7 +3645,7 @@ def test_decoderawtransaction_reads_a_transaction_without_inputs() -> None:
 @pytest.mark.parametrize(
     ("spk", "legacy_insane", "omitted", "witness_only", "no_witness_only"),
     [
-        # `bitcoind` v31.1.0 on regtest, `vin` of each answer: the extended
+        # `bitcoind` on regtest, `vin` of each answer: the extended
         # reading is sound, so it is kept without trying the legacy one
         (b"", False, 1, 1, 0),
         # the extended reading is unsound and the legacy one is not
@@ -3663,7 +3671,7 @@ def test_decoderawtransaction_chooses_between_two_readings_as_core_does(
     `true` the extended alone; `false` the legacy alone. A reading is
     sound if it passes `CheckTxScriptsSanity`, and the first sound one
     wins, the extended one when none is. The numbers are the inputs each
-    answer carries, as `bitcoind` v31.1.0 on regtest gives them.
+    answer carries, as `bitcoind` on regtest gives them.
     """
     raw = ambiguous_tx(spk, legacy_insane=legacy_insane)
     assert len(decoded_with(raw, iswitness=None)["vin"]) == omitted
@@ -3700,7 +3708,8 @@ def test_check_tx_scripts_sanity_asks_core_s_questions(
     """An output script and an input script are each held to `HasValidOps`.
 
     The bounds are `MAX_OPCODE`, `MAX_SCRIPT_ELEMENT_SIZE` and
-    `MAX_SCRIPT_SIZE` (`src/script/script.h`, at v31.1).
+    `MAX_SCRIPT_SIZE` (`src/script/script.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag).
     """
     tx = a_tx()
     as_output = replace(tx, vout=[TxOut(0, script_pub_key=ScriptPubKey(script))])
@@ -3721,7 +3730,7 @@ def test_check_tx_scripts_sanity_skips_a_coinbase_s_input() -> None:
 def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> None:
     """`decoderawtransaction` answers Core's own message, with no addition.
 
-    `bitcoind` v31.1 on regtest answers `-22` "TX decode failed" alone,
+    `bitcoind` on regtest answers `-22` "TX decode failed" alone,
     where `sendrawtransaction` and `testmempoolaccept` append "Make sure
     the tx has at least one input.".
     """
@@ -3948,7 +3957,8 @@ def test_verbose_false_answers_a_version_zero_or_negative_header(version: int) -
 def test_verbose_true_and_the_default_answer_the_same_object() -> None:
     """`getblockheader`'s default, explicit true and null all answer alike.
 
-    `verbose`'s Default is true (`src/rpc/blockchain.cpp`:617), and Core
+    `verbose`'s Default is true (`src/rpc/blockchain.cpp:647`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and Core
     treats an explicit null the same as an omitted argument.
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
@@ -4152,8 +4162,8 @@ def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
     """A valid-hex, wrong-length `hash` is refused before it is decoded.
 
     `ParseHashV` checks the string's own length before it ever tries to
-    decode it (`src/rpc/util.cpp:117-124`, at
-    bitcoin/bitcoin@9be056a8a7).
+    decode it (`src/rpc/util.cpp:122-130`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
@@ -4169,7 +4179,7 @@ def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
 def test_two_wrongly_typed_arguments_are_both_named_at_once() -> None:
     """ISS 1293: `getblockheader [1, "x"]` names both, as a real bitcoind does.
 
-    Measured against a regtest bitcoind v31.1.0: `getblockheader`
+    Measured against a regtest bitcoind: `getblockheader`
     called with a number `blockhash` and a string `verbose` answers
     `"Position 1 (blockhash)"` and `"Position 2 (verbose)"` in one
     `Wrong type passed` object, not the first alone.
@@ -4442,8 +4452,8 @@ def test_blockchain_info_s_size_on_disk_reads_current_usage_unconditionally() ->
     """`size_on_disk` is `block_db.current_usage`, present either way.
 
     Core's own member is unconditional too, computed before the `pruned`
-    branch it sits beside (`rpc/blockchain.cpp:1450-1452`, at
-    bitcoin/bitcoin@ca7162cde5).
+    branch it sits beside (`rpc/blockchain.cpp:1480-1482`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = a_blockchain_info_node(pruned=False, current_usage=12345)
     assert get_blockchain_info(node, _CONN, [])["size_on_disk"] == 12345
@@ -4462,8 +4472,9 @@ def test_blockchain_info_s_pruned_reads_config() -> None:
 def test_blockchain_info_s_pruneheight_is_the_first_unpruned_block() -> None:
     """`pruneheight` is `pruned_up_to + 1`, present once `pruned` holds.
 
-    Core's own "the first block unpruned, all previous blocks were
-    pruned" (`rpc/blockchain.cpp:1400`, at bitcoin/bitcoin@ca7162cde5).
+    Core's own "the first block unpruned, all previous blocks were pruned"
+    (`rpc/blockchain.cpp:1430`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
     """
     node = a_blockchain_info_node(pruned=True, pruned_up_to=41)
     assert get_blockchain_info(node, _CONN, [])["pruneheight"] == 42
@@ -4473,8 +4484,8 @@ def test_blockchain_info_s_automatic_pruning_is_whether_a_mib_target_is_set() ->
     """`automatic_pruning` is `Config.prune_target_mib is not None`.
 
     Core's own `GetPruneTarget() != PRUNE_TARGET_MANUAL`
-    (`rpc/blockchain.cpp:1457`, at bitcoin/bitcoin@ca7162cde5); no
-    `prune_target_size` where it is `False`.
+    (`rpc/blockchain.cpp:1487`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag); no `prune_target_size` where it is `False`.
     """
     node = a_blockchain_info_node(pruned=True, prune_target_mib=None)
     result = get_blockchain_info(node, _CONN, [])
@@ -4493,7 +4504,10 @@ def test_blockchain_info_s_prune_target_size_is_in_bytes() -> None:
 def test_prune_blockchain_refuses_when_not_in_prune_mode(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `IsPruneMode()` refusal (`rpc/blockchain.cpp:936-938`)."""
+    """Core's own `IsPruneMode()` refusal (`rpc/blockchain.cpp:966-968`).
+
+    At bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
     node = regtest_node(pruned=False)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [10])
@@ -4552,7 +4566,10 @@ def test_prune_blockchain_refuses_a_fractional_height(
 def test_prune_blockchain_refuses_a_negative_height(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `heightParam < 0` check (`rpc/blockchain.cpp:945-947`)."""
+    """Core's own `heightParam < 0` check (`rpc/blockchain.cpp:975-977`).
+
+    At bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [-1])
@@ -4566,12 +4583,12 @@ def test_prune_blockchain_refuses_a_chain_too_short_for_pruning(
     """A chain shorter than `chain.prune_after_height` refuses to prune at all.
 
     Regtest's own `prune_after_height` is 1000
-    (`src/kernel/chainparams.cpp:601`, at bitcoin/bitcoin@ca7162cde5,
-    without `-fastprune`), not `MIN_BLOCKS_TO_KEEP` -- the two are
-    separate constants in Core and this checks the one this refusal
-    actually reads. A thousand-block chain connects in well under a
-    second on regtest's own trivial target, measured before writing
-    this test rather than assumed.
+    (`src/kernel/chainparams.cpp:625`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag, without `-fastprune`), not `MIN_BLOCKS_TO_KEEP` -- the two
+    are separate constants in Core and this checks the one this refusal
+    actually reads. A thousand-block chain connects in well under a second
+    on regtest's own trivial target, measured before writing this test
+    rather than assumed.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
     chain = generate_random_chain(
@@ -4603,7 +4620,10 @@ def test_prune_blockchain_allows_a_chain_at_exactly_prune_after_height(
 def test_prune_blockchain_refuses_a_height_past_the_tip(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `height > chainHeight` check (`blockchain.cpp:964-965`)."""
+    """Core's own `height > chainHeight` check (`blockchain.cpp:994-995`).
+
+    At bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
     node = regtest_node(pruned=True, prune_target_mib=None)
     chain = generate_random_chain(
         node.chain.prune_after_height + 5, node.chain.genesis.hash
@@ -4647,8 +4667,9 @@ def test_prune_blockchain_clamps_a_height_close_to_the_tip(
 ) -> None:
     """A `height` within `MIN_BLOCKS_TO_KEEP` of the tip is clamped.
 
-    Core's own `blockchain.cpp:966-969`: pruning still runs, down to the
-    retained depth rather than up to the height actually asked for.
+    Core's own `blockchain.cpp:996-999`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag: pruning still runs, down to the retained depth rather than up
+    to the height actually asked for.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
     chain = generate_random_chain(
@@ -4725,10 +4746,11 @@ def a_chain_index_node(chain: list[bytes]) -> Node:
 def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> None:
     """`getblockhash` refuses a negative height, not reading from the chain end.
 
-    A negative index used to count from the end of `active_chain`,
-    Python's own list semantics, silently answering the tip's hash for a
-    height nothing asked for. Core refuses `nHeight < 0` outright
-    (`src/rpc/blockchain.cpp`:600-601, issue #234).
+    A negative index used to count from the end of `active_chain`, Python's
+    own list semantics, silently answering the tip's hash for a height
+    nothing asked for. Core refuses `nHeight < 0` outright
+    (`src/rpc/blockchain.cpp:630-631`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag; issue #234).
     """
     node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
     with pytest.raises(RpcError) as raised:
@@ -4775,8 +4797,8 @@ def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() ->
     A JSON number written with a decimal point is still VNUM, so it
     passes the type check the way an int does, but
     `UniValue::getInt<int>()` fails on it regardless of its value --
-    `RPC_MISC_ERROR`, not `RPC_TYPE_ERROR` (`src/rpc/server.cpp`
-    :884-886).
+    `RPC_MISC_ERROR`, not `RPC_TYPE_ERROR` (`src/rpc/server.cpp:891-892`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = a_chain_index_node([b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
@@ -4834,7 +4856,7 @@ def test_a_fee_refusal_is_answered_in_core_s_words(
 ) -> None:
     """`sendrawtransaction` answers `-26` and Core's own reason and details.
 
-    `bitcoind` v31.1 on regtest: "min relay fee not met, 0 < 11" for a
+    `bitcoind` on regtest: "min relay fee not met, 0 < 11" for a
     zero-fee 110-vbyte spend (btclib-org/btclib-node#1245).
     """
     monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
@@ -4950,7 +4972,7 @@ def test_testmempoolaccept_refuses_a_held_txid_in_core_s_words(
     """A txid already held is refused as held, not as its own conflict.
 
     Core's `PreChecks` refuses it ahead of the conflict checks, as
-    bitcoind v31.1 answers on regtest: "txn-already-in-mempool" for the
+    bitcoind answers on regtest: "txn-already-in-mempool" for the
     same wtxid, "txn-same-nonwitness-data-in-mempool" for another
     witness, each its own reject-details. btclib-org/btclib-node#1244
     """
@@ -5028,7 +5050,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     """`getnetworkinfo` answers `subversion`/`protocolversion` and the services.
 
     `connect_nodes`'s own read is `subversion` alone
-    (`test_framework.py:568-594`, at bitcoin/bitcoin@bb529657);
+    (`test_framework.py:568-594`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag);
     `protocolversion` is included beside it as a real, cheaply-answered
     constant rather than as decoration. `NETWORK | WITNESS |
     NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give.
@@ -5384,7 +5406,7 @@ def test_addnode_onetry_takes_a_hostname() -> None:
 
 @pytest.mark.parametrize("spec", ["127.0.0.1:+80", "127.0.0.1:0x50", "127.0.0.1: 80"])
 def test_addnode_onetry_hands_a_port_int_would_read_on_whole(spec: str) -> None:
-    """ISS 1292: `onetry` answers, as `bitcoind` v31.1.0 does, and dials a name.
+    """ISS 1292: `onetry` answers, as `bitcoind` does, and dials a name.
 
     Not at port 80: `connect_host` is given `spec` whole, a name that
     resolves to nothing.
@@ -5427,7 +5449,7 @@ def test_addnode_type_checks_node_and_command() -> None:
 def test_addnode_names_both_wrongly_typed_arguments_at_once() -> None:
     """ISS 1293: `addnode [1, 2]` names both, as a real bitcoind does.
 
-    Measured against a regtest bitcoind v31.1.0: `addnode` called with
+    Measured against a regtest bitcoind: `addnode` called with
     a number `node` and a number `command` answers `"Position 1 (node)"`
     and `"Position 2 (command)"` in one `Wrong type passed` object, not
     the first alone.
@@ -5537,7 +5559,11 @@ def test_setmocktime_holds_the_clock_and_zero_releases_it() -> None:
 
 
 def test_setmocktime_accepts_the_largest_timestamp_and_refuses_the_next() -> None:
-    """Core v31.1.0's bound `[0, 9223372036]`, measured at both ends."""
+    """The v31.1 tag's bound `[0, 9223372036]`, measured at both ends.
+
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+    until ISS 2256.
+    """
     node = cast("Node", SimpleNamespace(chain=RegTest()))
     set_mock_time(node, _CONN, [clock.MAX_MOCK_TIME])
     assert clock.mock_time() == 9223372036
@@ -5709,8 +5735,9 @@ def test_addconnection_dials_with_the_named_type_s_own_flags(
 def test_addconnection_trims_connection_type_like_core(padded: str) -> None:
     r"""Core's own `util::TrimStringView(..., " \f\n\r\t\v")`, echoed back.
 
-    `rpc/net.cpp:414`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
-    a `connection_type` carrying one of its six whitespace characters
+    `util/string.h:163`, its default pattern, and `rpc/net.cpp:443`, its
+    call, both at bitcoin/bitcoin@f0de87f040, the v32.1 tag: a
+    `connection_type` carrying one of its six whitespace characters
     at either end still names the type past it, and the RPC's own
     answer carries the trimmed form, not the one given.
     """
@@ -5829,7 +5856,7 @@ def test_addconnection_names_every_wrongly_typed_argument_at_once() -> None:
     All three arguments are the wrong JSON type and the chain is not
     regtest either -- the type refusal is what answers, not the chain
     one, `add_connection`'s own docstring arguing why: Core's generic
-    `RPCHelpMan::HandleRequest` check runs ahead of every method's own
+    `RPCMethod::HandleRequest` check runs ahead of every method's own
     lambda, the chain gate included.
     """
     node, dialled = an_addconnection_node(chain=Main())
@@ -5956,7 +5983,7 @@ _I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
 def test_setban_bans_an_onion_or_i2p_host_and_no_subnet_of_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1218: as bitcoind v31.1 answers `setban`.
+    """ISS 1218: as bitcoind answers `setban`.
 
     The host alone, each on its key whatever its case; a prefix is no
     subnet of one. `listbanned` lists them after the IP bans.
@@ -6042,7 +6069,7 @@ def test_setban_absolute_bans_until_the_time_given(
 def test_setban_add_past_int64_succeeds_and_bans_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bantime past `int64_t` succeeds and bans nothing, as in Core v31.1.0.
+    """A bantime past `int64_t` succeeds and bans nothing, as in Core.
 
     The host is dropped all the same, `DisconnectNode` following `Ban`
     whatever `Ban` did.
@@ -6366,8 +6393,9 @@ def test_get_block_verbosity_1_answers_the_coinbase_witness(
     """A segwit coinbase's own witness stack answers `coinbase_tx["witness"]`.
 
     `coinbaseTxToJSON`'s own `CHECK_NONFATAL(witness_stack.size() == 1)`
-    (`src/rpc/blockchain.cpp:195`, at bitcoin/bitcoin@9be056a8a7): the
-    coinbase's own BIP141 nonce, once the block itself commits to one.
+    (`src/rpc/blockchain.cpp:236`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag): the coinbase's own BIP141 nonce, once the block itself commits to
+    one.
     """
     node = regtest_node()
     block = generate_segwit_block()
@@ -6804,7 +6832,7 @@ def test_invalidate_block_on_genesis_is_a_silent_no_op(
 ) -> None:
     """Genesis can never be invalidated: Core's own `nHeight == 0` floor.
 
-    Measured against a real regtest bitcoind v31.1.0: `invalidateblock`
+    Measured against a real regtest bitcoind: `invalidateblock`
     on the genesis hash answers `null` rather than an error, and changes
     nothing.
     """
@@ -6844,7 +6872,7 @@ def test_invalidate_block_on_a_mid_chain_block_disconnects_down_to_its_parent(
 ) -> None:
     """Invalidating a deep ancestor disconnects everything above it.
 
-    Measured against a real regtest bitcoind v31.1.0 on a five-block
+    Measured against a real regtest bitcoind on a five-block
     chain: invalidating the block at height 3 leaves the tip at height 2
     -- this is that same shape, at the sizes this test builds.
     """
@@ -6993,7 +7021,7 @@ def test_reconsider_block_undoes_invalidate_block(
 ) -> None:
     """Reconsidering an invalidated tip restores the chain and its status.
 
-    The round trip a real regtest bitcoind v31.1.0 answers too: mine
+    The round trip a real regtest bitcoind answers too: mine
     five, invalidate the tip, reconsider it, and the tip is back where
     it started.
     """
@@ -7040,8 +7068,8 @@ def test_reconsider_block_clears_an_invalidated_ancestor_s_whole_lineage(
         )
 
 
-# Core's own `LARGE_WORK_INVALID_CHAIN` text (`src/validation.cpp:1961`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# Core's own `LARGE_WORK_INVALID_CHAIN` text (`src/validation.cpp:1956`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _LARGE_WORK_WARNING = (
     "Warning: Found invalid chain more than 6 blocks longer than our best "
     "chain. This could be due to database corruption or consensus "
@@ -7055,8 +7083,8 @@ def test_invalidate_block_raises_the_fork_warning_its_disconnect_uncovers(
     """Invalidating an active block checks the fork warning, as Core does.
 
     Core's own `InvalidateBlock` ends in `InvalidChainFound`, which calls
-    `CheckForkWarningConditions` (`src/validation.cpp:3721` and `:1987`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The invalid fork
+    `CheckForkWarningConditions` (`src/validation.cpp:3681` and `:1982`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The invalid fork
     carries 14 blocks' worth of work: less than the 10-block tip plus
     six, more than the 5-block tip the disconnect leaves plus six.
     """
@@ -7081,8 +7109,8 @@ def test_reconsider_block_resets_best_invalid_it_clears(
     """Reconsidering the best invalid header resets `best_invalid`.
 
     Core's own `ResetBlockFailureFlags` sets `m_best_invalid` to
-    `nullptr` (`src/validation.cpp:3772-3775`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The warning stays until
+    `nullptr` (`src/validation.cpp:3732-3735`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The warning stays until
     the next check, as in Core: no block is connected, so nothing runs
     `CheckForkWarningConditions` in between.
     """
@@ -7108,8 +7136,8 @@ def test_a_deep_invalidate_block_names_the_block_itself_best_invalid(
     """A deep `invalidateblock` on one chain raises no warning.
 
     Core's own `InvalidChainFound(to_mark_failed)` weighs only the
-    invalidated block against `m_best_invalid` (`src/validation.cpp:3721`
-    and `:1971-1974`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The
+    invalidated block against `m_best_invalid` (`src/validation.cpp:3681`
+    and `:1966-1969`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The
     descendant `chain[9]` would carry ten blocks' worth of work, more than
     the remaining tip plus six.
     """
@@ -7169,8 +7197,8 @@ def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
     docstring is where offering a `valid`-status block -- what the
     displaced chain's own blocks become -- as a candidate again is
     argued, matching Core's own `InvalidateBlock`
-    (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). btclib-org/btclib-node#1561
+    (`src/validation.cpp:3623-3644`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). btclib-org/btclib-node#1561
     """
     node = regtest_node()
     first = generate_random_chain(2, node.chain.genesis.hash)
@@ -7207,8 +7235,8 @@ def test_invalidate_block_reconnects_a_branch_of_equal_work_received_first(
     reorgs it off; invalidating `second`'s own tip reduces it to
     `second[1]`, exactly `first`'s own work. `first`'s data arrived
     first, so Core reorgs back to it by `nSequenceId`
-    (`node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), and so does this node. btclib-org/btclib-node#1579
+    (`node/blockstorage.cpp:181-182`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), and so does this node. btclib-org/btclib-node#1579
     """
     node = regtest_node()
     first = generate_random_chain(2, node.chain.genesis.hash)
@@ -7276,7 +7304,7 @@ def test_precious_block_below_the_tip_does_not_retry_the_chain(
     """A block with less work than the tip leaves even a ready candidate be.
 
     Core's `PreciousBlock` returns before `ActivateBestChain` there
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     so `chain[2]`, downloaded and not yet connected, stays unconnected.
     """
     node = regtest_node()
@@ -7298,8 +7326,8 @@ def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_ca
     """Past Core's own 10-block cap, a disconnected transaction is dropped.
 
     `Chainstate::InvalidateBlock`'s own per-block counter
-    (`++disconnected <= 10`, `src/validation.cpp:3611` and `:3637`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) stops re-adding once the
+    (`++disconnected <= 10`, `src/validation.cpp:3571` and `:3597`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) stops re-adding once the
     eleventh block disconnects; `_reconcile_mempool_for_reorg`'s own
     `readd_limit` is that same cap, counted tip-first the way Core's own
     disconnect loop counts it. The dropped transaction's own mempool
@@ -7362,7 +7390,7 @@ def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
     `removeRecursive` answering identically for a transaction that
     "doesn't make it in to the mempool" whichever of the two reasons
     stops it (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): without that call, `c`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): without that call, `c`
     is left behind, spending an output that no longer exists anywhere.
     btclib-org/btclib-node#1570
     """
@@ -7413,7 +7441,7 @@ def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
     (`AddTransactionsFromBlock(block.vtx)`), and
     `MaybeUpdateMempoolForReorg` calls `removeRecursive` for a coinbase
     instead of re-adding it (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `common[0]`'s coinbase
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `common[0]`'s coinbase
     is mature, so `spend` is admitted; once `common[0]` is invalidated
     that output no longer exists, and `spend` must go with it.
     btclib-org/btclib-node#1570
@@ -7438,8 +7466,8 @@ def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immatu
 
     Core's own `removeForReorg`, run through `filter_final_and_mature`
     every time `MaybeUpdateMempoolForReorg` is called
-    (`src/validation.cpp:348-392`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag): a coinbase spend mature against one tip can be immature
+    (`src/validation.cpp:350-394`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag): a coinbase spend mature against one tip can be immature
     again against an earlier one a disconnect reveals.
     `main._still_final_and_mature`'s own docstring is where this tree's
     match is argued. btclib-org/btclib-node#1570
@@ -7568,12 +7596,12 @@ def test_submit_block_adds_the_nonce_a_committed_body_lacks_as_core_does(
 ) -> None:
     """Core adds the missing nonce, and the whole block is then `duplicate`.
 
-    The body without its coinbase nonce has the hash of the block with
-    it. Core's `submitblock` adds the 32 zero bytes before
-    `ProcessNewBlock` (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7),
-    so the body is accepted and stored as the whole block, and the whole
-    block is then `duplicate`. Without the nonce, `update_chain` would refuse
-    the stored body and mark its hash invalid.
+    The body without its coinbase nonce has the hash of the block with it.
+    Core's `submitblock` adds the 32 zero bytes before `ProcessNewBlock`
+    (`src/rpc/mining.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+    the body is accepted and stored as the whole block, and the whole block
+    is then `duplicate`. Without the nonce, `update_chain` would refuse the
+    stored body and mark its hash invalid.
     """
     node = regtest_node()
     whole = a_block_committing_to_a_witness_only_its_nonce_holds()
@@ -7598,11 +7626,11 @@ def test_submit_block_leaves_a_body_with_an_unexpected_witness_unmarked(
 ) -> None:
     """A `BLOCK_MUTATED` body is refused, stored nowhere and never marked.
 
-    A witness below segwit's height is refused by `ContextualCheckBlock`
-    as `unexpected-witness`, and `InvalidBlockFound` leaves such a block
-    alone (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7): the same
-    header is not `duplicate-invalid` afterwards, and the block with its
-    witness removed is accepted.
+    A witness below segwit's height is refused by `ContextualCheckBlock` as
+    `unexpected-witness`, and `InvalidBlockFound` leaves such a block alone
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+    the same header is not `duplicate-invalid` afterwards, and the block
+    with its witness removed is accepted.
     """
     node = regtest_node()
     consensus = replace(node.chain.consensus, segwit_height=2)
@@ -7627,7 +7655,7 @@ def test_submit_block_answers_core_s_word_for_a_short_nonce_and_leaves_it_unmark
 ) -> None:
     """A 31-byte nonce is `bad-witness-nonce-size`, a `BLOCK_MUTATED` refusal.
 
-    Measured against bitcoind v31.1: `CheckWitnessMalleation` answers it
+    Measured against bitcoind: `CheckWitnessMalleation` answers it
     with that word, nothing is stored, and the header stays valid-header,
     so the whole block is accepted afterwards. btclib's own text for it
     is `invalid witness nonce: [31] stack element size(s) instead of: [32]`.
@@ -7681,7 +7709,7 @@ def test_submit_block_refuses_a_body_its_stored_header_does_not_commit_to(
 ) -> None:
     """ISS 1346: Core's `CheckBlock` runs before the block is found stored.
 
-    Measured against bitcoind v31.1: `bad-txnmrklroot` for both bodies,
+    Measured against bitcoind: `bad-txnmrklroot` for both bodies,
     where this node answers btclib's own reason. The stored block and its
     header are left as they were.
     """
@@ -7713,9 +7741,9 @@ def test_submit_block_answers_prev_blk_not_found_for_an_orphan(
     """A block whose parent this node has never indexed names Core's reason.
 
     `validation.cpp:4225`'s own `"prev-blk-not-found"`
-    (at bitcoin/bitcoin@bb529657), the one reject reason this tree
-    reproduces literally -- `submit_block`'s own docstring is where that
-    is argued against the rest of Core's own vocabulary.
+    (at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the one reject reason
+    this tree reproduces literally -- `submit_block`'s own docstring is
+    where that is argued against the rest of Core's own vocabulary.
     """
     node = regtest_node()
     orphan = generate_random_chain(1, b"\x22" * 32)[0]
@@ -7806,7 +7834,7 @@ def test_submit_block_answers_bad_prevblk_for_a_block_on_an_invalid_parent(
 ) -> None:
     """ISS 1233: `add_headers` refuses the header, `bad-prevblk`.
 
-    Measured against bitcoind v31.1, a block on a header `invalidateblock`
+    Measured against bitcoind, a block on a header `invalidateblock`
     marked: `bad-prevblk`.
     Neither the header nor the block is kept.
     """
@@ -7892,8 +7920,8 @@ def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
     """ISS 1301: `address` matches `m_addr_name`, a portless IP included.
 
     Core's `CConnman::DisconnectNode(std::string_view)` matches
-    `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
+    `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
     here, does not match once a name is held.
     """
     peers = {3: a_peer(peer="1.2.3.4", addr_name="1.2.3.4")}
@@ -7977,7 +8005,7 @@ def _wrong_type(*entries: str) -> tuple[RPCErrorCode, str]:
 def test_disconnectnode_answers_what_bitcoind_answers(
     params: list[Any], expected: tuple[RPCErrorCode, str]
 ) -> None:
-    """ISS 1193: each code and message as a regtest bitcoind v31.1.0 gave it.
+    """ISS 1193: each code and message as a regtest bitcoind gave it.
 
     Nothing is dropped. The integer bounds are `int64_t`'s, one past
     either end.
@@ -8026,7 +8054,7 @@ def test_submit_header_refuses_a_hexdata_of_the_wrong_json_type() -> None:
 def test_submit_header_refuses_what_does_not_decode(hexdata: str) -> None:
     """Core's `DecodeHexBlockHeader` failing: not hex, or short of a header.
 
-    Measured against a regtest bitcoind v31.1.0, which answers each
+    Measured against a regtest bitcoind, which answers each
     `RPC_DESERIALIZATION_ERROR`, "Block header decode failed".
     """
     with pytest.raises(RpcError) as raised:
@@ -8130,7 +8158,7 @@ def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
 ) -> None:
     """ISS 1344: Core's `CheckBlock`, then `AcceptBlockHeader`'s cached state.
 
-    Measured against bitcoind v31.1, each body under a header
+    Measured against bitcoind, each body under a header
     `invalidateblock` marked: `duplicate-invalid`, `duplicate-invalid`,
     `bad-cb-multiple`. Nothing is stored.
     """
@@ -8163,7 +8191,7 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
 ) -> None:
     """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
 
-    Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
+    Measured against bitcoind: `bad-cb-multiple`, and the header
     absent from `getchaintips` -- `headers-only` there where
     `submitheader` indexed it first. This node's own header is absent
     from `block_index` too, its own equivalent read (ISS 1339).
@@ -8184,7 +8212,7 @@ def test_submit_block_answers_check_block_failure_over_prev_blk_not_found(
 
     Core's `ProcessNewBlock` asks `CheckBlock` unconditionally, before
     `AcceptBlock` ever reaches `AcceptBlockHeader`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so a body failing it is refused for that reason even where
     the header's own parent is unknown too -- `prev-blk-not-found` is
     never reached, and nothing about the unknown parent is looked at.
@@ -8211,12 +8239,12 @@ def test_submit_block_answers_a_contextual_failure_for_a_block_extending_the_tip
 ) -> None:
     """ISS 1335: Core's own reasons, where btclib-node used to answer `None`.
 
-    Measured against bitcoind v31.1: `bad-cb-height` for a coinbase
+    Measured against bitcoind: `bad-cb-height` for a coinbase
     committing to no height, and `bad-txns-nonfinal` where that same
     coinbase sits beside a non-final transaction too -- Core checks
     finality before the coinbase height commitment
     (`ContextualCheckBlock`, `src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
@@ -8283,7 +8311,7 @@ def test_submit_block_marks_a_mutated_body_refused_before_its_witness(
     non-final transaction and a wrong coinbase height before it asks
     `CheckWitnessMalleation`. Both are `BLOCK_CONSENSUS`, which
     `InvalidBlockFound` marks (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
@@ -8305,8 +8333,8 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
 
     Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
     `ProcessNewBlock` does not reach `AcceptBlock`, which marks, for a
-    body failing it (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). `main.SigNet` is `RegTest` here, so the real BIP325
+    body failing it (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). `main.SigNet` is `RegTest` here, so the real BIP325
     check runs on a regtest block: mining a block at signet's target takes
     millions of hashes.
     """
@@ -8336,8 +8364,8 @@ def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
     Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
     `ProcessNewBlock` does not reach `AcceptBlock`, which indexes the
     header, for a body failing it (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
-    v31.1 on a signet whose challenge is `OP_0`: `submitblock` answers
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Measured against bitcoind
+    on a signet whose challenge is `OP_0`: `submitblock` answers
     `bad-signet-blksig` and `getblockheader` answers `Block not found`.
     Off signet, the test's block is accepted.
     """
@@ -8377,9 +8405,9 @@ def test_submit_block_answers_high_hash_before_check_block_s_body_rules(
     Core's `CheckBlock` asks `CheckBlockHeader` before the signet solution
     and the coinbase, and `ProcessNewBlock` indexes no header for a block
     failing `CheckBlock` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
-    v31.1 on a signet whose challenge is `OP_0`: a block at height 1 whose
-    hash misses its target is answered `high-hash`, and `getblockheader`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Measured against bitcoind
+    on a signet whose challenge is `OP_0`: a block at height 1 whose hash
+    misses its target is answered `high-hash`, and `getblockheader`
     answers `Block not found`.
     """
     node = regtest_node()
@@ -8404,7 +8432,7 @@ def test_submit_block_marks_a_contextual_failure_off_the_active_chain(
 
     Core's `AcceptBlock` asks `ContextualCheckBlock` of every new block it
     stores, on the active chain or not, and `submitblock` answers its
-    reason (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    reason (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag).
     """
     node = regtest_node()
@@ -8426,7 +8454,7 @@ def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
 ) -> None:
     """ISS 1390: Core's `ConnectBlock`, run synchronously where the tip moves.
 
-    Measured against bitcoind v31.1: `block-script-verify-flag-failed
+    Measured against bitcoind: `block-script-verify-flag-failed
     (OP_RETURN was encountered)`.
     """
     node = regtest_node()
@@ -8468,7 +8496,7 @@ def test_submit_block_answers_a_spend_refusal_as_its_reason_alone(
     """`CheckTxInputs`' refusals are `GetRejectReason()`, without its details.
 
     Core's `submitblock` answers the reason alone (`src/rpc/mining.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), where `TxRejectedError`'s
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), where `TxRejectedError`'s
     own `str()` carries the details after it.
     """
     node = regtest_node()
@@ -8554,7 +8582,7 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
 
     Core asks the weight last in `ContextualCheckBlock`, so a wrong coinbase
     height is `bad-cb-height` first (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where segwit binds only
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Where segwit binds only
     after the block's own height, its witness makes the body mutated:
     Core's `unexpected-witness`, ahead of the weight, and the header is
     left alone.
@@ -8602,9 +8630,9 @@ def test_submit_block_marks_a_body_over_the_weight_behind_time_too_new(
     assert block_info.status == BlockStatus.invalid
 
 
-# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
-# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
-# through `submitblock` and answered it back through `getblockheader false`.
+# A regtest header at height 1 of version -1. A bitcoind run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) takes it
+# through `submitheader` and answers it back through `getblockheader false`.
 _A_VERSION_MINUS_ONE_HEADER = (
     "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
     "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
@@ -8657,8 +8685,9 @@ def test_test_mempool_accept_default_maxfeerate_refuses_a_high_fee(
 ) -> None:
     """`testmempoolaccept` answers `max-fee-exceeded`, no `maxfeerate` given.
 
-    bitcoind v31.1's own default `maxfeerate` is 0.1 BTC/kvB
-    (`DEFAULT_MAX_RAW_TX_FEE_RATE`). btclib-org/btclib-node#1371
+    Core's own default `maxfeerate` is 0.1 BTC/kvB
+    (`DEFAULT_MAX_RAW_TX_FEE_RATE`, `src/node/transaction.h:28`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). btclib-org/btclib-node#1371
     """
     monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
     (result,) = mempool_accept(
@@ -8701,7 +8730,7 @@ def test_test_mempool_accept_an_allowed_tx_answers_core_s_fees(
     """`fees` is `base`, `effective-feerate` and its own wtxid, as Core's.
 
     The key order and the amounts are `src/rpc/mempool.cpp`'s, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag: BTC, and the feerate in
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag: BTC, and the feerate in
     BTC per kvB, rounded down. btclib-org/btclib-node#1799
     """
 
@@ -8905,7 +8934,7 @@ def test_send_raw_transaction_a_maxburnamount_param_allows_a_smaller_burn(
 def test_an_amount_string_core_refuses_is_invalid_amount(text: str) -> None:
     """`ParseFixedPoint` refuses each of these; `Decimal` read most of them.
 
-    `src/util/strencodings.cpp`, at bitcoin/bitcoin@9be056a8a7.
+    `src/util/strencodings.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     btclib-org/btclib-node#1664
     """
     with pytest.raises(RpcError) as raised:
@@ -8998,7 +9027,7 @@ def test_send_raw_transaction_maxburnamount_negative_is_out_of_range() -> None:
 def test_send_raw_transaction_refuses_a_confirmed_transaction_in_core_s_words() -> None:
     """A transaction whose own output is already in the UTXO set is `-27`.
 
-    bitcoind v31.1 answers a resubmitted, already-confirmed transaction
+    bitcoind answers a resubmitted, already-confirmed transaction
     `RPC_VERIFY_ALREADY_IN_UTXO_SET` (-27), "Transaction outputs already
     in utxo set" -- not `RPC_VERIFY_ERROR` (-25) "Missing prevouts", the
     prevout-lookup failure a confirmed transaction's own *inputs*, spent

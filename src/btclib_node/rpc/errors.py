@@ -26,7 +26,7 @@ _HEX_DIGITS = frozenset(string.hexdigits)
 def is_hex(text: str) -> bool:
     """Core's `IsHex`: a non-empty, even-length string of hexadecimal digits.
 
-    `src/util/strencodings.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/util/strencodings.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag. `bytes.fromhex` skips whitespace between bytes, and so does
     btclib's `bytes_from_octets`; `IsHex` refuses it, so a string is
     checked here before either decodes it. btclib-org/btclib-node#1372
@@ -86,26 +86,26 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
     r"""Refuse a declared argument's own JSON type, Core's own wrapped shape.
 
     `RPCMethod::HandleRequest`'s own type check (`src/rpc/util.cpp`
-    :652-661, read at `bitcoin/bitcoin@b91d983f66`) collects every
-    mismatched argument into one `UniValue` object, keyed
+    :656-665, read at bitcoin/bitcoin@f0de87f040, the v32.1 tag) collects
+    every mismatched argument into one `UniValue` object, keyed
     `strprintf("Position %s (%s)", i + 1, arg.m_names)`, and wraps it in
     `strprintf("Wrong type passed:\n%s", arg_mismatch.write(4))` --
-    `UniValue::write`'s own four-space indent and lack of a trailing
-    newline after the closing brace
-    (`src/univalue/lib/univalue_write.cpp`), reproduced literally in
-    `type_errors` rather than through a JSON encoder: every key and
-    value is text this tree writes itself, with nothing to escape. Measured
-    against a real `bitcoind` (v31.1.0, `-regtest`) answering a raw
+    `UniValue::write`'s own four-space indent and lack of a trailing newline
+    after the closing brace (`src/univalue/lib/univalue_write.cpp`),
+    reproduced literally in `type_errors` rather than through a JSON
+    encoder: every key and value is text this tree writes itself, with
+    nothing to escape. Measured against a real `bitcoind`, at the release
+    `integration-bitcoind.yml` pins, on `-regtest`, answering a raw
     `testmempoolaccept`, `getblockheader`, `getblockhash`,
-    `getrawtransaction` and `sendrawtransaction` call each with one
-    argument of the wrong JSON type.
+    `getrawtransaction` and `sendrawtransaction` call each with one argument
+    of the wrong JSON type.
 
     `position` is the argument's own one-based position among the
     method's declared arguments, the way Core counts it (`i + 1`), and
     `name` is Core's own declared name for it -- `arg.m_names` itself,
     the raw field the key above is built from, not `GetFirstName()`'s
     `|`-trimmed form (`m_names.substr(0, m_names.find('|'))`,
-    `src/rpc/util.cpp:917-920`), which only `RPCArg::ToString` reads,
+    `src/rpc/util.cpp:921-924`), which only `RPCArg::ToString` reads,
     for the usage string, and which `HandleRequest`'s own type check
     never calls. The two coincide for every argument checked here except
     `getrawtransaction`'s own second one, declared `"verbosity|verbose"`
@@ -122,7 +122,7 @@ def check_object(
 ) -> None:
     """Core's `RPCTypeCheckObj` with `fStrict`: each named field, then no other.
 
-    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `src/rpc/util.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     `fields` maps a name to the JSON type it must have, named as univalue
     does. A missing field is null: refused as "Missing" unless
     `allow_null`, where it and an explicit null pass. Every error is
@@ -164,7 +164,7 @@ def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:
 def parse_hash_v(name: str, value: str) -> bytes:
     """Answer Core's own `ParseHashV`: a hash from its own 64-character hex.
 
-    `ParseHashV` (`src/rpc/util.cpp:116-124`, at bitcoin/bitcoin@9be056a8a7)
+    `ParseHashV` (`src/rpc/util.cpp:122-130`, at bitcoin/bitcoin@f0de87f040)
     checks the string's own length before it ever tries to decode it:
     `uint256::FromHex` answers `nullopt` for anything but exactly 64
     characters, so a wrong length is `"<name> must be of length 64 (not
@@ -175,7 +175,7 @@ def parse_hash_v(name: str, value: str) -> bytes:
     only, so whitespace, which `bytes.fromhex` skips, is refused here.
     `name` is each call site's own choice, matching Core's: `"hash"` for
     `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
-    `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
+    `gettxout` (`src/rpc/blockchain.cpp:679,882,1259`, same sha), and
     `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
     hash arguments, Core's own names for them
     (`src/rpc/rawtransaction.cpp:304,317`, same sha).
@@ -224,7 +224,8 @@ def bool_param(params: list[Any], position: int, *, name: str, default: bool) ->
     declared `default`. Anything else is read, and refused with
     `RPC_TYPE_ERROR` where it is not an actual JSON bool -- the same
     check `RPCMethod::HandleRequest` makes for every declared argument
-    before the handler body runs at all (`src/rpc/util.cpp:653-661`),
+    before the handler body runs at all (`src/rpc/util.cpp:656-665`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     applied here to the one JSON type this helper's every caller
     declares. `position` is the zero-based index into `params`, the way
     every caller here already addresses it; `bool_mismatch` above is

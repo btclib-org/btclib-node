@@ -6,11 +6,13 @@
 
 The node is a stub holding the coins a test names. A signing case spends
 one output, which the call is told of or finds on the stub's chain, and
-`VECTORS` holds what `bitcoind` v31.1.0's `signrawtransactionwithkey`
-answered for the same transaction, keys and `prevtxs`: the hex and the
-error of the input, if it is left unsigned. `REFUSALS` is what it refuses
-and how. `tests/integration/signing_test.py` asks a live `bitcoind` for
-both again.
+`VECTORS` holds what `bitcoind`'s `signrawtransactionwithkey` answered
+for the same transaction, keys and `prevtxs`: the hex and the error of
+the input, if it is left unsigned. `REFUSALS` is what it refuses and how.
+`tests/integration/signing_test.py` asks a live `bitcoind` for both
+again.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import base64
@@ -281,7 +283,7 @@ def accepted(hex_tx: str, script: bytes, amount: int = AMOUNT) -> bool:
     return True
 
 
-# what `bitcoind` v31.1.0 answered for each case above, called as
+# what `bitcoind` answered for each case above, called as
 # `case_call` calls it: the hex, and the error where the input is unsigned
 VECTORS: dict[str, tuple[str, str]] = {
     "p2pk": (
@@ -428,7 +430,7 @@ def prev_refusal(
 
 SCRIPT_HASH = p2sh(THREE).hex()
 
-# method, parameters, and the code and message `bitcoind` v31.1.0 refuses with
+# method, parameters, and the code and message `bitcoind` refuses with
 REFUSALS: list[tuple[str, list[Any], int, str]] = [
     ("signmessagewithprivkey", [], -1, HELP_TEXT["signmessagewithprivkey"]),
     ("signmessagewithprivkey", [KEY], -1, HELP_TEXT["signmessagewithprivkey"]),
@@ -658,7 +660,7 @@ REFUSALS: list[tuple[str, list[Any], int, str]] = [
     ("combinerawtransaction", [[RAW, RAW]], -25, "Input not found or already spent"),
 ]
 
-# what Core's master refuses and v31.1 does not
+# what Core refuses since bitcoin/bitcoin@6d86184a8b
 MASTER_REFUSALS: list[tuple[str, list[Any], int, str]] = [
     (
         "combinerawtransaction",
@@ -1127,8 +1129,8 @@ def test_the_stack_of_a_script_sig_is_where_its_evaluation_stops() -> None:
     assert stack("88") == []
 
 
-# what `bitcoind` v31.1.0 answered for a taproot output mined to, spent
-# and signed with the key of its output: the transaction, signed with
+# what `bitcoind` answered for a taproot output mined to, spent and
+# signed with the key of its output: the transaction, signed with
 # SIGHASH_DEFAULT and with ALL, and its answers
 TAPROOT_FUNDING = bytes.fromhex(
     "8888b889c774f2900b98c82fdb95d95026dbb4ac1e1fb6a78056a679423e5c44"
@@ -1137,7 +1139,7 @@ TAPROOT_VALUE = 5_000_000_000
 TAPROOT_RAW = "0200000001445c3e4279a65680a7b61f1eacb4db2650d995db2fc8980b90f274c789b888880000000000fdffffff0118ee052a01000000160014362995a6e6922a04e0b832a80bc56c33709a42d200000000"
 TAPROOT_DEFAULT = "02000000000101445c3e4279a65680a7b61f1eacb4db2650d995db2fc8980b90f274c789b888880000000000fdffffff0118ee052a01000000160014362995a6e6922a04e0b832a80bc56c33709a42d2014013fa78124c7b02a14a221111fa3f156bd8fa203a16f1d8537149818780372e0fd0f47d6e57b143bafe51ca79c4b917ed45711fb14f3abf05395b3c355d0c315100000000"
 TAPROOT_ALL = "02000000000101445c3e4279a65680a7b61f1eacb4db2650d995db2fc8980b90f274c789b888880000000000fdffffff0118ee052a01000000160014362995a6e6922a04e0b832a80bc56c33709a42d20141f1f4945a6c379f3252f610704e3ffb511349de010eb906d90469e12be607f0e0aeaf39942a2e075ce5c5931e03e9a3e43044c2d1482442ef5a58197cf8dd8b170100000000"
-# `bitcoind` v31.1.0's `signrawtransactionwithkey` of TAPROOT_ALL with the key
+# `bitcoind`'s `signrawtransactionwithkey` of TAPROOT_ALL with the key
 TAPROOT_RESIGNED = "02000000000101445c3e4279a65680a7b61f1eacb4db2650d995db2fc8980b90f274c789b888880000000000fdffffff0118ee052a01000000160014362995a6e6922a04e0b832a80bc56c33709a42d2014013fa78124c7b02a14a221111fa3f156bd8fa203a16f1d8537149818780372e0fd0f47d6e57b143bafe51ca79c4b917ed45711fb14f3abf05395b3c355d0c315100000000"
 
 
@@ -1161,7 +1163,7 @@ def test_a_taproot_input_signed_with_all_is_signed_again_by_default() -> None:
     assert TAPROOT_RESIGNED == TAPROOT_DEFAULT
 
 
-# `bitcoind` v31.1.0's `signrawtransactionwithkey` of a spend of a P2SH
+# `bitcoind`'s `signrawtransactionwithkey` of a spend of a P2SH
 # 2-of-3 with the key A, and with the key B, and what its
 # `combinerawtransaction` answers for them: A_AFTER has `OP_1 OP_DROP`
 # before its script_sig, which `Stacks` evaluates
