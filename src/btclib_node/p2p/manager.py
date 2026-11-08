@@ -66,6 +66,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
     service_key,
+    sockaddr_scope,
 )
 from btclib_node.p2p.addrrelay import is_relayable, relay_destinations
 from btclib_node.p2p.anchors import (
@@ -1019,6 +1020,7 @@ class P2pManager(threading.Thread):
         prefer_evict: bool = False,
         addr_fetch: bool = False,
         addr_name: str | None = None,
+        scope_id: int = 0,
         local_address: tuple[str, int] | None = None,
         inbound_onion: bool = False,
         granted: NetPermissionFlags | None = None,
@@ -1079,6 +1081,9 @@ class P2pManager(threading.Thread):
 
         `granted` is what the listener the connection reached grants
         (`-whitebind`), which `-whitelist` adds to.
+
+        `scope_id` is the IPv6 scope of the address an inbound peer was
+        accepted from, which `server` below passes.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -1113,6 +1118,7 @@ class P2pManager(threading.Thread):
         conn.prefer_evict = prefer_evict
         conn.addr_fetch = addr_fetch
         conn.addr_name = addr_name
+        conn.scope_id = scope_id
         conn.addr_bind = self._bind_address(client)
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         if local_address is not None:
@@ -1133,8 +1139,8 @@ class P2pManager(threading.Thread):
         fails, which Core logs; where the family is neither IPv4 nor IPv6
         (`CService::SetSockAddr`, `src/netaddress.cpp`, same sha); and where
         `is_valid_host`, Core's `IsValid`, refuses the address. An IPv6
-        scope is dropped, as `getsockname` puts it apart from the host
-        (btclib-org/btclib-node#2266).
+        address keeps its scope, which `CService::SetSockAddr` reads from
+        `sin6_scope_id` (btclib-org/btclib-node#2266).
         """
         try:
             sockname = client.getsockname()
@@ -1145,7 +1151,7 @@ class P2pManager(threading.Thread):
             return None
         if not is_valid_host(ip_address(sockname[0])):
             return None
-        return ip_and_port(sockname[0], sockname[1])
+        return ip_and_port(sockname[0], sockname[1], sockaddr_scope(sockname))
 
     def promote_connection(self, connection_id: int) -> None:
         """Move a connection out of the handshake and into the herd.
@@ -3721,7 +3727,8 @@ class P2pManager(threading.Thread):
                     # AF_INET6 one -- the flow info and the scope id
                     # BIP155 has nowhere to carry either,
                     # `query_dns_seed`'s own sockaddr comment being
-                    # where that is argued
+                    # where that is argued. `sockaddr_scope` below
+                    # keeps the scope id, for `getpeerinfo`.
                     address = peer_address(*sockaddr[:2])
                     # `CreateNodeFromAcceptedSocket`'s `inbound_onion`: the
                     # accepted socket's own address, concrete where the
@@ -3799,6 +3806,7 @@ class P2pManager(threading.Thread):
                         address,
                         inbound=True,
                         prefer_evict=discouraged,
+                        scope_id=sockaddr_scope(sockaddr),
                         local_address=bound,
                         inbound_onion=inbound_onion,
                         granted=granted,

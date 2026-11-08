@@ -68,6 +68,7 @@ __all__ = [
     "network_class",
     "peer_address",
     "service_key",
+    "sockaddr_scope",
 ]
 
 # Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040,
@@ -277,7 +278,16 @@ def can_connect(address: NetworkAddressV2) -> bool:
     return address.network_id in _IP_NETWORKS
 
 
-def ip_and_port(ip: str, port: int) -> str:
+def sockaddr_scope(sockaddr: tuple[Any, ...]) -> int:
+    """Return the scope id of a socket's address, 0 where it has none.
+
+    CPython gives an `AF_INET6` address as `(host, port, flowinfo,
+    scope_id)` and an `AF_INET` one as `(host, port)`.
+    """
+    return int(next(iter(sockaddr[3:]), 0))
+
+
+def ip_and_port(ip: str, port: int, scope_id: int = 0) -> str:
     """Return the endpoint the way Core's `CService::ToStringAddrPort` does.
 
     `"[" + ToStringAddr() + "]:" + port_str` for every network that
@@ -296,6 +306,12 @@ def ip_and_port(ip: str, port: int) -> str:
     peer would read `[::ffff:1.2.3.4]:8333`, a `NetworkAddress` holding
     every address in the sixteen octets of an IPv6 one.
 
+    A non-zero `scope_id` is written after an IPv6 host as `%` and the
+    number, in place of any scope the host's text carries: Core's
+    `IPv6ToString` writes `m_scope_id` so (`src/netaddress.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). An IPv4 host, mapped or
+    not, is written without one, as Core does.
+
     Raises `ValueError` where the host is not an IP address, which is
     what `ipaddress.ip_address` answers with: a hostname is refused
     rather than shown with brackets guessed at.
@@ -305,6 +321,8 @@ def ip_and_port(ip: str, port: int) -> str:
         return f"{parsed}:{port}"
     if mapped := parsed.ipv4_mapped:
         return f"{mapped}:{port}"
+    if scope_id:
+        return f"[{str(parsed).partition('%')[0]}%{scope_id}]:{port}"
     return f"[{parsed}]:{port}"
 
 

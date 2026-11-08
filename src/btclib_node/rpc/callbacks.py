@@ -1631,15 +1631,17 @@ def _peer_addr(p2p_conn: Connection) -> str:
     the formatted peer address otherwise, fixed when the node is built
     (`CNode::CNode`, `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
     v32.1 tag). `p2p_conn.addr_name` is this node's own `m_addr_name`,
-    `None` where Core's falls back to the address. `disconnectnode`
-    matches its `address` against this same `addr`, as Core's
+    `None` where Core's falls back to the address. That address is
+    written with its IPv6 scope, `p2p_conn.scope_id`, as
+    `CService::ToStringAddrPort` writes it. `disconnectnode` matches its
+    `address` against this same `addr`, as Core's
     `CConnman::DisconnectNode` matches `m_addr_name`
     (btclib-org/btclib-node#1301).
     """
     if p2p_conn.addr_name is not None:
         return p2p_conn.addr_name
     endpoint = network_address(p2p_conn.address)
-    return ip_and_port(str(endpoint.ip), endpoint.port)
+    return ip_and_port(str(endpoint.ip), endpoint.port, p2p_conn.scope_id)
 
 
 def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:

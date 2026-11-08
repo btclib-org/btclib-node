@@ -211,6 +211,7 @@ def a_peer(
     bind: str | None = "5.6.7.8",
     local: str = "9.10.11.12",
     addr_name: str | None = None,
+    scope_id: int = 0,
     user_agent: bytes = b"/btclib:test/",
     latency: float = 0.5,
     min_ping_time: float = 0.25,
@@ -255,6 +256,7 @@ def a_peer(
         version_message=version_message if versioned else None,
         address=peer_address(peer, 8333),
         addr_name=addr_name,
+        scope_id=scope_id,
         addr_bind=None if bind is None else ip_and_port(bind, 18444),
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
@@ -931,6 +933,21 @@ def test_a_peer_whose_socket_is_closed_is_listed_and_counted(
         counts["connections_out"],
     ) == (2, 1, 1)
     assert counts["connections"] == len(peers)
+
+
+def test_a_link_local_peer_answers_addr_with_its_scope() -> None:
+    """ISS 2266: Core writes the scope after the host, as `%` and a number.
+
+    Measured on bitcoind v32.1.0 on macOS, an inbound peer over `lo0`:
+    `"addr": "[fe80::1%1]:59054"`. A peer dialled by name answers the
+    name as it was given. `addrbind` is `P2pManager._bind_address`'s.
+    """
+    peer = a_peer(peer="fe80::1", scope_id=1)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "[fe80::1%1]:8333"
+    named = a_peer(peer="fe80::1", addr_name="[fe80::1%lo0]:8333", scope_id=1)
+    (info,) = get_peer_info(a_node({7: named}), _CONN, [])
+    assert info["addr"] == "[fe80::1%lo0]:8333"
 
 
 def test_a_peer_without_a_bind_address_answers_no_addrbind() -> None:
@@ -8096,6 +8113,22 @@ def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> No
     (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 2]
     disconnect_node(node, _CONN, [info["addr"]])
     assert removed == [2]
+
+
+def test_disconnectnode_matches_a_scoped_peer_by_its_scoped_address() -> None:
+    """ISS 2266: the address carries the scope, as `getpeerinfo`'s `addr` does.
+
+    Core's `CConnman::DisconnectNode` compares `m_addr_name` as a string
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+    the same address without its scope matches no peer.
+    """
+    node, removed = a_disconnecting_node({3: a_peer(peer="fe80::1", scope_id=1)})
+    with pytest.raises(RpcError) as raised:
+        disconnect_node(node, _CONN, ["[fe80::1]:8333"])
+    assert (raised.value.code, raised.value.message) == _DISCONNECT_NOT_FOUND
+    assert removed == []
+    disconnect_node(node, _CONN, ["[fe80::1%1]:8333"])
+    assert removed == [3]
 
 
 def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
