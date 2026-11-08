@@ -4164,6 +4164,28 @@ def test_a_fork_ends_ibd_at_its_first_recent_block_whatever_its_tip(
     assert [stats.height for stats in node.mempool_estimator.blocks] == [2, 3]
 
 
+def test_a_fork_ends_ibd_at_its_first_block_with_the_minimum_work(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2178: each block of a fork is judged on its own chainwork.
+
+    Every block of the fork is recent. Its first block carries less than
+    `minimum_chain_work`, and its second carries exactly that much, so
+    initial block download ends at the second.
+    """
+    node.config.minimum_chain_work = 6
+    heights = _recorded_heights(node, monkeypatch)
+    commits = _commits(monkeypatch)
+    now = datetime.now(UTC)
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    fork = _dated_chain([now, now + timedelta(seconds=1), now + timedelta(seconds=2)])
+    block_index = connect(node, fork)
+    assert [block_index.chainwork[block.header.hash] for block in fork] == [4, 6, 8]
+    assert commits == [1, 1, 3]
+    assert node.is_initial_block_download is False
+    assert heights == [2, 3]
+
+
 def test_unknown_activations_are_not_checked_during_initial_block_download(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
