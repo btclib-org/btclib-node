@@ -13,13 +13,18 @@ is btclib's own and is tested there (btclib-org/btclib#1581).
 
 import asyncio
 import hashlib
+import logging
+import os
+import random
 import secrets
 import socket
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -41,6 +46,7 @@ from btclib_node.p2p.eviction import Network, net_class, net_group
 from tests import call_within
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from btclib_node.chains import Chain
@@ -89,6 +95,22 @@ def plant_answered(
     peer_db.add_addresses([address], time_penalty=0)
     peer_db._good(address, time.time() if at is None else at, test_before_evict=False)
     peer_db._last_try.pop(address_module.endpoint_key(address), None)
+
+
+class Coin(random.Random):
+    """Draws whose coin, `randrange(2)`, always lands on `face`."""
+
+    def __init__(self, face: int) -> None:
+        """Keep `face`."""
+        super().__init__()
+        self.face = face
+
+    @override
+    def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
+        """Return `face` for the coin, a real draw otherwise."""
+        if start == 2:
+            return self.face
+        return super().randrange(start, *args, **kwargs)
 
 
 def side_rows(side: Any) -> list[NetworkAddressV2]:
@@ -1168,7 +1190,7 @@ def test_a_draw_takes_a_bucket_before_an_address() -> None:
 
 @pytest.mark.parametrize(("start", "index"), [(0, 0), (11, 1), (12, 1), (13, 0)])
 def test_a_draw_takes_the_first_address_from_a_position_on(
-    monkeypatch: pytest.MonkeyPatch, start: int, index: int
+    start: int, index: int
 ) -> None:
     """The first position from the one drawn, looping round, as `Select_`."""
     rows = [peer_address("1.2.3.4", 1), peer_address("1.2.3.4", 2)]
@@ -1179,11 +1201,13 @@ def test_a_draw_takes_the_first_address_from_a_position_on(
         lambda _row: True,
         lambda _row: 1.0,
     )
-    monkeypatch.setattr(
-        secrets, "choice", lambda seq: start if isinstance(seq, range) else seq[0]
-    )
-    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
-    assert address_module._select(None, side) == rows[index]
+
+    class Draws(random.Random):
+        @override
+        def randrange(self, *_args: Any, **_kwargs: Any) -> int:
+            return start
+
+    assert address_module._select(None, side, Draws()) == rows[index]
 
 
 def test_a_held_address_is_updated_where_its_bucket_is_full() -> None:
@@ -1943,7 +1967,7 @@ def test_get_addr_is_capped_at_the_most_it_may_answer() -> None:
 
 @pytest.mark.parametrize(("coin", "table"), [(1, "answered"), (0, "gossiped")])
 def test_a_coin_decides_between_the_answered_and_the_gossiped_table(
-    monkeypatch: pytest.MonkeyPatch, coin: int, table: str
+    coin: int, table: str
 ) -> None:
     """ISS 1201: Core's `Select_` flips `randbool()` where both tables hold one.
 
@@ -1957,7 +1981,7 @@ def test_a_coin_decides_between_the_answered_and_the_gossiped_table(
     gossiped = peer_address("5.6.7.8", 8333)
     peer_db.add_addresses([answered, gossiped])
     peer_db.add_active_address(answered)
-    monkeypatch.setattr(secrets, "randbelow", lambda n: coin)
+    peer_db._rng = Coin(coin)
     drawn = peer_db.random_address()
     assert drawn is not None
     expected = answered if table == "answered" else gossiped
@@ -1979,7 +2003,7 @@ def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
     peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=1), gossiped])
     peer_db.add_active_address(answered)
     # a `functools.partial` over `_select`, whose two tables are its args
-    tried, new = cast("Any", peer_db.address_sampler()).args
+    tried, new, _rng = cast("Any", peer_db.address_sampler()).args
     assert [a.address for a in side_rows(tried)] == [answered.address]
     assert [a.address for a in side_rows(new)] == [gossiped.address]
 
@@ -1995,7 +2019,7 @@ def test_the_tried_side_draws_a_row_terrible_by_age_as_select_does() -> None:
     now = int(time.time())
     terrible = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
     plant_answered(peer_db, terrible, at=terrible.timestamp)
-    tried, _ = cast("Any", peer_db.address_sampler()).args
+    tried, _, _ = cast("Any", peer_db.address_sampler()).args
     assert [a.address for a in side_rows(tried)] == [terrible.address]
     assert peer_db.get_addr(0, 0) == []
 
@@ -2018,7 +2042,7 @@ def test_the_gossiped_side_leaves_out_the_answered_endpoint_alone(
     answered = peer_address("1.2.3.4", 8333)
     peer_db.add_addresses([answered, other])
     peer_db.add_active_address(answered)
-    _, new = cast("Any", peer_db.address_sampler()).args
+    _, new, _ = cast("Any", peer_db.address_sampler()).args
     assert side_rows(new) == [other]
 
 
@@ -2108,7 +2132,7 @@ def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
 
 
 def test_an_address_that_answered_survives_a_restart_and_is_drawn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """Which address answered survives a restart, and is drawn as answered.
 
@@ -2127,7 +2151,7 @@ def test_an_address_that_answered_survives_a_restart_and_is_drawn(
     second = a_peer_db(data_dir=tmp_path)
     assert second.addresses == {answered, unconfirmed}
     # the coin fixed to the answered table, which only `answered` is in
-    monkeypatch.setattr(secrets, "randbelow", lambda n: 1)
+    second._rng = Coin(1)
     drawn = second.random_address()
     assert drawn is not None
     assert drawn.address == answered.address
@@ -2547,7 +2571,7 @@ def test_an_address_gossiped_again_may_take_a_further_bucket(
     # the odds do not come up
     peer_db.add_addresses([newer], source=peer_address("8.8.8.8", 1))
     assert len(peer_db._slots[endpoint]) == 1
-    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
+    monkeypatch.setattr(address_module, "_roll", lambda _factor, _rng: True)
     # an older gossip does not even draw
     peer_db.add_addresses([address], source=peer_address("7.7.7.7", 1))
     assert len(peer_db._slots[endpoint]) == 1
@@ -2870,7 +2894,7 @@ def test_gossip_through_the_source_that_gave_a_slot_takes_no_other(
     source = peer_address("9.9.9.9", 1)
     address = peer_address("1.2.3.4", 8333, timestamp=now - 7200)
     peer_db.add_addresses([address], source=source)
-    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
+    monkeypatch.setattr(address_module, "_roll", lambda _factor, _rng: True)
     again = replace(address, timestamp=now)
     assert peer_db.add_addresses([again], source=source) == 0
     assert len(peer_db._slots[address_module._endpoint(address)]) == 1
@@ -2923,15 +2947,20 @@ def test_a_draw_grows_its_acceptance_with_every_address_it_declines() -> None:
     peer_db.attempt(address)
     calls: list[None] = []
 
-    def random() -> float:
-        calls.append(None)
-        assert len(calls) < 100
-        return 0.5
+    class Draws(random.Random):
+        @override
+        def random(self) -> float:
+            calls.append(None)
+            assert len(calls) < 100
+            return 0.5
 
-    draw = peer_db.address_sampler()
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(address_module, "_RNG", SimpleNamespace(random=random))
-        assert draw() == address
+        # defined, so that `randrange` and `choice` draw bits, not `random`
+        @override
+        def getrandbits(self, k: int, /) -> int:
+            return super().getrandbits(k)
+
+    peer_db._rng = Draws()
+    assert peer_db.address_sampler()() == address
     # 1.2 ** 22 * 0.01 is the first to pass one half
     assert len(calls) == 23
 
@@ -2969,9 +2998,7 @@ def test_the_odds_of_a_further_bucket_are_a_draw_of_one_in_a_power_of_two() -> N
         draws.append(factor)
         return 0
 
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(address_module, "_RNG", SimpleNamespace(randrange=randrange))
-        assert _REAL_ROLL(4)
+    assert _REAL_ROLL(4, cast("random.Random", SimpleNamespace(randrange=randrange)))
     assert draws == [4]
 
 
@@ -3023,3 +3050,258 @@ def test_a_stored_row_takes_no_more_slots_than_core_allows(tmp_path: Path) -> No
     second = a_peer_db(data_dir=tmp_path)
     assert len(second._slots[address_module._endpoint(address)]) == 8
     second.close()
+
+
+# Core's five measured slots: bitcoind v32.1.0 on regtest under
+# `-test=addrman`, each address added by `addpeeraddress` and read back
+# with `getrawaddrman` as "bucket/position"
+_CORE_SLOTS = [
+    ("1.2.3.4", 8333, False, "774/4"),
+    ("1.2.3.5", 18444, False, "774/42"),
+    ("2a01:4f8::1", 8333, False, "76/35"),
+    ("5.6.7.8", 8333, True, "3/35"),
+    ("250.1.2.3", 8333, True, "174/7"),
+]
+
+
+def core_table(**kwargs: Any) -> PeerDB:
+    """Build a `deterministic` table holding `_CORE_SLOTS`, as Core did."""
+    peer_db = PeerDB(cast("Chain", None), None, deterministic=True, **kwargs)
+    for host, port, tried, _ in _CORE_SLOTS:
+        address = peer_address(host, port, timestamp=int(time.time()))
+        assert peer_db.add_addresses([address], source=address)
+        if tried:
+            assert peer_db.add_active_address(address)
+    return peer_db
+
+
+def test_a_deterministic_table_gives_each_address_core_s_slot() -> None:
+    """`-test=addrman`: `nKey` is `uint256{1}`, so the slots are Core's."""
+    with pytest.MonkeyPatch.context() as patch:
+        # the key a table is otherwise built with, which this one ignores
+        patch.setattr(address_module, "_new_bucket_key", lambda: bytes(range(32)))
+        peer_db = core_table()
+    assert peer_db._bucket_key == bytes.fromhex("01" + "00" * 31)
+    slots: dict[str, Any] = {}
+    for endpoint, held in peer_db._slots.items():
+        for bucket, position in held:
+            slots[f"{bucket}/{position}"] = endpoint
+    for key, (bucket, position) in peer_db._tried_slot_of.items():
+        row = peer_db.active_addresses[peer_db._active_index[key]]
+        slots[f"{bucket}/{position}"] = address_module._endpoint(row)
+    assert slots == {
+        slot: address_module._endpoint(peer_address(host, port))
+        for host, port, _, slot in _CORE_SLOTS
+    }
+
+
+def test_a_store_s_key_wins_over_the_deterministic_one(tmp_path: Path) -> None:
+    """`Unserialize` reads `nKey` from `peers.dat`, however it was built."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(address_module, "_new_bucket_key", lambda: bytes(range(32)))
+        first = a_peer_db(data_dir=tmp_path)
+    key = first._bucket_key
+    first.close()
+    second = PeerDB(cast("Chain", None), tmp_path, deterministic=True)
+    assert second._bucket_key == key != address_module._DETERMINISTIC_KEY
+    second.close()
+
+
+def test_a_deterministic_table_draws_the_same_on_every_build() -> None:
+    """The draws of two tables built and called alike are the same."""
+    first, second = core_table(), core_table()
+    for table in (first, second):
+        table._collisions.update(table._rows)
+    assert first.get_addr(0, 0) == second.get_addr(0, 0)
+    assert [first.random_address() for _ in range(20)] == [
+        second.random_address() for _ in range(20)
+    ]
+    assert [first.select_tried_collision() for _ in range(5)] == [
+        second.select_tried_collision() for _ in range(5)
+    ]
+    assert first._rng is not address_module._RNG
+    assert a_peer_db()._rng is address_module._RNG
+
+
+def test_a_deterministic_answer_does_not_follow_the_set_s_order() -> None:
+    """`get_addr` sorts before its shuffle: a set's order is the hash's."""
+    peer_db = core_table()
+    rows = sorted(peer_db.addresses, key=address_module._endpoint)
+    random.Random(address_module._DETERMINISTIC_SEED).shuffle(rows)
+    peer_db._rng = random.Random(address_module._DETERMINISTIC_SEED)
+    assert peer_db.get_addr(0, 0) == rows
+
+
+# A deterministic table of the addresses `_CORE_SLOTS` names, each tried
+# and waiting on a collision with itself, and what its draws answer:
+# printed by a process of its own, whose hash seed the caller sets.
+_DRAWS_OF_A_DETERMINISTIC_TABLE = """
+import time
+from btclib_node.p2p.address import PeerDB, _endpoint, peer_address
+
+table = PeerDB(None, None, deterministic=True)
+for host in ("1.2.3.4", "1.2.3.5", "2a01:4f8::1", "5.6.7.8", "250.1.2.3"):
+    address = peer_address(host, 8333, timestamp=int(time.time()))
+    table.add_addresses([address], source=address)
+    table.add_active_address(address)
+table._collisions.update(table._rows)
+print([_endpoint(a) for a in table.get_addr(0, 0)])
+drawn = [table.select_tried_collision() for _ in range(8)]
+print([row and _endpoint(row) for row in drawn])
+"""
+
+
+def test_a_deterministic_table_draws_the_same_under_any_hash_seed() -> None:
+    """A set's order is the hash seed's: `get_addr` and the collisions sort."""
+    answers = {
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", _DRAWS_OF_A_DETERMINISTIC_TABLE],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+            timeout=60,
+        ).stdout
+        for seed in ("1", "2", "3")
+    }
+    assert len(answers) == 1
+
+
+@pytest.mark.parametrize(("ratio", "draw", "runs"), [(0, 0, 0), (3, 1, 0), (3, 0, 1)])
+def test_a_table_checks_itself_one_time_in_its_ratio(
+    ratio: int, draw: int, runs: int
+) -> None:
+    """`Check`: no check at `0`, else where `randrange(ratio)` draws `0`."""
+    peer_db = PeerDB(cast("Chain", None), None, consistency_check_ratio=ratio)
+    draws: list[int] = []
+    ran: list[None] = []
+
+    class Draws(random.Random):
+        @override
+        def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
+            draws.append(start)
+            return draw
+
+    peer_db._rng = Draws()
+    with pytest.MonkeyPatch.context() as patch:
+
+        def consistency() -> int:
+            ran.append(None)
+            return 0
+
+        patch.setattr(peer_db, "_consistency", consistency)
+        peer_db._check()
+    assert draws == ([ratio] if ratio else [])
+    assert len(ran) == runs
+
+
+def test_a_checked_method_checks_before_and_after_its_work() -> None:
+    """Core's public methods run `Check` on both sides of their work."""
+    peer_db = a_peer_db()
+    order: list[str] = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(peer_db, "_check", lambda: order.append("check"))
+        patch.setattr(
+            address_module.PeerDB,
+            "_held",
+            lambda self, address: order.append("work"),
+        )
+        peer_db.set_services(peer_address("1.2.3.4", 8333), ServiceFlags.NODE_NETWORK)
+        assert peer_db.size == 0
+    assert order == ["check", "work", "check", "check", "check"]
+
+
+def test_a_failed_check_logs_its_code_and_stops_the_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`Check`'s `LogError` and `assert(false)`."""
+    peer_db = core_table(consistency_check_ratio=1)
+    stops: list[None] = []
+    peer_db._bucket_key = bytes(32)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "abort", lambda: stops.append(None))
+        assert peer_db.size == len(_CORE_SLOTS)
+    assert len(stops) == 2
+    assert "ADDRMAN CONSISTENCY CHECK FAILED!!! err=-16" in caplog.text
+
+
+def test_a_check_logs_through_the_logger_the_table_is_given() -> None:
+    """`Node.load` hands its logger to the table."""
+    logger = logging.getLogger("a-table-s-own")
+    assert PeerDB(cast("Chain", None), None, logger=logger)._logger is logger
+
+
+def _two_new_one_tried() -> tuple[PeerDB, Any, Any, bytes]:
+    """Return `core_table`, a new endpoint, a tried one, and the tried key."""
+    peer_db = core_table()
+    new = address_module._endpoint(peer_address("1.2.3.4", 8333))
+    tried = address_module._endpoint(peer_address("5.6.7.8", 8333))
+    return peer_db, new, tried, address_module.endpoint_key(peer_db._rows[tried])
+
+
+def _move(table: dict[Any, Any], index: dict[Any, Any], key: Any, part: int) -> None:
+    """Move `key`'s slot in `table` a bucket (`0`) or a position (`1`) on."""
+    slot = table[key]
+    moved = (slot[0] + 1, slot[1]) if part == 0 else (slot[0], (slot[1] + 1) % 64)
+    table[key] = moved
+    index[moved] = index.pop(slot)
+
+
+# Each way a table is broken, by the code `CheckAddrman` answers for it:
+# what each does to `core_table`, given a new endpoint, a tried one and
+# the tried key.
+_STRANGER = address_module._endpoint(peer_address("9.9.9.9", 1))
+
+
+def _first_slot(peer_db: PeerDB, endpoint: Any) -> tuple[int, int]:
+    """Return the first new slot `endpoint` holds."""
+    return next(iter(peer_db._slots[endpoint]))
+
+
+def _tried_in_no_slot(peer_db: PeerDB, new: Any) -> None:
+    """Make a new endpoint tried with no tried slot."""
+    del peer_db._occupant[_first_slot(peer_db, new)]
+    del peer_db._slots[new]
+    peer_db._tried_endpoints.add(new)
+    peer_db._stats[new] = address_module._Stats(last_success=1)
+
+
+def _new_slot_moved(peer_db: PeerDB, new: Any) -> None:
+    """Move a new endpoint, consistently, to a slot that is not its own."""
+    slot = _first_slot(peer_db, new)
+    moved = (slot[0] + 1, slot[1])
+    peer_db._slots[new][moved] = peer_db._slots[new].pop(slot)
+    peer_db._occupant[moved] = peer_db._occupant.pop(slot)
+
+
+_BREAKS: dict[int, Callable[[PeerDB, Any, Any, bytes], object]] = {
+    -16: lambda db, n, t, k: setattr(db, "_bucket_key", bytes(32)),
+    -5: lambda db, n, t, k: db.addresses.add(peer_address("9.9.9.9", 1)),
+    -9: lambda db, n, t, k: db._tried_endpoints.add(_STRANGER),
+    -10: lambda db, n, t, k: db._slots.__setitem__(_STRANGER, {}),
+    -2: lambda db, n, t, k: db._slots.__setitem__(t, {(0, 0): b""}),
+    -1: lambda db, n, t, k: setattr(db._stats[t], "last_success", 0),
+    -4: lambda db, n, t, k: db._slots.pop(n),
+    -3: lambda db, n, t, k: db._slots[n].update({(b, 0): b"" for b in range(1, 9)}),
+    -6: lambda db, n, t, k: db._last_try.__setitem__(k, -1),
+    -8: lambda db, n, t, k: db._stats.__setitem__(
+        n, address_module._Stats(last_success=-1)
+    ),
+    -14: lambda db, n, t, k: db._active_index.__setitem__(k, 5),
+    -13: lambda db, n, t, k: _tried_in_no_slot(db, n),
+    -11: lambda db, n, t, k: db._tried_occupant.__setitem__((0, 0), b"none"),
+    -17: lambda db, n, t, k: _move(db._tried_slot_of, db._tried_occupant, k, 0),
+    -18: lambda db, n, t, k: _move(db._tried_slot_of, db._tried_occupant, k, 1),
+    -12: lambda db, n, t, k: db._occupant.__setitem__((0, 0), n),
+    -15: lambda db, n, t, k: db._occupant.pop(_first_slot(db, n)),
+    -19: lambda db, n, t, k: _new_slot_moved(db, n),
+}
+
+
+@pytest.mark.parametrize("code", list(_BREAKS))
+def test_a_table_broken_each_way_answers_core_s_code(code: int) -> None:
+    """`CheckAddrman`'s codes, each for the counterpart of what Core tests."""
+    peer_db, new, tried, key = _two_new_one_tried()
+    assert peer_db._consistency() == 0
+    _BREAKS[code](peer_db, new, tried, key)
+    assert peer_db._consistency() == code

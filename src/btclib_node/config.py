@@ -665,7 +665,9 @@ class Config:
     # version line; `""` where no section is unrecognised
     section_warning: str
     # `SetLoggingCategories`'s warnings, one per deprecated category it
-    # reads (`cli._resolve_debug`), logged after `section_warning`
+    # reads (`cli._resolve_debug`), then one per `-test` value
+    # `AppInitParameterInteraction` does not know (`cli._check_test_options`),
+    # logged after `section_warning`
     debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
@@ -732,6 +734,10 @@ class Config:
     # Core's own `-acceptstalefeeestimates`: read `block_policy_estimates.dat`
     # however old it is, on regtest alone (`FeeEstimator`)
     accept_stale_fee_estimates: bool
+    # Core's `-test=addrman` and `-checkaddrman`, the `deterministic` and
+    # `consistency_check_ratio` of `PeerDB`
+    deterministic_addrman: bool
+    check_addrman: int
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
@@ -996,6 +1002,8 @@ class Config:
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         accept_stale_fee_estimates: bool = False,
+        deterministic_addrman: bool = False,
+        check_addrman: int = 0,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
@@ -1043,6 +1051,8 @@ class Config:
         self.assume_valid = assume_valid
         self.max_tip_age = max_tip_age
         self.accept_stale_fee_estimates = accept_stale_fee_estimates
+        self.deterministic_addrman = deterministic_addrman
+        self.check_addrman = check_addrman
 
         data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir = data_dir.absolute() / self.chain.name

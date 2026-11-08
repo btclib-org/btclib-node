@@ -417,6 +417,15 @@ _MIN_CHAIN_WORK_SIGNET = SigNet().consensus.minimum_chain_work
 # is what that pull request fills in.
 _ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
 
+# The values `-test` knows, each with its help. Core's `TEST_OPTIONS_DOC`
+# (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+# also lists `reindex_after_failure_noninteractive_yes` and `bip94`. This
+# node does neither, so it warns of each as an unknown value rather than
+# take it and do nothing.
+_TEST_OPTIONS = {"addrman": "use deterministic addrman"}
+# `LoadAddrman`'s clamp of `-checkaddrman` (`src/addrdb.cpp`, same sha)
+_MAX_CHECK_ADDRMAN = 1_000_000
+
 
 def _parse_hex_uint256(value: str) -> int | None:
     """Return Core's `uint256::FromUserHex` of `value`, `None` where it fails.
@@ -527,6 +536,15 @@ _OPTIONS: dict[str, _Option] = {
         "Use the chain <chain> (default: main). Allowed values: "
         + ", ".join(sorted(_CHAIN_ALIASES)),
         _CHAINPARAMS_TITLE,
+    ),
+    # Core's registration (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag)
+    "checkaddrman": _Option(
+        "=<n>",
+        "Run addrman consistency checks every <n> operations. Use 0 to "
+        "disable. (default: 0)",
+        _DEBUG_TEST_TITLE,
+        debug_only=True,
     ),
     "conf": _Option(
         "=<file>",
@@ -869,6 +887,17 @@ _OPTIONS: dict[str, _Option] = {
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
     "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
+    # Core's registration (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag), the space before the colon included, but for the
+    # values `_TEST_OPTIONS` leaves out
+    "test": _Option(
+        "=<option>",
+        "Pass a test-only option. Options include : "
+        + ", ".join(f"{name} ({doc})" for name, doc in _TEST_OPTIONS.items())
+        + ".",
+        _DEBUG_TEST_TITLE,
+        debug_only=True,
+    ),
     # Core's registration (`src/chainparamsbase.cpp`, at
     # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
     # parameter included
@@ -998,7 +1027,8 @@ class _Settings:
     # `_warn_unrecognized_sections`'s one warning, logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str = field(default="", repr=False)
-    # `_resolve_debug`'s warnings, logged after `section_warning`
+    # `_resolve_debug`'s and `_check_test_options`'s warnings, logged
+    # after `section_warning`
     debug_warnings: list[str] = field(default_factory=list, repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
@@ -1664,6 +1694,18 @@ def _to_int(value: int) -> int:
     return (value - _INT_MIN) % 2**32 + _INT_MIN
 
 
+def _get_check_addrman(settings: _Settings) -> int:
+    """Return `-checkaddrman` as `LoadAddrman` reads it, `0` where unset.
+
+    `std::clamp<int32_t>` (`src/addrdb.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) takes `GetIntArg`'s `int64_t` as a 32-bit `int` first,
+    then holds it between `0` and `_MAX_CHECK_ADDRMAN`.
+    """
+    return min(
+        max(_to_int(_get_int(settings, "checkaddrman") or 0), 0), _MAX_CHECK_ADDRMAN
+    )
+
+
 def _get_rpcmaxconnections(settings: _Settings) -> int:
     """Return `-rpcmaxconnections` as Core's `GetArg<int>` reads it.
 
@@ -1893,6 +1935,25 @@ def _resolve_debug(
     if any(category in _DEBUG_ALL for category in enabled):
         return True, frozenset(), frozenset(excluded)
     return bool(enabled), frozenset(enabled), frozenset(excluded)
+
+
+def _check_test_options(settings: _Settings, chain_name: str) -> None:
+    """Refuse `-test` off regtest, and warn of each value it does not know.
+
+    `AppInitParameterInteraction` (`src/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a negation sets no value,
+    and the warning is an `InitWarning`, printed after `Warning: ` on
+    stderr and appended to `settings.debug_warnings` for the log.
+    """
+    options = _get_args(settings, "test")
+    if options and chain_name != "regtest":
+        err_msg = "-test=<option> can only be used with regtest"
+        raise ValueError(err_msg)
+    for option in options:
+        if option not in _TEST_OPTIONS:
+            warning = f'Unrecognised option "{option}" provided in -test=<option>.'
+            sys.stderr.write(f"Warning: {warning}\n")
+            settings.debug_warnings.append(warning)
 
 
 def _get_activation_heights(settings: _Settings) -> dict[str, int]:
@@ -2571,7 +2632,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     about a section naming no chain, a missing blocks directory,
     `-prune` beside `-reindex-chainstate`, `-forcednsseed` beside
     a `-dnsseed` that is off, a negative `-maxconnections`, a
-    `-rpcmaxconnections` below one, `-debug`'s categories,
+    `-rpcmaxconnections` below one, `-debug`'s categories, `-test`,
     `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040,
     the v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage`
     (the order `node::ApplyArgsManOptions`'s own chainstate-manager
@@ -2621,6 +2682,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
+    _check_test_options(settings, chain_name)
     # `IsArgSet`, so a negation is refused too and `settings.json` is
     # read, unlike `_read_settings`'s read of the heights themselves
     if chain_name == "mainnet" and _is_set(settings, "testactivationheight"):
@@ -2904,6 +2966,8 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         assume_valid=before.assume_valid,
         max_tip_age=before.max_tip_age,
         accept_stale_fee_estimates=bool(_get_bool(settings, "acceptstalefeeestimates")),
+        deterministic_addrman="addrman" in _get_args(settings, "test"),
+        check_addrman=_get_check_addrman(settings),
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",

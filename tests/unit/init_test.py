@@ -3022,3 +3022,34 @@ def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
     assert refused.init_errors == ["Error loading block database"]
     assert not refused.loaded
     assert refused.block_db.db.closed
+
+
+@pytest.mark.parametrize("ratio", [0, 5])
+def test_load_builds_the_address_table_from_test_and_checkaddrman(
+    tmp_path: Path, ratio: int
+) -> None:
+    """`LoadAddrman`: `-test=addrman` and `-checkaddrman` build the table."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            deterministic_addrman=bool(ratio),
+            check_addrman=ratio,
+        )
+    )
+    node.load()
+    try:
+        peer_db = node.p2p_manager.peer_db
+        assert peer_db._deterministic is bool(ratio)
+        assert peer_db._consistency_check_ratio == ratio
+        assert peer_db._logger is node.logger
+    finally:
+        node._close_worker_pool()
+        node.p2p_manager.peer_db.close()
+        node.chainstate.close()
+        node.block_db.close()
+        node.p2p_manager.loop.close()
+        node.rpc_manager.loop.close()
+        node.logger.close()
