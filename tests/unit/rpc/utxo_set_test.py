@@ -23,6 +23,7 @@ from bip32_descriptors.descriptors import (
     parse,
     strip_checksum,
 )
+from btclib.exceptions import BTClibException
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
 
@@ -670,22 +671,43 @@ def test_what_both_read_is_scanned(node: Node, text: str) -> None:
 LEAK = "92e07cd20dd29f3b6e3e2db783825a195e913e105c098d44b4dd7c67e200ac1c"
 
 
+# Each with the function `_core_refusal` names, or None where
+# bip32_descriptors refuses it first, with a message of its own
 @pytest.mark.parametrize(
-    "text",
+    ("text", "name"),
     [
-        f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({TPRV})))",
-        f"tr({X_ONLY},rawnode({LEAK}))",
-        f"tr({X_ONLY},rawleaf({LEAK},c0))",
-        f"rawpkh({LEAK[:40]})",
-        f"rawnode({LEAK})",
-        f"rawleaf({LEAK},c0)",
+        (f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({TPRV})))", "rawpkh"),
+        (f"tr({X_ONLY},rawnode({LEAK}))", "rawnode"),
+        (f"tr({X_ONLY},rawleaf({LEAK},c0))", "rawleaf"),
+        (f"rawpkh({LEAK[:40]})", "rawpkh"),
+        (f"rawnode({LEAK})", None),
+        (f"rawleaf({LEAK},c0)", None),
     ],
 )
-def test_a_refusal_quotes_no_key(node: Node, text: str) -> None:
+def test_a_refusal_quotes_no_key(node: Node, text: str, name: str | None) -> None:
     """What `bitcoind` quotes may hold a key, which the refusal leaves out."""
+    if name is None:
+        with pytest.raises(BTClibException):
+            parse(text, "regtest", {})
+    else:
+        parse(text, "regtest", {})
     with pytest.raises(RpcError) as caught:
         scan(node, text)
     assert_secret_free(caught.value, [TPRV, LEAK])
+    if name is not None:
+        assert (int(caught.value.code), caught.value.message) == (
+            -5,
+            NOT_A_FUNCTION.format(name),
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [f"{X_ONLY},)", f"{X_ONLY},pk({X_ONLY2}))", f"{X_ONLY},{{pk({X_ONLY2})}})"],
+)
+def test_a_tree_walk_stops_at_a_parenthesis_it_cannot_pass(args: str) -> None:
+    """A `)` at level 0 ends the walk, which would otherwise not progress."""
+    assert utxo_set._tree_refusal(args) is None
 
 
 def test_a_null_range_is_absent_and_scan_objects_are_read_in_order(node: Node) -> None:

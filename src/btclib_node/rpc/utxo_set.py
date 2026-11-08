@@ -196,14 +196,18 @@ def _core_refusal(expr: str, ctx: str) -> str | None:
 
 
 def _tree_refusal(args: str) -> str | None:
-    """Return Core's message for the first leaf of a `tr()` it refuses."""
+    """Return the message for the first leaf of a `tr()` Core refuses."""
     # the internal key, then the tree's leaves, each in braces or not
     _, tree = _expr(args)
     while tree:
-        leaf, tree = _expr(tree.lstrip(",{"))
+        leaf, rest = _expr(tree.lstrip(",{"))
         if refusal := _core_refusal(leaf, _P2TR):
             return refusal
-        tree = tree.lstrip("}")
+        rest = rest.lstrip("}")
+        # a `)` at level 0, which no tree bip32_descriptors reads holds
+        if rest == tree:
+            return None
+        tree = rest
     return None
 
 
