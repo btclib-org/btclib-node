@@ -785,6 +785,8 @@ def deterministic_bucket_key() -> Iterator[None]:
     of before it.
     """
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(address_module, "_new_bucket_key", lambda: b"\x01" * 32)
-        patch.setattr(address_module, "_roll", lambda _factor: False)
+        patch.setattr(
+            address_module, "_new_bucket_key", lambda: address_module._DETERMINISTIC_KEY
+        )
+        patch.setattr(address_module, "_roll", lambda _factor, _rng: False)
         yield

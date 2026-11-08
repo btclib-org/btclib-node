@@ -362,8 +362,8 @@ class Node(threading.Thread):
         self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
-        # section warning, the debug categories' warnings, then
-        # `LogArgs`'s lines, in that order
+        # section warning, the warnings of the debug categories and of
+        # `-test`, then `LogArgs`'s lines, in that order
         self.logger = open_history_log(
             log_path,
             debug=config.debug,
@@ -523,7 +523,13 @@ class Node(threading.Thread):
         # tag)
         warmup = self.rpc_manager.set_warmup_status
         warmup("Loading P2P addresses…")
-        peer_db = PeerDB(self.chain, self.data_dir)
+        peer_db = PeerDB(
+            self.chain,
+            self.data_dir,
+            deterministic=self.config.deterministic_addrman,
+            consistency_check_ratio=self.config.check_addrman,
+            logger=self.logger,
+        )
         self._opened.callback(peer_db.close)
         warmup("Loading banlist…")
         # Core's `banlist.json`, in the chain's own directory

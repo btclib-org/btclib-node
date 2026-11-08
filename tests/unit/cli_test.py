@@ -5410,3 +5410,112 @@ def test_settings_print_no_credential_from_the_section_warning() -> None:
 def test_settings_still_print_what_holds_no_secret(tmp_path: Path) -> None:
     """The network stays in the repr, so a repr says which settings it is."""
     assert "network='regtest'" in repr(_read(tmp_path))
+
+
+def test_build_config_test_and_checkaddrman_are_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both are `DEBUG_ONLY`: listed under `-help-debug` alone."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    out = capsys.readouterr().out
+    assert "-checkaddrman" not in out
+    assert "-test=" not in out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    out = capsys.readouterr().out
+    # bitcoind v32.1.0's own `-help-debug`
+    assert (
+        "  -checkaddrman=<n>\n"
+        "       Run addrman consistency checks every <n> operations. Use 0 to disable.\n"
+        "       (default: 0)\n"
+    ) in out
+    # Core's, but for the two values this node does not read
+    assert (
+        "  -test=<option>\n"
+        "       Pass a test-only option. Options include : addrman (use deterministic\n"
+        "       addrman).\n"
+    ) in out
+
+
+def test_build_config_test_addrman_builds_a_deterministic_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`HasTestOption(args, "addrman")`, from the command line or the file."""
+    assert not _build(tmp_path, "-regtest").deterministic_addrman
+    assert _build(tmp_path, "-regtest", "-test=addrman").deterministic_addrman
+    from_file = _build(tmp_path, conf="regtest=1\n[regtest]\ntest=addrman\n")
+    assert from_file.deterministic_addrman
+    assert not _build(
+        tmp_path, "-regtest", "-test=addrman", "-notest"
+    ).deterministic_addrman
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "ratio"),
+    [
+        ("1", 1),
+        ("-1", 0),
+        ("abc", 0),
+        ("2000000", 1_000_000),
+        # the `int64_t` taken as a 32-bit `int` before the clamp
+        ("4294967297", 1),
+        ("2147483648", 0),
+    ],
+)
+def test_build_config_checkaddrman_is_clamped_as_core_clamps_it(
+    tmp_path: Path, value: str, ratio: int
+) -> None:
+    """`LoadAddrman`'s `std::clamp<int32_t>` of `GetIntArg`, `0` by default."""
+    assert _build(tmp_path, "-regtest").check_addrman == 0
+    assert _build(tmp_path, "-regtest", "-nocheckaddrman").check_addrman == 0
+    config = _build(tmp_path, "-regtest", f"-checkaddrman={value}")
+    assert config.check_addrman == ratio
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-signet", "-test=addrman"),
+        ("-signet", "-test=bogus"),
+        ("-signet", "-test"),
+        ("-chain=main", "-test=addrman", "-testactivationheight=csv@1"),
+    ],
+)
+def test_build_config_test_is_refused_off_regtest(
+    tmp_path: Path, argv: Sequence[str]
+) -> None:
+    """Measured on bitcoind: exit 1, ahead of `-testactivationheight`'s."""
+    expected = re.escape("-test=<option> can only be used with regtest")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, *argv)
+
+
+def test_build_config_test_is_read_after_the_debug_categories(tmp_path: Path) -> None:
+    """`AppInitParameterInteraction` reads the categories, then `-test`."""
+    with pytest.raises(
+        ValueError, match=r"^Unsupported logging category -debug=bogus\.$"
+    ):
+        _build(tmp_path, "-signet", "-test=addrman", "-debug=bogus")
+
+
+def test_build_config_a_negated_test_is_no_test(tmp_path: Path) -> None:
+    """`-notest` sets no value, so a signet start goes on, as bitcoind's."""
+    assert not _build(tmp_path, "-signet", "-notest").deterministic_addrman
+
+
+@pytest.mark.parametrize("value", ["bogus", "", "bip94"])
+def test_build_config_warns_of_a_test_value_it_does_not_know(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    """Measured on bitcoind: `-test=bogus` and a bare `-test` warn and start.
+
+    `bip94` is one Core knows and this node does not read.
+    """
+    warning = f'Unrecognised option "{value}" provided in -test=<option>.'
+    argv = ["-regtest", "-test" if not value else f"-test={value}", "-test=addrman"]
+    config = _build(tmp_path, *argv)
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    assert config.debug_warnings == (warning,)
+    assert config.deterministic_addrman

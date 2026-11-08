@@ -19,13 +19,17 @@ answer to it are this node's.
 """
 
 import asyncio
+import copy
 import hashlib
+import logging
+import os
+import random
 import secrets
 import socket
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import partial, wraps
 from io import BytesIO
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast
@@ -48,6 +52,7 @@ from btclib_node.p2p.eviction import get_network, is_routable, net_class, net_gr
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
+    from typing import Concatenate
 
     from btclib_node.chains import Chain
     from btclib_node.p2p.eviction import Network
@@ -509,6 +514,14 @@ _OFFLINE_UPDATE_INTERVAL = 24 * 3600
 
 _RNG = secrets.SystemRandom()
 
+# `uint256{1}`'s octets, the `nKey` Core's `AddrManImpl` takes where it is
+# built `deterministic` (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag), which `-test=addrman` asks for
+_DETERMINISTIC_KEY = (1).to_bytes(32, "little")
+# the seed of a `deterministic` table's draws, standing for the zero key
+# Core's `FastRandomContext{true}` seeds its ChaCha20 with
+_DETERMINISTIC_SEED = 0
+
 
 @dataclass(slots=True)
 class _Stats:
@@ -525,9 +538,9 @@ class _Stats:
     last_count_attempt: float = 0.0
 
 
-def _roll(factor: int) -> bool:
-    """Whether a one-in-`factor` draw comes up: `randrange(factor) == 0`."""
-    return _RNG.randrange(factor) == 0
+def _roll(factor: int, rng: random.Random) -> bool:
+    """Whether a one-in-`factor` draw of `rng` comes up: `randrange` gives 0."""
+    return rng.randrange(factor) == 0
 
 
 def _aged_out(
@@ -687,9 +700,9 @@ class _Side:
             )
         return self.usable
 
-    def scan(self, bucket: int) -> NetworkAddressV2 | None:
-        """Return the first fit from a random place in `bucket`."""
-        start = secrets.choice(range(_BUCKET_SIZE))
+    def scan(self, bucket: int, rng: random.Random) -> NetworkAddressV2 | None:
+        """Return the first fit from a place in `bucket` that `rng` draws."""
+        start = rng.randrange(_BUCKET_SIZE)
         for step in range(_BUCKET_SIZE):
             item = self.occupant.get((bucket, (start + step) % _BUCKET_SIZE))
             if item is not None:
@@ -699,8 +712,10 @@ class _Side:
         return None
 
 
-def _select(tried: _Side | None, new: _Side | None) -> NetworkAddressV2 | None:
-    """Draw from one table, a fair coin deciding where both hold something.
+def _select(
+    tried: _Side | None, new: _Side | None, rng: random.Random
+) -> NetworkAddressV2 | None:
+    """Draw from one table by `rng`, a fair coin deciding where both hold one.
 
     Core's `AddrManImpl::Select_` (`src/addrman.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) searches the tried table
@@ -715,11 +730,11 @@ def _select(tried: _Side | None, new: _Side | None) -> NetworkAddressV2 | None:
     sides = [side for side in (new, tried) if side is not None and side.is_usable()]
     if not sides:
         return None
-    side = sides[secrets.randbelow(2)] if len(sides) == 2 else sides[0]  # noqa: PLR2004
+    side = sides[rng.randrange(2)] if len(sides) == 2 else sides[0]  # noqa: PLR2004
     factor = 1.0
     while True:
-        row = side.scan(secrets.choice(side.buckets))
-        if row is not None and _RNG.random() < factor * side.chance(row):
+        row = side.scan(rng.choice(side.buckets), rng)
+        if row is not None and rng.random() < factor * side.chance(row):
             return row
         if row is not None:
             factor *= _CHANCE_FACTOR_GROWTH
@@ -793,9 +808,7 @@ def service_key(address: NetworkAddressV2) -> bytes:
 def _new_bucket_key() -> bytes:
     """Return a new secret for placing addresses, Core's `rand256()`.
 
-    Core's `AddrMan` takes `uint256{1}` instead where it is built
-    `deterministic`, which its own tests do; `tests/conftest.py` does as
-    much here, by replacing this function.
+    A `deterministic` `PeerDB` takes `_DETERMINISTIC_KEY` instead.
     """
     return secrets.token_bytes(32)
 
@@ -932,6 +945,27 @@ class AddrResponseCache:
     expiration: float = 0.0
 
 
+def _checked[**P, R](
+    method: Callable[Concatenate[PeerDB, P], R],
+) -> Callable[Concatenate[PeerDB, P], R]:
+    """Run `PeerDB._check` before and after `method`.
+
+    Each of Core's public `AddrManImpl` methods runs `Check` before and
+    after its work (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `_check` takes the table's locks, so a method called while
+    one of them is held, as `last_try` is, is not marked.
+    """
+
+    @wraps(method)
+    def checked(table: PeerDB, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        table._check()  # noqa: SLF001
+        result = method(table, *args, **kwargs)
+        table._check()  # noqa: SLF001
+        return result
+
+    return checked
+
+
 class PeerDB:
     """The table of addresses this node knows of, gossiped and self-confirmed.
 
@@ -947,12 +981,42 @@ class PeerDB:
     An address is in the new table, in up to `_NEW_BUCKETS_PER_ADDRESS`
     buckets (`_insert_new`), or in the tried table (`_make_tried`), as in
     Core.
+
+    `deterministic` and `consistency_check_ratio` are the two arguments
+    `LoadAddrman` builds Core's `AddrMan` with (`src/addrdb.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), from `-test=addrman` and
+    `-checkaddrman`. A `deterministic` table places addresses by
+    `_DETERMINISTIC_KEY`, so an address from a source takes the slot Core
+    gives it, and takes its draws from a generator seeded with
+    `_DETERMINISTIC_SEED`, so that the same calls draw the same values on
+    every run. Those draws are not Core's: its generator is ChaCha20, and
+    its `Select_` draws among every bucket where `_select` draws among the
+    ones that hold something. A key the store holds wins over either key,
+    as `Unserialize` reads `nKey` from `peers.dat`. `_check` runs
+    `_consistency` before and after each method marked `_checked`.
     """
 
-    def __init__(self, chain: Chain, data_dir: Path | None) -> None:
+    def __init__(
+        self,
+        chain: Chain,
+        data_dir: Path | None,
+        *,
+        deterministic: bool = False,
+        consistency_check_ratio: int = 0,
+        logger: logging.Logger | None = None,
+    ) -> None:
         """Load the durable tables, then decide whether DNS is still needed."""
         self.chain = chain
         self.data_dir = data_dir
+        self._deterministic = deterministic
+        # `insecure_rand`, what every draw of this table is taken from
+        self._rng: random.Random = (
+            random.Random(_DETERMINISTIC_SEED)  # noqa: S311
+            if deterministic
+            else _RNG
+        )
+        self._consistency_check_ratio = consistency_check_ratio
+        self._logger = logger or logging.getLogger(__name__)
         self.addresses: set[NetworkAddressV2] = set()
         # The `endpoint_key` of every member of `addresses`, kept in step
         # by `add_addresses` under `_addresses_lock` and by `init_from_db`
@@ -969,7 +1033,7 @@ class PeerDB:
         # `m_last_good`. An endpoint held in the tried table holds no slot
         # of the new one.
         self._rows: dict[tuple[int, bytes, int], NetworkAddressV2] = {}
-        self._bucket_key = _new_bucket_key()
+        self._bucket_key = _DETERMINISTIC_KEY if deterministic else _new_bucket_key()
         self._slots: dict[tuple[int, bytes, int], dict[tuple[int, int], bytes]] = {}
         self._occupant: dict[tuple[int, int], tuple[int, bytes, int]] = {}
         self._source: dict[tuple[int, bytes, int], bytes] = {}
@@ -1019,7 +1083,8 @@ class PeerDB:
         # tables takes the other two in turn: `Good_` and
         # `ResolveCollisions_` each read one table and write the other,
         # from `Node`'s thread and `P2pManager`'s. Of the three, it is the
-        # only one held across a take of another.
+        # only one held across a take of another. `_consistency` holds it
+        # too, while it copies the two tables.
         self._move_lock = threading.Lock()
         # What `callbacks.getaddr` last answered with, keyed the way
         # Core's own `m_addr_response_caches` is: one cache per
@@ -1374,6 +1439,169 @@ class PeerDB:
         with self.db.write_batch() as wb:
             yield wb
 
+    def _check(self) -> None:
+        """Run `_consistency` one time in `consistency_check_ratio`: `Check`.
+
+        Core's `AddrManImpl::Check` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): a ratio of `0` checks
+        nothing, and a failure logs its code and stops the process, as
+        Core's `assert(false)` does.
+        """
+        ratio = self._consistency_check_ratio
+        if not ratio or self._rng.randrange(ratio):
+            return
+        if code := self._consistency():
+            self._logger.error("ADDRMAN CONSISTENCY CHECK FAILED!!! err=%i", code)
+            os.abort()
+
+    def _consistency(self) -> int:
+        """Return `0` for a consistent table, else what fails: `CheckAddrman`.
+
+        Core's `AddrManImpl::CheckAddrman` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), each test answering
+        the code Core gives its counterpart. `_rows`, `addresses`,
+        `_known_keys` and `_source` stand for `mapInfo` and `mapAddr`,
+        `_slots` and `_occupant` for `vvNew` and each entry's `nRefCount`,
+        `_tried_slot_of` and `_tried_occupant` for `vvTried`, and
+        `_active_index` for `nRandomPos`. Core's `-20` and `-21` compare
+        `m_network_counts`, which this table does not keep.
+
+        The tests read a copy of each table, taken under its own lock while
+        `_move_lock` is held, so that no move between the tables is half
+        done: what changes a table without that lock leaves the two
+        consistent with each other.
+        """
+        with self._move_lock:
+            table = self._copy()
+        return table._first_failure()  # noqa: SLF001
+
+    def _copy(self) -> PeerDB:
+        """Return a copy of what `_first_failure` reads.
+
+        Each table is copied under its own lock, the two never nested. The
+        caller holds `_move_lock`.
+        """
+        copies: dict[str, object] = {}
+        with self._addresses_lock:
+            copies.update(
+                _rows=dict(self._rows),
+                addresses=set(self.addresses),
+                _known_keys=set(self._known_keys),
+                _source=dict(self._source),
+                _slots={endpoint: dict(held) for endpoint, held in self._slots.items()},
+                _occupant=dict(self._occupant),
+                _stats={endpoint: replace(s) for endpoint, s in self._stats.items()},
+                _tried_endpoints=set(self._tried_endpoints),
+                _last_try=dict(self._last_try),
+            )
+        with self._active_lock:
+            copies.update(
+                active_addresses=list(self.active_addresses),
+                _active_index=dict(self._active_index),
+                _tried_slot_of=dict(self._tried_slot_of),
+                _tried_occupant=dict(self._tried_occupant),
+            )
+        table = copy.copy(self)
+        vars(table).update(copies)
+        return table
+
+    def _first_failure(self) -> int:
+        """Return the code of the first of `_consistency`'s tests that fails."""
+        rows = self._rows
+        tried = self._tried_endpoints
+        slots = self._slots
+        tried_keys = {endpoint_key(rows[e]) for e in tried & rows.keys()}
+        tests: tuple[tuple[int, Callable[[], bool]], ...] = (
+            (-16, lambda: not any(self._bucket_key)),
+            (-5, self._rows_disagree),
+            (-9, lambda: not tried <= rows.keys()),
+            (-10, lambda: not slots.keys() <= rows.keys()),
+            (-2, lambda: not tried.isdisjoint(slots)),
+            (
+                -1,
+                lambda: any(
+                    not self._stats.get(e, _Stats()).last_success for e in tried
+                ),
+            ),
+            (-4, lambda: any(e not in tried and e not in slots for e in rows)),
+            (
+                -3,
+                lambda: any(
+                    len(held) > _NEW_BUCKETS_PER_ADDRESS for held in slots.values()
+                ),
+            ),
+            (-6, lambda: any(when < 0 for when in self._last_try.values())),
+            (-8, lambda: any(s.last_success < 0 for s in self._stats.values())),
+            (-14, self._positions_disagree),
+            (-13, lambda: not tried_keys <= self._tried_slot_of.keys()),
+            (-11, lambda: self._tried_occupant_disagrees(tried_keys)),
+            (-17, lambda: self._tried_slot_disagrees(0)),
+            (-18, lambda: self._tried_slot_disagrees(1)),
+            (-12, self._new_occupant_disagrees),
+            (
+                -15,
+                lambda: any(
+                    self._occupant.get(slot) != endpoint
+                    for endpoint, held in slots.items()
+                    for slot in held
+                ),
+            ),
+            (
+                -19,
+                lambda: any(
+                    _new_slot(self._bucket_key, rows[endpoint], group) != slot
+                    for endpoint, held in slots.items()
+                    for slot, group in held.items()
+                ),
+            ),
+        )
+        return next((code for code, failed in tests if failed()), 0)
+
+    def _rows_disagree(self) -> bool:
+        """Whether the known rows and what indexes them disagree: `-5`."""
+        rows = self._rows
+        return (
+            any(_endpoint(row) != endpoint for endpoint, row in rows.items())
+            or self.addresses != set(rows.values())
+            or self._known_keys != {endpoint_key(row) for row in rows.values()}
+            or self._source.keys() != rows.keys()
+        )
+
+    def _positions_disagree(self) -> bool:
+        """Whether `_active_index` misplaces an answered row: `-14`."""
+        rows = self.active_addresses
+        return (
+            len(self._active_index) != len(rows)
+            or self._active_index.keys() != self._tried_slot_of.keys()
+            or any(
+                not 0 <= position < len(rows) or endpoint_key(rows[position]) != key
+                for key, position in self._active_index.items()
+            )
+        )
+
+    def _tried_occupant_disagrees(self, tried_keys: set[bytes]) -> bool:
+        """Whether a tried slot holds what no tried entry puts there: `-11`."""
+        return not self._tried_slot_of.keys() <= tried_keys or self._tried_occupant != {
+            slot: key for key, slot in self._tried_slot_of.items()
+        }
+
+    def _tried_slot_disagrees(self, part: int) -> bool:
+        """Whether a tried entry's bucket (`0`) or position (`1`) is wrong."""
+        return any(
+            _tried_slot(
+                self._bucket_key, self.active_addresses[self._active_index[key]]
+            )[part]
+            != slot[part]
+            for key, slot in self._tried_slot_of.items()
+        )
+
+    def _new_occupant_disagrees(self) -> bool:
+        """Whether a new slot holds an entry that does not hold it: `-12`."""
+        return any(
+            slot not in self._slots.get(endpoint, {})
+            for slot, endpoint in self._occupant.items()
+        )
+
     def close(self) -> None:
         """Close the durable store, if this table has one."""
         if self.db is not None:
@@ -1447,6 +1675,7 @@ class PeerDB:
         return None
 
     @property
+    @_checked
     def size(self) -> int:
         """Return Core's `addrman.Size()`: every distinct endpoint known.
 
@@ -1482,6 +1711,7 @@ class PeerDB:
         return known_count + unmatched
 
     @property
+    @_checked
     def is_empty(self) -> bool:
         """Whether `addresses` holds nothing at all, read without a lock."""
         # Unlocked on purpose: `len` on a set is one step, not a walk of
@@ -1493,6 +1723,7 @@ class PeerDB:
         # not, and nothing here promised otherwise).
         return not len(self.addresses)
 
+    @_checked
     def holds_network(self, network_id: int) -> bool:
         """Whether either table holds an address on `network_id`.
 
@@ -1514,6 +1745,7 @@ class PeerDB:
         """
         return self.address_sampler()()
 
+    @_checked
     def address_sampler(
         self, *, new_only: bool = False, network: Network | None = None
     ) -> Callable[[], NetworkAddressV2 | None]:
@@ -1564,7 +1796,7 @@ class PeerDB:
             chance,
         )
         if new_only:
-            return partial(_select, None, new)
+            return partial(_select, None, new, self._rng)
         with self._active_lock:
             tried_occupant = dict(self._tried_occupant)
             tried_rows = {
@@ -1578,8 +1810,9 @@ class PeerDB:
             fits,
             chance,
         )
-        return partial(_select, tried, new)
+        return partial(_select, tried, new, self._rng)
 
+    @_checked
     def add_addresses(
         self,
         addresses: Iterable[NetworkAddressV2],
@@ -1726,7 +1959,9 @@ class PeerDB:
         if gossip.timestamp <= known.timestamp or endpoint in self._tried_endpoints:
             return False
         held = len(self._slots.get(endpoint, ()))
-        if held >= _NEW_BUCKETS_PER_ADDRESS or (held and not _roll(1 << held)):
+        if held >= _NEW_BUCKETS_PER_ADDRESS or (
+            held and not _roll(1 << held, self._rng)
+        ):
             return False
         if not self._insert_new(known, group, now, wb):
             return False
@@ -1747,6 +1982,7 @@ class PeerDB:
         self.addresses.add(new)
         self._rows[endpoint] = new
 
+    @_checked
     def set_services(self, address: NetworkAddressV2, services: ServiceFlags) -> None:
         """Overwrite the services held for `address`'s endpoint.
 
@@ -1792,6 +2028,7 @@ class PeerDB:
                 _ANSWERED + endpoint_key(row), row.serialize(check_validity=False)
             )
 
+    @_checked
     def attempt(
         self, address: NetworkAddressV2, *, count_failure: bool = False
     ) -> None:
@@ -1830,6 +2067,7 @@ class PeerDB:
         """Return when `address` was last tried, `0.0` for never or long ago."""
         return self._last_try.get(endpoint_key(address), 0.0)
 
+    @_checked
     def get_addr(
         self, max_addresses: int, max_pct: int, network: Network | None = None
     ) -> list[NetworkAddressV2]:
@@ -1851,12 +2089,16 @@ class PeerDB:
         now = clock.now()
         with self._addresses_lock:
             rows = list(self.addresses)
+        # a set's order follows the hash of the octets it holds, which
+        # changes from process to process
+        if self._deterministic:
+            rows.sort(key=_endpoint)
         size = len(rows)
         if max_pct:
             size = -(-size * min(max_pct, 100) // 100)
         if max_addresses:
             size = min(size, max_addresses)
-        secrets.SystemRandom().shuffle(rows)
+        self._rng.shuffle(rows)
         sample: list[NetworkAddressV2] = []
         for row in rows:
             if len(sample) >= size:
@@ -1869,6 +2111,7 @@ class PeerDB:
                 sample.append(row)
         return sample
 
+    @_checked
     def add_active_address(
         self, addr: NetworkAddressV2, *, test_before_evict: bool = True
     ) -> bool:
@@ -1983,6 +2226,7 @@ class PeerDB:
             self._put_sources(endpoint, wb)
             self._put_stats(endpoint, wb)
 
+    @_checked
     def resolve_collisions(self) -> None:
         """Settle the tried-table collisions that can be, `ResolveCollisions_`.
 
@@ -2036,6 +2280,7 @@ class PeerDB:
         self._good(known, now, test_before_evict=False)
         return True
 
+    @_checked
     def select_tried_collision(self) -> NetworkAddressV2 | None:
         """Return a tried address another is waiting to replace, or `None`.
 
@@ -2046,7 +2291,8 @@ class PeerDB:
         with self._addresses_lock:
             if not self._collisions:
                 return None
-            endpoint = secrets.choice(list(self._collisions))
+            # sorted, as `get_addr` sorts what it shuffles
+            endpoint = self._rng.choice(sorted(self._collisions))
             known = self._rows.get(endpoint)
             if known is None:
                 self._collisions.discard(endpoint)
@@ -2058,6 +2304,7 @@ class PeerDB:
                 None if key is None else self.active_addresses[self._active_index[key]]
             )
 
+    @_checked
     def connected(self, address: NetworkAddressV2) -> None:
         """Move the time of `address`'s endpoint forward to now, if it is stale.
 
