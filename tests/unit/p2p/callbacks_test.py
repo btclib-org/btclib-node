@@ -1898,6 +1898,13 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.prefers_headers
 
 
+def test_sendaddrv2_ahead_of_version_leaves_prefer_addressv2_false() -> None:
+    """`sendaddrv2` ahead of `version` is ignored, as Core ignores it."""
+    peer = a_peer(version_message=None)
+    sendaddrv2(a_handshake_node(), b"", peer)
+    assert not peer.prefer_addressv2
+
+
 @pytest.mark.parametrize(
     ("payload", "requested"),
     [
