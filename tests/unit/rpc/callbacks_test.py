@@ -8577,8 +8577,7 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
 
     result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
 
-    assert isinstance(result, str)
-    assert result.startswith("bad-signet-blksig")
+    assert result == "bad-signet-blksig"
     assert node.block_db.get_block(bad.header.hash) is None
     assert bad.header.hash not in node.chainstate.block_index.header_dict
 
@@ -8609,8 +8608,7 @@ def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
 
     header_dict = node.chainstate.block_index.header_dict
     if signet:
-        assert isinstance(result, str)
-        assert result.startswith("bad-signet-blksig")
+        assert result == "bad-signet-blksig"
         assert block.header.hash not in header_dict
     else:
         assert result is None

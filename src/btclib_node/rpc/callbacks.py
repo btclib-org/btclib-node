@@ -1174,7 +1174,7 @@ def _submitted_body_refusal(
         check_headers_pow([block.header], node.chain.pow_limit_bits)
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
-        return str(error)
+        return block_reject_reason(error)
     # `CheckBlock` first: a body that was never indexed has no parent here
     # to read a height from
     if (reason := check_block_reason(block, check_merkle_root=True)) is not None:
