@@ -46,7 +46,7 @@ dependencies = [
     # import (btclib-org/btclib-node#848). Raised to 2026.9.30, the
     # release fixing `Tx.assert_valid`'s own check order to match
     # Core's `CheckTransaction` (btclib-org/btclib#2417,
-    # btclib-org/btclib#2422): `rpc/callbacks.py`'s own
+    # btclib-org/btclib#2422): `tx_check.py`'s own
     # `_reject_reason` answers a multi-violation transaction's reject
     # reason by reading `assert_valid`'s own first-raised message, and
     # relies on that order matching Core's rather than reordering it a

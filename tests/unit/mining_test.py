@@ -1113,25 +1113,36 @@ def test_a_block_without_a_coinbase_is_refused_before_its_transactions(
     )
 
 
-def test_a_transaction_that_is_not_valid_alone_is_answered_in_btclibs_words(
-    funded: Node,
+@pytest.mark.parametrize(
+    ("vin", "vout", "answer"),
+    [
+        ([], [], "bad-txns-vin-empty"),
+        (
+            [TxIn(OutPoint(bytes(range(32)), 0))] * 2,
+            [TxOut(0, anyone_can_spend())],
+            "bad-txns-inputs-duplicate",
+        ),
+    ],
+    ids=["no-inputs", "one-outpoint-twice"],
+)
+def test_a_transaction_failing_check_transaction_is_answered_in_cores_word(
+    funded: Node, vin: list[TxIn], vout: list[TxOut], answer: str
 ) -> None:
-    """What `Tx.assert_valid` refuses is reported with its own text."""
+    """`CheckBlock` answers the word `CheckTransaction` gives the transaction.
+
+    Measured by hand on `bitcoind` v32.1.0, regtest: the proposal and
+    `submitblock` both answer this word for a block holding a
+    transaction of the same shape.
+    """
     block = create_new_block(funded, SCRIPT).block
     block.transactions.append(
-        Tx(
-            version=2,
-            lock_time=0,
-            vin=[],
-            vout=[TxOut(0, anyone_can_spend())],
-            check_validity=False,
-        )
+        Tx(version=2, lock_time=0, vin=vin, vout=vout, check_validity=False)
     )
     rebuilt(block)
 
     reason = check_block_validity(funded, block, check_merkle_root=True)
 
-    assert reason == "Missing inputs"
+    assert reason == answer
 
 
 def test_a_block_over_the_sigop_limit_is_refused_by_its_legacy_count(
