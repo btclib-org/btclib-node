@@ -6633,6 +6633,40 @@ def test_get_chain_tips_answers_only_the_active_tip_on_a_single_chain(
     }
 
 
+def test_get_chain_tips_answers_the_active_tip_under_a_staged_header(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2158: headers staged on the active tip leave it listed, once.
+
+    `submitheader` stages them there, so the tip has a child and is
+    still the tip, which Core's `getchaintips` always lists.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    staged = generate_random_header_chain(
+        2, chain[-1].header.hash, chain[-1].header.time
+    )
+    node.chainstate.block_index.add_headers(staged)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    assert tips == [
+        {
+            "height": 4,
+            "hash": staged[-1].hash,
+            "branchlen": 2,
+            "status": "headers-only",
+        },
+        {
+            "height": 2,
+            "hash": chain[-1].header.hash,
+            "branchlen": 0,
+            "status": "active",
+        },
+    ]
+
+
 def test_get_chain_tips_answers_a_headers_only_fork(
     regtest_node: Callable[..., Node],
 ) -> None:
