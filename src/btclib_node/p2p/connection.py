@@ -418,13 +418,21 @@ class Connection:
     # where `dest` names one -- for every manual dial: `-connect`'s and
     # `-addnode`'s own standing loops, the `addnode` RPC's `onetry`, and
     # an addr-fetch dial alike (btclib-org/btclib-node#1264, #1432,
-    # #1493). Core's own field falls back to the formatted socket
-    # address for a connection dialled by address, which
-    # `_socket_addresses` (`rpc/callbacks.py`) does the same way for
-    # `getpeerinfo`'s own `addr`. Set by `P2pManager.create_connection`
-    # before this connection's task is scheduled, and never changed
-    # after; a class default for the same reason as `time_received`.
+    # #1493). Core's own field falls back to the formatted peer address
+    # for a connection dialled by address, which `_peer_addr`
+    # (`rpc/callbacks.py`) does the same way from `address` for
+    # `getpeerinfo`'s own `addr`, except that `address` holds no IPv6
+    # scope (btclib-org/btclib-node#2266). Set by
+    # `P2pManager.create_connection` before this connection's task is
+    # scheduled, and never changed after; a class default for the same
+    # reason as `time_received`.
     addr_name: str | None = None
+    # Core's `CNode::addrBind`: this end's own address, read off the
+    # socket once, when the connection is built, so that `getpeerinfo`
+    # still answers it once the socket is closed. `None` where Core's is
+    # invalid, which `P2pManager._bind_address` argues. Set and kept as
+    # `addr_name` is.
+    addr_bind: str | None = None
     # Core's `m_last_block_announcement`: when this peer last sent a
     # header new here and with more work than the active tip, which
     # `callbacks.headers` sets and `DownloadManager` evicts the extra

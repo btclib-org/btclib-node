@@ -1047,6 +1047,7 @@ class P2pManager(threading.Thread):
         conn.prefer_evict = prefer_evict
         conn.addr_fetch = addr_fetch
         conn.addr_name = addr_name
+        conn.addr_bind = self._bind_address(client)
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         if local_address is not None:
             network_id = BIP155Network.TORV3 if inbound_onion else address.network_id
@@ -1054,6 +1055,31 @@ class P2pManager(threading.Thread):
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
+
+    def _bind_address(self, client: socket.socket) -> str | None:
+        """Return `addrbind` for `client`: its own address, or `None`.
+
+        Core's `GetBindAddress` (`src/netbase.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), which `ConnectNode` and
+        `AcceptConnection` call when they build a node. `None` is an
+        `addrBind` that is not `IsValid`, for which `getpeerinfo` leaves
+        `addrbind` out (`src/rpc/net.cpp`, same sha): where `getsockname`
+        fails, which Core logs; where the family is neither IPv4 nor IPv6
+        (`CService::SetSockAddr`, `src/netaddress.cpp`, same sha); and where
+        `is_valid_host`, Core's `IsValid`, refuses the address. An IPv6
+        scope is dropped, as `getsockname` puts it apart from the host
+        (btclib-org/btclib-node#2266).
+        """
+        try:
+            sockname = client.getsockname()
+        except OSError:
+            self.logger.warning("getsockname failed")
+            return None
+        if client.family not in {socket.AF_INET, socket.AF_INET6}:
+            return None
+        if not is_valid_host(ip_address(sockname[0])):
+            return None
+        return ip_and_port(sockname[0], sockname[1])
 
     def promote_connection(self, connection_id: int) -> None:
         """Move a connection out of the handshake and into the herd.

@@ -7,14 +7,16 @@
 The functional tests drive the happy path of a few of these through a
 real client. What is left is the rest of the table, and the branches a
 client reaches only by asking about a block at the tip or on a fork this
-node did not follow, a peer that goes away mid-lookup, or a transaction
-the mempool refuses.
+node did not follow, a peer whose socket is closed, or a transaction the
+mempool refuses.
 
 `bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
+import errno
 import json
 import math
+import socket
 import threading
 import time
 from collections import Counter
@@ -88,7 +90,7 @@ from btclib_node.main import (
 )
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
-from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
@@ -190,31 +192,11 @@ def a_tx(tag: bytes = b"\x11") -> Tx:
     )
 
 
-class FakeSocket:
-    """A socket double for `get_peer_info`, answering fixed peer/bind addresses.
-
-    `getpeername` raises where `gone` is set, standing in for a peer that
-    disconnected between `get_peer_info` copying `connections` and this
-    lookup running.
-    """
-
-    def __init__(
-        self, *, gone: bool = False, peer: str = "1.2.3.4", bind: str = "5.6.7.8"
-    ) -> None:
-        """Set the peer and local addresses this socket answers, and `gone`."""
-        self.gone = gone
-        self.peer = peer
-        self.bind = bind
-
-    def getpeername(self) -> tuple[str, int]:
-        """Answer `peer`, or raise `OSError` where `gone` is set."""
-        if self.gone:
-            raise OSError
-        return (self.peer, 8333)
-
-    def getsockname(self) -> tuple[str, int]:
-        """Answer `bind`, read as `get_peer_info`'s own `addrbind`."""
-        return (self.bind, 18444)
+def a_closed_socket() -> socket.socket:
+    """Return a TCP socket already closed: its `getpeername` raises."""
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.close()
+    return closed
 
 
 def a_peer(
@@ -224,7 +206,7 @@ def a_peer(
     # a different host in each, so that an answer naming the wrong
     # source cannot pass
     peer: str = "1.2.3.4",
-    bind: str = "5.6.7.8",
+    bind: str | None = "5.6.7.8",
     local: str = "9.10.11.12",
     addr_name: str | None = None,
     user_agent: bytes = b"/btclib:test/",
@@ -246,7 +228,9 @@ def a_peer(
 
     `peer`, `bind` and `local` each default to a different host, so an
     assertion naming the wrong one of the three cannot pass by accident.
-    `versioned` false is a connection whose `version` has not arrived.
+    `bind` `None` is a connection whose `addr_bind` Core would hold
+    invalid. `gone` is one whose socket is closed. `versioned` false is a
+    connection whose `version` has not arrived.
     """
     version_message = SimpleNamespace(
         services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
@@ -257,10 +241,19 @@ def a_peer(
     )
     return SimpleNamespace(
         status=status,
-        client=FakeSocket(gone=gone, peer=peer, bind=bind),
+        # a live socket answers the addresses the connection holds, and a
+        # closed one raises
+        client=(
+            a_closed_socket()
+            if gone
+            else SimpleNamespace(
+                getpeername=lambda: (peer, 8333), getsockname=lambda: (bind, 18444)
+            )
+        ),
         version_message=version_message if versioned else None,
         address=peer_address(peer, 8333),
         addr_name=addr_name,
+        addr_bind=None if bind is None else ip_and_port(bind, 18444),
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
         # left unrounded cannot pass
@@ -409,8 +402,8 @@ def test_the_transactions_here_tell_a_txid_from_a_wtxid() -> None:
 def test_the_peer_table_names_a_connected_peer() -> None:
     """`getpeerinfo` names a connected peer's address, network and services.
 
-    Every field comes off the peer's own socket and version message,
-    keyed by connection id.
+    Every field comes off what the connection holds and the peer's version
+    message, keyed by connection id.
     """
     node = a_node({7: a_peer()})
     (info,) = get_peer_info(node, _CONN, [])
@@ -426,13 +419,13 @@ def test_the_peer_table_names_a_connected_peer() -> None:
 
 
 def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
-    """ISS 1301: `addr` is `m_addr_name`, not the socket, once one is held.
+    """ISS 1301: `addr` is `m_addr_name`, not the address, once one is held.
 
     Core's `getpeerinfo` pushes `stats.m_addr_name`
     (`src/rpc/net.cpp:254`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     which is the destination string a peer was dialled by rather than a
-    reformatting of the socket's own address -- a portless IP among
-    them, the ordinary case a client dialling by name produces.
+    reformatting of the peer's address -- a portless IP among them, the
+    ordinary case a client dialling by name produces.
     `addrbind` is unaffected, being the bind address rather than the
     peer's.
     """
@@ -442,8 +435,8 @@ def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
     assert info["addrbind"] == "5.6.7.8:18444"
 
 
-def test_a_peer_dialled_by_address_still_answers_the_formatted_socket() -> None:
-    """No `addr_name` held: `addr` is the formatted socket address."""
+def test_a_peer_dialled_by_address_answers_the_formatted_address() -> None:
+    """No `addr_name` held: `addr` is the formatted peer address."""
     peer = a_peer(peer="1.2.3.4", addr_name=None)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["addr"] == "1.2.3.4:8333"
@@ -470,11 +463,11 @@ def test_a_v6_peer_is_named_with_the_brackets_core_writes() -> None:
     last colon reads one of the two wrong.
     """
     node = a_node(
-        {7: a_peer(peer="2001:db8::1", bind="2001:db8::2", local="2a01:4f8::3")}
+        {7: a_peer(peer="2001:db8::1", bind="2a01:4f8::2", local="2a01:4f8::3")}
     )
     (info,) = get_peer_info(node, _CONN, [])
     assert info["addr"] == "[2001:db8::1]:8333"
-    assert info["addrbind"] == "[2001:db8::2]:18444"
+    assert info["addrbind"] == "[2a01:4f8::2]:18444"
     assert info["addrlocal"] == "[2a01:4f8::3]:8333"
 
 
@@ -889,15 +882,60 @@ def test_bip152_hb_from_is_what_the_peer_s_sendcmpct_asked(
     assert info["bip152_hb_from"] is requested
 
 
-def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
-    """`getpeerinfo` skips a peer whose socket fails mid-lookup.
+@pytest.mark.parametrize("pending", [False, True], ids=["handshaken", "pending"])
+@pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
+def test_a_peer_whose_socket_is_closed_is_listed_and_counted(
+    *, pending: bool, inbound: bool
+) -> None:
+    """ISS 2168: `getpeerinfo` lists the peers `getnetworkinfo` counts.
 
-    Its own connection state already reports the disconnect; the table
-    just carries on rather than failing the whole request.
+    Core's `CloseSocketDisconnect` leaves a node in `m_nodes` until
+    `DisconnectNodes` runs, and `GetNodeStats` and `GetNodeCount` both
+    read `m_nodes` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). So a peer whose socket is closed, handshaken or still
+    mid-handshake, is in both answers, with the addresses it had.
     """
-    node = a_node({7: a_peer(gone=True), 8: a_peer()})
-    (info,) = get_peer_info(node, _CONN, [])
-    assert info["id"] == 8
+    # `Connection.stop` sets `Closed` before its `_close` closes the socket
+    closed = a_peer(
+        P2pConnStatus.Closed,
+        gone=True,
+        peer="2001:db8::1",
+        bind="2a01:4f8::2",
+        inbound=inbound,
+        versioned=not pending,
+    )
+    # a closed descriptor, or on Windows no socket at all
+    with pytest.raises(OSError, match=rf"\[(Errno {errno.EBADF}|WinError 10038)\]"):
+        closed.client.getpeername()
+    node = a_node(
+        {1: a_peer(inbound=not inbound)} | ({} if pending else {7: closed}),
+        pending={7: closed} if pending else None,
+    )
+    peers = get_peer_info(node, _CONN, [])
+    assert [peer["id"] for peer in peers] == [1, 7]
+    assert (peers[1]["addr"], peers[1]["addrbind"], peers[1]["inbound"]) == (
+        "[2001:db8::1]:8333",
+        "[2a01:4f8::2]:18444",
+        inbound,
+    )
+    counts = get_network_info(node, _CONN, [])
+    assert (
+        counts["connections"],
+        counts["connections_in"],
+        counts["connections_out"],
+    ) == (2, 1, 1)
+    assert counts["connections"] == len(peers)
+
+
+def test_a_peer_without_a_bind_address_answers_no_addrbind() -> None:
+    """Core leaves `addrbind` out where `addrBind` is not valid.
+
+    `getpeerinfo` pushes it under `stats.addrBind.IsValid()`
+    (`src/rpc/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    (info,) = get_peer_info(a_node({7: a_peer(bind=None)}), _CONN, [])
+    assert "addrbind" not in info
+    assert info["addr"] == "1.2.3.4:8333"
 
 
 def test_a_connection_removed_mid_loop_does_not_raise() -> None:
@@ -7901,19 +7939,20 @@ def a_disconnecting_node(
 def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> None:
     """ISS 1193: Core's `address`, matched against `getpeerinfo`'s `addr`.
 
-    A peer whose socket is gone is passed over, and the first match is
-    the one dropped.
+    The first match is the one dropped, a peer whose socket is closed
+    included, as Core's `CConnman::DisconnectNode` matches every node of
+    `m_nodes` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
     """
     peers = {
         1: a_peer(peer="1.2.3.4"),
-        2: a_peer(gone=True),
+        2: a_peer(peer="5.5.5.5", gone=True),
         3: a_peer(peer="5.5.5.5"),
-        4: a_peer(peer="5.5.5.5"),
     }
     node, removed = a_disconnecting_node(peers)
-    (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 3]
+    (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 2]
     disconnect_node(node, _CONN, [info["addr"]])
-    assert removed == [3]
+    assert removed == [2]
 
 
 def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
@@ -7921,8 +7960,8 @@ def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
 
     Core's `CConnman::DisconnectNode(std::string_view)` matches
     `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
-    the v32.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
-    here, does not match once a name is held.
+    the v32.1 tag); the formatted peer address, `"1.2.3.4:8333"` here,
+    does not match once a name is held.
     """
     peers = {3: a_peer(peer="1.2.3.4", addr_name="1.2.3.4")}
     node, removed = a_disconnecting_node(peers)

@@ -5691,6 +5691,96 @@ def test_create_connection_logs_the_id_beside_the_address(
     assert logged == [f"{verb} 1.2.3.4:18444, connection 0"]
 
 
+def test_create_connection_keeps_the_bind_address_past_the_socket(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2168: `addr_bind` is read once, so it outlives the socket.
+
+    Core's `CNode::addrBind` is set when the node is built, from
+    `GetBindAddress` (`src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), and `getpeerinfo` answers it after
+    `CloseSocketDisconnect` has reset the socket.
+    """
+    manager = a_manager()
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+    bound = ours.getsockname()[1]
+    address = peer_address("127.0.0.1", port)
+
+    async def create() -> Connection:
+        manager.create_connection(ours, address, inbound=False)
+        (conn,) = manager.pending_connections.values()
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+        return conn
+
+    with ours, theirs:
+        conn = manager.loop.run_until_complete(create())
+    # a closed descriptor, or on Windows no socket at all
+    with pytest.raises(OSError, match=rf"\[(Errno {errno.EBADF}|WinError 10038)\]"):
+        ours.getsockname()
+    assert conn.addr_bind == f"127.0.0.1:{bound}"
+
+
+@pytest.mark.parametrize(
+    ("family", "host", "answer"),
+    [
+        (socket.AF_INET, "127.0.0.1", "127.0.0.1:8333"),
+        (socket.AF_INET6, "fe80::1", "[fe80::1]:8333"),
+        (socket.AF_INET6, "2a01:4f8::3", "[2a01:4f8::3]:8333"),
+        (socket.AF_INET6, "::ffff:127.0.0.1", "127.0.0.1:8333"),
+        (socket.AF_INET, "0.0.0.0", None),  # noqa: S104
+        (socket.AF_INET, "255.255.255.255", None),
+        (socket.AF_INET6, "::", None),
+        (socket.AF_INET6, "::ffff:0.0.0.0", None),
+        (socket.AF_INET6, "2001:db8::1", None),
+        (socket.AF_INET6, "3fff::1", None),
+        (socket.AF_INET6, "fd6b:88c0:8724::1", None),
+    ],
+)
+def test_bind_address_is_none_where_is_valid_refuses_it(
+    a_manager: AManagerFactory,
+    family: socket.AddressFamily,
+    host: str,
+    answer: str | None,
+) -> None:
+    """Core's `getpeerinfo` writes `addrbind` only where `IsValid` holds.
+
+    `addrBind.IsValid()` (`src/rpc/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) refuses, among others, the unspecified and broadcast
+    addresses, the documentation ranges and the internal prefix
+    (`CNetAddr::IsValid`, `src/netaddress.cpp`, same sha). A mapped v4
+    address is read as v4.
+    """
+    bound = SimpleNamespace(family=family, getsockname=lambda: (host, 8333))
+    assert a_manager()._bind_address(cast("socket.socket", bound)) == answer
+
+
+def test_bind_address_is_none_where_core_holds_it_invalid(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GetBindAddress` answers no address for a failed `getsockname`, logged.
+
+    Nor for a family other than IPv4 or IPv6, which `CService::SetSockAddr`
+    refuses (`src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag): a stand-in, since `socketpair` falls back to `AF_INET` where the
+    platform has none.
+    """
+    logged, warning = log_recorder()
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "warning", warning)
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.close()
+    assert manager._bind_address(closed) is None
+    assert logged == ["getsockname failed"]
+    other = SimpleNamespace(family=socket.AF_UNSPEC, getsockname=lambda: "")
+    assert manager._bind_address(cast("socket.socket", other)) is None
+    assert logged == ["getsockname failed"]
+
+
 def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails_before_verack(
     a_manager: AManagerFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
