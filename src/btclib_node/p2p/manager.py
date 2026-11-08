@@ -156,7 +156,7 @@ _PEER_CONNECT_TIMEOUT = 60
 #
 # bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
 # serving a block this node asked for, is not
-# at bitcoin/bitcoin@f0de87f040 and is not here.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag, and is not here.
 _PING_INTERVAL = 120
 _TIMEOUT_INTERVAL = 1200
 

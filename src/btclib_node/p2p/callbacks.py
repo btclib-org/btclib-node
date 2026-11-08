@@ -3623,8 +3623,9 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     below argues why.
     """
     missing = NotFound.parse(msg)
-    # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
-    # (at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a `notfound` for a
+    # `TxDownloadManagerImpl::ReceivedNotFound`
+    # (`src/node/txdownloadman_impl.cpp:291-298`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a `notfound` for a
     # transaction this node asked for completes that announcement, so the
     # next announcer is asked instead of the node waiting out the request.
     # `DownloadManager.received_not_found` reads only the transaction

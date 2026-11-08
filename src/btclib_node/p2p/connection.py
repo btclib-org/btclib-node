@@ -151,7 +151,7 @@ _MESSAGE_TYPE_OTHER = "*other*"
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
 # (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the
-# v32.1 tag) and sends as `/Satoshi:29.0.0/` -- the one thing this node
+# v32.1 tag) and sends as `/Satoshi:<version>/` -- the one thing this node
 # says about itself to every peer it meets, and what a crawler reporting
 # the composition of the network parses. `constants.USER_AGENT` is where
 # this string is computed and argued, once, for this module's wire bytes
