@@ -4,11 +4,10 @@
 
 """A block received as a `cmpctblock`, and the peers asked to send them.
 
-Core's `CMPCTBLOCK` and `BLOCKTXN` handlers and `BlockChecked`
-(`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
-and its `MaybeSetPeerAsAnnouncingHeaderAndIDs` (same file, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-ISS 2251), over a real regtest node whose tip is recent.
+Core's `CMPCTBLOCK` and `BLOCKTXN` handlers, `BlockChecked` and
+`MaybeSetPeerAsAnnouncingHeaderAndIDs` (`net_processing.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), over a real regtest node
+whose tip is recent.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -922,6 +921,39 @@ def test_three_peers_are_high_bandwidth_at_once(
         True,
         True,
     ]
+
+
+def test_the_new_peer_is_asked_before_the_oldest_is_dropped(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core sends the fourth `sendcmpct(1)`, then the first `sendcmpct(0)`."""
+    node, _ = a_node(regtest_node)
+    sends: list[tuple[int, bool]] = []
+    for conn_id in (1, 2, 3, 4):
+        a_compact_peer(
+            node,
+            conn_id,
+            send=lambda message, conn_id=conn_id: sends.append(
+                (conn_id, message.announce)
+            ),
+        )
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
+    assert sends == [(1, True), (2, True), (3, True), (4, True), (1, False)]
+
+
+def test_a_new_peer_not_reached_drops_nobody(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core drops the oldest only where the new peer was added."""
+    node, _ = a_node(regtest_node)
+    peers = [a_compact_peer(node, conn_id) for conn_id in (1, 2, 3)]
+    for peer in peers:
+        maybe_set_peer_as_announcing_header_and_ids(node, peer.id)
+    newcomer = a_compact_peer(node, 4, status=P2pConnStatus.Open)
+    maybe_set_peer_as_announcing_header_and_ids(node, 4)
+    assert node.download_manager.hb_peers == [1, 2, 3]
+    assert [sendcmpcts(peer) for peer in peers] == [[True], [True], [True]]
+    assert newcomer.sent == []
 
 
 def test_an_inbound_peer_does_not_take_the_last_outbound_slot(
