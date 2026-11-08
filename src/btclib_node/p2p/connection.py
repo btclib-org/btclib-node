@@ -420,13 +420,20 @@ class Connection:
     # an addr-fetch dial alike (btclib-org/btclib-node#1264, #1432,
     # #1493). Core's own field falls back to the formatted peer address
     # for a connection dialled by address, which `_peer_addr`
-    # (`rpc/callbacks.py`) does the same way from `address` for
-    # `getpeerinfo`'s own `addr`, except that `address` holds no IPv6
-    # scope (btclib-org/btclib-node#2266). Set by
+    # (`rpc/callbacks.py`) does the same way from `address` and
+    # `scope_id` for `getpeerinfo`'s own `addr`. Set by
     # `P2pManager.create_connection` before this connection's task is
     # scheduled, and never changed after; a class default for the same
     # reason as `time_received`.
     addr_name: str | None = None
+    # The IPv6 scope of the address an inbound peer was accepted from,
+    # which `address` has no room for: Core's `m_scope_id` of
+    # `CNode::addr`, read from `sin6_scope_id` (`CService::SetSockAddr`,
+    # `src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    # 0 for a dialled connection, whose address comes from a BIP155 record
+    # or a resolved name kept without its scope
+    # (btclib-org/btclib-node#2292). Set and kept as `addr_name` is.
+    scope_id: int = 0
     # Core's `CNode::addrBind`: this end's own address, read off the
     # socket once, when the connection is built, so that `getpeerinfo`
     # still answers it once the socket is closed. `None` where Core's is

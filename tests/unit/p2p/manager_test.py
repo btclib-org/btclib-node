@@ -6164,7 +6164,12 @@ def public_listener(manager: P2pManager) -> socket.socket:
 
 
 def land_an_inbound_peer(
-    manager: P2pManager, host: str, port: int, *, local: str = "127.0.0.1"
+    manager: P2pManager,
+    host: str,
+    port: int,
+    *,
+    local: str = "127.0.0.1",
+    scope: int | None = None,
 ) -> tuple[socket.socket, socket.socket]:
     """Hand `server` an accepted socket that says it came from `host`.
 
@@ -6172,7 +6177,8 @@ def land_an_inbound_peer(
     really connect from is a local one, which is never discouraged.
     The socket is one end of a loopback connection on `local`, as
     `server` reads the address it is bound to. Returns the pair, the second
-    being the peer's own end.
+    being the peer's own end. A `scope` makes the address an `AF_INET6`
+    one's four elements.
     """
     server_socket = public_listener(manager)
     wait_until(lambda: server_socket in manager._accept_queues)
@@ -6180,8 +6186,9 @@ def land_an_inbound_peer(
     with socket.create_server((local, 0), family=family) as pair_listener:
         theirs = socket.create_connection(pair_listener.getsockname()[:2])
         ours, _ = pair_listener.accept()
+    sockaddr = (host, port) if scope is None else (host, port, 0, scope)
     manager.loop.call_soon_threadsafe(
-        manager._accept_queues[server_socket].put_nowait, (ours, (host, port))
+        manager._accept_queues[server_socket].put_nowait, (ours, sockaddr)
     )
     theirs.settimeout(20)
     return ours, theirs
@@ -7068,6 +7075,130 @@ def test_a_scoped_link_local_bind_listens_at_its_scope(
     finally:
         for server_socket in sockets:
             server_socket.close()
+
+
+def test_bind_address_writes_an_ipv6_scope(a_manager: AManagerFactory) -> None:
+    """ISS 2266: `addrbind` carries the scope of an `AF_INET6` socket's address.
+
+    Core's `GetBindAddress` reads it from `sin6_scope_id` through
+    `CService::SetSockAddr` (`src/netbase.cpp`, `src/netaddress.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    bound = SimpleNamespace(
+        family=socket.AF_INET6, getsockname=lambda: ("fe80::1", 8333, 0, 3)
+    )
+    assert a_manager()._bind_address(cast("socket.socket", bound)) == (
+        "[fe80::1%3]:8333"
+    )
+
+
+def _connects(host: IPv6Address, scope: int) -> bool:
+    """Answer whether a socket at `host` and `scope` is reached in a second."""
+    with (
+        socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener,
+        socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as dialler,
+    ):
+        try:
+            listener.bind((str(host), 0, 0, scope))
+            listener.listen()
+            dialler.settimeout(1)
+            dialler.connect(listener.getsockname())
+        except OSError:
+            return False
+    return True
+
+
+def test_an_address_this_host_does_not_hold_is_not_reached() -> None:
+    """`_connects` answers False where the bind fails.
+
+    `2001:db8::1` is reserved for documentation (RFC 3849), so no
+    interface holds it unless configured to. A bind to an address no
+    interface holds fails at once with `EADDRNOTAVAIL`, or Windows'
+    `WSAEADDRNOTAVAIL`, before any connection is tried. Linux binds one
+    under `ip_nonlocal_bind` or `IPV6_FREEBIND`, both off by default.
+    """
+    assert not _connects(IPv6Address("2001:db8::1"), 0)
+
+
+@pytest.fixture
+def a_reachable_link_local() -> tuple[IPv6Address, int]:
+    """Return a link-local address of this host a socket reaches, and its scope.
+
+    As `a_scoped_link_local`, with `fe80::1` tried first and a connection
+    asked of each: a tunnel's own link-local address binds and is never
+    reached. The test is skipped where none is.
+    """
+    candidates = [
+        IPv6Address("fe80::1"),
+        *(
+            host
+            for host in local_addresses()
+            if isinstance(host, IPv6Address) and host.is_link_local
+        ),
+    ]
+    found = next(
+        (
+            (host, index)
+            for host in candidates
+            for index, _ in socket.if_nameindex()
+            if _connects(host, index)
+        ),
+        None,
+    )
+    if found is None:  # pragma: no cover -- a host with no link-local address
+        pytest.skip("no link-local IPv6 address is reached on this host")
+    return found
+
+
+def test_both_ends_of_a_scoped_link_local_connection_bind_at_its_scope(
+    a_manager: AManagerFactory,
+    a_reachable_link_local: tuple[IPv6Address, int],
+) -> None:
+    """ISS 2266: either end of a link-local connection binds at its scope.
+
+    Measured on bitcoind v32.1.0 on macOS: an inbound peer over `lo0`
+    answers `"addrbind": "[fe80::1%1]:38267"`, and the manual peer that
+    dialled it `"addrbind": "[fe80::1%1]:59335"`.
+    """
+    host, index = a_reachable_link_local
+    manager = a_manager()
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+        listener.bind((str(host), 0, 0, index))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as dialled:
+            dialled.settimeout(20)
+            dialled.connect((str(host), port, 0, index))
+            accepted, _ = listener.accept()
+            with accepted:
+                assert manager._bind_address(accepted) == f"[{host}%{index}]:{port}"
+                assert manager._bind_address(dialled) == (
+                    f"[{host}%{index}]:{dialled.getsockname()[1]}"
+                )
+
+
+def test_an_inbound_peer_keeps_the_scope_it_was_accepted_from(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2266: `scope_id` is the fourth element of the accepted address.
+
+    BIP155 has no room for it, so `address` cannot hold it. Core's
+    `AcceptConnection` reads it through `CService::SetSockAddr`
+    (`src/net.cpp`, `src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). A v4 peer has none.
+    """
+    manager = a_manager(port=get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        for host, scope in [("fe80::1", 3), ("1.2.3.4", None)]:
+            _, theirs = land_an_inbound_peer(manager, host, 50000, scope=scope)
+            peers.enter_context(closing(theirs))
+        wait_until(lambda: len(manager.pending_connections) == 2)
+        pending = manager.pending_connections
+        assert [pending[0].scope_id, pending[1].scope_id] == [3, 0]
+        manager.stop()
+        manager.join(timeout=10)
 
 
 def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> None:

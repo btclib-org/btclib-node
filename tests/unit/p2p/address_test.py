@@ -35,6 +35,7 @@ from btclib_node.p2p.address import (
     fixed_seed_addresses,
     ip_and_port,
     peer_address,
+    sockaddr_scope,
 )
 from btclib_node.p2p.eviction import Network, net_class, net_group
 from tests import call_within
@@ -372,6 +373,28 @@ def test_an_address_is_shown_the_way_core_writes_one() -> None:
     # under NET_IPV4, and this is the form a `NetworkAddress` hands over
     assert ip_and_port("::ffff:1.2.3.4", 8333) == "1.2.3.4:8333"
     assert str(NetworkAddress(0, "1.2.3.4", 8333).ip) == "::ffff:1.2.3.4"
+
+
+def test_an_ipv6_address_is_shown_with_its_scope_the_way_core_writes_it() -> None:
+    """ISS 2266: Core's `IPv6ToString` writes a scope as `%` and a number.
+
+    Measured on bitcoind v32.1.0 on macOS: an inbound peer over `lo0`
+    answers `getpeerinfo` with `"addr": "[fe80::1%1]:59054"`. A scope in
+    the host's text gives way to the number, which is what Core holds.
+    An IPv4 host has none, mapped or not.
+    """
+    assert ip_and_port("fe80::1", 8333, 1) == "[fe80::1%1]:8333"
+    assert ip_and_port("fe80::1%lo0", 8333, 1) == "[fe80::1%1]:8333"
+    assert ip_and_port("fe80::1", 8333, 0) == "[fe80::1]:8333"
+    assert ip_and_port("1.2.3.4", 8333, 1) == "1.2.3.4:8333"
+    assert ip_and_port("::ffff:1.2.3.4", 8333, 1) == "1.2.3.4:8333"
+
+
+def test_the_scope_of_a_socket_address_is_its_fourth_element() -> None:
+    """ISS 2266: an `AF_INET6` address has a scope, an `AF_INET` one none."""
+    assert sockaddr_scope(("fe80::1", 8333, 0, 3)) == 3
+    assert sockaddr_scope(("::1", 8333, 0, 0)) == 0
+    assert sockaddr_scope(("1.2.3.4", 8333)) == 0
 
 
 def test_a_host_that_is_not_an_ip_address_is_refused() -> None:
