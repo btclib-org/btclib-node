@@ -1340,9 +1340,17 @@ def _accepted(
 
     Core's `ProcessValidTx`: the orphans that spend it are to be
     reconsidered, every other peer is told of it, and what it `replaced`
-    is kept for compact blocks (`AddToCompactExtraTransactions`).
+    is kept for compact blocks (`AddToCompactExtraTransactions`). `conn`'s
+    next message waits on each other peer marked to reconsider one, as
+    `p2p.main._hold_message` says.
     """
-    node.download_manager.mempool_accepted_tx(tx)
+    marked = node.download_manager.mempool_accepted_tx(tx)
+    waits = node.tx_checks.marked.setdefault(conn.id, {})
+    for _, peer in marked:
+        if peer != conn.id:
+            waits.setdefault(peer, None)
+    if not waits:
+        del node.tx_checks.marked[conn.id]
     node.download_manager.received_txs.append((conn.id, tx.hash))
     node.download_manager.extra_txns.extend(replaced)
 

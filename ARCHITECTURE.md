@@ -140,14 +140,14 @@ block's script checks, and only those, under Core's conditions.
 
 A transaction a peer relays has its scripts checked on `Node.worker_pool`
 too, one candidate at a time (a transaction, or a parent with its child),
-so the loop goes on serving other peers while they run, the sending
-peer's later messages waiting for the verdict and for any orphan it is to
-reconsider (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
-every other check first, and applies the verdict once it is in, after
-running those checks again against the chain and the mempool as they
-are then. The worker reads only the transactions and their prevouts; the
-queue of candidates, the mempool and the chain state stay on `Node`'s
-thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
+so the loop goes on serving other peers while they run
+(`src/btclib_node/p2p/tx_checks.py`), the sending peer's later messages
+waiting as `_hold_message` says. `Node`'s thread runs every other check
+first, and applies the verdict once it is in, after running those checks
+again against the chain and the mempool as they are then. The worker
+reads only the transactions and their prevouts; the queue of candidates,
+the mempool and the chain state stay on `Node`'s thread.
+`sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
 transactions a reorg puts back in the mempool and those `mempool.dat`
 loads are checked on `Node`'s thread, scripts included.
 
