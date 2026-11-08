@@ -320,7 +320,7 @@ def test_the_outbound_time_offsets_keep_core_s_last_fifty(tmp_path: Path) -> Non
     `src/node/timeoffsets.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     """
     with unstarted_node_context(tmp_path) as node:
-        assert list(node.outbound_time_offsets) == []
+        assert not node.outbound_time_offsets
         node.outbound_time_offsets.extend(range(51))
         assert list(node.outbound_time_offsets) == list(range(1, 51))
 
