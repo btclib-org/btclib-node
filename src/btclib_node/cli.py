@@ -868,8 +868,8 @@ _OPTIONS: dict[str, _Option] = {
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
     "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
-    # Core's registration (`src/chainparamsbase.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
+    # Core's registration (`src/chainparamsbase.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
     # parameter included
     "testactivationheight": _Option(
         "=name@height.",

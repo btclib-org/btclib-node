@@ -123,8 +123,8 @@ LEAK = "correct-horse-battery-staple"
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
-# (`src/common/config.cpp`, `src/common/args.cpp`, at
-# bitcoin/bitcoin@f0de87f040), each measured on `bitcoind` with the line
+# (`src/common/config.cpp`, `src/common/args.cpp`,
+# at bitcoin/bitcoin@f0de87f040), each measured on `bitcoind` with the line
 # below `regtest=1`, which is what numbers it 2
 @pytest.mark.parametrize(
     ("line", "refusal"),

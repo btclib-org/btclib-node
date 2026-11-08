@@ -239,8 +239,8 @@ def check_fork_warning_conditions(node: Node) -> None:
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _MAX_BLOCKS_TO_ANNOUNCE = 8
 
-# Core's own `MAX_PACKAGE_WEIGHT` (`src/policy/packages.h:24`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# Core's own `MAX_PACKAGE_WEIGHT` (`src/policy/packages.h:24`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _MAX_PACKAGE_WEIGHT = 404_000
 
 
@@ -541,8 +541,8 @@ def _reconcile_mempool_for_reorg(
     }
     # Core connects every new block, with its `removeForBlock`, before
     # `MaybeUpdateMempoolForReorg` puts anything back
-    # (`ActivateBestChainStep`, `src/validation.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the fee estimator
+    # (`ActivateBestChainStep`, `src/validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the fee estimator
     # counts the blocks before any re-add or removal the re-add makes
     first_height = len(node.chainstate.block_index.active_chain) - len(to_add)
     for height, block in enumerate(to_add, start=first_height):
@@ -552,8 +552,8 @@ def _reconcile_mempool_for_reorg(
         removed = node.mempool.remove_for_block(block.transactions)
         node.fee_estimator.process_block(removed, height)
         # v32.1's `ConnectTip` signals the block to the estimators only
-        # outside initial block download (`src/validation.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
+        # outside initial block download (`src/validation.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
         # estimator is still told during it, as v31.1 told it
         # (btclib-org/btclib-node#2178).
         if not node.is_initial_block_download:
@@ -595,8 +595,8 @@ def _reconcile_mempool_for_reorg(
             # Core's own disconnectpool holds the whole block,
             # coinbase included (`AddTransactionsFromBlock(block.vtx)`),
             # and `MaybeUpdateMempoolForReorg` never re-adds one
-            # (`(*it)->IsCoinBase() ||`, `src/validation.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the output it
+            # (`(*it)->IsCoinBase() ||`, `src/validation.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the output it
             # spent no longer exists on any chain, so it is never a
             # mempool entrant on any path into it. What already spends
             # one of its outputs is the orphan `removeRecursive` takes
@@ -1247,8 +1247,8 @@ def is_cached_invalid(block_index: BlockIndex, block: Block, chain: Chain) -> bo
     )
 
 
-# Core's `TWO_WEEKS_IN_SECONDS` (`ConnectBlock`, `src/validation.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# Core's `TWO_WEEKS_IN_SECONDS` (`ConnectBlock`, `src/validation.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _ASSUME_VALID_BURIAL = 60 * 60 * 24 * 7 * 2
 
 
@@ -1396,8 +1396,8 @@ def _validate_block(
         check_scripts(transactions, flags, node)
 
 
-# Core's own `MAX_MONEY` (`src/consensus/amount.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the bound `MoneyRange` puts
+# Core's own `MAX_MONEY` (`src/consensus/amount.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the bound `MoneyRange` puts
 # on an input value, an input total and the fees a block accumulates
 _MAX_MONEY = 21_000_000 * 100_000_000
 

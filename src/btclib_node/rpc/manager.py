@@ -668,8 +668,8 @@ class RpcManager(threading.Thread):
                 sock.close()
                 continue
             # Nagle's algorithm off, as `HTTPServer::NewSockAccepted` sets
-            # it on every accepted socket (`src/httpserver.cpp`, at
-            # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+            # it on every accepted socket (`src/httpserver.cpp`,
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
             try:
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except OSError:

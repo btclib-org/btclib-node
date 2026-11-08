@@ -2140,8 +2140,8 @@ class P2pManager(threading.Thread):
         ]
         # time_penalty=0, not `add_addresses`'s own gossip default:
         # `ThreadOpenConnections` calls `addrman.get().Add(seed_addrs,
-        # local)` with no third argument (`src/net.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
+        # local)` with no third argument (`src/net.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
         # `AddrManImpl::Add`'s own default for that argument is `0s`
         # (`src/addrman.h`, same sha) -- a fixed seed already carries
         # `fixed_seed_addresses`'s own one-to-two-week backdating
@@ -2552,8 +2552,8 @@ class P2pManager(threading.Thread):
         # network is off `_next_outbound` chooses no anchor. A flip
         # between that check and `_pop_anchor` still loses the one
         # popped: Core's `ThreadOpenConnections` reads `fNetworkActive`
-        # and pops `m_anchors` in two steps too (`src/net.cpp`, at
-        # bitcoin/bitcoin@aef8a04966).
+        # and pops `m_anchors` in two steps too (`src/net.cpp`,
+        # at bitcoin/bitcoin@aef8a04966).
         if not self.network_active:
             return
         # `OpenNetworkConnection` (`src/net.cpp`,
@@ -3913,8 +3913,8 @@ class P2pManager(threading.Thread):
         # `Discover()` off `fListen` (`_discover`'s own docstring).
         server_sockets: list[socket.socket] = []
         # Core's own warning, logged as it builds the options
-        # `CConnman::Start` takes (`src/init.cpp:2196-2203`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), once for each empty
+        # `CConnman::Start` takes (`src/init.cpp:2196-2203`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), once for each empty
         # `-addnode` value `Config` left out
         for _ in range(self.node.config.addnode_empty):
             self.logger.warning("Ignoring empty -addnode value")

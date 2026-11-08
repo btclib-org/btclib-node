@@ -1399,8 +1399,8 @@ ser = "ser"
 # ChaCha20Aligned::Seek, past tense -- not the misspelling of "sought"
 # typos' dictionary offers for ordinary English usage.
 seeked = "seeked"
-# BIP325's own SIGNET_HEADER (signet.py, src/signet.cpp at
-# bitcoin/bitcoin@9be056a8a7): four bytes of a witness commitment's own
+# BIP325's own SIGNET_HEADER (signet.py, src/signet.cpp
+# at bitcoin/bitcoin@9be056a8a7): four bytes of a witness commitment's own
 # push data. typos tokenizes the hex literal `ecc7daa2` splitting the
 # trailing digit off, so the word it actually flags is `daa`, not
 # `data`, the misspelling its dictionary offers -- measured with

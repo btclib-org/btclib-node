@@ -1952,8 +1952,8 @@ def inv(  # sourcery skip: low-code-quality
 
     # Core skips `MSG_TX` from a peer that sent `wtxidrelay` and `MSG_WTX`
     # from one that did not, and reads `MSG_WITNESS_TX` as a txid from
-    # either (`net_processing.cpp` and `protocol.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The announcement keeps
+    # either (`net_processing.cpp` and `protocol.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The announcement keeps
     # which of the two it is: a wtxid-relay peer's `MSG_WITNESS_TX` is
     # looked up and asked for as a txid. btclib-org/btclib-node#1774
     skipped = (

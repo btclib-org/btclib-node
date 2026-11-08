@@ -2472,8 +2472,8 @@ CATEGORY: dict[str, str] = {
     "setban": "Network",
     # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`) and
     # `generatetoaddress` and `generateblock` (`src/rpc/mining.cpp`) and
-    # `setmocktime` (`src/rpc/node.cpp`), at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag: no heading of its own
+    # `setmocktime` (`src/rpc/node.cpp`),
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag: no heading of its own
     # in the bare listing, `_BARE_LISTING`'s own construction excluding
     # this category rather than sorting it in alphabetically where
     # "hidden" would fall. `help addconnection` still answers its own

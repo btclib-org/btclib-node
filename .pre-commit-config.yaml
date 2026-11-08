@@ -564,6 +564,16 @@ repos:
         entry: |-
           #\W*sourcery\W+skip(?!:)|#\W*sourcery\W+skip:[^#]*(?<![\w-])(?:default|refactoring|suggestion|comment)(?![\w-])
         types: [python]
+      # CONTRIBUTING.md's *Following Bitcoin Core* asks that a citation in
+      # a comment keep `at` on the same physical line as the sha it cites,
+      # because ruff's `ERA001` reads one comment line at a time and `at`
+      # glued to the citation is never valid Python (btclib-org/btclib-node#471,
+      # #1517, #2209)
+      - id: core-citation-comment-wrap
+        name: a Core citation in a comment keeps at on the sha line
+        language: pygrep
+        entry: '^[ \t]*#[ \t]*bitcoin/bitcoin@'
+        types: [python]
   # a bitcoind pin and a release-pinned Core citation are two places
   # that have to move together, and nothing else here reads either --
   # `pinned-rev` above checks the shape of a pre-commit rev, not a

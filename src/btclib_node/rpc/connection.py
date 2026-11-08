@@ -102,8 +102,8 @@ IDLE_TIMEOUT = 30.0
 # size is that of Core's own reads (`HTTPRemoteClient::Receive`).
 _SEND_CHUNK = 0x10000
 # The longest Core's socket thread waits for a socket to be ready, in
-# seconds: `SELECT_TIMEOUT` (`src/httpserver.cpp:47`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+# seconds: `SELECT_TIMEOUT` (`src/httpserver.cpp:47`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 # `RpcConnection._answer_past_a_close` says what it bounds here.
 _SELECT_TIMEOUT = 0.05
 

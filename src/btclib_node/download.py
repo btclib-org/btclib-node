@@ -83,8 +83,8 @@ __all__ = [
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 
-# The global rate limits on transaction announcements, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag: `DEFAULT_TX_SEND_RATE`
+# The global rate limits on transaction announcements,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag: `DEFAULT_TX_SEND_RATE`
 # (`net_processing.h`), and `OUTBOUND_INVENTORY_BUCKET_MULTIPLIER`,
 # `INVENTORY_BUCKET_CHECK_DELAY` and `InvToSendBucket`'s own constants
 # (`net_processing.cpp`). `_InvToSendBucket` says what its constants

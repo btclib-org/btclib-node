@@ -700,9 +700,9 @@ def a_p2wpkh_spend_with_a_wrong_signature() -> tuple[list[TxOut], Tx]:
     return prevouts, tx
 
 
-# Core's `TX_WITNESS_STRIPPED` (`PolicyScriptChecks`, `src/validation.cpp`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): no witness, and a witness program
-# spent, bare or nested in p2sh, a version no BIP defines included
+# Core's `TX_WITNESS_STRIPPED` (`PolicyScriptChecks`, `src/validation.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): no witness, and a witness
+# program spent, bare or nested in p2sh, a version no BIP defines included
 _WITNESS_STRIPPED = (
     ("p2wpkh", a_stripped_p2wpkh_spend, TxRejectedError, True),
     ("p2sh-p2wpkh", a_stripped_p2sh_p2wpkh_spend, TxRejectedError, True),
@@ -869,8 +869,8 @@ def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
     )
     with pytest.raises(TxRejectedError) as refusal:
         check_transaction(prevouts, tx)
-    # `SCRIPT_ERR_EVAL_FALSE`'s string, src/script/script_error.cpp at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag
+    # `SCRIPT_ERR_EVAL_FALSE`'s string, src/script/script_error.cpp
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
     assert refusal.value.reason == (
         "mempool-script-verify-flag-failed (Script evaluated without error "
         "but finished with a false/empty top stack element)"
