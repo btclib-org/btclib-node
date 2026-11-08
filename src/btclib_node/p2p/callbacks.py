@@ -155,6 +155,7 @@ from btclib_node.p2p.protocol_version import (
 from btclib_node.p2p.raw_block import RawBlock, assert_well_formed, strip_witnesses
 from btclib_node.p2p.tx_checks import TxCheck
 from btclib_node.stored_block import read_checked_raw, read_held_block
+from btclib_node.timeoffsets import warn_if_out_of_sync
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -636,13 +637,15 @@ def _record_time_offset(node: Node, conn: Connection, timestamp: int) -> None:
     `conn.stats.time_offset` is Core's `Peer::m_time_offset`. Where this
     node dialled the peer, a feeler included, the offset also joins
     `node.outbound_time_offsets`, Core's `m_outbound_time_offsets`
-    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
-    Split out of `version` for ruff's complexity ceiling.
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    and the clock warning is checked again, as Core's `WarnIfOutOfSync`
+    is there. Split out of `version` for ruff's complexity ceiling.
     """
     offset = timestamp - int(clock.now())
     conn.stats.time_offset = offset
     if not conn.inbound:
         node.outbound_time_offsets.append(offset)
+        warn_if_out_of_sync(node)
 
 
 def _end_if_feeler(node: Node, conn: Connection) -> None:

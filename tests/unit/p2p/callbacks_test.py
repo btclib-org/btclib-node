@@ -1041,6 +1041,41 @@ def test_a_version_samples_the_clock_of_a_peer_this_node_dialled(
     )
 
 
+def test_a_version_checks_the_clock_warning_of_a_peer_this_node_dialled() -> None:
+    """ISS 2282: Core's `WarnIfOutOfSync` runs after each outbound sample.
+
+    `a_version`'s timestamp of 1 is decades behind this node's clock, so
+    the fifth peer dialled sets the warning and logs it
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
+    """
+    node = a_handshake_node()
+    logged: list[str] = []
+    node.logger.warning = logged.append
+    for _ in range(4):
+        version(node, a_version(), a_peer())
+    assert not node.warnings.get_messages()
+    assert not logged
+    version(node, a_version(), a_peer())
+    assert len(node.warnings.get_messages()) == 1
+    assert logged == node.warnings.get_messages()
+
+
+def test_an_inbound_version_leaves_the_clock_warning_unchecked() -> None:
+    """ISS 2282: Core checks the warning only where it adds a sample.
+
+    The samples here are out of sync and the warning not yet set, so an
+    inbound peer's `version` that checked it would set it and log it.
+    """
+    node = a_handshake_node()
+    node.outbound_time_offsets.extend([3600] * 5)
+    logged: list[str] = []
+    node.logger.warning = logged.append
+    version(node, a_version(), a_peer(inbound=True))
+    assert not node.warnings.get_messages()
+    assert not logged
+
+
 def test_a_second_version_ahead_of_verack_is_ignored_outright() -> None:
     """A repeat `version`, `version_message` already set, gets no reply at all.
 

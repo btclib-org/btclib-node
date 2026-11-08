@@ -161,8 +161,7 @@ _LARGE_WORK_INVALID_CHAIN_PERIODS = 6
 
 # Core's own `kernel::Warning::LARGE_WORK_INVALID_CHAIN`
 # (`src/kernel/warning.h`, same sha), passed to `notify.Warnings` as a
-# plain string id: this tree tracks no other warning, so there is
-# nothing else the id has to be distinct from but itself.
+# plain string id, distinct from the other ids its docstring names.
 _LARGE_WORK_INVALID_CHAIN = "large_work_invalid_chain"
 
 # Core's own two strings, cited apart because one reaches the log alone
