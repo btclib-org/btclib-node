@@ -1300,16 +1300,18 @@ class DownloadManager:
                 return parent, child
         return None
 
-    def mempool_accepted_tx(self, tx: Tx) -> None:
+    def mempool_accepted_tx(self, tx: Tx) -> list[tuple[bytes, int]]:
         """Take in that `tx` was accepted, Core's `MempoolAcceptedTx`.
 
         Nobody is asked for it any longer, the orphans that spend it are to be
-        reconsidered, and it is no orphan itself.
+        reconsidered, and it is no orphan itself. Answers the orphans marked,
+        as `TxOrphanage.add_children_to_work_set` does.
         """
         self.tx_requests.forget_tx_hash(tx.id)
         self.tx_requests.forget_tx_hash(tx.hash)
-        self.orphanage.add_children_to_work_set(tx)
+        marked = self.orphanage.add_children_to_work_set(tx)
         self.orphanage.erase_tx(tx.hash)
+        return marked
 
     def received_tx_response(self, conn_id: int, txid: bytes, wtxid: bytes) -> None:
         """Complete `conn_id`'s announcement of a transaction it sent.
