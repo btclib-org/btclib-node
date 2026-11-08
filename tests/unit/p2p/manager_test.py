@@ -6881,7 +6881,7 @@ def test_a_listening_ipv6_socket_carries_cores_options(
         if sys.platform == "win32":  # pragma: no cover -- windows-latest
             level = server_socket.getsockopt(socket.IPPROTO_IPV6, IPV6_PROTECTION_LEVEL)
             assert level == PROTECTION_LEVEL_UNRESTRICTED
-    assert not [args for args in infos if "IPV6_PROTECTION_LEVEL" in str(args[0])]
+    assert not [args for args in infos if "IPV6_PROTECTION_LEVEL" in args]
 
 
 @pytest.mark.parametrize(
@@ -6936,10 +6936,57 @@ def test_the_protection_level_is_set_on_windows_and_its_failure_logged(
                 (socket.IPPROTO_IPV6, 23, 10),
             ]
         )
-        line = "Error setting IPV6_PROTECTION_LEVEL on socket: %s, continuing anyway"
-        logged.append((line, f"Protocol not available ({errno.ENOPROTOOPT})"))
+        line = "Error setting %s on socket: %s, continuing anyway"
+        text = f"Protocol not available ({errno.ENOPROTOOPT})"
+        logged.append((line, "IPV6_PROTECTION_LEVEL", text))
     assert calls == [*expected, "bind"]
     assert infos == logged
+
+
+@pytest.mark.parametrize(
+    ("family", "host"),
+    [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")],
+    ids=["ipv4", "ipv6"],
+)
+def test_an_option_core_passes_over_is_logged_at_info(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    family: socket.AddressFamily,
+    host: str,
+) -> None:
+    """ISS 2274: `SO_REUSEADDR` or `IPV6_V6ONLY` refused, and the socket bound.
+
+    `CConnman::BindListenPort` logs either at info and goes on
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    manager = a_manager(port=8333)
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    refused = {
+        (socket.SOL_SOCKET, socket.SO_REUSEADDR),
+        (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+    }
+
+    class Refusing(socket.socket):
+        """A socket refusing the two options Core passes over."""
+
+        @override
+        def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
+            # `IPV6_PROTECTION_LEVEL`, set and not refused
+            if (level, optname) not in refused:  # pragma: no cover -- Windows alone
+                super().setsockopt(level, optname, value, *rest)
+                return
+            raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+    monkeypatch.setattr(socket, "socket", Refusing)
+    with closing(manager._bind_one(family, host, 0)) as server_socket:
+        assert server_socket.getsockname()[1]
+    names = ["SO_REUSEADDR"]
+    if family == socket.AF_INET6:
+        names.append("IPV6_V6ONLY")
+    line = "Error setting %s on socket: %s, continuing anyway"
+    text = f"Protocol not available ({errno.ENOPROTOOPT})"
+    assert infos == [(line, name, text) for name in names]
 
 
 def _binds(host: IPv6Address, scope: int) -> bool:

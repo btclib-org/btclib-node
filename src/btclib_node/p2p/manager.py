@@ -3234,7 +3234,8 @@ class P2pManager(threading.Thread):
             )
             raise OSError(msg) from error
         try:
-            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            reuse = (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._set_or_log(server_socket, reuse, "SO_REUSEADDR")
             if family == socket.AF_INET6:
                 # Otherwise a dual-stack kernel hands this socket an
                 # inbound v4 peer too, its address mapped into sixteen
@@ -3244,9 +3245,17 @@ class P2pManager(threading.Thread):
                 # would ask for. Core sets the same option on its own
                 # "::" listener for the same reason (net.cpp,
                 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
-                server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                v6only = (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                self._set_or_log(server_socket, v6only, "IPV6_V6ONLY")
                 if sys.platform == "win32":
-                    self._unrestrict(server_socket)
+                    unrestricted = (
+                        socket.IPPROTO_IPV6,
+                        IPV6_PROTECTION_LEVEL,
+                        PROTECTION_LEVEL_UNRESTRICTED,
+                    )
+                    self._set_or_log(
+                        server_socket, unrestricted, "IPV6_PROTECTION_LEVEL"
+                    )
             try:
                 server_socket.bind(socket_address(ip_address(host), port))
             except OSError as error:
@@ -3278,20 +3287,20 @@ class P2pManager(threading.Thread):
             raise
         return server_socket
 
-    def _unrestrict(self, server_socket: socket.socket) -> None:
-        """Set `IPV6_PROTECTION_LEVEL`, or log at info that it could not be.
+    def _set_or_log(
+        self, server_socket: socket.socket, option: tuple[int, int, int], name: str
+    ) -> None:
+        """Set `option` (level, number, value), or log at info that it failed.
 
-        Core logs the failure in these words and goes on.
+        `name` names the option in the line logged. Core logs the failure
+        in these words and goes on.
         """
         try:
-            server_socket.setsockopt(
-                socket.IPPROTO_IPV6,
-                IPV6_PROTECTION_LEVEL,
-                PROTECTION_LEVEL_UNRESTRICTED,
-            )
+            server_socket.setsockopt(*option)
         except OSError as error:
             self.logger.info(
-                "Error setting IPV6_PROTECTION_LEVEL on socket: %s, continuing anyway",
+                "Error setting %s on socket: %s, continuing anyway",
+                name,
                 network_error_string(error),
             )
 
