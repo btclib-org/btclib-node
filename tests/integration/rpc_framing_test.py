@@ -388,7 +388,9 @@ def _answer(
         reply = b""
         if later:
             while b"\r\n\r\n" not in reply:
-                reply += client.recv(65536)
+                chunk = client.recv(65536)
+                assert chunk, f"closed before a header section ended: {reply!r}"
+                reply += chunk
             client.sendall(later)
         while chunk := client.recv(65536):
             reply += chunk

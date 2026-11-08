@@ -2217,7 +2217,9 @@ def after_the_reply(
     the loop the connection runs on. A request `run` queues is answered
     `body`, as `conversation` answers it. `capped` makes the
     connection's socket a `_CappedSocket`. Returns everything written
-    back, and the seconds from reading `answer` to the close.
+    back, and the seconds from writing `data` to the close: the
+    connection's wait past a close starts after that, however late the
+    reply is read.
     """
 
     async def main() -> tuple[bytes, float]:
@@ -2229,6 +2231,7 @@ def after_the_reply(
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={0: None})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        started = time.monotonic()
         await loop.sock_sendall(theirs, data)
         await conn.run()
         sent = None
@@ -2238,7 +2241,6 @@ def after_the_reply(
         async with asyncio.timeout(5):
             while len(reply) < len(answer):
                 reply += await loop.sock_recv(theirs, 4096)
-            answered = time.monotonic()
             for delay, piece in pieces:
                 await asyncio.sleep(delay)
                 # the connection may be closed already
@@ -2250,7 +2252,7 @@ def after_the_reply(
             with contextlib.suppress(ConnectionResetError, ConnectionAbortedError):
                 while chunk := await loop.sock_recv(theirs, 4096):
                     reply += chunk
-            closed = time.monotonic() - answered
+            closed = time.monotonic() - started
             if sent is not None:
                 await sent
         theirs.close()
