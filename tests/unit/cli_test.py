@@ -5514,7 +5514,7 @@ def test_build_config_warns_of_a_test_value_it_does_not_know(
     `bip94` is one Core knows and this node does not read.
     """
     warning = f'Unrecognised option "{value}" provided in -test=<option>.'
-    argv = ["-regtest", "-test" if not value else f"-test={value}", "-test=addrman"]
+    argv = ["-regtest", f"-test={value}" if value else "-test", "-test=addrman"]
     config = _build(tmp_path, *argv)
     assert capsys.readouterr().err == f"Warning: {warning}\n"
     assert config.debug_warnings == (warning,)
