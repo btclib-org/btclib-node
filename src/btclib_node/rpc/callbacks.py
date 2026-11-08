@@ -711,7 +711,7 @@ def get_chain_tips(
     active tip's own fork is empty by definition, so it is answered `0`
     without calling that method at all.
 
-    `status`, in Core's own priority order (`:1680-1697`): `"active"`
+    `status`, in Core's own priority order (`:1682-1700`): `"active"`
     for the chain's own tip; `"invalid"` for a tip `BlockStatus.invalid`
     already marks, itself or an ancestor, `invalidate` above already
     propagating that mark down every child rather than leaving it for a
