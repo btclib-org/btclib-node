@@ -46,6 +46,6 @@ def test_zero_releases_the_clock_to_the_system_time(
     assert clock.now() == 42.0
 
 
-def test_the_mock_time_bound_is_the_one_bitcoind_v31_1_0_answers() -> None:
-    """Core v31.1.0 refuses `setmocktime 9223372037`, past 9223372036."""
-    assert clock.MAX_MOCK_TIME == 9223372036
+def test_the_mock_time_bound_is_the_one_bitcoind_v32_1_answers() -> None:
+    """Core v32.1 refuses `setmocktime 4294967296`, past 4294967295."""
+    assert clock.MAX_MOCK_TIME == 4294967295

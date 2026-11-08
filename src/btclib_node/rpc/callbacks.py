@@ -4397,17 +4397,15 @@ def stop_wait_param(params: list[Any]) -> int | None:
 def set_mock_time(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     """Answer `setmocktime`: hold the node's clock at `timestamp`, regtest only.
 
-    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag, which this node follows until ISS 2256), in Core's order:
-    the generic missing-argument and wrong-type refusals, then the chain
-    gate -- `RPC_MISC_ERROR`, as the plain `std::runtime_error` Core
-    throws becomes -- then the range, a non-integer number being "JSON
-    integer out of range" as `getInt` answers it. A `timestamp` outside
-    `[0, MAX_MOCK_TIME]` is `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is
-    the v31.1 tag's bound, `nanoseconds::max()` in seconds; the v32.1 tag
-    narrows it to `uint32_t`'s maximum (406c2348dd, "rpc: tighten
-    setmocktime upper bound to UINT32_MAX"). Every refusal here matches a
-    regtest bitcoind v31.1.0.
+    Core's own (`src/rpc/node.cpp:77-84`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag, from bitcoin/bitcoin@406c2348dd, "rpc: tighten
+    setmocktime upper bound to UINT32_MAX"), in Core's order: the generic
+    missing-argument and wrong-type refusals, then the chain gate --
+    `RPC_MISC_ERROR`, as the plain `std::runtime_error` Core throws
+    becomes -- then the range, a non-integer number being "JSON integer
+    out of range" as `getInt` answers it. A `timestamp` outside
+    `[0, MAX_MOCK_TIME]` is `RPC_INVALID_PARAMETER`. Every refusal here
+    matches a regtest bitcoind v32.1.
 
     The callback runs on `Node`'s thread between two steps of the loop,
     so no validation is in flight, as Core's `LOCK(cs_main)` ensures.
