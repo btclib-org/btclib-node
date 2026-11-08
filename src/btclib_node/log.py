@@ -31,10 +31,7 @@ tag).
 
 `open_history_log` is what a caller with a `Config` (or a `Config` never
 built at all, `cli.main`'s own refusal after the lock) opens one
-through, in Core's own order: the version line between the warnings
-buffered while the settings were read and the unrecognised-section
-warning, then the data directory and configuration file lines, then
-`LogArgs`'s lines.
+through, in Core's own order, which its docstring gives.
 """
 
 import logging
@@ -410,6 +407,7 @@ def open_history_log(  # noqa: PLR0913
     config_file_line: str = "",
     log_warnings: Sequence[str] = (),
     section_warning: str = "",
+    max_connections_warning: str = "",
     debug_warnings: Sequence[str] = (),
     config_args: Sequence[str] = (),
     rate_limit: bool = True,
@@ -418,15 +416,17 @@ def open_history_log(  # noqa: PLR0913
 
     Core's own order, across `init/common.cpp`'s `StartLogging`,
     `LogPackageVersion` and `init.cpp`'s `AppInitParameterInteraction`
-    (all at bitcoin/bitcoin@9be056a8a7): `log_warnings`, buffered while
-    the settings were read, then the version line, then
+    (all at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `log_warnings`,
+    buffered while the settings were read, then the version line, then
     `section_warning` -- the one warning about a section naming no
-    chain, empty where there is none -- then `StartLogging`'s own
-    "Default data directory" and "Using data directory", then
-    `config_file_line`, then `config_args`, `LogArgs`'s own "Config file
-    arg:"/"Command-line arg:" lines. Without `rate_limit` it ends with
-    `AppInitMain`'s "Log rate limiting disabled", which Core writes later,
-    among lines this node has no counterpart for.
+    chain, empty where there is none -- then `max_connections_warning`
+    -- the warning that `-maxconnections` was capped, empty where it was
+    not -- then `debug_warnings`, then `StartLogging`'s own "Default data
+    directory" and "Using data directory", then `config_file_line`, then
+    `config_args`, `LogArgs`'s own "Config file arg:"/"Command-line arg:"
+    lines. Without `rate_limit` it ends with `AppInitMain`'s "Log rate
+    limiting disabled", which Core writes later, among lines this node
+    has no counterpart for.
     """
     logger = Logger(
         log_path,
@@ -444,6 +444,8 @@ def open_history_log(  # noqa: PLR0913
     logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
     if section_warning:
         logger.warning(section_warning)
+    if max_connections_warning:
+        logger.warning(max_connections_warning)
     for warning in debug_warnings:
         logger.warning(warning)
     logger.info("Default data directory %s", default_data_dir())

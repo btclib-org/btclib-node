@@ -992,17 +992,14 @@ def test_build_config_reads_the_relay_share_as_core_clamps_it(
 
 
 def test_help_names_the_relay_share() -> None:
-    """ISS 1769: in `bitcoind`'s words.
-
-    `-maxconnections` names no maximum (ISS 2127).
-    """
+    """ISS 1769, ISS 2127: in `bitcoind`'s words, the cap included."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-inboundrelaypercent=<n> Permit a maximum percent of inbound "
         "connections to relay transactions, to limit memory utilization "
         "(0 to 100, default: 50)."
     ) in message
-    assert "connections to peers (default: 200)" in message
+    assert "connections to peers (default: 200, maximum: 2000)" in message
 
 
 @pytest.mark.parametrize(
@@ -1758,10 +1755,11 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
     assert cli._atoi64(value) == read
 
 
-# measured on `bitcoind` v31.1.0, which this node follows until ISS 2127,
-# with `-regtest -listen=0`: the limit its "Using at most <n> automatic
-# connections" line gives, `None` where it refuses "-maxconnections must
-# be greater or equal than zero"
+# measured on `bitcoind` v32.1.0 with `-regtest -listen=0`: the limit its
+# "Using at most <n> automatic connections" line gives, 2000 for a value
+# it reads as 2000 or more, warning past 2000 with "Reducing
+# -maxconnections from <n> to 2000.", and `None` where it refuses
+# "-maxconnections must be greater or equal than zero"
 @pytest.mark.parametrize(
     ("value", "limit"),
     [
@@ -1773,23 +1771,25 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
         ("x", 0),
         ("", 0),
         ("0x10", 0),
-        ("99999999999999999999", None),
-        ("-99999999999999999999", 0),
-        ("4294967296", 0),
-        ("4294967297", 1),
-        ("-4294967295", 1),
-        ("2147483648", None),
+        ("2000", 2000),
+        ("2001", 2000),
+        ("99999999999999999999", 2000),
+        ("-99999999999999999999", None),
+        ("4294967296", 2000),
+        ("4294967297", 2000),
+        ("-4294967295", None),
+        ("2147483648", 2000),
+        ("-2147483648", None),
         ("-7x", None),
     ],
 )
 def test_maxconnections_is_the_int_bitcoind_reads(
     tmp_path: Path, value: str, limit: int | None
 ) -> None:
-    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`.
+    """ISS 1313, ISS 2127: `GetArg<int>`, saturated, then capped at 2000.
 
-    That is `AppInitParameterInteraction`'s reading (`src/init.cpp:1033`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-    until ISS 2127).
+    That is `AppInitParameterInteraction`'s reading (`src/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if limit is None:
         with pytest.raises(
@@ -1802,34 +1802,84 @@ def test_maxconnections_is_the_int_bitcoind_reads(
 
 @pytest.mark.parametrize(
     ("value", "listen"),
-    [("4294967296", True), ("-4294967295", False)],
+    [("4294967296", True), ("abc", False)],
 )
-def test_the_listen_soft_set_reads_maxconnections_before_the_int(
+def test_the_listen_soft_set_reads_maxconnections(
     tmp_path: Path, value: str, *, listen: bool
 ) -> None:
     """ISS 1324: `InitParameterInteraction` compares the `int64_t` with zero.
 
-    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
-    `-maxconnections=4294967296` logs no "setting -listen=0" though its
-    limit is 0, and `-4294967295` logs it though its limit is 1.
+    Measured on `bitcoind` v32.1.0: `-maxconnections=4294967296` logs no
+    "setting -listen=0", and `-maxconnections=abc` logs it.
     """
     assert _build(tmp_path, f"-maxconnections={value}").listen is listen
 
 
 @pytest.mark.parametrize(
     ("value", "dnsseed"),
-    [("4294967296", True), ("-4294967295", False)],
+    [("4294967296", True), ("abc", False)],
 )
-def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
+def test_the_dnsseed_soft_set_reads_maxconnections(
     tmp_path: Path, value: str, *, dnsseed: bool
 ) -> None:
     """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
 
-    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
-    `-maxconnections=4294967296` logs "dnsseed thread start", and
-    `-4294967295` logs "setting -dnsseed=0".
+    Measured on `bitcoind` v32.1.0: `-maxconnections=4294967296` logs
+    "dnsseed thread start", and `-maxconnections=abc` logs "setting
+    -dnsseed=0".
     """
     assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
+
+
+@pytest.mark.parametrize(
+    ("value", "read"),
+    [("5000", 5000), ("2001", 2001), ("4294967297", 2**31 - 1)],
+)
+def test_a_maxconnections_past_2000_is_capped_with_core_s_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, read: int
+) -> None:
+    """ISS 2127: one warning on stderr, naming the value `GetArg<int>` read.
+
+    Measured on `bitcoind` v32.1.0, which prints the same line.
+    """
+    config = _build(tmp_path, f"-maxconnections={value}")
+    warning = f"Reducing -maxconnections from {read} to 2000."
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    assert config.max_connections == 2000
+    assert config.max_connections_warning == warning
+
+
+def test_a_maxconnections_of_2000_is_not_warned_of(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: the cap warns only where it lowers the limit."""
+    config = _build(tmp_path, "-maxconnections=2000")
+    assert capsys.readouterr().err == ""
+    assert config.max_connections_warning == ""
+
+
+def test_the_maxconnections_warning_precedes_the_rpcmaxconnections_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: `AppInitParameterInteraction` caps, then refuses.
+
+    Measured on `bitcoind` v32.1.0: `-maxconnections=5000
+    -rpcmaxconnections=0` prints the warning, then the error.
+    """
+    with pytest.raises(ValueError, match=r"^-rpcmaxconnections must be"):
+        _build(tmp_path, "-maxconnections=5000", "-rpcmaxconnections=0")
+    assert capsys.readouterr().err == (
+        "Warning: Reducing -maxconnections from 5000 to 2000.\n"
+    )
+
+
+def test_the_forcednsseed_refusal_precedes_the_maxconnections_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: measured on `bitcoind` v32.1.0, which prints the error only."""
+    with pytest.raises(ValueError, match=r"^Cannot set -forcednsseed"):
+        _build(tmp_path, "-maxconnections=5000", "-forcednsseed", "-nodnsseed")
+    assert capsys.readouterr().err == ""
 
 
 def test_forcednsseed_defaults_to_false(tmp_path: Path) -> None:
@@ -4395,6 +4445,84 @@ def test_main_a_refusal_after_the_lock_reaches_history_log(
     assert "[error] Invalid port specified in -port: 'abc'" in log_text
 
 
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["-blocksdir={tmp}/nosuch"],
+            'Specified blocks directory "{tmp}/nosuch" does not exist.',
+        ),
+        (
+            ["-prune=550", "-reindex-chainstate"],
+            (
+                "Prune mode is incompatible with -reindex-chainstate. "
+                "Use full -reindex instead."
+            ),
+        ),
+        (
+            ["-forcednsseed", "-nodnsseed"],
+            "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+        ),
+        (
+            ["-bind=127.0.0.1:38428", "-listen=0"],
+            "Cannot set -bind or -whitebind together with -listen=0",
+        ),
+        (["-rpcmaxconnections=0"], "JSON integer out of range"),
+        ([], "JSON integer out of range"),
+    ],
+    ids=["blocksdir", "prune", "forcednsseed", "bind", "rpcmaxconnections", "alone"],
+)
+def test_a_maxconnections_number_past_an_int_is_refused_where_core_reads_it(
+    tmp_path: Path, argv: list[str], message: str
+) -> None:
+    """ISS 2127: `GetArg<int>` throws after the refusals ahead of it.
+
+    Measured on `bitcoind` v32.1.0 with `{"maxconnections": 2147483648}`
+    in `regtest/settings.json`: each of the first four prints its own
+    error, and the number's "JSON integer out of range" comes ahead of
+    the `-rpcmaxconnections` refusal.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": 2147483648}', encoding="utf-8"
+    )
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError, match=f"^{re.escape(message.format(tmp=tmp_path))}$"
+    ):
+        _build(tmp_path, "-regtest", *args)
+
+
+def test_an_int_option_number_past_an_int_is_left_for_the_caller() -> None:
+    """ISS 2127: without `refuse`, `_get_int32` returns the number as it is."""
+    settings = _file_settings('{"maxconnections":2147483648}')
+    assert cli._get_int32(settings, "maxconnections", 0, refuse=False) == 2**31
+    settings = _file_settings('{"maxconnections":"2147483648"}')
+    assert cli._get_int32(settings, "maxconnections", 0, refuse=False) == 2**31 - 1
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_refusal_after_the_lock_logs_the_maxconnections_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: the cap's warning reaches the log a later refusal opens.
+
+    Measured on `bitcoind` v32.1.0 with `-maxconnections=5000
+    -onlynet=bogus`, a refusal after `init::StartLogging` too: it prints
+    the warning, then the error, and its `debug.log` holds both in that
+    order.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-maxconnections=5000", "-port=abc"])
+    assert excinfo.value.code == 1
+    warning = "Reducing -maxconnections from 5000 to 2000."
+    assert capsys.readouterr().err == (
+        f"Warning: {warning}\nError: Invalid port specified in -port: 'abc'\n"
+    )
+    log_text = (tmp_path / "mainnet" / "history.log").read_text(encoding="utf-8")
+    assert log_text.index(f"[warning] {warning}") < log_text.index("[error]")
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5358,18 +5486,28 @@ def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
     ("content", "expected"),
     [("2147483647", 2**31 - 1), ('"3000000000"', 2**31 - 1), ("5", 5)],
 )
-def test_rpcmaxconnections_in_the_file_is_an_int(content: str, expected: int) -> None:
-    """ISS 1953: a 32-bit `int` as a number, a string saturated to one."""
-    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
-    assert cli._get_rpcmaxconnections(settings) == expected
+@pytest.mark.parametrize("name", ["rpcmaxconnections", "maxconnections"])
+def test_an_int_option_in_the_file_is_an_int(
+    name: str, content: str, expected: int
+) -> None:
+    """ISS 1953, ISS 2127: a 32-bit `int` as a number, a string saturated."""
+    settings = _file_settings(f'{{"{name}":{content}}}')
+    assert cli._get_int32(settings, name, 0) == expected
 
 
 @pytest.mark.parametrize("content", ["2147483648", "3000000000", "-2147483649"])
-def test_an_rpcmaxconnections_number_past_an_int_is_out_of_range(content: str) -> None:
-    """ISS 1953: Core's `UniValue::getInt<int>` refuses it, ending the start."""
-    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
+@pytest.mark.parametrize("name", ["rpcmaxconnections", "maxconnections"])
+def test_an_int_option_number_past_an_int_is_out_of_range(
+    name: str, content: str
+) -> None:
+    """ISS 1953, ISS 2127: Core's `UniValue::getInt<int>` refuses it.
+
+    Measured on `bitcoind` v32.1.0 for `{"maxconnections": 2147483648}` in
+    `settings.json`: "JSON integer out of range", ending the start.
+    """
+    settings = _file_settings(f'{{"{name}":{content}}}')
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
-        cli._get_rpcmaxconnections(settings)
+        cli._get_int32(settings, name, 0)
 
 
 def test_a_number_is_a_string_option_in_its_own_text() -> None:
