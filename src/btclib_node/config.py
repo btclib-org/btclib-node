@@ -908,11 +908,12 @@ class Config:
     # joined before `Node.stop`'s own shutdown goes on
     # (`notify.run_shutdown_notify`).
     shutdown_notify: tuple[str, ...]
-    # Core's own `-alertnotify`: the command
-    # `main.check_fork_warning_conditions` runs, through the shell,
-    # whenever this node raises a warning of its own, `%s` replaced by
-    # the sanitized, single-quoted message (`notify.alert_notify`). `""`
-    # runs nothing.
+    # Core's own `-alertnotify`: the command run through the shell when
+    # this node raises one of Core's kernel warnings
+    # (`main.check_fork_warning_conditions`,
+    # `versionbits.check_unknown_activations`), `%s` replaced by the
+    # sanitized, single-quoted message (`notify.alert_notify`). The clock
+    # warning runs none, as in Core. `""` runs nothing.
     alert_notify: str
 
     # every parameter here is one independent setting, not a group of

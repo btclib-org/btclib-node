@@ -197,6 +197,13 @@ btclib\_node.stored\_block module
    :members:
    :show-inheritance:
 
+btclib\_node.timeoffsets module
+--------------------------------
+
+.. automodule:: btclib_node.timeoffsets
+   :members:
+   :show-inheritance:
+
 btclib\_node.txgraph module
 ----------------------------
 

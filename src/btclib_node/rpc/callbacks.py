@@ -130,6 +130,7 @@ from btclib_node.rpc.signing import (
 from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.rpc.utxo_set import scan_tx_out_set
 from btclib_node.stored_block import read_checked_block
+from btclib_node.timeoffsets import median
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
@@ -1671,11 +1672,6 @@ def set_network_active(node: Node, conn: RpcConnection, params: list[Any]) -> bo
     return state
 
 
-# Core's `TimeOffsets::Median` answers 0 under this many samples
-# (`src/node/timeoffsets.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-_MIN_TIME_OFFSETS = 5
-
-
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getnetworkinfo` with the fields argued below.
 
@@ -1715,9 +1711,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     same sha), false only under `-blocksonly`, which this node does not
     have.
 
-    `timeoffset` is Core's `TimeOffsets::Median` (`src/node/timeoffsets.cpp`,
-    same sha) of `node.outbound_time_offsets`: 0 under five samples, and
-    otherwise the sample at half their count in sorted order.
+    `timeoffset` is `timeoffsets.median` of `node.outbound_time_offsets`,
+    Core's `TimeOffsets::Median`.
 
     `networks` is Core's `GetNetworksInfo` (`:649-669`, same sha): its
     networks in its order, each `reachable` where `p2p.manager.reaches`
@@ -1760,7 +1755,6 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     manager = node.p2p_manager
     peers = {**manager.pending_connections, **manager.connections}
     connections_in = sum(bool(p2p_conn.inbound) for p2p_conn in peers.values())
-    offsets = sorted(node.outbound_time_offsets)
     return {
         "version": NUMERIC_CLIENT_VERSION,
         "subversion": USER_AGENT,
@@ -1768,9 +1762,7 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
         "localrelay": True,
-        "timeoffset": (
-            offsets[len(offsets) // 2] if len(offsets) >= _MIN_TIME_OFFSETS else 0
-        ),
+        "timeoffset": median(node.outbound_time_offsets),
         "networkactive": manager.get_network_active(),
         "connections": len(peers),
         "connections_in": connections_in,

@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Running an operator's `-*notify` command, and the warnings that trigger one.
+"""Running an operator's `-*notify` command, and the node's warnings.
 
 Core's `runCommand` (`src/common/system.cpp`, at bitcoin/bitcoin@9be056a8a7,
 the v31.1 tag) is `run_command` below: every notify command runs through
@@ -129,14 +129,14 @@ class Warnings:
     """The node-wide warnings this tree raises, Core's `node::Warnings`.
 
     (`src/node/warnings.h`/`.cpp`, same citation as the module
-    docstring.) Tracks Core's two kernel warnings, by plain string id:
-    `"large_work_invalid_chain"`, which `main.py`'s
-    `check_fork_warning_conditions` raises, and
-    `"unknown_new_rules_activated"`, which `versionbits.py`'s
-    `check_unknown_activations` does. None of Core's `node::Warning`
-    members (`CLOCK_OUT_OF_SYNC`,
-    `PRE_RELEASE_TEST_BUILD`, `FATAL_INTERNAL_ERROR`) has a counterpart
-    here either, this tree raising none of them.
+    docstring.) Tracks, by plain string id, Core's two kernel warnings and
+    one of its `node::Warning` members. `"large_work_invalid_chain"` is
+    raised by `main.py`'s `check_fork_warning_conditions`, and
+    `"unknown_new_rules_activated"` by `versionbits.py`'s
+    `check_unknown_activations`. `"clock_out_of_sync"`, Core's
+    `CLOCK_OUT_OF_SYNC`, is raised by `timeoffsets.py`'s
+    `warn_if_out_of_sync`. Core's other members, `PRE_RELEASE_TEST_BUILD`
+    and `FATAL_INTERNAL_ERROR`, have no counterpart here.
 
     `set_warning`/`unset_warning`/`get_messages` are Core's own
     `Set`/`Unset`/`GetMessages`. `set_warning`'s own dedup -- an id
