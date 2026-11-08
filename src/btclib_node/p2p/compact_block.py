@@ -45,7 +45,7 @@ __all__ = [
 
 # Core's `MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK` and
 # `DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN` (`src/net_processing.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many peers one block is
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag): how many peers one block is
 # asked of through `cmpctblock`, and how many refused transactions are kept
 # to rebuild one with. Core's `-blockreconstructionextratxn` sets the
 # second, and this tree has no such option.
@@ -66,7 +66,7 @@ class MostRecentBlock:
     """The block `new_pow_valid_block` last kept, and its `cmpctblock`.
 
     Core's `m_most_recent_block` and `m_most_recent_compact_block`
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), which `m_most_recent_block_hash` names. `txs` is Core's
     `m_most_recent_block_txs`, built with them: every transaction of the
     block under its txid and under its wtxid, the two kept apart as
@@ -108,14 +108,14 @@ def maybe_set_peer_as_announcing_header_and_ids(node: Node, conn_id: int) -> Non
     """Ask a peer to announce new blocks as `cmpctblock`, dropping the oldest.
 
     Core's `MaybeSetPeerAsAnnouncingHeaderAndIDs` (`src/net_processing.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), over
-    `DownloadManager.hb_peers`, Core's `lNodesAnnouncingHeaderAndIDs`.
-    Nothing for a peer gone or one that sent no `sendcmpct` of version 2.
-    A peer already chosen moves to the end. Otherwise, where `_HB_PEERS`
-    are chosen, the first is sent `sendcmpct(0, 2)` and dropped, an
-    outbound one being kept where it is the only outbound left and an
-    inbound peer is the one added. The peer is sent `sendcmpct(1, 2)`
-    and added at the end.
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+    until ISS 2251), over `DownloadManager.hb_peers`, Core's
+    `lNodesAnnouncingHeaderAndIDs`. Nothing for a peer gone or one that sent
+    no `sendcmpct` of version 2. A peer already chosen moves to the end.
+    Otherwise, where `_HB_PEERS` are chosen, the first is sent `sendcmpct(0,
+    2)` and dropped, an outbound one being kept where it is the only
+    outbound left and an inbound peer is the one added. The peer is sent
+    `sendcmpct(1, 2)` and added at the end.
 
     A peer id stays in the list after its peer is gone, as in Core.
     """
@@ -153,7 +153,7 @@ def block_checked(node: Node, block_hash: bytes, *, valid: bool) -> None:
     """Take in that a block was connected, or refused, by `update_chain`.
 
     Core's `BlockChecked` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `ConnectTip` calls
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), which `ConnectTip` calls
     for each block it connects or refuses. A valid block that came from
     a peer (`DownloadManager.block_source`) makes it a high-bandwidth
     peer, out of initial block download and where no other block is in

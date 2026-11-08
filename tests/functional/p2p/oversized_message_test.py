@@ -7,7 +7,7 @@
 Core's `V1Transport::readHeader` refuses a header announcing a payload
 longer than `MAX_PROTOCOL_MESSAGE_LENGTH`, so `ReceiveMsgBytes` fails
 and the socket handler disconnects the peer, which nothing discourages
-(`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The
+(`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The
 bound is the same for every type: nothing judges the command before the
 length.
 

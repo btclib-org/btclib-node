@@ -8,7 +8,7 @@
 `protect_eviction_candidates_by_ratio` its
 `ProtectEvictionCandidatesByRatio` (`src/node/eviction.cpp`), and
 `net_group` is `NetGroupManager::GetGroup` with no asmap loaded
-(`src/netgroup.cpp`), all read at bitcoin/bitcoin@9be056a8a7, the v31.1
+(`src/netgroup.cpp`), all read at bitcoin/bitcoin@f0de87f040, the v32.1
 tag. The selection is pure: it reads `EvictionCandidate` records and
 returns an id, and `P2pManager` is what builds the records from its
 connections and disconnects the peer chosen.
@@ -335,7 +335,7 @@ def is_internal(ip: IPv6Address) -> bool:
     """Core's `CNetAddr::IsInternal`: whether `ip` is under the internal prefix.
 
     `SetLegacyIPv6` reads an IPv6 address under `INTERNAL_IN_IPV6_PREFIX`
-    (`src/netaddress.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) as
+    (`src/netaddress.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) as
     `NET_INTERNAL`, whatever the peer or resolver meant by it.
     `LookupIntern`'s own collection loop (`src/netbase.cpp:144-168`, same
     sha) asks exactly this, and nothing more, of each answer before
@@ -376,7 +376,7 @@ def is_routable(address: NetworkAddressV2) -> bool:
     `IsValid` about a CJDNS address, and no range of `IsRoutable` reaches
     one. Core decodes any other network id as an address `IsValid`
     refuses (`CNetAddr::UnserializeV2Stream`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), BIP155's TORv2 id and
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), BIP155's TORv2 id and
     Yggdrasil's included. An IPv6 record embedding IPv4 or Tor v2, which
     Core decodes as invalid too, is left to `is_embedded_ipv6`, run ahead
     of this.

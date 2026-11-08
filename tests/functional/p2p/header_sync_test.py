@@ -27,11 +27,11 @@ def test_peers_at_the_same_tip_both_reach_header_synced(tmp_path: Path) -> None:
     """Each node's initial `getheaders` draws the shared tip from the other.
 
     Core's own reason for starting the locator at the best header's parent
-    (`SendMessages`, `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7):
-    "This ensures that we always get a non-empty list of headers back as long
-    as the peer is up-to-date." That short batch, connecting, is what moves a
-    node to `HeaderSynced`. Both hold the blocks too: a `getheaders` is
-    answered off the active chain, as Core's is.
+    (`SendMessages`, `net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag): "This ensures that we always get a non-empty list of headers
+    back as long as the peer is up-to-date." That short batch, connecting, is
+    what moves a node to `HeaderSynced`. Both hold the blocks too: a
+    `getheaders` is answered off the active chain, as Core's is.
     """
     chain = generate_random_chain(3, RegTest().genesis.hash)
     nodes = []

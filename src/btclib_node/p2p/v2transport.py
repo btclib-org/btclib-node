@@ -5,7 +5,7 @@
 """BIP324's v2 transport as a state machine that reads and writes no socket.
 
 `V2Transport` is Core's `V2Transport` (`src/net.h` and `src/net.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), with Core's receive and send
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), with Core's receive and send
 states, implementing `p2p.transport.Transport`, whose conventions it
 follows. The cipher, the key schedule and the short message ids are
 `btclib.p2p.bip324`'s.

@@ -4,10 +4,11 @@
 
 """A block received as a `cmpctblock`, and the peers asked to send them.
 
-Core's `CMPCTBLOCK` and `BLOCKTXN` handlers, `BlockChecked` and
-`MaybeSetPeerAsAnnouncingHeaderAndIDs` (`net_processing.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), over a real regtest node
-whose tip is recent.
+Core's `CMPCTBLOCK` and `BLOCKTXN` handlers and `BlockChecked`
+(`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+and its `MaybeSetPeerAsAnnouncingHeaderAndIDs` (same file, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
+ISS 2251), over a real regtest node whose tip is recent.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -154,7 +155,10 @@ def test_a_block_whose_transactions_are_all_held_is_taken_at_once(
 def test_a_cmpctblock_from_a_peer_that_never_sent_sendcmpct_is_ignored(
     regtest_node: Callable[[], Node],
 ) -> None:
-    """Core's return at `net_processing.cpp:4799-4802`, before the parse."""
+    """Core's return at `net_processing.cpp:4798-4801`, before the parse.
+
+    Read at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
     node, _ = a_node(regtest_node)
     block = next_block(node, generate_random_transaction())
     peer = a_compact_peer(node, provides_cmpctblocks=False)
@@ -170,10 +174,11 @@ def test_a_cmpctblock_nobody_asked_of_a_peer_not_high_bandwidth_is_ignored(
     regtest_node: Callable[[], Node],
     requested: bool,  # noqa: FBT001
 ) -> None:
-    """Core's return at `net_processing.cpp:4888-4891`, after the header.
+    """Core's return at `net_processing.cpp:4887-4890`, after the header.
 
-    The header is taken, as Core takes it. Where the block was asked of
-    the peer, it is rebuilt whatever the peer's bandwidth.
+    Read at bitcoin/bitcoin@f0de87f040, the v32.1 tag. The header is
+    taken, as Core takes it. Where the block was asked of the peer, it
+    is rebuilt whatever the peer's bandwidth.
     """
     node, _ = a_node(regtest_node)
     block = next_block(node, generate_random_transaction())

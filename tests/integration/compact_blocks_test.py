@@ -6,7 +6,7 @@
 
 Each sends `sendcmpct(1, 2)` to a peer that has just given it a new
 block (`MaybeSetPeerAsAnnouncingHeaderAndIDs`, `src/net_processing.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and that peer then sends it the
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), and that peer then sends it the
 next block as a `cmpctblock` before connecting it (Core's
 `NewPoWValidBlock`, here `main.new_pow_valid_block`), taken without a
 `getdata`. The first test hands the blocks to this node with

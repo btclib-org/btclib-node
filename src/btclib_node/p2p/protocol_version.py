@@ -5,9 +5,9 @@
 """The protocol versions a peer is kept at, and each feature begins at.
 
 Core's `src/node/protocol_version.h` (at bitcoin/bitcoin@9be056a8a7, the
-v31.1 tag), under Core's names; `PROTOCOL_VERSION` itself is
-`btclib.p2p.limits`'. `common_version` is Core's
-`CNode::GetCommonVersion`, which every feature gate reads.
+v31.1 tag, which this node follows until ISS 2250), under Core's names;
+`PROTOCOL_VERSION` itself is `btclib.p2p.limits`'. `common_version` is
+Core's `CNode::GetCommonVersion`, which every feature gate reads.
 """
 
 from typing import TYPE_CHECKING

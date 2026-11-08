@@ -6,7 +6,7 @@
 
 The protection and eviction tables are Core's own
 `src/test/net_peer_eviction_tests.cpp`, case for case, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag: random candidates with the
+bitcoin/bitcoin@f0de87f040, the v32.1 tag: random candidates with the
 fields each case is about overwritten, shuffled, then selected. Core
 runs each case under one fixed seed; these run under several.
 """

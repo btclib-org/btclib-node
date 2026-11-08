@@ -444,10 +444,11 @@ def test_own_version_announces_the_name_and_the_installed_version() -> None:
 def test_own_version_carries_this_nodes_own_best_height() -> None:
     """`start_height` on the wire is `manager.node.best_height` (closes #722).
 
-    Core's own `PushNodeVersion` (`net_processing.cpp:1673`, at
-    bitcoin/bitcoin@ca7162cde5) fills `my_height` from `m_best_height`;
-    `Node.best_height`'s own comment (`__init__.py`) is where reading it
-    here, off `Node`'s own thread's writes without a lock, is argued.
+    Core's own `PushNodeVersion` (`net_processing.cpp:1671`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) fills `my_height` from
+    `m_best_height`; `Node.best_height`'s own comment (`__init__.py`) is
+    where reading it here, off `Node`'s own thread's writes without a
+    lock, is argued.
     """
     connection, _ = a_connection()
     connection.manager.node.best_height = 741
@@ -528,8 +529,9 @@ def test_own_version_drops_node_network_when_pruned() -> None:
     """A pruned node's own `version` keeps `LIMITED`, drops `NODE_NETWORK`.
 
     Core's own `g_local_services` (`src/init.cpp`, at
-    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED | NODE_WITNESS` from
-    the start, `NODE_NETWORK` added only where `!fPruneMode`.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `NODE_NETWORK_LIMITED |
+    NODE_WITNESS` from the start, `NODE_NETWORK` added only where
+    `!fPruneMode`.
     """
     connection, _ = a_connection()
     connection.manager.node.config.pruned = True
@@ -1384,8 +1386,8 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
 
     Core processes a peer's messages in the order received, and a `ping`
     ahead of `verack` meets "Unsupported message prior to verack"
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
-    btclib-org/btclib-node#1657
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). btclib-org/btclib-node#1657
     """
     connection, _ = a_connection()
     manager = cast("Any", connection.manager)

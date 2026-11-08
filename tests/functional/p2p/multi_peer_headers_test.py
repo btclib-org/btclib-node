@@ -8,21 +8,21 @@ The peers are `ScriptedPeer`s on real sockets. Every liar is met before
 the honest peer, the only order that puts it to the proof, as the
 package docstring of `tests/functional/p2p/__init__.py` says.
 
-What Core does with a peer that tells each lie, at v31.1
-(bitcoin/bitcoin@9be056a8a7), `src/net_processing.cpp`:
+What Core does with a peer that tells each lie, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag, `src/net_processing.cpp`:
 
 - a header missing its proof of work, or headers that do not follow one
-  another, are `Misbehaving` (:2623, :2629), as is a header whose target
-  the chain does not require, `BLOCK_INVALID_HEADER` (:1937-1939);
+  another, are `Misbehaving` (:2867, :2873), as is a header whose target
+  the chain does not require, `BLOCK_INVALID_HEADER` (:2061-2063);
 - a block whose body its header does not commit to is `Misbehaving`,
-  "mutated block" (:4875-4876);
+  "mutated block" (:5122-5123);
 - a block asked for and never sent costs the peer its connection after
-  the download timeout, and nothing else (:6118-6121).
+  the download timeout, and nothing else (:6464-6467).
 
 `Misbehaving` makes `MaybeDiscourageAndDisconnect` drop the peer and
 discourage its address, except that a local peer is dropped and not
 discouraged, "since that would discourage all peers on the same local
-address" (:5194-5201). Every peer here is local, so each liar is dropped
+address" (:5393-5400). Every peer here is local, so each liar is dropped
 and the host stays undiscouraged, which is what the honest peer, on the
 same host, needs. `tests/unit/p2p/manager_test.py` holds the discouraging
 half.

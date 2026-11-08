@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Tests for `btclib_node.p2p.permissions`: `-whitelist` and `-whitebind`."""
+"""Tests for `btclib_node.p2p.permissions`: `-whitelist` and `-whitebind`.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import re
 
@@ -69,7 +72,7 @@ def test_a_value_grants_core_s_permissions_in_core_s_order(
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        # measured on bitcoind v31.1.0
+        # measured on bitcoind
         ("bogus@1.2.3.4", "Invalid P2P permission: 'bogus'"),
         ("noban,Relay@1.2.3.4", "Invalid P2P permission: 'Relay'"),
         ("in@1.2.3.4", "Only direction was set, no permissions: 'in@1.2.3.4'"),
@@ -218,7 +221,7 @@ def test_a_whitebind_naming_no_permission_holds_implicit() -> None:
 def test_whitebind_permissions_are_refused_in_core_s_words(
     text: str, message: str
 ) -> None:
-    """ISS 1625: the texts are those of `bitcoind` v31.1.0.
+    """ISS 1625: the texts are those of `bitcoind`.
 
     `out` is refused where it is read, so a permission named before it
     that is none is refused first, and `-whitelist` still accepts `out`.

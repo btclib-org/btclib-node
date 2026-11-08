@@ -6,8 +6,8 @@
 
 `BanMan` is Core's class of the same name (`src/banman.cpp`), `Subnet`
 its `CSubNet` (`src/netaddress.cpp`) and `lookup_subnet` its
-`LookupSubNet` (`src/netbase.cpp`), all read at bitcoin/bitcoin@9be056a8a7,
-the v31.1 tag. The list is kept in `banlist.json` in Core's own format
+`LookupSubNet` (`src/netbase.cpp`), all read at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag. The list is kept in `banlist.json` in Core's own format
 (`src/addrdb.cpp`, `src/net_types.cpp`), so either node reads the
 other's.
 
@@ -76,7 +76,7 @@ _WARNING = (
 # `DecodeBase32` also reads in upper case
 _BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
 # `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _ONION = ".onion"
 _I2P = ".b32.i2p"
 _I2P_CHARS = 52
@@ -556,10 +556,11 @@ class BanMan:
         if ban_time_offset <= 0:
             ban_time_offset = self.default_ban_time
             absolute = False
-        # Core adds in `int64_t`, and bitcoind v31.1.0 wraps a sum past its
-        # maximum to a negative end, which never beats the zero
-        # `m_banned[sub_net]` default-constructs: the ban is not taken, and
-        # `banlist.json` holds no end it cannot read back.
+        # Core adds in `int64_t`, and `bitcoind`, at the release
+        # `integration-bitcoind.yml` pins, wraps a sum past its maximum
+        # to a negative end, which never beats the zero
+        # `m_banned[sub_net]` default-constructs: the ban is not taken,
+        # and `banlist.json` holds no end it cannot read back.
         until = (0 if absolute else now) + ban_time_offset
         entry = BanEntry(now, (until + _INT64_END) % (2 * _INT64_END) - _INT64_END)
         with self._lock:

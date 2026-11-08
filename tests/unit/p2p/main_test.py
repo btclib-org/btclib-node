@@ -639,8 +639,8 @@ def test_an_oversized_inv_costs_the_peer_whatever_the_sync_state(
     """More than `MAX_INV_SZ` items drops the peer, discouraged.
 
     Core's `INV` branch calls `Misbehaving` for it before reading the
-    node's own state (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `callbacks.inv` refuses the count first, with a
+    node's own state (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `callbacks.inv` refuses the count first, with a
     `MisbehavingError`. The count is a canonical CompactSize, three
     octets: a longer one is a parse error to btclib, as to Core's
     `ReadCompactSize`, which costs the peer nothing.

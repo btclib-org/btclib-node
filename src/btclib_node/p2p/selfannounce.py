@@ -6,7 +6,7 @@
 
 `reachability` is `CNetAddr::GetReachabilityFrom` (`src/netaddress.cpp`)
 and `address_for_peer` is `GetLocal` and `GetLocalAddrForPeer`
-(`src/net.cpp`), both read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+(`src/net.cpp`), both read at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
 Only IPv4 and IPv6 are held here, so no local address is on a privacy
 network, and `GetLocal` skips every one of them for a peer that is.
 """
