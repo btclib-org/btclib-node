@@ -691,11 +691,10 @@ def get_chain_tips(
     always adds the active chain's own tip. `block_index.children` is
     this index's own parent -> children table, already kept for
     `BlockIndex.invalidate`'s own walk (that class's own comment on it),
-    so a tip here is exactly a hash with no entry in it, or an empty
-    one -- the active tip included, nothing ever being staged on top of
-    it until a block extends it, so it needs no separate case the way
-    Core's own `setTips.insert(active_chain.Tip())` does past its own
-    orphans-only loop.
+    so a tip other than the active one is a hash with no entry in it, or
+    an empty one. The active tip is added as Core adds it, since a
+    header staged on top of it, as `submitheader` stages one, gives it a
+    child while it is still the tip.
 
     `branchlen` is the fork's own length (`CChain::FindFork`'s height
     difference, `:1618`) -- `BlockIndex.get_fork_details` already
@@ -727,7 +726,8 @@ def get_chain_tips(
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
     active_tip = active_chain[-1]
-    tips = [h for h in block_index.header_dict if not block_index.children.get(h)]
+    tips = {h for h in block_index.header_dict if not block_index.children.get(h)}
+    tips.add(active_tip)
 
     out: list[dict[str, Any]] = []
     for tip_hash in tips:
