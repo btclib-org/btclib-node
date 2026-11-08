@@ -1412,8 +1412,8 @@ def test_a_manual_peer_with_neither_service_is_kept() -> None:
     """A `-connect` or `-addnode` peer is not refused for the wanted services.
 
     Core's `ExpectServicesFromConn` is `false` for a `MANUAL` connection,
-    which `automatic=False` on an outbound peer is here. The peer still
-    has `NODE_WITNESS`, which `version` asks of every peer.
+    which `automatic=False` on an outbound peer is here. `version` keeps
+    such a peer whatever its services.
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
