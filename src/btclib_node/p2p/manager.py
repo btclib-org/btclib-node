@@ -140,11 +140,12 @@ _ACCEPT_RETRY_DELAY = 0.1
 # btclib-org/btclib-node#1379
 _AUTOMATIC_DIAL_INTERVAL = 0.5
 
-# How long a connection has from connecting to finishing its handshake:
+# How long after connecting a connection is spared every inactivity check:
 # Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`,
-# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), past which
-# `CConnman::InactivityCheck` drops a connection not yet
-# `fSuccessfullyConnected`, whatever it has sent. This node has no
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the timeout
+# `_inactivity_checks_due` reads. Past it `CConnman::InactivityCheck`
+# drops a connection not yet `fSuccessfullyConnected`, whatever it has
+# sent, and `_keep_alive` judges the others. This node has no
 # `-peertimeout` to set it.
 _PEER_CONNECT_TIMEOUT = 60
 
@@ -152,7 +153,8 @@ _PEER_CONNECT_TIMEOUT = 60
 # (`src/net.h`), at bitcoin/bitcoin@f0de87f040, the v32.1 tag, in
 # seconds: the wait before a connection with no ping outstanding is sent
 # one, and the silence, or the delay of a `pong`, that drops it.
-# `_keep_alive` applies them, and drops a peer paused that long too.
+# `_keep_alive` applies them, and drops a peer paused that long too, each
+# drop only once `_PEER_CONNECT_TIMEOUT` has passed.
 #
 # bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
 # serving a block this node asked for, is not
@@ -391,6 +393,25 @@ def _exponential_delay(mean: float) -> float:
     predict is in this tree.
     """
     return secrets.SystemRandom().expovariate(1 / mean)
+
+
+def _inactivity_checks_due(conn: Connection, now: float) -> bool:
+    """Whether `_PEER_CONNECT_TIMEOUT` has passed since `conn` connected.
+
+    `CConnman::ShouldRunInactivityChecks` (`src/net.cpp`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `m_connected` plus the
+    timeout is before `now`, both read off `NodeClock`, the mockable clock,
+    as `connected_time` and the `now` of `manage_connections` are read off
+    `clock.now`. Until then `_keep_alive` drops no peer, and
+    `_prune_stale_connections` drops a pending connection only where it has
+    closed. So a peer connected under `_PEER_CONNECT_TIMEOUT` ago, whose
+    `last_receive` was stamped under a mock time set back, is not judged on
+    it the moment the clock is released. An older peer is, as in Core.
+
+    `connected_time` is in whole seconds, rounded down, where Core's
+    `m_connected` is not, so the timeout can end up to a second early.
+    """
+    return conn.connected_time + _PEER_CONNECT_TIMEOUT < now
 
 
 def network_error_string(error: OSError) -> str:
@@ -1821,10 +1842,7 @@ class P2pManager(threading.Thread):
             # A v2 outbound attempt a v1-only peer refuses ends here, as a
             # `Closed` pending connection: `remove_connection` is Core's
             # `DisconnectNodes`, where it reads `ShouldReconnectV1`.
-            if (
-                conn.status == P2pConnStatus.Closed
-                or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
-            ):
+            if conn.status == P2pConnStatus.Closed or _inactivity_checks_due(conn, now):
                 self.remove_connection(conn.id)
 
     def is_reachable(self, address: NetworkAddressV2) -> bool:
@@ -1953,19 +1971,21 @@ class P2pManager(threading.Thread):
 
         `MaybeSendPing` and `CConnman::InactivityCheck`
         (`src/net_processing.cpp` and `src/net.cpp`, at
-        bitcoin/bitcoin@f0de87f040, the v32.1 tag): a peer whose
-        `last_receive` or `last_send` is `_TIMEOUT_INTERVAL` old, or whose
-        `pong` is that overdue, is dropped; otherwise it is sent a `ping`
-        once `_PING_INTERVAL` has passed since the last and none is
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): once
+        `_inactivity_checks_due`, a peer whose `last_receive` or
+        `last_send` is `_TIMEOUT_INTERVAL` old, or whose `pong` is that
+        overdue, is dropped; otherwise it is sent a `ping` once
+        `_PING_INTERVAL` has passed since the last and none is
         outstanding. A peer at `BIP0031_VERSION` or below has none
         outstanding.
 
-        A peer whose `pause_send` has held for `_TIMEOUT_INTERVAL` is
-        dropped too, as `InactivityCheck` drops one whose `fPauseSend` has
-        (bitcoin/bitcoin#36667, at bitcoin/bitcoin@f0de87f040, the v32.1
-        tag). A peer that reads slowly keeps `last_send` fresh, and one at
-        `BIP0031_VERSION` or below owes no `pong`, so without this check
-        such a peer stays paused while what is queued for it grows.
+        Once `_inactivity_checks_due`, a peer whose `pause_send` has held
+        for `_TIMEOUT_INTERVAL` is dropped too, as `InactivityCheck` drops
+        one whose `fPauseSend` has (bitcoin/bitcoin#36667, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). A peer that reads
+        slowly keeps `last_send` fresh, and one at `BIP0031_VERSION` or
+        below owes no `pong`, so without this check such a peer stays
+        paused while what is queued for it grows.
         """
         # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
         # on the other thread, clears it the moment a pong answers this
@@ -1977,7 +1997,7 @@ class P2pManager(threading.Thread):
         # `pause_send` first: `Connection._set_pause_send` writes the time
         # before the flag.
         paused = conn.pause_send
-        if (
+        if _inactivity_checks_due(conn, now) and (
             now - conn.last_receive > _TIMEOUT_INTERVAL
             or now - conn.last_send > _TIMEOUT_INTERVAL
             or (ping_sent and now - ping_sent > _TIMEOUT_INTERVAL)

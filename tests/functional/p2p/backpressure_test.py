@@ -443,11 +443,12 @@ def test_a_peer_that_does_not_read_is_dropped_by_the_ping_timeout(
 
     The peer keeps sending, so it is not silent; it reads nothing, so no
     whole message reaches it and its `ping` goes unanswered. Past
-    `_TIMEOUT_INTERVAL`, shortened here, it is dropped, as Core's
-    `InactivityCheck` drops it.
+    `_TIMEOUT_INTERVAL`, shortened here with `_PEER_CONNECT_TIMEOUT`, it
+    is dropped, as Core's `InactivityCheck` drops it.
     """
     node, peer, chain = deaf_peer
     monkeypatch.setattr(manager_module, "_TIMEOUT_INTERVAL", 2)
+    monkeypatch.setattr(manager_module, "_PEER_CONNECT_TIMEOUT", 1)
     connection = the_connection(node)
     for message in block_messages(chain[:_BLOCKS_PAST_THE_BOUND]):
         connection.send(message)
@@ -479,8 +480,9 @@ def test_a_slow_reader_at_bip31_is_dropped_once_its_pause_lasts(
     silent, and it reads a little at a time, so `last_send` keeps moving.
     What is queued for it is kept past the bound, as announcements keep it
     in the advisory bitcoin/bitcoin#36667 fixes. Only the pause is left to
-    drop it, past `_TIMEOUT_INTERVAL`, shortened here once the pause has
-    begun, as Core's `InactivityCheck` drops it.
+    drop it, past `_TIMEOUT_INTERVAL`, shortened here with
+    `_PEER_CONNECT_TIMEOUT` once the pause has begun, as Core's
+    `InactivityCheck` drops it.
     """
     chain = blocks_of(1, _SERVED_BLOCK_BYTES)
     block = block_messages(chain)[0]
@@ -504,6 +506,7 @@ def test_a_slow_reader_at_bip31_is_dropped_once_its_pause_lasts(
 
             wait_until(topped_up)
             monkeypatch.setattr(manager_module, "_TIMEOUT_INTERVAL", 2)
+            monkeypatch.setattr(manager_module, "_PEER_CONNECT_TIMEOUT", 1)
 
             def dropped() -> bool:
                 if connection.id not in node.p2p_manager.connections:
