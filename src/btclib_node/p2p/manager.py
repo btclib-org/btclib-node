@@ -19,6 +19,7 @@ import errno
 import math
 import secrets
 import socket
+import sys
 import threading
 import time
 from collections import Counter, deque
@@ -114,7 +115,25 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
-__all__ = ["P2pManager", "network_error_string", "socket_address"]
+__all__ = [
+    "IPV6_PROTECTION_LEVEL",
+    "PROTECTION_LEVEL_UNRESTRICTED",
+    "P2pManager",
+    "network_error_string",
+    "socket_address",
+]
+
+# The Windows option, and its value, that both listeners set on an IPv6
+# socket before `bind`, as Core's `CConnman::BindListenPort`
+# (`src/net.cpp`) and `HTTPServer::BindAndStartListening`
+# (`src/httpserver.cpp`) do, at bitcoin/bitcoin@f0de87f040, the v32.1
+# tag. CPython's `socket` names neither (`Modules/socketmodule.c` at
+# CPython v3.14.0), so the numbers are the Windows SDK's `ws2ipdef.h`
+# (10.0.28000.0). This level takes connections from anywhere, Teredo's
+# NAT traversal included, where the host firewall allows them
+# (https://learn.microsoft.com/en-us/windows/win32/winsock/ipv6-protection-level).
+IPV6_PROTECTION_LEVEL = 23
+PROTECTION_LEVEL_UNRESTRICTED = 10
 
 # What `accept` fails with where no descriptor is left, for this process
 # or for the system. A connection the kernel leaves queued makes the next
@@ -3218,6 +3237,8 @@ class P2pManager(threading.Thread):
                 # "::" listener for the same reason (net.cpp,
                 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
                 server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                if sys.platform == "win32":
+                    self._unrestrict(server_socket)
             try:
                 server_socket.bind(socket_address(ip_address(host), port))
             except OSError as error:
@@ -3248,6 +3269,23 @@ class P2pManager(threading.Thread):
             server_socket.close()
             raise
         return server_socket
+
+    def _unrestrict(self, server_socket: socket.socket) -> None:
+        """Set `IPV6_PROTECTION_LEVEL`, or log at info that it could not be.
+
+        Core logs the failure in these words and goes on.
+        """
+        try:
+            server_socket.setsockopt(
+                socket.IPPROTO_IPV6,
+                IPV6_PROTECTION_LEVEL,
+                PROTECTION_LEVEL_UNRESTRICTED,
+            )
+        except OSError as error:
+            self.logger.info(
+                "Error setting IPV6_PROTECTION_LEVEL on socket: %s, continuing anyway",
+                network_error_string(error),
+            )
 
     def _listen_port(self) -> int:
         """Return `GetListenPort`: what local addresses are recorded at."""
