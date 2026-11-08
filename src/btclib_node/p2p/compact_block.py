@@ -108,14 +108,14 @@ def maybe_set_peer_as_announcing_header_and_ids(node: Node, conn_id: int) -> Non
     """Ask a peer to announce new blocks as `cmpctblock`, dropping the oldest.
 
     Core's `MaybeSetPeerAsAnnouncingHeaderAndIDs` (`src/net_processing.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-    until ISS 2251), over `DownloadManager.hb_peers`, Core's
-    `lNodesAnnouncingHeaderAndIDs`. Nothing for a peer gone or one that sent
-    no `sendcmpct` of version 2. A peer already chosen moves to the end.
-    Otherwise, where `_HB_PEERS` are chosen, the first is sent `sendcmpct(0,
-    2)` and dropped, an outbound one being kept where it is the only
-    outbound left and an inbound peer is the one added. The peer is sent
-    `sendcmpct(1, 2)` and added at the end.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), over
+    `DownloadManager.hb_peers`, Core's `lNodesAnnouncingHeaderAndIDs`.
+    Nothing for a peer gone or one that sent no `sendcmpct` of version 2. A
+    peer already chosen moves to the end. Otherwise a peer whose handshake
+    is done is sent `sendcmpct(1, 2)` and added at the end. Where that makes
+    more than `_HB_PEERS`, the first is then sent `sendcmpct(0, 2)` and
+    dropped, an outbound one being kept where it is the only outbound left
+    and an inbound peer is the one added.
 
     A peer id stays in the list after its peer is gone, as in Core.
     """
@@ -139,14 +139,14 @@ def maybe_set_peer_as_announcing_header_and_ids(node: Node, conn_id: int) -> Non
     # Core's `ForNode`, which reaches a peer only once its handshake is done
     if conn.status != P2pConnStatus.Connected:
         return
-    if len(hb_peers) >= _HB_PEERS:
+    conn.send(SendCmpct(announce=True, version=CMPCTBLOCKS_VERSION))
+    conn.bip152_highbandwidth_to = True
+    hb_peers.append(conn_id)
+    if len(hb_peers) > _HB_PEERS:
         dropped = connections.get(hb_peers.pop(0))
         if dropped is not None and dropped.status == P2pConnStatus.Connected:
             dropped.send(SendCmpct(announce=False, version=CMPCTBLOCKS_VERSION))
             dropped.bip152_highbandwidth_to = False
-    conn.send(SendCmpct(announce=True, version=CMPCTBLOCKS_VERSION))
-    conn.bip152_highbandwidth_to = True
-    hb_peers.append(conn_id)
 
 
 def block_checked(node: Node, block_hash: bytes, *, valid: bool) -> None:
