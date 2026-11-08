@@ -5528,6 +5528,36 @@ def test_addnode_refuses_an_empty_node_address() -> None:
     assert raised.value.message == "Error: Node address cannot be empty"
 
 
+def test_addnode_add_accepts_non_breaking_space() -> None:
+    r"""ISS 2291: Core's TrimStringView accepts \xa0, while " \t" is refused."""
+    added: list[str] = []
+
+    def record_add(node_str: str, *, use_v2transport: bool) -> bool:
+        added.append(node_str)
+        return True
+
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                add_added_peer=record_add,
+                connect_host=lambda h, p, *, use_v2transport: pytest.fail(
+                    "add must not dial"
+                ),
+            ),
+        ),
+    )
+    add_node(node, _CONN, ["\xa0", "add"])
+    assert added == ["\xa0"]
+
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [" \t", "add"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Error: Node address cannot be empty"
+
+
 def test_addnode_refuses_an_unknown_command() -> None:
     """A `command` outside `add`/`remove`/`onetry` is refused with the help."""
     node = cast(
