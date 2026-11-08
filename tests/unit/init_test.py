@@ -314,6 +314,13 @@ def test_the_mempool_is_built_with_the_configured_expiry(tmp_path: Path) -> None
         assert node.mempool.expiry == 7200
 
 
+def test_an_empty_addnode_is_not_an_added_peer(tmp_path: Path) -> None:
+    """ISS 2248: Core skips an `-addnode` value `TrimStringView` empties."""
+    addnode = ("", " ", "\t\n", "10.0.0.2")
+    with unstarted_node_context(tmp_path, addnode=addnode) as node:
+        assert list(node.p2p_manager._added_peers) == ["10.0.0.2"]
+
+
 def test_the_outbound_time_offsets_keep_core_s_last_fifty(tmp_path: Path) -> None:
     """ISS 2128: Core's `TimeOffsets` holds the last `MAX_SIZE{50}` samples.
 
