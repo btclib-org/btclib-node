@@ -4,11 +4,10 @@
 
 """`V2Transport`, against the scenarios of Core's `v2transport_test`.
 
-`src/test/net_tests.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
-which this node follows until ISS 2253. Each test drives the transport
-with a `Cipher` playing the other side, as Core's `V2TransportTester`
-does, since a second `V2Transport` could not send garbage, decoys or a
-damaged packet.
+`src/test/net_tests.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+Each test drives the transport with a `Cipher` playing the other side,
+as Core's `V2TransportTester` does, since a second `V2Transport` could
+not send garbage, decoys or a damaged packet.
 """
 
 import random
@@ -250,10 +249,14 @@ def test_an_initiator_handshakes_and_exchanges_messages(seed: int) -> None:
     tester.send_message(4, data_1)  # cmpctblock
     tester.send_message(0)  # a long type of no characters is no type
     tester.send_message("tx", data_2)  # tx has a short id: the long form is read too
+    tester.send_message("t\x7f", data_2)  # DEL, past '~', is refused as in v1
+    tester.send_message("t~", data_2)  # '~' is the last octet a type may hold
     assert tester.interact() == [
         message("cmpctblock", data_1),
         None,
         message("tx", data_2, 1 + 12 + len(data_2) + EXPANSION),
+        None,
+        message("t~", data_2, 1 + 12 + len(data_2) + EXPANSION),
     ]
 
 
@@ -423,7 +426,8 @@ def test_fifteen_bytes_of_the_terminator_inside_the_garbage_do_not_end_it(
     tester.compare_session_ids()
     data_1 = rng.randbytes(4_000_000)  # the largest payload is received
     data_2 = rng.randbytes(4_000_000)  # and sent
-    tester.send_message(rng.randrange(223) + 33)  # beyond the table
+    # beyond the table
+    tester.send_message(rng.randrange(256 - len(MESSAGE_IDS)) + len(MESSAGE_IDS))
     tester.send_message(2, data_1)  # block
     tester.msg_to_send.append(SerializedMessage("blocktxn", data_2))
     assert tester.interact() == [None, message("block", data_1)]
