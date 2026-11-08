@@ -18,6 +18,8 @@ import os
 import random
 import secrets
 import socket
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -3128,6 +3130,41 @@ def test_a_deterministic_answer_does_not_follow_the_set_s_order() -> None:
     random.Random(address_module._DETERMINISTIC_SEED).shuffle(rows)
     peer_db._rng = random.Random(address_module._DETERMINISTIC_SEED)
     assert peer_db.get_addr(0, 0) == rows
+
+
+# A deterministic table of the addresses `_CORE_SLOTS` names, each tried
+# and waiting on a collision with itself, and what its draws answer:
+# printed by a process of its own, whose hash seed the caller sets.
+_DRAWS_OF_A_DETERMINISTIC_TABLE = """
+import time
+from btclib_node.p2p.address import PeerDB, _endpoint, peer_address
+
+table = PeerDB(None, None, deterministic=True)
+for host in ("1.2.3.4", "1.2.3.5", "2a01:4f8::1", "5.6.7.8", "250.1.2.3"):
+    address = peer_address(host, 8333, timestamp=int(time.time()))
+    table.add_addresses([address], source=address)
+    table.add_active_address(address)
+table._collisions.update(table._rows)
+print([_endpoint(a) for a in table.get_addr(0, 0)])
+drawn = [table.select_tried_collision() for _ in range(8)]
+print([row and _endpoint(row) for row in drawn])
+"""
+
+
+def test_a_deterministic_table_draws_the_same_under_any_hash_seed() -> None:
+    """A set's order is the hash seed's: `get_addr` and the collisions sort."""
+    answers = {
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", _DRAWS_OF_A_DETERMINISTIC_TABLE],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+            timeout=60,
+        ).stdout
+        for seed in ("1", "2", "3")
+    }
+    assert len(answers) == 1
 
 
 @pytest.mark.parametrize(("ratio", "draw", "runs"), [(0, 0, 0), (3, 1, 0), (3, 0, 1)])

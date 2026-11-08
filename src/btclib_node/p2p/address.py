@@ -1463,8 +1463,8 @@ class PeerDB:
         `_known_keys` and `_source` stand for `mapInfo` and `mapAddr`,
         `_slots` and `_occupant` for `vvNew` and each entry's `nRefCount`,
         `_tried_slot_of` and `_tried_occupant` for `vvTried`, and
-        `_active_index` for `nRandomPos`. Core's `-20` and `-21` compare
-        `m_network_counts`, which this table does not keep.
+        `_active_index` for `nRandomPos`. Core's `-7`, `-20` and `-21`
+        compare counters this table does not keep.
 
         The tests read a copy of each table, taken under its own lock while
         `_move_lock` is held, so that no move between the tables is half
@@ -2291,8 +2291,12 @@ class PeerDB:
         with self._addresses_lock:
             if not self._collisions:
                 return None
-            # sorted, as `get_addr` sorts what it shuffles
-            endpoint = self._rng.choice(sorted(self._collisions))
+            waiting = list(self._collisions)
+            # sorted on a `deterministic` table, as `get_addr` sorts what
+            # it shuffles
+            if self._deterministic:
+                waiting.sort()
+            endpoint = self._rng.choice(waiting)
             known = self._rows.get(endpoint)
             if known is None:
                 self._collisions.discard(endpoint)
