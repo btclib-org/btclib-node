@@ -37,7 +37,7 @@ from unittest.mock import AsyncMock
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.p2p.address import Addr, ServiceFlags
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, addr_entry
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
@@ -2156,7 +2156,7 @@ def test_run_discovers_under_listen_0_discover_1(
 ) -> None:
     """ISS 1330: an explicit `-discover=1` records addresses under `-listen=0`.
 
-    Core calls `Discover()` off `bind_on_any`, never off `fListen`
+    Core calls `Discover()` off `should_discover`, never off `fListen`
     (`P2pManager._discover`'s own docstring), which is exactly what
     `-listen=0 -discover=1` could not do before this: `_bind` never
     runs, so `manager.listening` stays clear, but `local_addresses` is
@@ -2336,7 +2336,7 @@ def test_a_manager_whose_bind_names_nothing_ends_like_a_failed_bind(
 def test_run_with_bind_listens_where_asked_and_discovers_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1257: `Discover()` follows `bind_on_any`, so not under `-bind`."""
+    """ISS 1257: `Discover()` does not run under a `-bind` of one address."""
     monkeypatch.setattr(
         manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
     )
@@ -2348,6 +2348,70 @@ def test_run_with_bind_listens_where_asked_and_discovers_nothing(
         assert manager.local_addresses == frozenset()
         with closing(socket.create_connection(("127.0.0.1", port), timeout=10)):
             pass
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("bind", "whitebind"),
+    [
+        (["0.0.0.0"], []),  # noqa: S104
+        (["[::]"], []),
+        ([], ["0.0.0.0:7"]),
+        ([], ["[::]:7"]),
+        (["127.0.0.1", "0.0.0.0"], []),  # noqa: S104
+    ],
+)
+def test_run_discovers_where_a_bind_or_whitebind_takes_every_interface(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    bind: list[str],
+    whitebind: list[str],
+) -> None:
+    """ISS 2249: Core's `should_discover` reads `IsBindAny` of each address.
+
+    `_bind` is a stand-in that binds nothing: what is asserted is the
+    discovery that runs ahead of it.
+    """
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(bind=bind, whitebind=whitebind)
+    monkeypatch.setattr(manager, "_bind", list)
+    try:
+        manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == {host_key(peer_address("1.2.3.4", 0))}
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("bind", "whitebind"),
+    [
+        (["0.0.0.0=onion"], []),
+        (["127.0.0.1"], []),
+        ([], ["127.0.0.1:7"]),
+    ],
+)
+def test_run_discovers_nothing_where_no_bind_takes_every_interface(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    bind: list[str],
+    whitebind: list[str],
+) -> None:
+    """ISS 2249: an `=onion` bind is not among `vBinds`, which Core reads."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(bind=bind, whitebind=whitebind)
+    monkeypatch.setattr(manager, "_bind", list)
+    try:
+        manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == frozenset()
     finally:
         manager.stop()
         manager.join(timeout=10)
@@ -2379,15 +2443,55 @@ def test_externalip_is_a_local_address_whether_or_not_it_discovers(
 ) -> None:
     """ISS 1445: `AddLocal(addr, LOCAL_MANUAL)`, which `-discover=0` keeps.
 
-    A private address is not routable, and an onion name has no network
-    this node reaches: `AddLocal` refuses both, silently.
+    A private address is not routable: `AddLocal` refuses it, silently.
     """
-    manager = a_manager(
-        externalip=["8.8.8.8:7", "192.168.1.2:7", f"{an_onion_host()}:7"],
-        discover=False,
-    )
+    manager = a_manager(externalip=["8.8.8.8:7", "192.168.1.2:7"], discover=False)
     manager._add_externalip()
     assert manager.local_addresses == {host_key(peer_address("8.8.8.8", 0))}
+
+
+@pytest.mark.parametrize("network", [BIP155Network.TORV3, BIP155Network.I2P])
+def test_an_externalip_on_a_network_this_node_does_not_reach_is_kept(
+    a_manager: AManagerFactory, network: BIP155Network
+) -> None:
+    """ISS 2249: Core adds `-externalip` with `add_even_if_unreachable`."""
+    host = SpecialAddress(network, bytes(range(32)))
+    manager = a_manager(externalip=[f"{host}:7"], discover=False)
+    manager._add_externalip()
+    assert manager.local_snapshot() == {
+        host.packed: LocalService(host, 7, LOCAL_MANUAL)
+    }
+
+
+def test_add_local_keeps_an_unreachable_network_only_where_told_to(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2249: `AddLocal` refuses it unless `add_even_if_unreachable`."""
+    host = SpecialAddress(BIP155Network.TORV3, bytes(32))
+    manager = a_manager()
+    assert not manager._add_local(host, 7, LOCAL_MANUAL)
+    assert manager.local_addresses == frozenset()
+    assert manager._add_local(host, 7, LOCAL_MANUAL, add_even_if_unreachable=True)
+    assert manager.local_addresses == {host.packed}
+
+
+def test_add_local_and_discover_log_no_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2249: Core logs these addresses only under `-logips`, off."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    logged, info = log_recorder()
+    manager = a_manager(externalip=["8.8.8.8:7"], discover=True)
+    monkeypatch.setattr(manager.logger, "info", info)
+    manager._add_externalip()
+    manager._discover()
+    assert manager.local_addresses == {
+        host_key(peer_address("8.8.8.8", 0)),
+        host_key(peer_address("1.2.3.4", 0)),
+    }
+    assert logged == []
 
 
 def test_discover_keeps_what_it_finds_only_under_discover(
@@ -2864,6 +2968,32 @@ def test_a_peer_on_an_onion_listener_is_told_no_local_address(
     manager._maybe_send_local_addr(conn, 1000.0)
     assert conn.sent == []
     assert conn.next_local_addr_send > 1000.0
+
+
+@pytest.mark.parametrize("addrv2", [True, False])
+def test_an_onion_externalip_is_told_only_to_a_peer_on_an_onion_listener(
+    a_manager: AManagerFactory, *, addrv2: bool
+) -> None:
+    """ISS 2249: `GetLocal` keeps an onion address for a Tor peer.
+
+    An `addr` message cannot carry it, and `MaybeSendAddr` checks
+    `IsAddrCompatible` before the first announcement.
+    """
+    host = SpecialAddress(BIP155Network.TORV3, bytes(32))
+    manager = a_manager(externalip=["8.8.8.8:7", f"{host}:7"])
+    manager._add_externalip()
+    tor = a_conn(1, inbound=True, inbound_onion=True)
+    clear = a_conn(2, inbound=True)
+    for conn in (tor, clear):
+        conn.addr_relay_enabled = True
+        conn.prefer_addressv2 = addrv2
+        manager._maybe_send_local_addr(conn, 1000.0)
+        assert conn.next_local_addr_send > 1000.0
+    services = int(local_services(manager.node.config))
+    onion = NetworkAddressV2(1000, services, BIP155Network.TORV3, host.packed, 7)
+    assert [m.addresses for m in tor.sent] == ([(onion,)] if addrv2 else [])
+    ip = peer_address("8.8.8.8", 7, 1000, services)
+    assert [m.addresses for m in clear.sent] == [(ip,) if addrv2 else (addr_entry(ip),)]
 
 
 def test_a_peer_is_told_nothing_where_the_node_has_no_address(
@@ -11298,7 +11428,7 @@ def test_a_failed_whitebind_ends_the_bind_and_closes_the_rest(
 def test_run_with_whitebind_discovers_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1625: `Discover()` is off `bind_on_any`: not under `-whitebind`."""
+    """ISS 1625: no `Discover()` under a `-whitebind` of one address."""
     monkeypatch.setattr(
         manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
     )

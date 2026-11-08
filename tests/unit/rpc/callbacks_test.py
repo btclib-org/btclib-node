@@ -37,6 +37,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
@@ -93,7 +94,7 @@ from btclib_node.main import (
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
 from btclib_node.p2p.address import ip_and_port, peer_address
-from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
+from btclib_node.p2p.banman import BanEntry, BanMan, SpecialAddress, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.eviction import Network, net_class
@@ -4508,8 +4509,12 @@ def test_blockchain_info_s_warnings_is_node_warnings_get_messages() -> None:
 
 
 def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
-    """ISS 1647: each with its port and score, IPv4 before IPv6, by octets."""
+    """ISS 1647, ISS 2249: with port and score, by network, then by octets."""
+    onion = SpecialAddress(BIP155Network.TORV3, bytes(32))
+    i2p = SpecialAddress(BIP155Network.I2P, bytes(range(32)))
     held = [
+        LocalService(i2p, 0, 4),
+        LocalService(onion, 8333, 4),
         LocalService(ip_address("2606:4700::1"), 8333, 1),
         LocalService(ip_address("9.9.9.9"), 18444, 5),
         LocalService(ip_address("8.8.8.8"), 8333, 2),
@@ -4519,6 +4524,8 @@ def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
         {"address": "8.8.8.8", "port": 8333, "score": 2},
         {"address": "9.9.9.9", "port": 18444, "score": 5},
         {"address": "2606:4700::1", "port": 8333, "score": 1},
+        {"address": str(onion), "port": 8333, "score": 4},
+        {"address": str(i2p), "port": 0, "score": 4},
     ]
     assert get_network_info(a_node(), _CONN, [])["localaddresses"] == []
 
