@@ -84,6 +84,7 @@ from btclib_node.main import (
     try_connect_block,
     update_chain,
 )
+from btclib_node.tx_check import check_transaction_reason
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -470,11 +471,11 @@ def _structure_reason(block: Block) -> str | None:
         return "bad-cb-missing"
     if any(tx.is_coinbase for tx in transactions[1:]):
         return "bad-cb-multiple"
+    # `CheckBlock` answers the transaction's own `CheckTransaction` word
+    # (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     for tx in transactions:
-        try:
-            tx.assert_valid()
-        except BTClibValueError as error:
-            return str(error)
+        if (reason := check_transaction_reason(tx)) is not None:
+            return reason
     try:
         block.assert_valid_sig_op_count()
     except BTClibValueError:

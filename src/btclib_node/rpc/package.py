@@ -40,6 +40,7 @@ from btclib_node.main import (
 from btclib_node.rpc.connection import btc_amount
 from btclib_node.rpc.errors import RpcError, json_type_name, type_error
 from btclib_node.rpc.help import HELP_TEXT
+from btclib_node.tx_check import check_transaction_reason
 
 if TYPE_CHECKING:
     from btclib.tx import Tx
@@ -152,7 +153,6 @@ def _read(params: list[Any]) -> _Call:
         _MAX_BURN_EXCEEDED_REASON,
         _MAX_PACKAGE_COUNT,
         _amount_param,
-        _check_transaction,
         _decode_hex_tx,
         _exceeds_max_burn,
         _parse_max_fee_rate,
@@ -198,7 +198,7 @@ def _read(params: list[Any]) -> _Call:
             for tx_in in parent.vin
         ):
             raise RpcError(RPCErrorCode.VERIFY_ERROR, _TOPOLOGY_REFUSED)
-    invalid = {tx.hash: _check_transaction(tx) for tx in txs}
+    invalid = {tx.hash: check_transaction_reason(tx) for tx in txs}
     return _Call(
         txs, max_feerate, {wtxid: why for wtxid, why in invalid.items() if why}
     )
@@ -420,17 +420,13 @@ def package_test_accept(
     where its scripts are what is refused, each before it; or every one.
     The effective feerate of each is its own.
     """
-    from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
-        _check_transaction,
-    )
-
     refusal = package_refusal(txs)
     if refusal is not None:
         return refusal, {}
     invalid = {
         tx.hash: TxRejectedError(reason)
         for tx in txs
-        if (reason := _check_transaction(tx)) is not None
+        if (reason := check_transaction_reason(tx)) is not None
     }
     try:
         candidates = pre_verify_subpackage(node, txs, test_accept=True, invalid=invalid)

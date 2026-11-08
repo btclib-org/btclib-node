@@ -3442,32 +3442,6 @@ def test_a_tx_of_24391_inputs_is_refused_as_oversize() -> None:
     assert verdict["reject-reason"] == "bad-txns-oversize"
 
 
-def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
-    """`_reject_reason` re-raises what it does not recognize.
-
-    Defensive: every message `Tx.assert_valid` can actually raise for a
-    parsed `Tx` is named, so this exercises the fallback with a message
-    that is not one of them, standing in for a rule this mapping has
-    not been taught yet.
-    """
-    tx = a_tx()
-    error = BTClibValueError("a rule this mapping does not know about")
-    with pytest.raises(BTClibValueError):
-        cb._reject_reason(tx, error)
-
-
-def test_amount_reject_reason_answers_none_when_nothing_violates() -> None:
-    """`_amount_reject_reason` falls through its own loop to `None`.
-
-    Defensive, the same reason as the test above: `Tx.assert_valid` only
-    ever raises this message when some output really is out of range,
-    so this reaches the loop's fall-through directly rather than through
-    a real refusal that could not carry it.
-    """
-    tx = a_tx()
-    assert cb._amount_reject_reason(tx, "invalid satoshi amount: 5") is None
-
-
 def test_decoderawtransaction_answers_the_dict_shape_and_no_more() -> None:
     """`decoderawtransaction` answers `TxToUniv`'s keys, no `hex`.
 
@@ -8428,6 +8402,38 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
 
     assert result == "bad-cb-multiple"
     assert twice.header.hash not in node.chainstate.block_index.header_dict
+
+
+@pytest.mark.parametrize(
+    ("vin", "vout", "answer"),
+    [
+        ([], [], "bad-txns-vin-empty"),
+        (
+            [TxIn(OutPoint(bytes(range(32)), 0))] * 2,
+            [TxOut(0, ScriptPubKey(b"\x51"))],
+            "bad-txns-inputs-duplicate",
+        ),
+    ],
+    ids=["no-inputs", "one-outpoint-twice"],
+)
+def test_submit_block_answers_check_transaction_in_cores_word(
+    regtest_node: Callable[..., Node], vin: list[TxIn], vout: list[TxOut], answer: str
+) -> None:
+    """ISS 2247: the word `CheckTransaction` gives the transaction.
+
+    Measured against `bitcoind` v32.1.0 on regtest for a block of the
+    same shape. The transaction with no inputs has no outputs either:
+    with one, `bitcoind` answers `Block decode failed`.
+    """
+    node = regtest_node()
+    block = generate_segwit_block(
+        Tx(version=2, lock_time=0, vin=vin, vout=vout, check_validity=False)
+    )
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    assert result == answer
+    assert block.header.hash not in node.chainstate.block_index.header_dict
 
 
 def test_submit_block_answers_check_block_failure_over_prev_blk_not_found(

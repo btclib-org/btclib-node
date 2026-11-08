@@ -204,6 +204,13 @@ btclib\_node.timeoffsets module
    :members:
    :show-inheritance:
 
+btclib\_node.tx\_check module
+-------------------------------
+
+.. automodule:: btclib_node.tx_check
+   :members:
+   :show-inheritance:
+
 btclib\_node.txgraph module
 ----------------------------
 
