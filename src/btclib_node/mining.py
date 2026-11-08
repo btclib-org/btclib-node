@@ -126,6 +126,10 @@ _COINBASE_VERSION = 2
 # `CTxIn::MAX_SEQUENCE_NONFINAL`, "make sure timelock is enforced"
 _COINBASE_SEQUENCE = 0xFFFFFFFE
 
+# heights up to 16 commit to a 1-byte BIP34 script, needing OP_0 for
+# `bad-cb-length`
+_MAX_ONE_BYTE_BIP34_HEIGHT = 16
+
 # the witness reserved value `GenerateCoinbaseCommitment` writes
 _WITNESS_NONCE = bytes(32)
 
@@ -297,9 +301,12 @@ def _assemble(
     min_time = _minimum_time(tip_header, height, tip_mtp, node)
 
     fees = sum(c.fee for c in chosen)
-    # the extra push is `include_dummy_extranonce`, which keeps the
-    # script_sig of a height up to 16 at the two bytes `bad-cb-length` asks
-    script_sig = bip34_commitment(height) + b"\x00"
+    # Core appends an OP_0 only up to height 16, where the BIP34 height alone
+    # is one byte and `bad-cb-length` asks for two
+    # (`src/node/miner.cpp:203-209` at bitcoin/bitcoin@f0de87f040, from
+    # bitcoin/bitcoin@8544537f41).
+    extra_push = b"\x00" if height <= _MAX_ONE_BYTE_BIP34_HEIGHT else b""
+    script_sig = bip34_commitment(height) + extra_push
     transactions = [
         Tx(
             version=_COINBASE_VERSION,
