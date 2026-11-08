@@ -114,7 +114,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
-__all__ = ["P2pManager", "network_error_string"]
+__all__ = ["P2pManager", "network_error_string", "socket_address"]
 
 # What `accept` fails with where no descriptor is left, for this process
 # or for the system. A connection the kernel leaves queued makes the next
@@ -410,6 +410,24 @@ def network_error_string(error: OSError) -> str:
     `FormatMessageA` fills without stripping it.
     """
     return f"{error.strerror} ({getattr(error, 'winerror', None) or error.errno})"
+
+
+def socket_address(
+    host: IPv4Address | IPv6Address, port: int
+) -> tuple[str, int] | tuple[str, int, int, int]:
+    """Return the address `bind` takes for `host`, an IPv6 one with its scope.
+
+    The scope is numeric, as `lookup_host` writes it: a name such as
+    `en0` raises `ValueError`.
+
+    CPython reads a scope written after `%` in a 2-tuple's host as 0, so
+    `fe80::1%1` binds only as a 4-tuple naming scope 1. Core's
+    `CService::GetSockAddr` sets `sin6_scope_id` the same way
+    (`src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    if isinstance(host, IPv4Address):
+        return str(host), port
+    return str(host).partition("%")[0], port, 0, int(host.scope_id or 0)
 
 
 async def _getaddrinfo(  # noqa: PLR0913
@@ -3129,7 +3147,7 @@ class P2pManager(threading.Thread):
         """
         # Core's `CService::ToStringAddrPort`, brackets around an IPv6 host
         address = f"[{host}]" if family == socket.AF_INET6 else host
-        port = self.port if port is None else port
+        port = cast("int", self.port) if port is None else port
         address = f"{address}:{port}"
         try:
             server_socket = socket.socket(family, socket.SOCK_STREAM)
@@ -3151,7 +3169,7 @@ class P2pManager(threading.Thread):
                 # "::" listener for the same reason (net.cpp, 58a7869f86).
                 server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             try:
-                server_socket.bind((host, port))
+                server_socket.bind(socket_address(ip_address(host), port))
             except OSError as error:
                 if error.errno == errno.EADDRINUSE:
                     msg = (

@@ -475,22 +475,10 @@ def test_a_host_of_no_ip_network_is_warned_over(
     ]
 
 
-def test_an_ipv6_host_is_bound_with_its_scope() -> None:
-    """ISS 2152: the 4-tuple `bind` reads a scope from, the scope apart.
-
-    CPython reads `fe80::1%3` in a 2-tuple at scope 0, and the bind of a
-    link-local address there fails.
-    """
-    scoped = IPv6Address("fe80::1%3")
-    assert manager_module._sockaddr(scoped, 5) == ("fe80::1", 5, 0, 3)
-    assert manager_module._sockaddr(IPv6Address("::1"), 5) == ("::1", 5, 0, 0)
-    assert manager_module._sockaddr(IPv4Address("127.0.0.1"), 5) == ("127.0.0.1", 5)
-
-
 def test_bind_and_listen_binds_an_ipv6_host_with_its_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 2152: `bind` receives `_sockaddr`'s 4-tuple, on every platform.
+    """ISS 2152: `bind` receives `socket_address`'s 4-tuple, on every platform.
 
     The socket records its address and refuses it, so no interface here
     has to hold `fe80::1`.

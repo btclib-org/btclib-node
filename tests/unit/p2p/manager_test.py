@@ -27,7 +27,7 @@ from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
 from dataclasses import replace
 from functools import partial
-from ipaddress import IPv4Address, ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
@@ -76,7 +76,8 @@ from btclib_node.p2p.banman import (
 from btclib_node.p2p.connection import AddrKnown, Connection, local_services
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
-from btclib_node.p2p.manager import P2pManager
+from btclib_node.p2p.manager import P2pManager, socket_address
+from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
@@ -6501,12 +6502,14 @@ class RefusingSocket:
         self.refused = refused
         self.error = error
         self.closed = False
+        self.bound: list[Any] = []
 
     def setsockopt(self, *args: Any) -> None:
         """Accept any option, as a real socket does these."""
 
     def bind(self, address: Any) -> None:
-        """Raise `error` if `bind` is what is refused."""
+        """Record `address`, and raise `error` if `bind` is what is refused."""
+        self.bound.append(address)
         self._refuse_if("bind")
 
     def listen(self) -> None:
@@ -6626,6 +6629,116 @@ def test_a_failed_bind_says_which_call_failed_and_why_as_core_does(
     assert str(excinfo.value) == message
     assert excinfo.value.__cause__ is error
     assert stand_in.closed is (refused != "socket")
+
+
+def test_an_ipv6_host_is_bound_with_its_scope() -> None:
+    """ISS 2152: the 4-tuple `bind` reads a scope from, the scope apart.
+
+    CPython reads `fe80::1%3` in a 2-tuple at scope 0, and the bind of a
+    link-local address there fails.
+    """
+    scoped = IPv6Address("fe80::1%3")
+    assert socket_address(scoped, 5) == ("fe80::1", 5, 0, 3)
+    assert socket_address(IPv6Address("::1"), 5) == ("::1", 5, 0, 0)
+    assert socket_address(IPv4Address("127.0.0.1"), 5) == ("127.0.0.1", 5)
+
+
+def test_bind_one_binds_an_ipv6_host_with_its_scope(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2165: `bind` receives `socket_address`'s 4-tuple, on every platform.
+
+    The stand-in records the address and refuses it, so no interface here
+    has to hold `fe80::1`.
+    """
+    manager = a_manager(port=8333)
+    error = OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+    stand_in = RefusingSocket("bind", error)
+    monkeypatch.setattr(socket, "socket", lambda *_: stand_in)
+    with pytest.raises(OSError, match=r"^Unable to bind to \[fe80::1%3\]:7 "):
+        manager._bind_one(socket.AF_INET6, "fe80::1%3", 7)
+    assert stand_in.bound == [("fe80::1", 7, 0, 3)]
+
+
+def _binds(host: IPv6Address, scope: int) -> bool:
+    """Answer whether a socket binds `host` at `scope`."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((str(host), 0, 0, scope))
+        except OSError:
+            return False
+    return True
+
+
+@pytest.fixture
+def a_scoped_link_local() -> tuple[IPv6Address, int, str]:
+    """Return a link-local address of this host, its scope and interface name.
+
+    The candidates are the link-local addresses `local_addresses` lists,
+    and `fe80::1`, which macOS's `lo0` holds. Each is tried at every
+    interface's index, and the first that binds is the answer. The test
+    is skipped where none binds.
+    """
+    candidates = [
+        *(
+            host
+            for host in local_addresses()
+            if isinstance(host, IPv6Address) and host.is_link_local
+        ),
+        IPv6Address("fe80::1"),
+    ]
+    found = next(
+        (
+            (host, index, name)
+            for host in candidates
+            for index, name in socket.if_nameindex()
+            if _binds(host, index)
+        ),
+        None,
+    )
+    if found is None:  # pragma: no cover -- a host with no link-local address
+        pytest.skip("no link-local IPv6 address binds on this host")
+    return found
+
+
+@pytest.mark.parametrize(
+    "by_name",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="the resolver's own forms",
+            ),
+        ),
+    ],
+)
+def test_a_scoped_link_local_bind_listens_at_its_scope(
+    a_manager: AManagerFactory,
+    a_scoped_link_local: tuple[IPv6Address, int, str],
+    *,
+    by_name: bool,
+) -> None:
+    """ISS 2165: a `-bind` of a link-local address listens at its scope.
+
+    The scope is written as an interface's index or, where `getaddrinfo`
+    reads one, as its name. Core's `BindListenPort` (`src/net.cpp`) binds
+    at it through `CService::GetSockAddr` (`src/netaddress.cpp`), both at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
+    host, index, name = a_scoped_link_local
+    port = get_random_port()
+    scope = name if by_name else index
+    manager = a_manager(port=port, bind=[f"[{host}%{scope}]:{port}"])
+    sockets = manager._bind()
+    try:
+        assert [(s.getsockname()[1], s.getsockname()[3]) for s in sockets] == [
+            (port, index)
+        ]
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
 
 
 def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> None:

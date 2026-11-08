@@ -39,7 +39,7 @@ import time
 from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
-from ipaddress import IPv4Address, IPv6Address
+from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.config import lookup_service, service_text, split_host_port
@@ -47,7 +47,7 @@ from btclib_node.constants import CLIENT_NAME
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.banman import SpecialAddress
-from btclib_node.p2p.manager import network_error_string
+from btclib_node.p2p.manager import network_error_string, socket_address
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import RpcConnection
@@ -135,7 +135,7 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
                 server_socket, socket.IPPROTO_IPV6, "IPV6_V6ONLY", address, logger
             )
         try:
-            server_socket.bind(_sockaddr(host, port))
+            server_socket.bind(socket_address(host, port))
         except OSError as error:
             if error.errno == errno.EADDRINUSE:
                 err_msg = (
@@ -158,19 +158,6 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
         server_socket.close()
         raise
     return server_socket
-
-
-def _sockaddr(
-    host: IPv4Address | IPv6Address, port: int
-) -> tuple[str, int] | tuple[str, int, int, int]:
-    """Return the address `bind` takes for `host`, an IPv6 one with its scope.
-
-    CPython reads a scope written after `%` in a 2-tuple's host as 0, so
-    `fe80::1%1` binds only as a 4-tuple naming scope 1.
-    """
-    if isinstance(host, IPv4Address):
-        return str(host), port
-    return str(host).partition("%")[0], port, 0, int(host.scope_id or 0)
 
 
 def _set_or_log(
