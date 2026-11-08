@@ -4211,15 +4211,14 @@ class P2pManager(threading.Thread):
         The comment below is where this, and `fee` going unread here,
         are argued.
         """
-        # `DownloadManager.tx_download`'s own queue, with no peer to
-        # exclude as already holding it, rather than a push of its own:
-        # a direct, unsolicited `Tx` to every peer the instant this
-        # method is called would have been the one thing that told
-        # apart a transaction of this node's own from one it relayed --
-        # the delay and the `inv`/`getdata` round trip are what a
-        # relayed transaction gets, so a locally originated one goes
-        # through them too. `getdata`'s own handler serves a `tx` it
-        # finds in the mempool, so this call answers for what a peer
+        # `DownloadManager.tx_download`'s own queue, rather than a push
+        # of its own: a direct, unsolicited `Tx` to every peer the
+        # instant this method is called would have been the one thing
+        # that told apart a transaction of this node's own from one it
+        # relayed -- the delay and the `inv`/`getdata` round trip are
+        # what a relayed transaction gets, so a locally originated one
+        # goes through them too. `getdata`'s own handler serves a `tx`
+        # it finds in the mempool, so this call answers for what a peer
         # asks back only where the caller has already put it there --
         # `send_raw_transaction` (rpc/callbacks.py) does, before calling
         # this. btclib-org/btclib-node#141
