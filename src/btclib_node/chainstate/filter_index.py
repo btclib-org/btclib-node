@@ -25,7 +25,7 @@ is not in the database yet.
 The filters are kept in a `KeyValueStore` of their own, `indexes/blockfilter`
 under the chain's directory, as Core keeps its block filter index in
 `indexes/blockfilter/` (`src/index/blockfilterindex.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The store holds a best-block
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). The store holds a best-block
 locator, Core's `DB_BEST_BLOCK` (`BaseIndex::DB::ReadBestBlock` and
 `WriteBestBlock`, `src/index/base.cpp`, same commit): the index's own
 progress, a block whose ancestors all have their filters stored. It is

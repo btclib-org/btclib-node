@@ -5,7 +5,7 @@
 """Core's `mempool.dat`: the mempool written at shutdown and read at start.
 
 The format is Core's `DumpMempool` and `LoadMempool`
-(`src/node/mempool_persist.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+(`src/node/mempool_persist.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag). The file opens with its version as a little-endian `u64`. Version 2
 follows it with an obfuscation key and XORs the rest of the file with it
 (`btclib.obfuscation`); version 1 has no key. Then come the number of

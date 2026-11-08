@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`Mempool`'s bookkeeping, eviction and its rolling minimum feerate."""
+"""`Mempool`'s bookkeeping, eviction and its rolling minimum feerate.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import hashlib
 import secrets
@@ -175,14 +178,15 @@ def test_removing_what_was_never_there_changes_nothing() -> None:
 def test_the_sequence_starts_at_one_and_counts_every_real_add_and_remove_once() -> None:
     """`sequence` starts at 1, bumping once per real add/remove, not a no-op."""
     # Core's own semantics, `CTxMemPool::m_sequence_number`
-    # (src/txmempool.h:200-202): "incremented once every time a
-    # transaction is added or removed from the mempool for any
-    # reason" -- but a no-op is neither an addition nor a removal, the
-    # same guard size and bytesize already have above. The field starts
-    # at 1, not 0 (`:202`), and `GetSequence` (`:598-600`) -- what
-    # `getrawmempool`'s `mempool_sequence` reads -- answers the current,
-    # already-bumped value, so a fresh mempool with zero events answers
-    # 1 and every later answer is Core's own N+1 after N events, not N
+    # (src/txmempool.h:200-202, at bitcoin/bitcoin@f0de87f040):
+    # "incremented once every time a transaction is added or removed
+    # from the mempool for any reason" -- but a no-op is neither an
+    # addition nor a removal, the same guard size and bytesize already
+    # have above. The field starts at 1, not 0 (`:202`), and
+    # `GetSequence` (`:598-600`) -- what `getrawmempool`'s
+    # `mempool_sequence` reads -- answers the current, already-bumped
+    # value, so a fresh mempool with zero events answers 1 and every
+    # later answer is Core's own N+1 after N events, not N
     mempool = Mempool(Logger(debug=True))
     assert mempool.sequence == 1
     tx = generate_random_transaction()
@@ -473,7 +477,7 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
     """A CPFP-evicted package bumps the rolling minimum by its combined rate."""
     # Core's own TrimToSize (src/txmempool.cpp, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) bumps the rolling
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) bumps the rolling
     # minimum from the removed chunk's own aggregate feerate, not from
     # the worst entry's own rate alone: a low-fee parent evicted with a
     # child overpaying for it (CPFP) bumps it by their combined rate, not
@@ -753,10 +757,10 @@ def a_mempool_with_a_conflict() -> tuple[Mempool, tuple[bytes, int], Tx, Tx]:
 def test_a_conflict_paying_less_than_what_it_replaces_is_insufficient() -> None:
     """Core's rule 3, over the conflict and its descendants, in its words.
 
-    `bitcoind` v31.1 on regtest answers a 5000-sat conflict with a
-    10000-sat spend "insufficient fee, rejecting replacement <txid>, less
-    fees than conflicting txs; 0.00005 < 0.0001". Here the held spend's
-    child counts too, so 11999 is still short of 12000.
+    `bitcoind` on regtest answers a 5000-sat conflict with a 10000-sat
+    spend "insufficient fee, rejecting replacement <txid>, less fees than
+    conflicting txs; 0.00005 < 0.0001". Here the held spend's child counts
+    too, so 11999 is still short of 12000.
     """
     mempool, coin, _, _ = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
@@ -819,8 +823,8 @@ def test_a_replacement_pays_the_incremental_relay_fee_it_was_given() -> None:
 def test_a_conflict_paying_for_what_it_replaces_replaces_it() -> None:
     """The conflict and its descendants are replaced, whatever they signal.
 
-    `bitcoind` v31.1 replaces them: it has no `-mempoolfullrbf` since
-    v29. `add_tx` takes them out before it adds the replacement.
+    `bitcoind` replaces them: it has no `-mempoolfullrbf` since v29.
+    `add_tx` takes them out before it adds the replacement.
     """
     mempool, coin, held, child = a_mempool_with_a_conflict()
     assert held.vin[0].sequence == 0xFFFFFFFF
@@ -1136,7 +1140,7 @@ def test_a_package_hash_sorts_by_the_display_bytes() -> None:
     """Core compares the wtxids from their last held byte, so by display bytes.
 
     `src/policy/packages.cpp` and `src/test/txpackage_tests.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Here the display bytes and
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag. Here the display bytes and
     the held bytes order the pair differently: the hash is of the held
     bytes of `low` then `high`, written out.
     """
@@ -1292,7 +1296,7 @@ def test_a_delta_stacks_and_is_kept_for_a_transaction_not_held() -> None:
     """Deltas add up whether or not the txid is in the mempool.
 
     A delta of zero is not kept, and one that comes back to zero is
-    dropped, as `bitcoind` v31.1's `getprioritisedtransactions` answers.
+    dropped, as `bitcoind`'s `getprioritisedtransactions` answers.
     """
     mempool = Mempool(Logger(debug=True))
     txid = secrets.token_bytes(32)
@@ -1318,7 +1322,7 @@ def test_a_delta_stacks_and_is_kept_for_a_transaction_not_held() -> None:
 def test_a_delta_saturates_at_the_int64_range(
     first: int, second: int, kept: int
 ) -> None:
-    """`SaturatingAdd` clamps the sum, as `bitcoind` v31.1 does."""
+    """`SaturatingAdd` clamps the sum, as `bitcoind` does."""
     mempool = Mempool(Logger(debug=True))
     txid = secrets.token_bytes(32)
     mempool.prioritise(txid, first)
@@ -1604,8 +1608,9 @@ def test_a_block_clears_the_delta_of_a_coinbase_it_holds() -> None:
 def test_a_delta_survives_an_eviction() -> None:
     """Only a block clears it: eviction and removal keep it.
 
-    Core's `mining_prioritisetransaction.py` at v31.1 says so, and keeps
-    it through a replacement.
+    Core's `mining_prioritisetransaction.py` (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) says so, and keeps it
+    through a replacement.
     """
     mempool = Mempool(Logger(debug=True))
     victim, keeper = generate_random_transaction(), generate_random_transaction()
@@ -1632,7 +1637,7 @@ def test_a_feefilter_is_held_against_the_fee_paid() -> None:
 def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
     """The entry's modified fee is not its fee plus the delta at the bound.
 
-    `bitcoind` v31.1, a held transaction paying 1410: a delta of
+    `bitcoind`, a held transaction paying 1410: a delta of
     9223372036854775797 gives a modified fee of 9223372036854775807, and
     the opposite delta then gives an empty list and a modified fee of 10,
     not 1410. btclib-org/btclib-node#1502
@@ -1653,9 +1658,9 @@ def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
 def test_the_trickle_order_is_the_order_a_block_takes() -> None:
     """A parent its child pays for goes first, as one chunk, then a single.
 
-    Core's `CompareMiningScoreWithTopology` reads the clusters' chunks:
-    the parent pays nothing, its child pays for both above the single's
-    rate, and the single pays above the parent's own rate.
+    Core's `ExtractBestByMiningScoreWithTopology` reads the clusters'
+    chunks: the parent pays nothing, its child pays for both above the
+    single's rate, and the single pays above the parent's own rate.
     """
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()

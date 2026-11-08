@@ -5,7 +5,7 @@
 """Tests for `btclib_node.txgraph`.
 
 `test_a_chain_chunks_as_core_s_does` is Core's `txgraph_chunk_chain`
-(`src/test/txgraph_tests.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+(`src/test/txgraph_tests.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag). The property holds the graph to `linearize` and `post_linearize`
 run from scratch on each cluster, which is what an optimal cluster's
 order is whatever path led to it.

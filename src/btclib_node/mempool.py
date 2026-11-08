@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 __all__ = ["Mempool", "MempoolEntry", "format_money", "package_hash"]
 
 # BIP431's TRUC policy (`src/policy/truc_policy.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the version it applies
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the version it applies
 # to and the sizes it bounds. Core's `SingleTRUCChecks` is specialized
 # for an ancestor and a descendant limit of two, a parent and one child,
 # and so is `Mempool.check_truc`.
@@ -130,7 +130,7 @@ def format_money(amount: int) -> str:
     """Core's own `FormatMoney` for an amount never negative here.
 
     Eight decimals, right-trimmed of zeros down to two
-    (`src/util/moneystr.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/util/moneystr.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag): 5000 satoshi is "0.00005", one bitcoin "1.00".
     """
     whole, fraction = divmod(amount, _COIN)
@@ -143,7 +143,7 @@ def _fee_rate_text(fee: int, vsize: int) -> str:
 
     `GetFeePerK` rounds down, and C++'s `/` and `%` then split it toward
     zero (`src/policy/feerate.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag).
+    v31.1 tag, which this node follows until ISS 2279).
     """
     per_k = fee * 1000 // vsize
     sign = -1 if per_k < 0 else 1
@@ -157,7 +157,7 @@ def package_hash(wtxids: Iterable[bytes]) -> bytes:
     The SHA-256 of the wtxids sorted ascending by their display bytes
     (`lexicographical_compare` over reverse iterators), each hashed as the
     bytes Core holds, the reverse of the display bytes this tree keeps
-    (`src/policy/packages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/policy/packages.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). It does not depend on the order the package is given in.
     """
     held = [wtxid[::-1] for wtxid in sorted(wtxids)]
@@ -213,8 +213,8 @@ class Mempool:
         self.fees: dict[bytes, int] = {}
         # wtxid -> Core's `m_modified_fee`: `fees` and the delta, saturated
         # at the `int64` range at each step as `UpdateModifiedFee` does
-        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag), so it is not always `fees` plus `deltas`, which a
+        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag), so it is not always `fees` plus `deltas`, which a
         # delta at the bound shows. btclib-org/btclib-node#1502
         self.modified_fees: dict[bytes, int] = {}
         # wtxid -> Core's `CTxMemPoolEntry::GetTxSize`, the sigop-adjusted
@@ -227,12 +227,12 @@ class Mempool:
         # Core's `m_txgraph`: the clusters and their linearizations, by
         # modified fee and `weights`. Ties go to the lower txid in its
         # internal byte order, Core's `fallback_order`
-        # (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # (`src/txmempool.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag).
         self.graph: TxGraph[bytes] = TxGraph()
         # wtxid -> Core's own `CTxMemPoolEntry::GetTime`
-        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag): the wall-clock second this entry was accepted,
+        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag): the wall-clock second this entry was accepted,
         # `add_tx` below's own `clock.now()`, or for an entry loaded from
         # `mempool.dat` the time the file gives (`mempool_persist`).
         # `getmempoolentry`'s own `time` field. btclib-org/btclib-node#1397
@@ -277,13 +277,13 @@ class Mempool:
         self.spent_by: dict[bytes, set[bytes]] = {}
         # (txid, vout) -> the wtxid, held in this mempool, spending that
         # outpoint: Core's own `mapNextTx` (`src/txmempool.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), what
         # `check_replacement` and `remove_conflicts` below read. `add_tx`
         # refusing a second spender is what keeps one wtxid per outpoint.
         # btclib-org/btclib-node#1244
         self.outpoint_spender: dict[tuple[bytes, int], bytes] = {}
         # txid -> Core's `mapDeltas` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the fee delta
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the fee delta
         # `prioritisetransaction` added, kept whether or not the
         # transaction is held, never zero. `modified_fee` is its reader.
         # btclib-org/btclib-node#1502
@@ -291,7 +291,7 @@ class Mempool:
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
-        # (`src/kernel/mempool_options.h`, at bitcoin/bitcoin@58a7869f86) is
+        # (`src/kernel/mempool_options.h`, at bitcoin/bitcoin@f0de87f040) is
         # 300, and this field carried 500 with no argument on record for
         # the difference -- inert while nothing evicted, since the exact
         # number only ever decided whether `add_tx` refused outright.
@@ -306,23 +306,24 @@ class Mempool:
         # closes is the missing eviction, not the fixed ceiling.
         # btclib-org/btclib-node#294
         self.bytesize_limit: int = 300 * 1000**2  # 300vMB
-        # Core's own external-tracking counter, `CTxMemPool::m_sequence_number`
-        # (`src/txmempool.h:200-202`): "incremented once every time a
+        # Core's own external-tracking counter,
+        # `CTxMemPool::m_sequence_number` (`src/txmempool.h:200-202`, at
+        # bitcoin/bitcoin@f0de87f040): "incremented once every time a
         # transaction is added or removed from the mempool for any reason".
         # `getrawmempool`'s `mempool_sequence` is a read of this value
         # (`GetSequence`, `src/txmempool.h:598-600`), not itself a bump.
         # Core initializes the field to 1, not 0 (`src/txmempool.h:202`),
         # and bumps it through `GetAndIncrementSequence`'s C++
-        # post-increment (`return m_sequence_number++;`, `:594-596`) --
-        # the value handed to a signal recipient is the one *before* the
-        # bump, but the field itself, which is what `GetSequence` later
-        # reads, is already past it. Starting at 1 here is what makes a
-        # fresh mempool answer `mempool_sequence: 1`, matching Core's own
-        # answer for zero events, and what keeps every later answer at
-        # Core's own N+1 after N add/remove events rather than N.
+        # post-increment (`return m_sequence_number++;`, `:594-596`) -- the
+        # value handed to a signal recipient is the one *before* the bump,
+        # but the field itself, which is what `GetSequence` later reads, is
+        # already past it. Starting at 1 here is what makes a fresh mempool
+        # answer `mempool_sequence: 1`, matching Core's own answer for zero
+        # events, and what keeps every later answer at Core's own N+1 after
+        # N add/remove events rather than N.
         self.sequence: int = 1
         # Core's `nTransactionsUpdated` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which a
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), which a
         # `getblocktemplate` long poll waits on: one per transaction added
         # or removed, as `sequence`, and one per block connected or
         # disconnected, through `add_transactions_updated`. Core counts
@@ -331,7 +332,7 @@ class Mempool:
         # Core's does after a restart.
         self.transactions_updated: int = 0
         # Core's `m_load_tried` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): whether the load of
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): whether the load of
         # `mempool.dat` at start ended without a stop. `Node` writes the
         # file at shutdown only then, so a node stopped while loading
         # keeps the file it was reading. btclib-org/btclib-node#1746
@@ -350,7 +351,7 @@ class Mempool:
 
         # Core's `m_lazy_recent_rejects`, a `CRollingBloomFilter{120'000,
         # 0.000'001}` (`src/node/txdownloadman_impl.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the wtxids
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the wtxids
         # `mark_rejected` recorded, so a resubmission is not verified
         # again. Like Core's, it drops a transaction never refused up to
         # once in a million queries.
@@ -431,8 +432,8 @@ class Mempool:
 
         Keyed on wtxid alone, matching Core's own general case
         (`RecentRejectsFilter().insert(ptx->GetWitnessHash())`,
-        `src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag), not Core's
+        `src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag), not Core's
         narrower `TX_INPUTS_NOT_STANDARD` special case, which also
         records the txid because that one failure is provably
         independent of the witness -- nothing here tells a
@@ -454,8 +455,8 @@ class Mempool:
         """Record a wtxid refused for a reason a package can undo, or a package.
 
         Core's `RecentRejectsReconsiderableFilter().insert`
-        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag): the wtxid of a transaction refused as `TX_RECONSIDERABLE`
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag): the wtxid of a transaction refused as `TX_RECONSIDERABLE`
         is not downloaded or submitted alone again, and the hash of a
         package refused for any reason (`package_hash`) is not tried again.
         Reset as `mark_rejected`'s filter is.
@@ -534,7 +535,7 @@ class Mempool:
         # transaction paid. It now adds the transaction provisionally and
         # runs `_evict_to_limit`, Core's own `LimitMempoolSize` shape
         # (`validation.cpp`, called right after a provisional add,
-        # at bitcoin/bitcoin@58a7869f86): if the trim reaches this
+        # at bitcoin/bitcoin@f0de87f040): if the trim reaches this
         # transaction's chunk, eviction takes it right
         # back out and the return value is `False` here exactly as it
         # was for the old outright refusal -- `rpc/callbacks.py`'s own
@@ -580,7 +581,7 @@ class Mempool:
         `replaced` what `check_package_replacement` answered, which goes
         first. They are added and the mempool trimmed once, as Core's
         `LimitMempoolSize` after `SubmitPackage` does (`src/validation.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the worst chunk
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so the worst chunk
         goes, which is the package where it pays less than what the
         mempool holds.
 
@@ -672,7 +673,7 @@ class Mempool:
         """Link the re-added `wtxids` to their held children, then trim.
 
         Core's `UpdateTransactionsFromBlock` (`src/txmempool.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `wtxids` are what a
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): `wtxids` are what a
         reorg put back, in the order it did, and one no longer held is
         skipped. A cluster the links take past Core's limits is trimmed by
         `TxGraph.trim`, and what it trims is removed, as Core removes it
@@ -703,7 +704,7 @@ class Mempool:
         """Return the fee delta of `txid`, held or not, zero where it has none.
 
         Core's `ApplyDelta` (`src/txmempool.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which its mempool
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), which its mempool
         acceptance asks of a candidate before it is held.
         btclib-org/btclib-node#1502
         """
@@ -770,7 +771,7 @@ class Mempool:
 
         Core's own `all_conflicts`, `GetEntriesForConflicts`' union of
         `CalculateDescendants` over the direct conflicts
-        (`src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`src/policy/rbf.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag).
         """
         conflicts = self.direct_conflicts(tx)
@@ -788,7 +789,7 @@ class Mempool:
         """Return what `tx` replaces, or refuse it as Core does.
 
         Core's `ReplacementChecks` (`src/validation.cpp`, with
-        `src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `src/policy/rbf.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag). The conflicts are the held spenders of what `tx` spends, and
         `sibling`, the child of its parent that `check_truc` offers to
         evict. What `tx` replaces is the conflicts and their descendants,
@@ -834,7 +835,7 @@ class Mempool:
         """Return what a package replaces, or refuse it as Core does.
 
         Core's `PackageRBFChecks` (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for `members` as
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), for `members` as
         `add_package` takes them, against the mempool without them. Each
         refusal is the package's, "package RBF failed: " and why: a package
         that is not one parent and its child, a member with a held parent,
@@ -897,7 +898,7 @@ class Mempool:
         Core's `GetEntriesForConflicts`: refused `reason` where `conflicts`
         are in more than `_MAX_REPLACEMENT_CANDIDATES` clusters, `txid`
         being the replacement's (`src/policy/rbf.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         clusters = self.graph.count_distinct_clusters(conflicts)
         if clusters > _MAX_REPLACEMENT_CANDIDATES:
@@ -916,7 +917,7 @@ class Mempool:
         `fee` has to reach the modified fees of `replaced` (rule 3), and
         exceed them by the incremental relay fee for `vsize` (rule 4), in
         `PaysForRBF`'s words, which name `txid` (`src/policy/rbf.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         original = sum(self.modified_fee(wtxid) for wtxid in replaced)
         if fee < original:
@@ -943,7 +944,7 @@ class Mempool:
         """Refuse a change that does not improve the feerate diagram.
 
         Core's `ImprovesFeerateDiagram` (`src/policy/rbf.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `replaced` removed and
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): `replaced` removed and
         `added` added, as `TxGraph.staged_diagrams` takes them, has to give
         a diagram strictly better than the one before, or `reason` and
         `details` refuse it. A cluster past the limits is
@@ -964,7 +965,7 @@ class Mempool:
         """Refuse `tx` if a held ancestor of it is one it conflicts with.
 
         Core's `EntriesAndTxidsDisjoint` (`src/policy/rbf.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag),
         "bad-txns-spends-conflicting-tx", over the direct conflicts and
         `sibling`, naming the first ancestor by internal txid, the order
         of Core's `setEntries`.
@@ -1023,7 +1024,7 @@ class Mempool:
         """Refuse `tx` if BIP431 does, "TRUC-violation" in Core's words.
 
         Core's `SingleTRUCChecks` (`src/policy/truc_policy.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), called from
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), called from
         `PreChecks` with the held parents and the held direct conflicts: a
         version-3 transaction spends only from version-3 ones and the
         reverse, is at most 10,000 vbytes, has at most one held parent
@@ -1100,7 +1101,7 @@ class Mempool:
         """Refuse `package[index]` if BIP431 does of a package, as Core does.
 
         Core's `PackageTRUCChecks` (`src/policy/truc_policy.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order, with
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order, with
         the parents the mempool holds and those before `index` in
         `package`: too many ancestors, the ancestors of a held parent, the
         size of a version 3 child, the version of its parent, a sibling or
@@ -1238,7 +1239,7 @@ class Mempool:
         """Refuse `tx` if its cluster would pass Core's limits.
 
         Core's `CheckMemPoolPolicyLimits` (`src/validation.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), "too-large-cluster"
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), "too-large-cluster"
         for more than 64 transactions or 404,000 sigop-adjusted weight
         units in the cluster `tx` would join. `weight` is `tx`'s; where it
         is `None`, `_weight(tx, vsize)` stands in, which is all `vsize` is
@@ -1260,7 +1261,7 @@ class Mempool:
 
         Core's own `removeConflicts`, which `removeForBlock` calls for
         every transaction of a connected block (`src/txmempool.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a held spend of a
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a held spend of a
         coin the block spent can never confirm. Called once `tx` itself is
         out, so every spender left is a conflict.
         The direct spenders lose their fee delta and their descendants keep
@@ -1284,7 +1285,7 @@ class Mempool:
         call to `removal_listener`; the conflicts call it.
 
         Core's `removeForBlock` (`src/txmempool.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) takes each transaction
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) takes each transaction
         out, then what conflicts with it, then clears its fee delta. The
         delta of a transaction a block holds is gone with it, so the
         transaction has none if a reorg returns it to the mempool; one set
@@ -1330,7 +1331,7 @@ class Mempool:
         Core's own `removeRecursive` reached the identical way, on a
         disconnected transaction that did not make it back into the
         mempool (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "If the
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): "If the
         transaction doesn't make it in to the mempool, remove any
         transactions that depend on it (which would now be orphans)."
         """
@@ -1357,7 +1358,7 @@ class Mempool:
         re-added. The package this removes is `_descendants`'s: Core's
         `CTxMemPool::RemoveStaged`, over `CalculateDescendants`, is what
         `removeForReorg` calls for an entry `filter_final_and_mature` flags
-        (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`src/txmempool.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag).
         """
         if wtxid not in self.transactions:
@@ -1505,8 +1506,8 @@ class Mempool:
         and the two RPCs omit. Ordered by internal hash, the txid's bytes
         reversed, as Core's `setEntries` is: a `std::set` under
         `CompareIteratorByHash` (`src/kernel/mempool_entry.h`), listed in
-        order by `src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag. btclib-org/btclib-node#1501
+        order by `src/rpc/mempool.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag. btclib-org/btclib-node#1501
         """
         found = self._ancestors(wtxid) if ancestors else self._descendants(wtxid)
         found.discard(wtxid)
@@ -1515,8 +1516,8 @@ class Mempool:
     def mining_order_keys(self, wtxids: Iterable[bytes]) -> dict[bytes, MiningKey]:
         """Return a sort key for each of `wtxids`, best-paying first.
 
-        Core at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, orders
-        announcements by `CompareMiningScoreWithTopology`: the order a
+        Core at bitcoin/bitcoin@f0de87f040, the v32.1 tag, orders
+        announcements by `ExtractBestByMiningScoreWithTopology`: the order a
         block takes them, `TxGraph.order_keys`.
         """
         return self.graph.order_keys(wtxids)
@@ -1525,7 +1526,7 @@ class Mempool:
         """Return `wtxid`'s own `getmempoolentry` accounting.
 
         Core's own `entryToJSON` (`src/rpc/mempool.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The chunk's weight
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). The chunk's weight
         and fee are `GetMainChunkFeerate`'s, read from `self.graph`.
         `modified` is `base`
         plus the transaction's fee delta, and `ancestor` and `descendant`
@@ -1579,7 +1580,7 @@ class Mempool:
         Called where Core calls it: once a transaction submitted through
         `sendrawtransaction` is kept, `BroadcastTransaction`'s
         `MEMPOOL_AND_BROADCAST_TO_ALL` branch (`src/node/transaction.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and for each txid
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and for each txid
         of `mempool.dat`'s unbroadcast set (`src/node/mempool_persist.cpp`,
         same tag). Never for one a peer handed this node over the wire:
         `net_processing.cpp`'s p2p acceptance path has no call. A txid
@@ -1611,8 +1612,8 @@ class Mempool:
     def expire(self) -> int:
         """Remove what is older than `expiry`, with its descendants.
 
-        Core's `Expire` (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag), with `LimitMempoolSize`'s cutoff: an entry whose
+        Core's `Expire` (`src/txmempool.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag), with `LimitMempoolSize`'s cutoff: an entry whose
         second of entry is before the current second less `expiry` goes.
         Each is removed as Core removes it with reason `EXPIRY`, so
         `removal_listener` is told. Returns how many were removed.
@@ -1633,7 +1634,7 @@ class Mempool:
         """Expire, then evict the worst chunk until back at the limit.
 
         Core's `LimitMempoolSize` (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `expire`, then
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): `expire`, then
         `TrimToSize` (`src/txmempool.cpp`, same tag), which takes the last
         chunk in the order a block takes them,
         `m_txgraph->GetWorstMainChunk()`, so a parent is scored with the
@@ -1675,14 +1676,14 @@ class Mempool:
 
         Core's `AddTransactionsUpdated`, which `UpdateTip` calls once per
         block connected or disconnected (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         self.transactions_updated += count
 
     def note_block_connected(self) -> None:
         """Restart the rolling minimum's decay clock for one connected block.
 
-        Core's own `removeForBlock` (`src/txmempool.cpp:405-427`, same
+        Core's own `removeForBlock` (`src/txmempool.cpp:405-429`, same
         commit) sets `lastRollingFeeUpdate`/`blockSinceLastRollingFeeBump`
         this way for every block, whether or not that block held any
         transaction this mempool was also holding -- called once per
@@ -1698,8 +1699,8 @@ class Mempool:
 
         `TxDownloadManagerImpl::ActiveTipChange` resets
         `m_lazy_recent_rejects` and `m_lazy_recent_rejects_reconsiderable`
-        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag). `main` calls this where Core's
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag). `main` calls this where Core's
         `PeerManagerImpl::ActiveTipChange` calls it: once the active tip
         has moved, out of initial block download.
         """

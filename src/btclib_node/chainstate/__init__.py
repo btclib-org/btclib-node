@@ -21,7 +21,7 @@ store, its locator and the catch-up are.
 
 `wipe` is `-reindex-chainstate`, Core's `InitCoinsDB` with
 `should_wipe` (`src/validation.cpp`, `src/node/chainstate.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). It removes the coins and their
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). It removes the coins and their
 running commitment, and takes every block of the active chain but genesis
 off it, all in one batch. The headers stay, and so do
 the blocks `block_db` holds: `main.update_chain` then connects them
@@ -76,7 +76,7 @@ class Chainstate:
         self.db = KeyValueStore(chain_dir)
         if wipe:
             # where Core's `CDBWrapper` logs "Wiping LevelDB in <path>"
-            # (`src/dbwrapper.cpp`, at bitcoin/bitcoin@9be056a8a7)
+            # (`src/dbwrapper.cpp`, at bitcoin/bitcoin@f0de87f040)
             logger.info("Wiping the chainstate in %s", chain_dir)
             with self.db.write_batch() as wb:
                 UtxoIndex.wipe(wb)

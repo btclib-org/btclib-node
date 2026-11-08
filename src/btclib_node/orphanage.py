@@ -5,7 +5,7 @@
 """`TxOrphanage`, the transactions peers sent whose inputs are not found yet.
 
 Bitcoin Core's `TxOrphanage` (`src/node/txorphanage.h` and
-`src/node/txorphanage.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+`src/node/txorphanage.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
 whose header comment argues the design. An orphan cannot be told from a
 bad transaction with inputs that do not exist, so what is kept is bounded:
 
@@ -176,8 +176,8 @@ class TxOrphanage:
         Core's `AddTx`: not stored over `MAX_STANDARD_TX_WEIGHT`, and `False`
         for a wtxid already kept, whether `peer` announced it before or
         not. It trims on every add, as Core's does (`LimitOrphans` at the end
-        of `AddTx`, `src/node/txorphanage.cpp` at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag).
+        of `AddTx`, `src/node/txorphanage.cpp` at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag).
         """
         if tx.weight > MAX_STANDARD_TX_WEIGHT:
             return False

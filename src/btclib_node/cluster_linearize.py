@@ -6,7 +6,7 @@
 
 A port of `src/cluster_linearize.h`, of `CompareChunks` in
 `src/util/feefrac.cpp` and of `InsecureRandomContext` in `src/random.h`,
-at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. `linearize` orders a
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag. `linearize` orders a
 cluster's transactions for mining with the spanning-forest algorithm
 (SFL), within a budget of work counted as Core counts it.
 

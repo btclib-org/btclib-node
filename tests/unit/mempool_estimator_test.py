@@ -7,7 +7,9 @@
 The cases follow `src/policy/fees/mempool_estimator.cpp` at
 bitcoin/bitcoin@f0de87f040, the v32.1 tag;
 `tests/integration/fee_estimation_test.py` compares the estimates and
-the file with bitcoind's.
+the file with `bitcoind`'s.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import struct

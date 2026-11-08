@@ -5,7 +5,9 @@
 """`Mempool`'s replacement rules, each refusal and what each lets through.
 
 `tests/integration/replacement_test.py` holds the answers equal to
-bitcoind v31.1's.
+`bitcoind`'s.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import secrets

@@ -8,6 +8,8 @@ Covers `UtxoIndex.add_block` staging spends and creations, its refusals
 on a double spend and a missing prevout, `apply_rev_block` undoing a
 block either still staged or already written, and persistence across a
 restart.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import hashlib
@@ -42,7 +44,7 @@ _BIP30_ORIGINAL_HASH = bytes.fromhex(
     "00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e"
 )
 
-# Core v31.1.0's `gettxoutsetinfo` over the regtest chain these blocks
+# `bitcoind`'s `gettxoutsetinfo` over the regtest chain these blocks
 # make (`tests/_data/README.md` says how it was made)
 _CORE_VECTOR = json.loads(
     (Path(__file__).parent / "_data" / "regtest_hash_serialized_3.json").read_text()
@@ -492,8 +494,8 @@ def test_add_blocks_own_creation_loops_keep_the_two_dicts_disjoint(
 def test_a_block_that_duplicates_an_unspent_output_is_refused(tmp_path: Path) -> None:
     """A block whose coinbase duplicates a still-unspent txid is refused.
 
-    Core's `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2401-2431`,
-    at bitcoin/bitcoin@204256c73f), CVE-2012-1909's shape: without this
+    Core's `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2466-2475`,
+    at bitcoin/bitcoin@f0de87f040), CVE-2012-1909's shape: without this
     check, the second block's own write silently overwrote the first's,
     and a reorg away from it deleted an output the first block's own
     branch still carries.
@@ -809,7 +811,7 @@ def test_apply_rev_block_hashes_in_an_ordinary_output_of_the_exempt_block(
     `coin.is_coinbase and is_bip30_unspendable(...)` together, matching
     `CoinStatsIndex::CustomAppend`'s own `is_coinbase &&
     IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`, at
-    bitcoin/bitcoin@ca7162cde5), correctly un-hashes it again on undo.
+    bitcoin/bitcoin@f0de87f040), correctly un-hashes it again on undo.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
@@ -954,7 +956,7 @@ def test_add_block_does_not_store_a_provably_unspendable_output(
     """A provably unspendable output is staged nowhere `add_block` can reach.
 
     Matches `CCoinsViewCache::AddCoin` (`src/coins.cpp:82`, at
-    bitcoin/bitcoin@ca7162cde5), which returns without adding such an
+    bitcoin/bitcoin@f0de87f040), which returns without adding such an
     output to Core's own UTXO set at all (btclib-org/btclib-node#667).
     Checked at every point `_stage_added`'s own gate touches: not in
     `updated_utxo_set`, not in the `RevBlock` a reorg would undo this

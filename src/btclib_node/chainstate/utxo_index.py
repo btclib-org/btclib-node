@@ -282,7 +282,8 @@ class UtxoIndex:
         checksum-clean record that still does not deserialize:
         exactly the fault `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`
         answer absent to (`src/dbwrapper.h`, `src/txdb.cpp`, at
-        bitcoin/bitcoin@ca7162cde5). Matching that answer with `None`
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
+        follows until ISS 2275). Matching that answer with `None`
         rather than raising `ChainstateInconsistencyError` is
         btclib-org/btclib-node#650's own decision, argued in that
         class's own docstring; `add_block` and `get_coin`, this
@@ -319,7 +320,7 @@ class UtxoIndex:
         Returns whether the output was staged at all: `False`, a
         no-op, for a provably unspendable one (`is_unspendable`) --
         matching `CCoinsViewCache::AddCoin` (`src/coins.cpp:82`, at
-        bitcoin/bitcoin@ca7162cde5), which returns without adding such
+        bitcoin/bitcoin@f0de87f040), which returns without adding such
         an output to Core's own UTXO set in the first place
         (`muhash.py`'s own "What is inserted, and what is not"
         argues why the digest already agreed with Core on this before
@@ -384,8 +385,8 @@ class UtxoIndex:
 
         `check_bip30` refuses a block that "overwrites" an output still
         unspent from anywhere earlier on the chain -- Core's own
-        `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2401-2431`,
-        at bitcoin/bitcoin@204256c73f), CVE-2012-1909's shape: without
+        `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2466-2475`,
+        at bitcoin/bitcoin@f0de87f040), CVE-2012-1909's shape: without
         it, a coinbase sharing an already-mined, still-unspent txid
         overwrites that output in place, and a reorg away from the
         second block deletes an output the first block's own branch
@@ -525,7 +526,7 @@ class UtxoIndex:
         collide with `to_remove`'s own, which this block alone created,
         a valid block spending a given outpoint at most once. Core's
         `DisconnectBlock` (`src/validation.cpp`, at
-        bitcoin/bitcoin@05e49b342f) reaches the same result walking one
+        bitcoin/bitcoin@f0de87f040) reaches the same result walking one
         transaction at a time in reverse block order -- spend its own
         outputs, then restore its own inputs -- rather than in the two
         flat passes here (btclib-org/btclib-node#634).
@@ -572,7 +573,7 @@ class UtxoIndex:
         permanently off after a reorg through that block. Matches
         `CoinStatsIndex::CustomAppend`'s own `is_coinbase &&
         IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`,
-        at bitcoin/bitcoin@ca7162cde5), which gates on exactly the same
+        at bitcoin/bitcoin@f0de87f040), which gates on exactly the same
         conjunction rather than the hash/height pair alone.
         `to_remove` parses the stored `Coin` for this alone where the
         rest of this loop only ever needed to know the record existed.
@@ -699,8 +700,8 @@ class UtxoIndex:
         or more, so each txid's rows are sorted again here. Core's
         `ComputeUTXOStats` collects one txid's outputs into a
         `std::map<uint32_t, Coin>` for the same reason
-        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag), and the txid bytes order the same in both stores.
+        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag), and the txid bytes order the same in both stores.
         """
         txid = b""
         rows: list[tuple[int, bytes, bytes]] = []
@@ -724,8 +725,8 @@ class UtxoIndex:
 
         SHA256d over `tx_out_ser` of every coin, in `by_txid`'s order:
         `ApplyHash` over `ComputeUTXOStats`' cursor
-        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag). The digest is `HashWriter::GetHash`'s own byte order,
+        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag). The digest is `HashWriter::GetHash`'s own byte order,
         reversed for the hex `uint256::GetHex` prints.
 
         `interruption_point` is called once per coin, and what it raises

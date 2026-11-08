@@ -4,9 +4,11 @@
 
 """`mempool.dat`: its format, what is written, and what a load keeps.
 
-The layout was measured on a file bitcoind v31.1.0 wrote with
-`savemempool`; `tests/integration/mempool_persist_test.py` compares the
-two nodes' files byte for byte.
+The layout was measured on a file `bitcoind` wrote with `savemempool`;
+`tests/integration/mempool_persist_test.py` compares the two nodes'
+files byte for byte.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import re

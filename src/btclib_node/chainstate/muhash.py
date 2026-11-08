@@ -56,8 +56,8 @@ never a scan of the `utxo-` namespace.
 
 ## The two blocks history exempts
 
-`IsBIP30Unspendable` (`validation.cpp:6224-6228`, at
-bitcoin/bitcoin@ca7162cde5) names two mainnet blocks, 91722 and 91812,
+`IsBIP30Unspendable` (`validation.cpp:6213-6217`, at
+bitcoin/bitcoin@f0de87f040) names two mainnet blocks, 91722 and 91812,
 each mined before BIP34 gave a coinbase's own outpoint a height it
 could never collide with, whose coinbase transaction was later
 duplicated verbatim by a different block (91842, 91880 --
@@ -95,7 +95,7 @@ __all__ = [
 ]
 
 # The two mainnet blocks IsBIP30Unspendable names (validation.cpp
-# :6224-6228, at bitcoin/bitcoin@ca7162cde5) -- the module docstring's
+# :6213-6217, at bitcoin/bitcoin@f0de87f040) -- the module docstring's
 # own "The two blocks history exempts" is where the pair, and why it is
 # local to this file rather than a Chain attribute, is argued. Core's
 # own literal there is a `uint256`, which reverses relative to its own
