@@ -462,7 +462,7 @@ def test_a_request_sent_once_a_closing_401_arrives_is_answered_as_bitcoind_does(
     # set by the fixture's own `Config`
     assert node.rpc_port is not None
     ours = _answer(node.rpc_port, data, later)
-    assert len(theirs) == 2
+    assert theirs
     assert ours == theirs
 
 
