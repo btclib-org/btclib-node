@@ -174,10 +174,7 @@ def test_chain(node: Node) -> None:
 def test_a_getblocks_activates_the_best_chain_first(node: Node) -> None:
     """A block downloaded and not yet connected is in the `inv` it asks for.
 
-    `callbacks.block` announces a block from `new_pow_valid_block`, and
-    `update_chain` connects it only after the loop's p2p share, so a
-    `getblocks` processed between the two would otherwise be answered
-    without it, as Core's `ActivateBestChain` call prevents.
+    Core's `ActivateBestChain` call in `GETBLOCKS` connects it first.
     """
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = node.chainstate.block_index

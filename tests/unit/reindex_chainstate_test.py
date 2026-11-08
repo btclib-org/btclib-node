@@ -389,8 +389,16 @@ def test_a_headers_is_dropped_unread_while_reindexing() -> None:
         headers(node, past_the_bound, a_peer())
 
 
-def test_a_block_is_dropped_unread_while_reindexing() -> None:
-    """Core's `LoadingBlocks()` return in `BLOCK`; the request stays queued."""
+def test_a_block_is_dropped_unread_while_reindexing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `LoadingBlocks()` return in `BLOCK`; the request stays queued.
+
+    No chain is activated over the stand-in index.
+    """
+    monkeypatch.setattr(
+        "btclib_node.p2p.callbacks.activate_best_chain", lambda _node: None
+    )
     block = a_block()
     block_hash = block.header.hash
     added: list[Block] = []

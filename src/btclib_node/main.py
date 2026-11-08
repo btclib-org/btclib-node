@@ -1655,7 +1655,7 @@ def _invalidate_failed_block(
     block_checked(node, failed_hash, valid=False)
 
 
-def update_chain(node: Node) -> None:
+def update_chain(node: Node) -> bool:
     """Try the best ready fork block by block, and commit or roll it back.
 
     Called once per pass of `Node`'s own loop. `_ready_fork` answers
@@ -1668,10 +1668,13 @@ def update_chain(node: Node) -> None:
     run, is `_CONTENT_FAILURE`'s own distinction above. Once a trial
     succeeds, `_finalize_fork` commits it and `_after_tip_change` runs
     what Core runs as the tip moves.
+
+    Answers whether the call moved the tip or invalidated a block, either
+    of which leaves the next call a different fork to try.
     """
     fork = _ready_fork(node)
     if fork is None:
-        return
+        return False
     to_add_hash, to_remove_hash = fork
 
     block_index = node.chainstate.block_index
@@ -1792,6 +1795,7 @@ def update_chain(node: Node) -> None:
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)
+    return success or failed_hash is not None
 
 
 # invalidate_chain, reconsider_chain, precious_chain and callbacks.getblocks
@@ -1802,21 +1806,21 @@ def update_chain(node: Node) -> None:
 # ever takes one step -- one candidate, its whole fork -- per call, so a
 # caller that means to settle the chain fully loops it here
 # rather than leaving a still-available better candidate for `Node`'s own
-# next pass to pick up. Bounded by the tip actually moving rather than by
-# a call count: each successful step moves the tip to a block that
-# outranks it (`BlockIndex._outranks`, which `get_first_candidate`
-# offers by), so there is no cycle to loop forever on, and
-# a step that finds nothing ready -- `_ready_fork` answering `None`, a
-# candidate not fully downloaded among them -- leaves the tip exactly
-# where it was, which is what ends the loop.
+# next pass to pick up. A step whose fork fails invalidates a block and
+# leaves the tip where it was, and the loop goes on to the next candidate:
+# Core's `ActivateBestChain` drops `pindexMostWork` on `fInvalidFound` and
+# asks `FindMostWorkChain` again, until the tip is the most-work candidate
+# (`src/validation.cpp:3400-3403` and `:3491`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag). Bounded rather than counted: each successful step moves
+# the tip to a block that outranks it (`BlockIndex._outranks`, which
+# `get_first_candidate` offers by), each failed one marks one more block
+# invalid, and a step that finds nothing ready -- `_ready_fork` answering
+# `None`, a candidate not fully downloaded among them -- or that a stop
+# ends, does neither, which is what ends the loop.
 def activate_best_chain(node: Node) -> None:
-    """Run `update_chain` until the active tip stops moving."""
-    block_index = node.chainstate.block_index
-    while True:
-        tip = block_index.active_chain[-1]
-        update_chain(node)
-        if block_index.active_chain[-1] == tip:
-            return
+    """Run `update_chain` until a step neither moves the tip nor invalidates."""
+    while update_chain(node):
+        pass
 
 
 def invalidate_chain(node: Node, block_hash: bytes) -> None:

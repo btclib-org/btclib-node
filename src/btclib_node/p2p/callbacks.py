@@ -1853,12 +1853,18 @@ def _accept_block(
     requested: bool,
     via_compact_block: bool,
 ) -> None:
-    """Store a block whose header is indexed, where it is new.
+    """Store a new block whose header is indexed, then activate the best chain.
 
     The tail of `block` above, which `cmpctblock` and `blocktxn` reach
     too with a block they rebuilt: Core's `ProcessBlock`, with
     `force_processing` where `requested`. `via_compact_block` spares the
     peer a block failing a check, as `_check_block` says.
+
+    A block already held, or one not asked for and not wanted, is not
+    stored, and the best chain is still activated: Core's `AcceptBlock`
+    answers `true` for both (`src/validation.cpp:4343-4344`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and `ProcessNewBlock`
+    then runs `ActivateBestChain`.
     """
     block_hash = block.header.hash
     block_index = node.chainstate.block_index
@@ -1867,6 +1873,7 @@ def _accept_block(
     if block_info.downloaded or (
         not requested and _unrequested_block_refused(node, block_hash)
     ):
+        _activate_best_chain(node)
         # Core's `ProcessBlock` forgets the source of a block not new
         node.download_manager.block_source.pop(block_hash, None)
         return
@@ -1918,9 +1925,27 @@ def _accept_block(
     # `RemoveBlockRequest` below, at bitcoin/bitcoin@f0de87f040
     # (`net_processing.cpp`, the v32.1 tag)
     new_pow_valid_block(node, block)
+    _activate_best_chain(node)
     # stored, so awaited from nobody: Core's `ProcessBlock`
     connections = list(node.p2p_manager.connections.values())
     remove_block_request(connections, block_hash, clock.now())
+
+
+def _activate_best_chain(node: Node) -> None:
+    """Run `activate_best_chain` for a block a peer sent, as Core does.
+
+    Core's `ProcessNewBlock` runs `ActivateBestChain` before it returns
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    so no block ready to connect outranks the tip once the peer's next
+    message is read, and a `pong` behind the block answers only then
+    (btclib-org/btclib-node#2172). A failure ends the node, as in
+    `getblocks`.
+    """
+    try:
+        activate_best_chain(node)
+    except Exception:
+        node.terminate_flag.set()
+        raise
 
 
 # The transaction items Core's `IsGenTxMsg` answers for, and the one its
@@ -2839,10 +2864,9 @@ def getblocks(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
     request = GetBlocks.parse(_fields(msg))
-    # Core's `ActivateBestChain(a_recent_block)`: a block announced from
-    # `block` is connected only in `update_chain`, after this share of the
-    # loop, so without it the `inv` would leave out the block this node
-    # has just announced. A failure ends the node, as in `rpc.callbacks`.
+    # Core's `ActivateBestChain(a_recent_block)`, so that the `inv` holds
+    # every block this node has stored and can connect, whichever path
+    # stored it. A failure ends the node, as in `rpc.callbacks`.
     try:
         activate_best_chain(node)
     except Exception:
