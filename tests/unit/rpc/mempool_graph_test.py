@@ -5,8 +5,7 @@
 """`getmempoolancestors`, `getmempooldescendants` and `gettxspendingprevout`.
 
 The refusals and the order of an answer were measured against bitcoind
-v31.1.0 on regtest: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this
-node follows until ISS 2257.
+v32.1.0 on regtest: bitcoin/bitcoin@f0de87f040, the v32.1 tag.
 """
 
 import json
@@ -278,7 +277,7 @@ def test_return_spending_tx_adds_the_serialized_spender() -> None:
 
 
 def test_mempool_only_false_refuses_an_outpoint_the_mempool_does_not_spend() -> None:
-    """With no index to ask, Core's `-1` names the first such outpoint."""
+    """With no index to ask, Core's `-1` refuses with its message."""
     root, left, *_ = a_diamond()
     node = a_node(root, left)
     spent = {"txid": root.id.hex(), "vout": 0}
@@ -289,8 +288,7 @@ def test_mempool_only_false_refuses_an_outpoint_the_mempool_does_not_spend() -> 
         get_tx_spending_prevout(node, _CONN, [[spent, unspent], options])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == (
-        f"No spending tx for the outpoint {root.id.hex()}:1 in mempool, "
-        "and txospenderindex is unavailable."
+        "Mempool lacks a relevant spend, and txospenderindex is unavailable."
     )
 
 
