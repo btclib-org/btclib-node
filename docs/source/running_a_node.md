@@ -163,8 +163,11 @@ of every interface, at `-port` where one names no port. It turns
 up. `-externalip=<ip or name>[:port]`, repeatable, tells the node an
 address it is reached at, at the port of the first `-bind` that names
 one, then that of the first `-whitebind` that does not grant `noban`,
-then `-port`. The node keeps it as its own, which its automatic
-outbound draw skips, tells its peers of it, and turns `-discover` off.
+then `-port`. The node keeps it as its own, which its automatic outbound
+draw skips, tells its peers of it, and turns `-discover` off. An onion
+or I2P address is kept too, though the node reaches neither network. An
+onion one is told only to a peer that came in through an `=onion`
+listener, and an I2P one to none.
 
 `-whitebind=<[permissions@]addr>`, repeatable, listens on an address
 that has to name a port, and grants every peer that connects to it the

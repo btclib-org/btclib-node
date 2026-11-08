@@ -816,25 +816,27 @@ class Config:
     # Core's own `-externalip` values, each an address `lookup_service`
     # reads without a lookup: `cli` resolves a name before it gets here.
     # `P2pManager` records each as a local address, as `AddLocal` at
-    # `LOCAL_MANUAL` does (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag, which this node follows until ISS 2249).
+    # `LOCAL_MANUAL` does (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag), even on a network this node does not reach.
     externalip: tuple[str, ...]
     # Core's own `-discover`: whether `P2pManager` records this
-    # machine's own interface addresses at all (`p2p.netif.local_addresses`,
-    # btclib-org/btclib-node#1238). `InitParameterInteraction`
-    # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag, which this node follows until ISS 2249) soft-sets it off under
-    # `-proxy`, `-listen=0` or `-externalip`; this node has no `-proxy`,
-    # so `-listen` and `externalip` are the conditions `__init__` reads,
-    # `-listen` off `self.listen` rather than off the `listen` parameter,
-    # so that an explicit `-listen`'s own soft-set (above) is what this
-    # one sees. `None` here is the sentinel `dnsseed` above already uses
-    # for a soft default an explicit value wins over. Discovery runs
-    # whether or not `_bind` itself goes on to succeed, as Core's
-    # `Discover()` (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain`
-    # calls it off `bind_on_any` (`src/init.cpp:2163`, same sha), never
-    # off `fListen`, so `P2pManager` calls it unless `bind` or
-    # `whitebind` above is given.
+    # machine's own interface addresses at all
+    # (`p2p.netif.local_addresses`, btclib-org/btclib-node#1238).
+    # `InitParameterInteraction` (`src/init.cpp:816-849`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) soft-sets it off
+    # under `-proxy`, `-listen=0` or `-externalip`; this node has no
+    # `-proxy`, so `-listen` and `externalip` are the conditions
+    # `__init__` reads, `-listen` off `self.listen` rather than off the
+    # `listen` parameter, so that an explicit `-listen`'s own soft-set
+    # (above) is what this one sees. `None` here is the sentinel
+    # `dnsseed` above already uses for a soft default an explicit value
+    # wins over. Discovery runs whether or not `_bind` itself goes on to
+    # succeed, as Core's `Discover()` (`src/net.cpp:3456-3466`, same
+    # sha) does: `AppInitMain` calls it off `should_discover`
+    # (`src/init.cpp:2290-2313`, same sha), never off `fListen`, so
+    # `P2pManager` calls it unless `bind` or `whitebind` above is given
+    # and none of them, an `=onion` bind apart, binds every interface
+    # (`P2pManager._should_discover`).
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered

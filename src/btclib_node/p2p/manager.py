@@ -107,6 +107,7 @@ from btclib_node.p2p.selfannounce import (
     LOCAL_MANUAL,
     LocalService,
     address_for_peer,
+    host_record,
 )
 from btclib_node.rolling_bloom import RollingBloomFilter
 
@@ -2015,7 +2016,7 @@ class P2pManager(threading.Thread):
             return
         host, port = chosen
         services = local_services(self.node.config)
-        address = peer_address(str(host), port, int(now), int(services))
+        address = host_record(host, port, int(now), int(services))
         self.logger.log_debug(
             "net", "Advertising address %s to peer=%s", address, conn.id
         )
@@ -2023,7 +2024,7 @@ class P2pManager(threading.Thread):
             conn.push_address(address)
         elif conn.prefer_addressv2:
             conn.send(AddrV2([address]))
-        else:
+        elif can_addrv1(address):
             conn.send(Addr([addr_entry(address)]))
 
     def _send_queued_addrs(self, conn: Connection, now: float) -> None:
@@ -3323,28 +3324,39 @@ class P2pManager(threading.Thread):
         # set wherever `run` binds, which is where it calls this
         return listen_port(self.bind, self.whitebind, cast("int", self.port))
 
-    def _add_local(self, host: Host, port: int, score: int) -> bool:
+    def _add_local(
+        self,
+        host: Host,
+        port: int,
+        score: int,
+        *,
+        add_even_if_unreachable: bool = False,
+    ) -> bool:
         """Keep `host` as one of this node's own addresses, as `AddLocal` does.
 
-        `AddLocal` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag, which this node follows until ISS 2249) keeps a
-        routable address on a reachable network, and under `-discover=0`
-        only a `LOCAL_MANUAL` one. A known address takes the new port
-        and a score one above the new one, where that is not lower than
-        its own.
+        `AddLocal` (`src/net.cpp:278-306`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag) keeps a routable address, under `-discover=0` only
+        a `LOCAL_MANUAL` one, and on a network this node does not reach
+        only where `add_even_if_unreachable` is set. A known address takes
+        the new port and a score one above the new one, where that is not
+        lower than its own.
+
+        Core logs the address only under `-logips`, which is off by
+        default (`DEFAULT_LOGIPS`, `src/logging.h`, same sha). This node
+        has no `-logips`, so it logs nothing here.
         """
-        if isinstance(host, SpecialAddress):
-            return False
-        ip = ip_address(str(host).partition("%")[0])
-        address = peer_address(str(ip), port)
+        if not isinstance(host, SpecialAddress):
+            host = ip_address(str(host).partition("%")[0])
+        address = host_record(host, port)
         if not is_routable(address) or (not self.discover and score < LOCAL_MANUAL):
             return False
-        self.logger.info("AddLocal(%s,%i)", service_text(host, port), score)
+        if not (add_even_if_unreachable or self.is_reachable(address)):
+            return False
         key = host_key(address)
         with self._local_lock:
             known = self.local_info.get(key)
             if known is None:
-                self.local_info[key] = LocalService(ip, port, score)
+                self.local_info[key] = LocalService(host, port, score)
             elif score >= known.score:
                 known.port = port
                 known.score = score + 1
@@ -3375,43 +3387,61 @@ class P2pManager(threading.Thread):
     def _add_externalip(self) -> None:
         """Record every `-externalip` as a local address, as `AppInitMain` does.
 
-        Each is looked up at `_listen_port` (`src/init.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
-        follows until ISS 2249), as `cli` has already resolved it. An
+        Each is looked up at `_listen_port` (`src/init.cpp:1861-1867`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), as `cli` has already
+        resolved it, and kept even on a network this node does not reach
+        (bitcoin/bitcoin@8c87e32bd3): here an onion or I2P address. An
         address `AddLocal` refuses is skipped without a word, there as
-        here; since bitcoin/bitcoin@8c87e32bd3, not in v31.1, Core also
-        keeps one on a network `-onlynet` leaves unreachable, which only
-        an onion or I2P address can be here.
+        here.
         """
         for value in self.externalip:
             service = lookup_service(value, self._listen_port())
             if service is None or not is_valid_host(service[0]):
                 err_msg = f"Cannot resolve -externalip address: '{value}'"
                 raise ValueError(err_msg)
-            self._add_local(*service, LOCAL_MANUAL)
+            self._add_local(*service, LOCAL_MANUAL, add_even_if_unreachable=True)
 
     def _discover(self) -> None:
         """Record this machine's routable addresses, as Core's `Discover` does.
 
-        `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-        until ISS 2249) off `bind_on_any` (`src/init.cpp:2163`,
-        `:2193-2196`, same sha) -- whether the node would bind every
-        interface, which is to say no `-bind` or `-whitebind` was given --
-        never off `fListen`, which is why `run` below calls this off
-        `self.discover` rather than off `self.listen`: an explicit
+        `AppInitMain` calls `Discover` (`src/net.cpp:3456-3466`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) where `_should_discover`
+        says so, never off `fListen`, which is why `run` below calls this
+        off `self.discover` rather than off `self.listen`: an explicit
         `-discover=1` still records these addresses under `-listen=0`
         (btclib-org/btclib-node#1330). `self.discover` is itself Core's own
         soft `-discover=0` under `-listen=0` or `-externalip`
         (`Config.discover`'s own comment; this node has no `-proxy`). Each
         address goes to `AddLocal` at the listening port, which keeps a
         routable one on a reachable network; IPv4 and IPv6 are both
-        reachable here.
+        reachable here. Core logs each address kept only under `-logips`,
+        as `_add_local` says.
         """
         port = self._listen_port()
         for ip in local_addresses():
-            if self._add_local(ip, port, LOCAL_IF):
-                self.logger.info("Discover: %s", ip)
+            self._add_local(ip, port, LOCAL_IF)
+
+    def _should_discover(self) -> bool:
+        """Return whether `run` calls `_discover`, Core's `should_discover`.
+
+        `AppInitMain` (`src/init.cpp:2290-2313`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag) discovers where no `-bind` or `-whitebind` is given,
+        or where one of them, an `=onion` one apart, is `0.0.0.0` or `::`,
+        as `CNetAddr::IsBindAny` reads it. A value that does not parse
+        raises as `_bind` would.
+        """
+        if not (self.bind or self.whitebind):
+            return True
+        port = cast("int", self.port)
+        binds = (parse_bind(value, port) for value in self.bind)
+        hosts = [
+            *(address.host for address in binds if not address.onion),
+            *(parse_whitebind(value).host for value in self.whitebind),
+        ]
+        return any(
+            not isinstance(host, SpecialAddress) and not any(host.packed)
+            for host in hosts
+        )
 
     def _bind(self) -> list[socket.socket]:
         """Bind every listener this node has, the IPv4 one required.
@@ -3878,9 +3908,9 @@ class P2pManager(threading.Thread):
         # untouched -- `_bind`'s own listener socket is the only thing
         # this skips, `manage_connections` and the dial loop below both
         # running on this same loop regardless of whether `_bind` below
-        # ever ran. `_discover` is gated on `self.discover` alone, not
-        # on `self.listen`: Core calls `Discover()` off `bind_on_any`,
-        # never off `fListen` (`_discover`'s own docstring).
+        # ever ran. `_discover` is gated on `self.discover` and
+        # `_should_discover`, not on `self.listen`: Core never calls
+        # `Discover()` off `fListen` (`_discover`'s own docstring).
         server_sockets: list[socket.socket] = []
         # Core's own warning, logged as it builds the options
         # `CConnman::Start` takes (`src/init.cpp:2196-2203`, at
@@ -3892,7 +3922,7 @@ class P2pManager(threading.Thread):
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
             self._add_externalip()
-            if self.discover and not (self.bind or self.whitebind):
+            if self.discover and self._should_discover():
                 self._discover()
             if self.listen:
                 server_sockets = self._bind()

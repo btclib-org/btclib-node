@@ -92,6 +92,7 @@ from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid
 from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
+from btclib_node.p2p.selfannounce import LocalService, host_record
 from btclib_node.rpc.connection import COIN, RawJSON, btc_amount
 from btclib_node.rpc.errors import (
     RpcError,
@@ -1675,6 +1676,12 @@ def set_network_active(node: Node, conn: RpcConnection, params: list[Any]) -> bo
     return state
 
 
+def _local_order(info: LocalService) -> tuple[int, bytes]:
+    """Return where `info` sorts in `mapLocalHost`: by network, then octets."""
+    record = host_record(info.address, info.port)
+    return record.network_id, record.address
+
+
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getnetworkinfo` with the fields argued below.
 
@@ -1747,14 +1754,11 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
     `localaddresses` is what `P2pManager.local_snapshot` holds, as Core's
     `mapLocalHost` is read under its mutex (`rpc/net.cpp:781-791`, same
-    sha), in the order of its `std::map` of `CNetAddr`: IPv4 before IPv6,
-    then by octets.
+    sha), in the order of its `std::map` of `CNetAddr`: by network, IPv4,
+    IPv6, onion and I2P, then by octets.
     """
     services = local_services(node.config)
-    local = sorted(
-        node.p2p_manager.local_snapshot().values(),
-        key=lambda info: (info.address.version, info.address.packed),
-    )
+    local = sorted(node.p2p_manager.local_snapshot().values(), key=_local_order)
     manager = node.p2p_manager
     peers = {**manager.pending_connections, **manager.connections}
     connections_in = sum(bool(p2p_conn.inbound) for p2p_conn in peers.values())
