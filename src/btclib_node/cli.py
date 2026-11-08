@@ -212,6 +212,7 @@ from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
     BindAddress,
     Config,
     WhitebindAddress,
@@ -889,6 +890,13 @@ _OPTIONS: dict[str, _Option] = {
         "",
         "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
+    ),
+    "txsendrate": _Option(
+        "=<n>",
+        "Set the maximum ongoing rate for sending transactions to (inbound) "
+        f"peers (default: {DEFAULT_TX_SEND_RATE} tx/s)",
+        _NODE_RELAY_TITLE,
+        debug_only=True,
     ),
     "v1transport": _Option(
         "",
@@ -1687,6 +1695,19 @@ def _get_inboundrelaypercent(settings: _Settings) -> int:
     if value is None:
         value = DEFAULT_FULL_RELAY_INBOUND_PCT
     return min(max(_to_int(value), 0), 100)
+
+
+def _get_txsendrate(settings: _Settings) -> int:
+    """Return `-txsendrate` as `ApplyArgsManOptions` reads it.
+
+    `std::clamp<int64_t>` to 1 to 1000 (`src/node/peerman_args.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a negation, which
+    `GetIntArg` reads as 0, is 1.
+    """
+    value = _get_int(settings, "txsendrate")
+    if value is None:
+        return DEFAULT_TX_SEND_RATE
+    return min(max(value, 1), 1000)
 
 
 def _get_thousands(settings: _Settings, name: str, default: int) -> int:
@@ -2855,6 +2876,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         v1transport=v1transport,
         max_connections=before.max_connections,
         inbound_relay_percent=_get_inboundrelaypercent(settings),
+        tx_send_rate=_get_txsendrate(settings),
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,

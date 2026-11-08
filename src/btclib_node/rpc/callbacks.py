@@ -93,7 +93,7 @@ from btclib_node.p2p.eviction import Network, is_valid
 from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.p2p.selfannounce import LocalService, host_record
-from btclib_node.rpc.connection import COIN, RawJSON, btc_amount
+from btclib_node.rpc.connection import COIN, RawJSON, btc_amount, univalue_float
 from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
@@ -1688,10 +1688,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     """Answer `getnetworkinfo` with the fields argued below.
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:671-797`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) also answers `inv_buckets`
-    and `tx_send_rate`, which this node does not answer yet
-    (btclib-org/btclib-node#2309). Core answers `asmap_version` only under
-    `-asmap`, which this node does not have.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers `asmap_version`
+    only under `-asmap`, which this node does not have.
 
     `version` is `constants.NUMERIC_CLIENT_VERSION`, this node's own
     version in the form of Core's `CLIENT_VERSION` (`:744`, same sha). The
@@ -1723,6 +1721,11 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
     `timeoffset` is `timeoffsets.median` of `node.outbound_time_offsets`,
     Core's `TimeOffsets::Median`.
+
+    `tx_send_rate` is `Config.tx_send_rate`, Core's `-txsendrate`.
+    `inv_buckets` is `DownloadManager.inv_bucket_info` (`:755-766`, same
+    sha): each direction's `backlog`, and its `count_tok` and `size_tok`
+    written as `UniValue` writes a `double`.
 
     `networks` is Core's `GetNetworksInfo` (`:649-669`, same sha): its
     networks in its order, each `reachable` where `p2p.manager.reaches`
@@ -1770,6 +1773,15 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "localservicesnames": service_names(services),
         "localrelay": True,
         "timeoffset": median(node.outbound_time_offsets),
+        "tx_send_rate": node.config.tx_send_rate,
+        "inv_buckets": {
+            direction: {
+                "backlog": info.backlog,
+                "count_tok": univalue_float(info.count_tokens),
+                "size_tok": univalue_float(info.size_tokens),
+            }
+            for direction, info in node.download_manager.inv_bucket_info().items()
+        },
         "networkactive": manager.get_network_active(),
         "connections": len(peers),
         "connections_in": connections_in,

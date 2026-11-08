@@ -72,6 +72,7 @@ __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
+    "DEFAULT_TX_SEND_RATE",
     "BindAddress",
     "Config",
     "WhitebindAddress",
@@ -112,6 +113,10 @@ DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # transaction-relaying peers may hold.
 DEFAULT_MAX_PEER_CONNECTIONS = 200
 DEFAULT_FULL_RELAY_INBOUND_PCT = 50
+# Core's own `-txsendrate` default, `DEFAULT_TX_SEND_RATE`
+# (`src/net_processing.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# the transactions a second announced to inbound peers.
+DEFAULT_TX_SEND_RATE = 14
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most RPC clients connected at once.
@@ -870,6 +875,12 @@ class Config:
     # at bitcoin/bitcoin@f0de87f040), and `P2pManager.__init__` turns it
     # into a count.
     inbound_relay_percent: int
+    # Core's own `-txsendrate`: the transactions a second this node
+    # announces to its inbound peers, which `DownloadManager`'s
+    # announcement buckets refill by. `cli` clamps it to 1 to 1000, as
+    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    tx_send_rate: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     # soft-sets it off under `-connect` or a `-maxconnections` whose
@@ -998,6 +1009,7 @@ class Config:
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
+        tx_send_rate: int = DEFAULT_TX_SEND_RATE,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -1109,6 +1121,7 @@ class Config:
             raise ValueError(err_msg)
         self.max_connections = max_connections
         self.inbound_relay_percent = inbound_relay_percent
+        self.tx_send_rate = tx_send_rate
         _refuse_rpcmaxconnections(rpcmaxconnections)
         self.rpcmaxconnections = rpcmaxconnections
         self.fixed_seeds = fixed_seeds

@@ -1005,6 +1005,45 @@ def test_help_names_the_relay_share() -> None:
     assert "connections to peers (default: 200)" in message
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "rate"),
+    [
+        ([], "", 14),
+        (["-txsendrate=3"], "", 3),
+        ([], "txsendrate=7\n", 7),
+        (["-txsendrate=5000"], "", 1000),
+        (["-txsendrate=0"], "", 1),
+        (["-txsendrate=-1"], "", 1),
+        (["-notxsendrate"], "", 1),
+    ],
+    ids=["Core's default", "command line", "file", "over", "zero", "under", "negated"],
+)
+def test_build_config_reads_the_send_rate_as_core_clamps_it(
+    tmp_path: Path, argv: list[str], conf: str, rate: int
+) -> None:
+    """ISS 2309: `-txsendrate`, clamped to 1 to 1000 as in Core.
+
+    bitcoind v32.1.0 answered `getnetworkinfo`'s `tx_send_rate` 1000 to
+    `-txsendrate=5000` and 1 to `-notxsendrate`, on regtest.
+    """
+    assert _build(tmp_path, *argv, conf=conf).tx_send_rate == rate
+
+
+def test_build_config_txsendrate_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2309: `-txsendrate` is `DEBUG_ONLY`, in bitcoind v32.1.0's words."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-txsendrate" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    assert (
+        "  -txsendrate=<n>\n       Set the maximum ongoing rate for sending "
+        "transactions to (inbound) peers\n       (default: 14 tx/s)\n"
+    ) in capsys.readouterr().out
+
+
 def test_help_names_bantime() -> None:
     """ISS 1219: in Core's words, among the connection options."""
     assert (

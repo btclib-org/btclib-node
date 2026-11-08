@@ -23,6 +23,7 @@ from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.reject import Reject, RejectCode
 
 import btclib_node.p2p.callbacks as cb
+from btclib_node.config import DEFAULT_TX_SEND_RATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import MisbehavingError
@@ -724,6 +725,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     )
     node.is_initial_block_download = False
     node.mempool = Mempool(Logger(debug=True))
+    node.config = SimpleNamespace(tx_send_rate=DEFAULT_TX_SEND_RATE)
     node.download_manager = DownloadManager(node, node.logger)
     node.p2p_manager.connections[0].id = 0
     node.tx_checks = TxChecks()
