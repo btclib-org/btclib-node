@@ -4,25 +4,24 @@
 
 """The protocol versions a peer is kept at, and each feature begins at.
 
-Core's `src/node/protocol_version.h` (at bitcoin/bitcoin@9be056a8a7, the
-v31.1 tag, which this node follows until ISS 2250), under Core's names;
-`PROTOCOL_VERSION` itself is `btclib.p2p.limits`'. `common_version` is
-Core's `CNode::GetCommonVersion`, which every feature gate reads.
+Core's `src/node/protocol_version.h` (at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag), under Core's names. `common_version` is Core's
+`CNode::GetCommonVersion`, which every feature gate reads.
 """
 
 from typing import TYPE_CHECKING
-
-from btclib.p2p.limits import PROTOCOL_VERSION
 
 if TYPE_CHECKING:
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
     "BIP0031_VERSION",
+    "FEATURE_VERSION",
     "FEEFILTER_VERSION",
     "INIT_PROTO_VERSION",
     "INVALID_CB_NO_BAN_VERSION",
     "MIN_PEER_PROTO_VERSION",
+    "PROTOCOL_VERSION",
     "SENDHEADERS_VERSION",
     "SHORT_IDS_BLOCKS_VERSION",
     "WTXID_RELAY_VERSION",
@@ -41,6 +40,13 @@ SHORT_IDS_BLOCKS_VERSION = 70014
 # it up, as Core's `NewPoWValidBlock` does
 INVALID_CB_NO_BAN_VERSION = 70015
 WTXID_RELAY_VERSION = 70016
+# a peer may send BIP434's `feature` between `version` and `verack` from it up
+FEATURE_VERSION = 70017
+
+# The version this node announces. Core's own, and not
+# `btclib.p2p.limits.PROTOCOL_VERSION`, which is still 70016 in the
+# btclib this tree pins (btclib-org/btclib#2995).
+PROTOCOL_VERSION = 70017
 
 
 def common_version(conn: Connection) -> int:

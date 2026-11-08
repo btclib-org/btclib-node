@@ -199,7 +199,13 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
 
 @pytest.mark.parametrize(
     ("command", "dropped"),
-    [("version", False), ("verack", False), ("wtxidrelay", True), ("sendaddrv2", True)],
+    [
+        ("version", False),
+        ("verack", False),
+        ("wtxidrelay", True),
+        ("sendaddrv2", True),
+        ("feature", True),
+    ],
 )
 def test_a_handshake_message_on_a_connected_one_discourages_nobody(
     command: str,
@@ -208,8 +214,8 @@ def test_a_handshake_message_on_a_connected_one_discourages_nobody(
     """ISS 1133: a handshake command after `verack` is answered as Core does.
 
     Core's `ProcessMessage` ignores a second `version` or `verack`, and
-    drops a peer sending `wtxidrelay` or `sendaddrv2` after `verack`
-    without discouraging it.
+    drops a peer sending `wtxidrelay`, `sendaddrv2` or, from v32.1,
+    `feature` after `verack` without discouraging it.
     """
     node, stopped = make_node(
         "handshake_messages", (command, b"", 0, 1, 0.0), status=P2pConnStatus.Connected

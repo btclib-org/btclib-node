@@ -103,9 +103,8 @@ def a_conn(
     relayed to by txid (ISS 1183). Its trickle is due by default, and
     it has had a first one, which `_process_inv_backlog` asks before
     it queues the peer anything; `next_inv_send_time=0.0` is a peer
-    that has had none. Its `version_message` is a full node's
-    at this node's own protocol version unless one is given, `None`
-    included.
+    that has had none. Its `version_message` is a full node's at
+    btclib's `PROTOCOL_VERSION` unless one is given, `None` included.
     """
     if version_message is ...:
         version_message = a_version(

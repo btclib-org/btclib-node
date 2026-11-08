@@ -314,6 +314,31 @@ def test_a_responder_handshakes_and_refuses_a_packet_over_the_limit(
     assert tester.interact() is None
 
 
+def test_a_feature_by_its_short_id_is_refused_and_by_its_name_is_read() -> None:
+    """ISS 2250: short id 37 is Core v32.1's `feature`, which btclib refuses.
+
+    `callbacks.feature`'s docstring says what the node does with the
+    refused one until a btclib release carries the id
+    (btclib-org/btclib-node#2302).
+    """
+    rng = random.Random(0)
+    tester = Peer(rng, initiator=True)
+    tester.send_key()
+    tester.send_garbage()
+    assert tester.interact() == []
+    tester.receive_key()
+    tester.send_garbage_term()
+    tester.send_version()
+    assert tester.interact() == []
+    payload = b"\x04BIP9\x00"
+    tester.send_message(37, payload)
+    tester.send_message("feature", payload)
+    assert tester.interact() == [
+        None,
+        message("feature", payload, 1 + 12 + len(payload) + EXPANSION),
+    ]
+
+
 @pytest.mark.parametrize("seed", range(12))
 def test_unusual_but_valid_scenarios(seed: int) -> None:
     """The garbage at its bounds, decoys, a version packet with contents."""
