@@ -543,11 +543,12 @@ def test_a_trickle_sends_the_whole_queue_best_paying_first() -> None:
     manager = make_manager([other])
     txs = [paying(manager, fee=1000 + n) for n in range(5000)]
     other.tx_announce_queue = dict.fromkeys([tx.hash for tx in txs])
+    before = time.time()
     manager._send_due_announcements()
     (inv,) = only(other, Inv)
     assert hashes_of(inv) == [tx.hash for tx in reversed(txs)]
     assert other.tx_announce_queue == {}
-    assert other.next_inv_send_time > time.time()
+    assert other.next_inv_send_time > before
 
 
 def test_a_trickle_longer_than_an_inv_is_split_at_max_inv_sz(
@@ -823,11 +824,12 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule(
     manager = make_manager([other])
     hold(manager, a_hash(1), a_hash(2))
     manager.received_txs = [(2, a_hash(1))]
+    before = time.time()
     manager.tx_download()
     (first,) = only(other, Inv)
     assert hashes_of(first) == [a_hash(1)]
     # a schedule was set
-    assert other.next_inv_send_time > time.time()
+    assert other.next_inv_send_time > before
 
     manager.received_txs = [(2, a_hash(2))]
     manager.tx_download()
