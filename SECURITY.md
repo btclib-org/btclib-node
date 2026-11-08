@@ -171,6 +171,13 @@ each of these whole, at bitcoin/bitcoin@db0bde16b9: the descriptor at
 `ReadSettings` (`src/common/settings.cpp:101`). A refusal reaches stderr,
 logs and the RPC caller.
 
+Core does not read `rawpkh()`, `rawnode()` or `rawleaf()`. At top level
+and in `tr()`, its `scantxoutset` refusal of one quotes the expression
+whole, a private key in it included (`ParseScript` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). This node's refusal quotes none of its arguments, as in
+`'rawnode(...)' is not a valid descriptor function`.
+
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
 `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7). This node masks some

@@ -20,6 +20,7 @@ thread, and the scan's state needs no lock.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
@@ -70,6 +71,20 @@ _DEFAULT_RANGE_END = 1000
 _MAX_RANGE_SIZE = 1_000_000
 
 _INT64 = range(-(2**63), 2**63)
+
+# `ParseScriptContext`: where in a descriptor an expression stands
+_TOP, _P2SH, _P2WSH, _P2TR = "TOP", "P2SH", "P2WSH", "P2TR"
+
+# A function of the draft BIP of bitcoin/bips#1721 where a miniscript
+# fragment can begin: first, or after `(`, `,` or a wrapper's `:`
+_DRAFT_FUNCTION = re.compile(r"(?:^|[(,:])(?P<name>raw(?:pkh|node|leaf))\(")
+
+# what `ParseScript` refuses an expression with in `sh()` and in `wsh()`,
+# where neither a function nor a miniscript reads it
+_NEEDED = {
+    _P2SH: "A function is needed within P2SH",
+    _P2WSH: "A function is needed within P2WSH",
+}
 
 
 @dataclass
@@ -135,20 +150,86 @@ def _range(value: object) -> tuple[int, int]:
     return low, high
 
 
+def _expr(text: str) -> tuple[str, str]:
+    """Return `text`'s first expression and what follows it: Core's `Expr`."""
+    level = 0
+    for at, char in enumerate(text):
+        if char in "({":
+            level += 1
+        elif level and char in ")}":
+            level -= 1
+        elif not level and char in "),}":
+            return text[:at], text[at:]
+    return text, ""
+
+
+def _core_refusal(expr: str, ctx: str) -> str | None:
+    """Return the message for what Core refuses in `expr`, else None.
+
+    `expr` is a descriptor bip32_descriptors has read, or an expression
+    inside one. bip32_descriptors follows the draft BIP of bitcoin/bips#1721
+    and reads `raw()` inside `sh()`, `wsh()` and `tr()`, and `rawpkh()`,
+    `rawnode()` and `rawleaf()`. `ParseScript` in
+    `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag, reads none of them. It refuses the first it meets, with a message
+    that depends on where it stands: this walks `expr` as it does.
+
+    Where Core quotes the expression, which may hold a key, this names the
+    function and writes its arguments as `...` (SECURITY.md, "Where this
+    node departs from Bitcoin Core").
+    """
+    name, _, args = expr[:-1].partition("(")
+    if name == "sh":
+        return _core_refusal(args, _P2SH)
+    if name == "wsh":
+        return _core_refusal(args, _P2WSH)
+    if name == "tr":
+        return _tree_refusal(args)
+    if name == "raw":
+        return None if ctx == _TOP else "Can only have raw() at top level"
+    if (draft := _DRAFT_FUNCTION.search(expr)) is None:
+        return None
+    # neither a function `ParseScript` knows nor a miniscript
+    return _NEEDED.get(
+        ctx, f"'{draft['name']}(...)' is not a valid descriptor function"
+    )
+
+
+def _tree_refusal(args: str) -> str | None:
+    """Return the message for the first leaf of a `tr()` Core refuses."""
+    # the internal key, then the tree's leaves, each in braces or not
+    _, tree = _expr(args)
+    while tree:
+        leaf, rest = _expr(tree.lstrip(",{"))
+        if refusal := _core_refusal(leaf, _P2TR):
+            return refusal
+        rest = rest.lstrip("}")
+        # a `)` at level 0, which no tree bip32_descriptors reads holds
+        if rest == tree:
+            return None
+        tree = rest
+    return None
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
     Core's `Parse`. Its message names what it found wrong and is
-    bip32_descriptors' here, which words it differently.
+    bip32_descriptors' here, which words it differently, except for what
+    `_core_refusal` refuses, whose message is Core's, shortened where Core
+    quotes the expression.
     """
     prv_keys: dict[str, str] = {}
     try:
+        stripped = strip_checksum(text)
         sources = [
             _Source(parse_descriptor(one, node.chain.name, prv_keys), prv_keys)
-            for one in multipath_descriptors(strip_checksum(text))
+            for one in multipath_descriptors(stripped)
         ]
     except BTClibException as err:
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, str(err)) from err
+    if refusal := _core_refusal(stripped, _TOP):
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)
     return sources
 
 
@@ -207,7 +288,7 @@ def scan_tx_out_set(
     its range. Core infers every script before the walk; here only a
     script a coin has is inferred, which answers the same.
 
-    A descriptor parse error has Core's code and bip32_descriptors' message.
+    A descriptor parse error has Core's code; `_parse` says whose message.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["scantxoutset"])

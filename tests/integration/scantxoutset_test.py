@@ -7,8 +7,7 @@
 bitcoind mines a coinbase to each script under test and the node syncs
 from it, so both hold one UTXO set. A scan of it is held to bitcoind's own
 answer for the same call, key for key, `desc` included. A refusal is held
-to its code, and to its message where it is not the descriptor parser's,
-which words what it finds wrong in its own way.
+to its code, and to its message where `_REFUSED` says so.
 """
 
 from typing import TYPE_CHECKING, Any, cast
@@ -57,6 +56,8 @@ _XPUB = (
     "upje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
 )
 _ADDRESS = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+_H160 = "ab" * 20
+_H256 = "cd" * 32
 
 # btclib-wallet's review cases: a multisig whose key at one index is the
 # other's at the next, so its origin is the first index's, and a leaf at
@@ -136,7 +137,8 @@ _INFERRED: list[list[Any]] = [
 ]
 
 # a request each side refuses with the same code; the message too where the
-# descriptor parser has no say
+# descriptor parser, which words what it finds wrong in its own way, has no
+# say, or where `utxo_set._parse` gives Core's
 _REFUSED: list[tuple[list[Any], bool]] = [
     ([], True),
     ([None], True),
@@ -169,6 +171,17 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", ["raw(zz)"]], False),
     (["start", [f"pkh({_TPUB}/<0;1>/<2;3>)"]], False),
     (["start", [f"pkh({_XPUB}/0/*)"]], False),
+    (["start", ["sh(raw(51))"]], True),
+    (["start", ["wsh(raw(51))"]], True),
+    (["start", ["sh(wsh(raw(51)))"]], True),
+    (["start", [f"rawpkh({_H160})"]], False),
+    (["start", [f"sh(rawpkh({_H160}))"]], True),
+    (["start", [f"wsh(and_v(v:rawpkh({_H160}),pk({_K})))"]], True),
+    (["start", [f"tr({_X},rawpkh({_H160}))"]], False),
+    (["start", [f"tr({_X},rawnode({_H256}))"]], False),
+    (["start", [f"tr({_X},rawleaf(51,c0))"]], False),
+    (["start", [f"tr({_X},raw(51))"]], True),
+    (["start", [f"tr({_X},{{pk({_X2}),{{rawnode({_H256}),raw(51)}}}})"]], False),
 ]
 
 
@@ -248,10 +261,10 @@ def test_status_and_abort_answer_as_bitcoind_does(both: tuple[Bitcoind, Node]) -
 
 
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
-    """Each refusal has bitcoind's code, and its message but a parser's.
+    """Each refusal has bitcoind's code, and its message where `_REFUSED` says.
 
-    The one departure is that the "without private keys" refusal does not
-    quote the descriptor.
+    The "without private keys" refusal is held to bitcoind's message without
+    its quote of the descriptor.
     """
     bitcoind, node = both
     client = rpc_client(node)

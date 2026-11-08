@@ -16,7 +16,14 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from bip32_descriptors.descriptors import Provider, multipath_descriptors, parse
+from bip32_descriptors.descriptors import (
+    Provider,
+    add_checksum,
+    multipath_descriptors,
+    parse,
+    strip_checksum,
+)
+from btclib.exceptions import BTClibException
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
 
@@ -27,6 +34,7 @@ from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.mining import generate_block
 from btclib_node.rpc.utxo_set import scan_tx_out_set
 from tests import finish
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -575,6 +583,131 @@ def test_the_refusals_are_core_s(
     got_code, got_message = refusal(node, *params)
     assert got_code == code
     assert message in got_message
+
+
+H160 = "ab" * 20
+H256 = "cd" * 32
+NOT_A_FUNCTION = "'{}(...)' is not a valid descriptor function"
+
+# What bip32_descriptors reads, after the draft BIP of bitcoin/bips#1721,
+# and the message `bitcoind` refuses it with. Where `bitcoind` quotes the
+# expression, the node names the function and writes `...` (SECURITY.md).
+DRAFT_REFUSALS = [
+    ("sh(raw(51))", "Can only have raw() at top level"),
+    ("wsh(raw(51))", "Can only have raw() at top level"),
+    ("sh(wsh(raw(AB)))", "Can only have raw() at top level"),
+    (f"tr({X_ONLY},raw(51))", "Can only have raw() at top level"),
+    (f"tr({X_ONLY},{{pk({X_ONLY2}),raw(AB)}})", "Can only have raw() at top level"),
+    (f"tr(musig({KEY},{KEY2}),raw(51))", "Can only have raw() at top level"),
+    (f"rawpkh({H160})", NOT_A_FUNCTION.format("rawpkh")),
+    (f"sh(rawpkh({H160}))", "A function is needed within P2SH"),
+    (f"wsh(rawpkh({H160}))", "A function is needed within P2WSH"),
+    (
+        f"sh(wsh(and_v(v:rawpkh({H160}),pk({KEY}))))",
+        "A function is needed within P2WSH",
+    ),
+    (f"tr({X_ONLY},rawpkh({H160}))", NOT_A_FUNCTION.format("rawpkh")),
+    (
+        f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({X_ONLY2})))",
+        NOT_A_FUNCTION.format("rawpkh"),
+    ),
+    (f"tr({X_ONLY},rawnode({H256}))", NOT_A_FUNCTION.format("rawnode")),
+    (
+        f"tr({X_ONLY},{{rawnode({H256.upper()}),pk({X_ONLY2})}})",
+        NOT_A_FUNCTION.format("rawnode"),
+    ),
+    (f"tr({X_ONLY},rawleaf(51,c0))", NOT_A_FUNCTION.format("rawleaf")),
+    (f"tr({X_ONLY},rawleaf(51))", NOT_A_FUNCTION.format("rawleaf")),
+    (
+        f"tr({X_ONLY},{{pk({X_ONLY2}),{{pk({X_ONLY}),rawleaf(AB,C0)}}}})",
+        NOT_A_FUNCTION.format("rawleaf"),
+    ),
+    (
+        f"tr({X_ONLY},{{pk({TPUB}/<0;1>/*),rawleaf(51,c0)}})",
+        NOT_A_FUNCTION.format("rawleaf"),
+    ),
+    (add_checksum(f"tr({X_ONLY},raw(51))"), "Can only have raw() at top level"),
+    # the first of two, as Core walks the tree
+    (
+        f"tr({X_ONLY},{{rawnode({H256}),raw(51)}})",
+        NOT_A_FUNCTION.format("rawnode"),
+    ),
+    (
+        f"tr({X_ONLY},{{raw(51),rawnode({H256})}})",
+        "Can only have raw() at top level",
+    ),
+]
+
+# What both read: raw() at top level, and trees and scripts of known leaves
+DRAFT_CONTROLS = [
+    "raw(51)",
+    "raw(AB)",
+    f"tr({X_ONLY},pk({X_ONLY2}))",
+    f"tr({X_ONLY},{{pk({X_ONLY2}),{{pk({X_ONLY}),pk({X_ONLY2})}}}})",
+    f"tr({X_ONLY},and_v(v:pk({X_ONLY2}),after(10)))",
+    f"tr(musig({KEY},{KEY2}),pk({X_ONLY2}))",
+    f"wsh(and_v(v:pk({KEY}),older(10)))",
+    f"sh(wsh(pkh({KEY})))",
+]
+
+
+@pytest.mark.parametrize(("text", "message"), DRAFT_REFUSALS)
+def test_what_core_does_not_read_is_refused_with_its_message(
+    node: Node, text: str, message: str
+) -> None:
+    """bip32_descriptors reads the draft's forms, and Core's refusal stands."""
+    for one in multipath_descriptors(strip_checksum(text)):
+        parse(one, "regtest")
+    assert refusal(node, "start", [text]) == (-5, message)
+
+
+@pytest.mark.parametrize("text", DRAFT_CONTROLS)
+def test_what_both_read_is_scanned(node: Node, text: str) -> None:
+    """raw() at top level, and a tree of known leaves, are not refused."""
+    assert scan(node, text)["success"] is True
+
+
+# a fixed random value, where a key may be put by mistake
+LEAK = "92e07cd20dd29f3b6e3e2db783825a195e913e105c098d44b4dd7c67e200ac1c"
+
+
+# Each with the function `_core_refusal` names, or None where
+# bip32_descriptors refuses it first, with a message of its own
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        (f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({TPRV})))", "rawpkh"),
+        (f"tr({X_ONLY},rawnode({LEAK}))", "rawnode"),
+        (f"tr({X_ONLY},rawleaf({LEAK},c0))", "rawleaf"),
+        (f"rawpkh({LEAK[:40]})", "rawpkh"),
+        (f"rawnode({LEAK})", None),
+        (f"rawleaf({LEAK},c0)", None),
+    ],
+)
+def test_a_refusal_quotes_no_key(node: Node, text: str, name: str | None) -> None:
+    """What `bitcoind` quotes may hold a key, which the refusal leaves out."""
+    if name is None:
+        with pytest.raises(BTClibException):
+            parse(text, "regtest", {})
+    else:
+        parse(text, "regtest", {})
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert_secret_free(caught.value, [TPRV, LEAK])
+    if name is not None:
+        assert (int(caught.value.code), caught.value.message) == (
+            -5,
+            NOT_A_FUNCTION.format(name),
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [f"{X_ONLY},)", f"{X_ONLY},pk({X_ONLY2}))", f"{X_ONLY},{{pk({X_ONLY2})}})"],
+)
+def test_a_tree_walk_stops_at_a_parenthesis_it_cannot_pass(args: str) -> None:
+    """A `)` at level 0 ends the walk, which would otherwise not progress."""
+    assert utxo_set._tree_refusal(args) is None
 
 
 def test_a_null_range_is_absent_and_scan_objects_are_read_in_order(node: Node) -> None:
