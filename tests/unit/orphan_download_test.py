@@ -359,6 +359,19 @@ def test_an_accepted_transaction_is_forgotten_and_wakes_its_children() -> None:
     assert not manager.orphanage.have_tx(parent.hash)
 
 
+def test_a_confirmed_transaction_wakes_its_children() -> None:
+    """ISS 2160: Core's `BlockConnected` marks the orphans of each one."""
+    manager = make_manager([a_conn(1), a_conn(2)])
+    first, second = an_orphan(outputs=2), an_orphan()
+    first_child, second_child = a_child(first, 1), a_child(second)
+    manager.orphanage.add_tx(first_child, 1)
+    manager.orphanage.add_tx(second_child, 2)
+    manager.confirm_block(cast("Block", SimpleNamespace(transactions=[first, second])))
+    assert sorted(manager.orphanage.peers_to_reconsider()) == [1, 2]
+    assert manager.orphanage.get_tx_to_reconsider(1) == first_child
+    assert manager.orphanage.get_tx_to_reconsider(2) == second_child
+
+
 def test_an_announcement_of_an_orphan_asks_the_announcer_for_its_parents() -> None:
     """The announcer is asked for the parents, not for the orphan."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)

@@ -1653,18 +1653,20 @@ class DownloadManager:
     def confirm_block(self, block: Block) -> None:
         """Do what Core's `TxDownloadManagerImpl::BlockConnected` does.
 
-        The orphans the block includes or conflicts with are erased. Each
-        transaction is recorded as confirmed, by txid and, where it carries
-        a witness, by wtxid, and its announcements by either hash are
-        forgotten, so that no peer is asked for it
-        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag). `main` calls this for a block connected out of
-        initial block download, as Core's `PeerManagerImpl` does, and
-        `recent_confirmed.reset()` for any block disconnected, as Core's
-        `BlockDisconnected` does.
+        The orphans the block includes or conflicts with are erased. The
+        orphans that spend a transaction of the block are to be reconsidered,
+        as for one the mempool accepts. Each transaction is recorded as
+        confirmed, by txid and, where it carries a witness, by wtxid, and its
+        announcements by either hash are forgotten, so that no peer is asked
+        for it (`src/node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). `main` calls this for a
+        block connected out of initial block download, as Core's
+        `PeerManagerImpl` does, and `recent_confirmed.reset()` for any block
+        disconnected, as Core's `BlockDisconnected` does.
         """
         self.orphanage.erase_for_block(block)
         for tx in block.transactions:
+            self.orphanage.add_children_to_work_set(tx)
             self.recent_confirmed.add(tx.id)
             if tx.hash != tx.id:
                 self.recent_confirmed.add(tx.hash)
