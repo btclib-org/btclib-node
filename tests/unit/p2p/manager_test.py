@@ -1020,10 +1020,14 @@ def stamp_under_a_set_back_clock(conn: Any, stamp: str) -> None:
     """
     clock_module.set_mock_time(int(time.time()) - 60 * 24 * 3600)
     setattr(conn, stamp, clock_module.now())
-    if stamp == "pause_send_since":
-        conn.pause_send = True
-    if stamp == "ping_sent":
-        conn.ping_start = conn.ping_sent
+    match stamp:
+        case "pause_send_since":
+            conn.pause_send = True
+        case "ping_sent":
+            conn.ping_start = conn.ping_sent
+        case _:
+            # `last_receive` and `last_send` need nothing more
+            pass
     clock_module.set_mock_time(0)
 
 
