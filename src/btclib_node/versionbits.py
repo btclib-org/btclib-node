@@ -6,11 +6,12 @@
 
 `UnknownActivations` is `VersionBitsCache::CheckUnknownActivations` with
 its `WarningBitsConditionChecker` (`src/versionbits.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a BIP9 state machine per
-version bit, counting over each period the blocks that signal a bit
-no deployment in `_DEPLOYMENTS` uses, a bit being unknown from
-`Chain.min_bip9_warning_height` on. It reaches `LOCKED_IN` and then
-`ACTIVE` as any deployment does, with the same threshold and period.
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
+ISS 2278): a BIP9 state machine per version bit, counting over each
+period the blocks that signal a bit no deployment in `_DEPLOYMENTS`
+uses, a bit being unknown from `Chain.min_bip9_warning_height` on. It
+reaches `LOCKED_IN` and then `ACTIVE` as any deployment does, with the
+same threshold and period.
 
 `check_unknown_activations` is what `main._after_tip_change` calls out
 of initial block download, where `Chainstate::UpdateTip`
@@ -313,12 +314,12 @@ def check_unknown_activations(node: Node, blocks: int) -> None:
     """Warn of each unknown bit after each of the last `blocks` blocks.
 
     `Chainstate::UpdateTip`'s own loop (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), run for each block a
-    commit connected, as `ConnectTip` does. A bit that is `ACTIVE` sets
-    the warning, `node.warnings.set_warning`'s dedup running
-    `-alertnotify` once, as `KernelNotifications::warningSet` does. One
-    that is `LOCKED_IN` goes to the log at info level, where Core puts it
-    in `UpdateTip`'s own line, which this node does not write.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
+    ISS 2278), run for each block a commit connected, as `ConnectTip` does.
+    A bit that is `ACTIVE` sets the warning, `node.warnings.set_warning`'s
+    dedup running `-alertnotify` once, as `KernelNotifications::warningSet`
+    does. One that is `LOCKED_IN` goes to the log at info level, where Core
+    puts it in `UpdateTip`'s own line, which this node does not write.
     """
     block_index = node.chainstate.block_index
     tip = len(block_index.active_chain) - 1

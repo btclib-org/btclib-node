@@ -55,7 +55,7 @@ __all__ = [
 ]
 
 # Core's own `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/policy/policy.h:118-131`,
-# at bitcoin/bitcoin@4519933391): what a transaction has to satisfy to be
+# at bitcoin/bitcoin@f0de87f040): what a transaction has to satisfy to be
 # relayed and held, over what it has to satisfy to be mined.
 # `btclib.script.engine.flags.ALL_FLAGS` is the consensus set and is
 # Core's `MANDATORY_SCRIPT_VERIFY_FLAGS` member for member, so the union
@@ -73,7 +73,7 @@ __all__ = [
 # `MINIMALIF_ALL`, which btclib carries from 2026.10.30, is left out as
 # well. It is not Core's: it applies MINIMALIF to every script, for
 # BIP322, where Core's `SCRIPT_VERIFY_MINIMALIF` reaches witness v0 alone
-# (`src/script/interpreter.cpp:631-637`, at bitcoin/bitcoin@4519933391).
+# (`src/script/interpreter.cpp:631-637`, at bitcoin/bitcoin@f0de87f040).
 # In this set it would refuse to relay a P2SH spend that Core relays.
 #
 # `CONST_SCRIPTCODE` is in, and btclib reads it more widely than Core:
@@ -157,7 +157,7 @@ def _tasks(
     `std::vector<PrecomputedTransactionData> txsdata(block.vtx.size())`
     across the threads its `CCheckQueue` runs them on (`validation.cpp`'s
     `ConnectBlock` and `validation.h`'s `CScriptCheck::txdata`,
-    at bitcoin/bitcoin@794a753958). Under `_pool_factory`'s process arm
+    at bitcoin/bitcoin@f0de87f040). Under `_pool_factory`'s process arm
     nothing here can be shared by pointer the way Core's threads share
     `txdata`: what a thread reads through it a process has to receive as
     its own pickled copy, one per task. That copy is a handful of
@@ -259,7 +259,7 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
 
     `STANDARD_FLAGS` and not `get_flags`, which is Core's
     `PolicyScriptChecks` (`src/validation.cpp:1129-1150`,
-    at bitcoin/bitcoin@4519933391): a candidate is judged against relay
+    at bitcoin/bitcoin@f0de87f040): a candidate is judged against relay
     policy, and the consensus set alone admits to this node's mempool a
     transaction Core will not relay. Nothing here reads the chain, so
     this takes neither a height nor a `Node`.
@@ -286,7 +286,7 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
 
     Both are in the shape of Core's `CheckInputScripts` refusal under
     `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the reason
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the reason
     "mempool-script-verify-flag-failed (...)" and the details naming the
     input, its transaction and the outpoint it spends. Inside the
     parentheses is `ScriptErrorString`, which btclib's `ScriptError.code`

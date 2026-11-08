@@ -17,7 +17,7 @@ nonce. `_headers` puts the previous hash back, so a record is read only
 as the continuation of the one before. Both files are `xz`.
 
 - `mainnet_headers_1_32300.xz` is `getblockheader <hash> false` of the
-  heights 1 to 32,300, read from a Bitcoin Core v31.1.0 node on mainnet.
+  heights 1 to 32,300, read from a Bitcoin Core node on mainnet.
   Height 32,256 is the first retarget that changes the target, and 32,300
   is far enough past it to carry the new one on. The stretch starts at
   the genesis because an index grows from nothing else.
@@ -28,9 +28,8 @@ as the continuation of the one before. Both files are `xz`.
   after its parent, in a period of target `1c03fffc`; height 8,064 is the
   next retarget, which scales that period's first target.
 
-The expected hashes, bits and chain work are Core's `getblockheader`
-answers. Mainnet's are the node's own. Testnet4's are those of a second
-Core v31.1.0 on testnet4 with no peer, which took the headers by
+The expected hashes, bits and chain work are the `getblockheader` answers
+of a `bitcoind` with no peer on each chain, which took the headers by
 `submitheader` and accepted all of them. Bitcoin Core's `chainparams.cpp`
 holds no checkpoint to compare a hash with: the chain is authenticated by
 being one chain from the genesis, each header meeting its target.
@@ -39,8 +38,10 @@ The refused headers are real ones with other bits and a nonce found
 offline for those bits. Each meets its own target, so that only the
 context can refuse it: a nonce that did not would be refused as
 `high-hash`, and the test would not be about the rule it names. The same
-three headers are refused `bad-diffbits` by `submitheader` on the
-Core v31.1.0 nodes above, the mainnet chain loaded on a second one.
+three headers are refused `bad-diffbits` by `submitheader` on those
+nodes.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import hashlib

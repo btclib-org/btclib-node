@@ -4,7 +4,7 @@
 
 """`-assumevalid`: when `main._validate_block` skips a block's scripts.
 
-Core's `feature_assumevalid.py` (at bitcoin/bitcoin@9be056a8a7, the v31.1
+Core's `feature_assumevalid.py` (at bitcoin/bitcoin@f0de87f040, the v32.1
 tag) builds a chain whose block 102 spends a coinbase with an invalid
 signature and buries it under 2100 blocks, regtest's two weeks being 2016
 blocks of 600 seconds. Each test here offers a node that chain, or one

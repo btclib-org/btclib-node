@@ -5,7 +5,7 @@
 """The mempool's clusters and their linearizations: Core's `TxGraph`.
 
 A port of the main graph of `src/txgraph.{h,cpp}`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A cluster is a connected
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. A cluster is a connected
 component of the dependencies added: the spend graph, but for a
 re-added transaction's held children until
 `Mempool.update_transactions_from_block` links them. It is kept with a
@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 # Core's `ACCEPTABLE_COST` and `POST_CHANGE_COST` (`src/txmempool.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the work a cluster gets
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the work a cluster gets
 # before its linearization is acceptable, and the work done after a
 # change to the mempool. The units are Core's, so a cluster ends as
 # often optimal here as there; a unit takes longer in Python.

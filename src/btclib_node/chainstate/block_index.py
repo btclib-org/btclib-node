@@ -99,7 +99,7 @@ def _invert_lowest_one(n: int) -> int:
 def _skip_height(height: int) -> int:
     """Return the height a skip pointer jumps back to: Core's `GetSkipHeight`.
 
-    `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `src/chain.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     """
     if height < 2:  # noqa: PLR2004
         return 0
@@ -111,8 +111,8 @@ def _skip_height(height: int) -> int:
 def locator_entries(block_index: BlockIndex, block_hash: bytes) -> list[bytes]:
     """Return a block locator from `block_hash`: Core's `LocatorEntries`.
 
-    Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag: `block_hash` and its ancestors, one height apart for the
+    Core's is in `src/chain.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag: `block_hash` and its ancestors, one height apart for the
     first ten and twice as far apart for each one after, down to
     genesis. This is the tree's one copy of it (btclib-org/btclib-node#1530):
     `BlockIndex.locator_entries`, `BlockIndex.get_block_locator_hashes`
@@ -171,7 +171,7 @@ def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
     """Assert `header`'s own proof of work, as Core's `CheckHeadersPoW`.
 
     Core calls `Misbehaving` for a header failing it
-    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so the refusal is a `MisbehavingError`. Its reason is
     `CheckBlockHeader`'s `high-hash` (`src/validation.cpp`, same sha),
     which Core answers for every way `CheckProofOfWork` fails, an
@@ -188,7 +188,7 @@ def check_headers_pow(headers: Sequence[BlockHeader], pow_limit_bits: bytes) -> 
     """Core's `CheckHeadersPoW`: each header's proof of work, then continuity.
 
     Both are `Misbehaving` in Core (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so both refusals are a
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so both refusals are a
     `MisbehavingError`. `BlockIndex.add_headers` asks it too, of every
     batch it is given.
     """
@@ -203,7 +203,7 @@ def _assert_continuous(headers: Sequence[BlockHeader]) -> None:
     Core's `CheckHeadersAreContinuous`, which `CheckHeadersPoW` answers
     with `Misbehaving` ("non-continuous headers sequence") ahead of any
     `AcceptBlockHeader` (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the refusal is a
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so the refusal is a
     `MisbehavingError`.
     """
     for previous, header in itertools.pairwise(headers):
@@ -233,8 +233,8 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     chain at all. Last, a version BIP34, BIP66 or BIP65 made obsolete is
     refused from the height each binds at, `chain.consensus`'s
     `bip34_height`, `bip66_height` and `bip65_height`, as Core's
-    `bad-version` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). `BlockHeader.assert_valid_pow` answers the other half
+    `bad-version` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). `BlockHeader.assert_valid_pow` answers the other half
     of the proof-of-work question -- whether the hash meets the target
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
@@ -250,7 +250,7 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     `_assert_valid_pow` already does for `assert_valid_pow`'s own.
     `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
     it stays a bare `BTClibValueError` (`src/validation.cpp` and
-    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag).
 
     Each is raised with Core's reject reason as its whole message, the
@@ -465,10 +465,10 @@ class BlockIndex:
         self.pending: dict[bytes, BlockInfo] = {}
 
         # Core's own `ChainstateManager::m_best_invalid` (`src/validation.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         # `calculate_chainwork` below sets it on load to the invalid block
         # with the most chainwork, as Core's `LoadBlockIndex` scan does
-        # (`src/validation.cpp:4964-4965`, same sha). At runtime
+        # (`src/validation.cpp:4935-4936`, same sha). At runtime
         # `invalidate` weighs only the block it is handed, as Core's
         # `InvalidChainFound` does, and `reconsider` resets it. `None`
         # where nothing has been marked. `main.check_fork_warning_conditions`
@@ -476,7 +476,7 @@ class BlockIndex:
         self.best_invalid: bytes | None = None
 
         # Core's own `nSequenceId` (`src/chain.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for each block
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), for each block
         # whose data, and every ancestor's, has arrived: the tie-break
         # beneath chainwork in `_outranks`, the lower number winning. In
         # memory only, as in Core. `_load_sequence_ids` numbers the
@@ -506,8 +506,8 @@ class BlockIndex:
         store.
 
         Each record is read as Core's `BlockTreeDB::LoadBlockIndexGuts`
-        reads it (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag). It is indexed under its header's own hash, and the
+        reads it (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag). It is indexed under its header's own hash, and the
         hash in its key is not read. A header that fails
         `CheckProofOfWork` fails the load: Core logs the header, and its
         start-up ends on "Error loading block database"
@@ -576,8 +576,8 @@ class BlockIndex:
 
         Backfills `children` along the way, one entry per header visited,
         and `best_invalid` the same way Core's own `LoadBlockIndex` scan
-        does (`src/validation.cpp:4964-4965`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag): a block already marked invalid when this index
+        does (`src/validation.cpp:4935-4936`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag): a block already marked invalid when this index
         was last written beats whatever `best_invalid` already holds if
         its chainwork is greater.
         """
@@ -613,8 +613,8 @@ class BlockIndex:
     def get_ancestor(self, block_hash: bytes, height: int) -> bytes | None:
         """Return `block_hash`'s ancestor at `height`: Core's `GetAncestor`.
 
-        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag.
+        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag.
 
         The block itself at its own height, and `None` for a height
         above it or below zero, where Core answers `nullptr`. Follows
@@ -659,8 +659,8 @@ class BlockIndex:
     def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
         """Return the fork point of two blocks: Core's `LastCommonAncestor`.
 
-        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag.
+        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag.
 
         Both are brought to the lower one's height, then walked back
         through their skip pointers while those differ, and one parent
@@ -698,7 +698,7 @@ class BlockIndex:
         `SEQ_ID_BEST_CHAIN_FROM_DISK`, 0, for the active chain, and
         `SEQ_ID_INIT_FROM_DISK`, 1, for every other block whose data, and
         every ancestor's, has arrived (`src/chain.h` and `LoadChainTip`
-        in `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        in `src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag): a tie at start-up keeps the tip. A block whose data arrived
         and whose parent has no number goes to `_unlinked`, in height
         order, as `BlockManager::LoadBlockIndex` puts it in
@@ -743,11 +743,11 @@ class BlockIndex:
         sets it) becomes a candidate again once whatever displaced it is
         itself invalidated, and so that a block `leave_active_chain` took
         off the chain connects again. Core's own `InvalidateBlock`
-        (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag) re-inserts such an out-of-chain header into
+        (`src/validation.cpp:3623-3644`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag) re-inserts such an out-of-chain header into
         `setBlockIndexCandidates` only where
         `candidate->IsValid(BLOCK_VALID_TRANSACTIONS) &&
-        candidate->HaveNumChainTxs()` both hold (`:3674-3677`) -- so a
+        candidate->HaveNumChainTxs()` both hold (`:3634-3637`) -- so a
         `valid` block this index still holds the data for is offered,
         matched here by requiring `downloaded` as well as the status,
         and one a completed prune has since cleared `downloaded` on
@@ -937,7 +937,7 @@ class BlockIndex:
         """Give a block whose data arrived the next number, if it can take one.
 
         Core's `ReceivedBlockTransactions` (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where its parent has
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Where its parent has
         no number yet, the block waits in `_unlinked`. Otherwise it takes
         the next number, and so does each block that waited on it,
         breadth first and, under one parent, in the order their data
@@ -980,8 +980,8 @@ class BlockIndex:
         is rebuilt from `active_chain` only if it held one of them.
 
         Compares `block_hash` alone against `best_invalid`, as Core's own
-        `InvalidChainFound` does (`src/validation.cpp:1971-1974`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): its
+        `InvalidChainFound` does (`src/validation.cpp:1966-1969`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): its
         `SetBlockFailureFlags` marks the descendants without touching
         `m_best_invalid`. `calculate_chainwork` is the load-time path,
         which weighs every invalid block, descendants included.
@@ -1017,8 +1017,8 @@ class BlockIndex:
         """Make `block_hash` the `best_invalid` if it carries more work.
 
         Core's own comparison wherever it writes `m_best_invalid`
-        (`src/validation.cpp:1971-1973`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag): strictly greater, so a tie keeps the first.
+        (`src/validation.cpp:1966-1968`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag): strictly greater, so a tie keeps the first.
         """
         if self.best_invalid is None or (
             self.chainwork[block_hash] > self.chainwork[self.best_invalid]
@@ -1031,7 +1031,7 @@ class BlockIndex:
         """Whether `other_hash` is `target`'s own ancestor, descendant or self.
 
         Core's `ResetBlockFailureFlags` own condition
-        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag): `other_hash` is a descendant where its ancestor at
         `target`'s height is `target` itself, and an ancestor (`other_hash`
         is equal or below `target`'s own height) where `target`'s own
@@ -1050,7 +1050,7 @@ class BlockIndex:
         """Undo `invalidate`'s mark on `block_hash`'s own lineage, then rebuild.
 
         Core's own `Chainstate::ResetBlockFailureFlags` (`src/validation
-        .cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every header
+        .cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): every header
         this index holds that is `block_hash` itself, one of its
         ancestors, or one of its descendants, and that `invalidate` above
         marked, has that mark cleared -- not only `block_hash` itself,
@@ -1064,7 +1064,7 @@ class BlockIndex:
 
         `best_invalid` is reset to `None` where it names a header this
         clears, as Core's own loop resets `m_best_invalid` to `nullptr`
-        (`:3772-3775`), without looking for the next-best invalid header.
+        (`:3732-3735`), without looking for the next-best invalid header.
         """
         target_height = self.get_block_info(block_hash).index
         for other_hash, other_info in list(self.header_dict.items()):
@@ -1129,7 +1129,7 @@ class BlockIndex:
     # add_headers' own precondition stage, over the whole batch and ahead
     # of indexing any of it: each header's own proof of work, then
     # continuity -- Core's own `CheckHeadersPoW` (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which checks both
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which checks both
     # over the whole message before any header of it reaches
     # `AcceptBlockHeader` -- so a header failing either leaves nothing
     # of the batch indexed, the valid headers ahead of it included.
@@ -1158,7 +1158,7 @@ class BlockIndex:
     # each already holds -- before the next header of the batch is even
     # looked at. Core's own `AcceptBlockHeader`, called once per header
     # from `ProcessNewBlockHeaders` (`validation.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it stops at the first
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): it stops at the first
     # header failing `ContextualCheckBlockHeader` and returns, so the
     # headers already accepted ahead of it, indexed one at a time as
     # they were accepted, stay indexed. btclib-org/btclib-node#1348
@@ -1238,7 +1238,7 @@ class BlockIndex:
         `MisbehavingError` where `punish_cached_invalid`, a plain
         `BTClibValueError` otherwise. The reason is Core's word alone,
         the hash going to the debug line Core's `AcceptBlockHeader` logs
-        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag).
         """
         header_hash = header.hash
@@ -1379,7 +1379,7 @@ class BlockIndex:
         """Answer whether `block_hash` sorts above `other`.
 
         Core's `CBlockIndexWorkComparator` (`node/blockstorage.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). More chainwork wins.
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). More chainwork wins.
         At equal chainwork the lower `sequence_id` wins, and a block
         without one, its data or an ancestor's still missing, loses.
         Where both tie, neither wins: Core breaks that tie by pointer
@@ -1397,7 +1397,7 @@ class BlockIndex:
         """Treat `block_hash` as received before its rivals: `PreciousBlock`.
 
         `Chainstate::PreciousBlock` (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Nothing for a block
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Nothing for a block
         with less work than the tip, and `False`. Otherwise the block
         takes the next negative number, counting down from -1 again
         wherever the tip gained work since the last call,

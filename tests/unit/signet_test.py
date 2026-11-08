@@ -6,7 +6,7 @@
 
 `_SIGNET_BLOCKS` are the first ten real default-signet blocks, read
 verbatim from Core's own `test/functional/feature_signet.py`
-(`signet_blocks`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather
+(`signet_blocks`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) rather
 than built here: each already carries a signature the default
 challenge's signers made, which nothing in this tree could construct on
 its own, and a transcription is worth nothing next to the source it
@@ -24,7 +24,7 @@ from btclib_node.signet import (
     assert_valid_solution,
 )
 
-# signet_blocks, feature_signet.py, at bitcoin/bitcoin@9be056a8a7 (v31.1)
+# signet_blocks, feature_signet.py, at bitcoin/bitcoin@f0de87f040 (v32.1)
 _SIGNET_BLOCKS = [
     "00000020f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000f575c83235984e7dc4afc1f30944c170462e84437ab6f2d52e16878a79e4678bd1914d5fae77031eccf4070001010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025151feffffff0200f2052a010000001600149243f727dd5343293eb83174324019ec16c2630f0000000000000000776a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf94c4fecc7daa2490047304402205e423a8754336ca99dbe16509b877ef1bf98d008836c725005b3c787c41ebe46022047246e4467ad7cc7f1ad98662afcaf14c115e0095a227c7b05c5182591c23e7e01000120000000000000000000000000000000000000000000000000000000000000000000000000",
     "00000020533b53ded9bff4adc94101d32400a144c54edc5ed492a3b26c63b2d686000000b38fef50592017cfafbcab88eb3d9cf50b2c801711cad8299495d26df5e54812e7914d5fae77031ecfdd0b0001010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025251feffffff0200f2052a01000000160014fd09839740f0e0b4fc6d5e2527e4022aa9b89dfa0000000000000000776a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf94c4fecc7daa24900473044022031d64a1692cdad1fc0ced69838169fe19ae01be524d831b95fcf5ea4e6541c3c02204f9dea0801df8b4d0cd0857c62ab35c6c25cc47c930630dc7fe723531daa3e9b01000120000000000000000000000000000000000000000000000000000000000000000000000000",
@@ -59,7 +59,7 @@ def test_genesis_is_exempt_whatever_its_own_hash_claims() -> None:
     """Genesis carries no witness commitment, and is never asked for a solution.
 
     `CheckSignetBlockSolution`'s own first line (`src/signet.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a hash equal to the
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a hash equal to the
     network's own genesis is taken before anything about its coinbase
     is even looked at.
     """
@@ -226,7 +226,7 @@ def test_an_empty_push_is_rebuilt_as_its_opcode_byte_alone(
     """An empty OP_PUSHDATA1 or OP_PUSHDATA2 loses its length bytes.
 
     `FetchAndClearCommitmentSection` (`src/signet.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes `replacement <<
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) writes `replacement <<
     opcode` for a push of no data, and a bare opcode is one byte. The
     signet section after it makes the script a match, so it is rebuilt.
     """

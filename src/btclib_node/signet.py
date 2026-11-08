@@ -5,7 +5,7 @@
 """BIP325: whether a signet block carries a valid solution for its challenge.
 
 Core's `CheckSignetBlockSolution` (`src/signet.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the coinbase's last BIP141
+bitcoin/bitcoin@f0de87f040, the v32.1 tag): the coinbase's last BIP141
 witness commitment output carries, appended after the 32-byte commitment
 itself, a second push holding a 4-byte header and a solution -- a
 scriptSig and a witness stack. Stripping that second push back to the
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 __all__ = ["SIGNET_CHALLENGE", "assert_valid_solution"]
 
 # SigNetParams's own default (`src/kernel/chainparams.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the only signet
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the only signet
 # `chains.SigNet` runs, its own docstring says why, so this is the one
 # challenge this whole module ever checks a solution against.
 SIGNET_CHALLENGE = bytes.fromhex(
@@ -79,7 +79,7 @@ def _witness_commitment_output_index(coinbase: Tx) -> int | None:
     """Return the coinbase output BIP141's witness commitment sits at, or None.
 
     Core's `GetWitnessCommitmentIndex` (`src/consensus/validation.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the *last* output whose
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the *last* output whose
     script starts with `_COMMITMENT_PREFIX` and is at least
     `_COMMITMENT_LENGTH` long, not the first -- an output appended after
     the miner's own could not be told from one it meant otherwise.

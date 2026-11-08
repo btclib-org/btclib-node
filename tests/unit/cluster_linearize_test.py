@@ -9,7 +9,7 @@ The vectors are Bitcoin Core's own, read from the vendored
 each serialized cluster with its optimal linearization, and each
 cluster with its serialization. The serialization is Core's test-only
 `DepGraphFormatter` (`src/test/util/cluster_linearize.h`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it is ported here and not
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), so it is ported here and not
 in the module.
 
 The properties are Core's fuzz targets in `src/test/fuzz/` at the same
@@ -50,7 +50,7 @@ _DATA = Path(__file__).parent / "_data"
 _CORE_TESTS = _DATA / "cluster_linearize_tests.cpp"
 
 # Core's `MaxOptimalLinearizationCost` (`src/test/util/cluster_linearize.h`,
-# at bitcoin/bitcoin@9be056a8a7): the highest cost seen for an optimal
+# at bitcoin/bitcoin@f0de87f040): the highest cost seen for an optimal
 # result per cluster size, which Core's tests allow twice of
 _COSTS = (
     0,
@@ -623,7 +623,7 @@ _CORE_RUNS = _core_runs()
 
 @pytest.mark.parametrize(("case", "answer"), _CORE_RUNS, ids=range(len(_CORE_RUNS)))
 def test_core_s_own_runs(case: str, answer: str) -> None:
-    """Core v31.1's `Linearize` and `PostLinearize`, run on the same input.
+    """Core's `Linearize` and `PostLinearize`, run on the same input.
 
     The order, `optimal` and cost of a run, then the order `PostLinearize`
     makes of a topological one. `tests/_data/README.md` says how they were
@@ -648,7 +648,7 @@ def test_core_s_own_runs(case: str, answer: str) -> None:
 def test_insecure_random_context() -> None:
     """Core's `xoroshiro128plusplus_reference_values`: two seeds' outputs.
 
-    `src/test/random_tests.cpp`, at bitcoin/bitcoin@9be056a8a7.
+    `src/test/random_tests.cpp`, at bitcoin/bitcoin@f0de87f040.
     """
     rng = InsecureRandomContext(0)
     assert [rng.rand64() for _ in range(4)] == [

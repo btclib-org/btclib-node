@@ -5,12 +5,12 @@
 """`FeeEstimator`, Core's `CBlockPolicyEstimator`.
 
 A port of `src/policy/fees/block_policy_estimator.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A transaction entering the
-mempool is put in a feerate bucket; each connected block records how
-many blocks the transactions it confirms took, in three moving averages
-of different half-lives; `estimate_smart_fee` and `estimate_raw_fee`
-read them back. `write` and `read` are Core's
-`fees/block_policy_estimates.dat`, byte for byte.
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
+ISS 2276. A transaction entering the mempool is put in a feerate bucket;
+each connected block records how many blocks the transactions it
+confirms took, in three moving averages of different half-lives;
+`estimate_smart_fee` and `estimate_raw_fee` read them back. `write` and
+`read` are Core's `fees/block_policy_estimates.dat`, byte for byte.
 
 These follow v32.1 instead, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag: the file's path, with `migrate_legacy_file` moving the

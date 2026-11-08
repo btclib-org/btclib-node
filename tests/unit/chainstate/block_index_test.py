@@ -180,7 +180,7 @@ def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
 
     Core's `CheckHeadersPoW` checks every header's own proof of work
     before any of the batch reaches `AcceptBlockHeader`
-    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag), so a header failing it leaves the valid prefix ahead of it
     unindexed too -- unlike a header failing only its contextual check,
     `test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed`
@@ -209,7 +209,7 @@ def test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed(
     header and returns at the first one failing
     `ContextualCheckBlockHeader`, so the headers already accepted ahead
     of it stay indexed (`validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- unlike a header
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- unlike a header
     failing its own proof of work, the previous test above.
     btclib-org/btclib-node#1348
     """
@@ -366,18 +366,19 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
 
     Core's `time-timewarp-attack` is `BLOCK_INVALID_HEADER`, punished by
     `MaybePunishNodeForBlock` exactly as `bad-diffbits` is
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), but btclib's own `assert_not_timewarp` raises a bare
-    `BTClibValueError` for it, having no `MisbehavingError` of its own
-    to raise -- this tree's exception, not btclib's. Before this,
-    `_assert_valid_in_context` let that bare exception through
-    unconverted, which `p2p.main.handle_p2p`'s own `isinstance(e,
-    MisbehavingError)` check would not have discouraged the peer for,
-    never exercised until a chain with `enforce_bip94=True` existed to
-    call it with. Only `testnet4` sets that flag among the chains this
-    package defines, and its real difficulty period is 2016 blocks,
-    too slow to mine in a unit test -- `_RegTestWithBip94` above is a
-    synthetic chain built to reach the same branch without it.
+    (`src/validation.cpp` and `src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), but btclib's own
+    `assert_not_timewarp` raises a bare `BTClibValueError` for it,
+    having no `MisbehavingError` of its own to raise -- this tree's
+    exception, not btclib's. Before this, `_assert_valid_in_context` let
+    that bare exception through unconverted, which
+    `p2p.main.handle_p2p`'s own `isinstance(e, MisbehavingError)` check
+    would not have discouraged the peer for, never exercised until a
+    chain with `enforce_bip94=True` existed to call it with. Only
+    `testnet4` sets that flag among the chains this package defines, and
+    its real difficulty period is 2016 blocks, too slow to mine in a
+    unit test -- `_RegTestWithBip94` above is a synthetic chain built to
+    reach the same branch without it.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -742,8 +743,8 @@ def test_generate_block_candidates_admits_a_valid_block_only_if_downloaded(
 ) -> None:
     """A `valid` block still `downloaded` is a candidate; a pruned one isn't.
 
-    Core's own `InvalidateBlock` (`src/validation.cpp:3674-3677`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) gates the identical
+    Core's own `InvalidateBlock` (`src/validation.cpp:3634-3637`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates the identical
     reinsertion of an out-of-chain, equal-or-more-work header on
     `candidate->HaveNumChainTxs()`; `generate_block_candidates`'s own
     docstring argues matching it here with `downloaded`, over
@@ -1006,7 +1007,7 @@ def test_invalidate_sets_best_invalid_to_the_first_invalidated_block(
     """ISS 1522: `best_invalid` is `invalidate`'s own hash, once marked.
 
     Core's own `m_best_invalid` (`ChainstateManager`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the invalid block with
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the invalid block with
     the most chainwork this index has ever indexed.
 
     No precondition check on `best_invalid` before `invalidate` runs, on
@@ -1061,7 +1062,7 @@ def test_best_invalid_survives_a_restart(
 ) -> None:
     """`calculate_chainwork`'s own load-time scan rebuilds `best_invalid`.
 
-    Core's own `LoadBlockIndex` scan (`src/validation.cpp:4964-4965`,
+    Core's own `LoadBlockIndex` scan (`src/validation.cpp:4935-4936`,
     same tag as the sibling test above): a block already marked invalid
     when this index was last written is found again on the next load,
     not only by a fresh call to `invalidate`.
@@ -1400,7 +1401,7 @@ def test_block_locators(
     """The locator pins the exact heights Core's `LocatorEntries` visits.
 
     `heights` is worked out by hand from `LocatorEntries` (`src/chain.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the tip and the eleven
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the tip and the eleven
     headers below it dense, every entry after the twelfth doubling the gap
     to the one before it, until the walk overshoots genesis and clamps
     there. `get_block_locator_hashes` is never consulted to derive them.
@@ -1438,7 +1439,7 @@ def test_a_locator_on_header_index_reads_it_by_height(
 def test_locator_entries_is_core_s_by_height(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """ISS 1246: Core's `LocatorEntries`, at bitcoin/bitcoin@9be056a8a7.
+    """ISS 1246: Core's `LocatorEntries`, at bitcoin/bitcoin@f0de87f040.
 
     Twelve heights one apart, the step doubling once more than ten are
     taken, down to genesis: `src/chain.cpp`'s own loop, from height 40 of
@@ -1901,7 +1902,7 @@ def test_blocks_waiting_on_one_parent_are_numbered_in_data_order(
     """Siblings waiting on their parent are numbered in the order data came.
 
     Core's `m_blocks_unlinked` keeps that order (`ReceivedBlockTransactions`,
-    `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    `src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     not the order the headers came in: `second`'s data arrived first, so
     it outranks `first` once `parent` arrives.
     """
@@ -1933,8 +1934,8 @@ def test_a_stored_block_whose_parent_has_no_data_waits_for_it(
     """On load a block without its parent's data has no number, until it comes.
 
     `BlockManager::LoadBlockIndex` puts it in `m_blocks_unlinked`
-    (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), and the parent's arrival numbers both.
+    (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), and the parent's arrival numbers both.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -1988,7 +1989,7 @@ def test_a_candidate_of_the_tips_work_is_offered_if_its_data_came_first(
     """`generate_block_candidates` breaks a tie of work by `sequence_id`.
 
     Core's `CBlockIndexWorkComparator` (`node/blockstorage.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the block numbered first
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the block numbered first
     outranks one of the same work. btclib-org/btclib-node#1579
     """
     chainstate = a_chainstate(None)
@@ -2040,7 +2041,7 @@ def test_precious_counts_down_and_restarts_once_the_tip_gains_work(
 
     Core's `nBlockReverseSequenceId`, reset wherever the tip's work
     exceeds `nLastPreciousChainwork` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A block whose data has
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A block whose data has
     not arrived keeps no number, and still uses one up.
     """
     chainstate = a_chainstate(None)

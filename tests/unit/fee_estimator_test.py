@@ -5,7 +5,10 @@
 """`btclib_node.fee_estimator`: Core's `CBlockPolicyEstimator`.
 
 `test_block_policy_estimates` is Core's `policyestimator_tests.cpp`
-(at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), ported check for check.
+(at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+until ISS 2277), ported check for check.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import hashlib
@@ -37,8 +40,8 @@ from btclib_node.mempool import Mempool
 from tests import LogLines
 from tests.unit.mempool_test import a_transaction_spending
 
-# the `fee_estimates.dat` a fresh regtest bitcoind v31.1.0 writes at its
-# first stop, 309269 bytes
+# the `fees/block_policy_estimates.dat` a fresh regtest `bitcoind`
+# writes at its first stop, 309269 bytes
 _CORE_EMPTY_FILE_SHA256 = (
     "3adca9e6d7ee02bb3088474896f4eaa52b719c8976db0a7e49bcdc7366000f2d"
 )

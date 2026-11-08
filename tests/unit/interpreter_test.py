@@ -9,6 +9,8 @@ does there is invisible both to coverage and to a test that watches the
 parent. It is called directly here, which is also the only way to say
 plainly that it raises rather than swallowing -- the property
 main.update_chain depends on to roll a block back.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from types import SimpleNamespace
@@ -682,7 +684,7 @@ _TWO_OF_TWO = b"\x52" + _push(b"\x02" * 33) * 2 + b"\x52" + _CHECKMULTISIG
 _NOPS = b"\x61"
 # (prevout script, script_sig, witness stack, output script, cost): each
 # answer is Core's `GetTransactionSigOpCost` read off its source,
-# at bitcoin/bitcoin@9be056a8a7 (btclib-org/btclib-node#1357)
+# at bitcoin/bitcoin@f0de87f040 (btclib-org/btclib-node#1357)
 _SIG_OP_COSTS = {
     "legacy, in the outputs, at four": (_P2WPKH, b"", (b"",), _CHECKSIG * 2, 4 * 2 + 1),
     "legacy, in the script_sig": (b"\x51", _CHECKSIG, (), b"\x51", 4),
@@ -787,12 +789,13 @@ def test_sig_op_cost_is_core_s(
 def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
     """The first input that fails is named, as Core's `CheckInputScripts`.
 
-    `bitcoind` v31.1 on regtest answers a bad signature
-    "mempool-script-verify-flag-failed (Signature must be zero for failed
-    CHECK(MULTI)SIG operation), input 0 of <txid> (wtxid <wtxid>),
-    spending <txid>:<n>"; the parentheses here hold `ScriptErrorString`
-    too (btclib-org/btclib-node#1328, btclib-org/btclib-node#1362). The
-    first input passes, so the one named is the second.
+    `bitcoind` on regtest answers a bad signature
+    "mempool-script-verify-flag-failed (Signature must be zero for
+    failed CHECK(MULTI)SIG operation), input 0 of <txid> (wtxid
+    <wtxid>), spending <txid>:<n>"; the parentheses here hold
+    `ScriptErrorString` too (btclib-org/btclib-node#1328,
+    btclib-org/btclib-node#1362). The first input passes, so the one
+    named is the second.
     """
     passes, fails = script.serialize(["OP_1"]), script.serialize(["OP_0"])
     prevouts = [TxOut(50 * 10**8, passes), TxOut(50 * 10**8, fails)]
@@ -808,7 +811,7 @@ def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
     with pytest.raises(TxRejectedError) as refusal:
         check_transaction(prevouts, tx)
     # `SCRIPT_ERR_EVAL_FALSE`'s string, src/script/script_error.cpp at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag
     assert refusal.value.reason == (
         "mempool-script-verify-flag-failed (Script evaluated without error "
         "but finished with a false/empty top stack element)"
@@ -822,7 +825,7 @@ def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
 def test_a_failed_signature_is_refused_as_core_s_nullfail() -> None:
     """A valid DER signature that does not verify is `SCRIPT_ERR_SIG_NULLFAIL`.
 
-    `bitcoind` v31.1 on regtest answers it "mempool-script-verify-flag-failed
+    `bitcoind` on regtest answers it "mempool-script-verify-flag-failed
     (Signature must be zero for failed CHECK(MULTI)SIG operation)"
     (btclib-org/btclib-node#1362).
     """
