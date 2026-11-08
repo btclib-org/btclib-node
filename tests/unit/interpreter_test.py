@@ -13,6 +13,7 @@ main.update_chain depends on to roll a block back.
 `bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
+import pickle
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -669,6 +670,64 @@ def test_a_spend_no_block_could_carry_is_refused_as_itself() -> None:
     with pytest.raises(BTClibValueError) as refusal:
         check_transaction(prevouts, tx)
     assert not isinstance(refusal.value, NonStandardTxError)
+
+
+def a_stripped_p2wpkh_spend() -> tuple[list[TxOut], Tx]:
+    """Return a signed p2wpkh spend with its witness taken away."""
+    prevouts, tx = a_p2wpkh_spend(1)
+    tx.vin[0].script_witness = Witness([])
+    return prevouts, tx
+
+
+def a_stripped_p2sh_p2wpkh_spend() -> tuple[list[TxOut], Tx]:
+    """Return a p2wpkh spend nested in p2sh, with no witness."""
+    redeem_script = ScriptPubKey.p2wpkh(_PUB_KEY).script
+    p2sh = b"\xa9\x14" + hash160(redeem_script) + b"\x87"
+    return _spend(p2sh, script_sig=script.serialize([redeem_script]))
+
+
+def a_stripped_upgradable_witness_program() -> tuple[list[TxOut], Tx]:
+    """Return a spend of an undefined witness version, with no witness."""
+    prevouts, tx = an_upgradable_witness_program()
+    tx.vin[0].script_witness = Witness([])
+    return prevouts, tx
+
+
+def a_p2wpkh_spend_with_a_wrong_signature() -> tuple[list[TxOut], Tx]:
+    """Return a p2wpkh spend whose witness signs another transaction."""
+    prevouts, tx = a_p2wpkh_spend(1)
+    tx.vout[0] = TxOut(tx.vout[0].value - 1, tx.vout[0].script_pub_key)
+    return prevouts, tx
+
+
+# Core's `TX_WITNESS_STRIPPED` (`PolicyScriptChecks`, `src/validation.cpp`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag): no witness, and a witness program
+# spent, bare or nested in p2sh, a version no BIP defines included
+_WITNESS_STRIPPED = (
+    ("p2wpkh", a_stripped_p2wpkh_spend, TxRejectedError, True),
+    ("p2sh-p2wpkh", a_stripped_p2sh_p2wpkh_spend, TxRejectedError, True),
+    ("v2", a_stripped_upgradable_witness_program, NonStandardTxError, True),
+    ("a witness", a_p2wpkh_spend_with_a_wrong_signature, TxRejectedError, False),
+    ("legacy", lambda: _spend(script.serialize(["OP_0"])), TxRejectedError, False),
+)
+
+
+@pytest.mark.parametrize(
+    ("build", "refusal", "stripped"),
+    [row[1:] for row in _WITNESS_STRIPPED],
+    ids=[row[0] for row in _WITNESS_STRIPPED],
+)
+def test_a_script_refusal_says_whether_the_witness_was_stripped(
+    build: Callable[[], tuple[list[TxOut], Tx]],
+    refusal: type[TxRejectedError],
+    stripped: bool,  # noqa: FBT001
+) -> None:
+    """The flag survives the pickling a worker process answers it through."""
+    prevouts, tx = build()
+    with pytest.raises(refusal) as refused:
+        check_transaction(prevouts, tx)
+    assert refused.value.witness_stripped is stripped
+    assert pickle.loads(pickle.dumps(refused.value)).witness_stripped is stripped  # noqa: S301
 
 
 def _push(data: bytes) -> bytes:

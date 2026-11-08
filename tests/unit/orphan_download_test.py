@@ -255,6 +255,45 @@ def test_a_child_of_a_refused_parent_is_refused_under_both_hashes() -> None:
     assert parent.id not in sender.known_tx_inventory
 
 
+def stripped() -> TxRejectedError:
+    """Return a script refusal of a transaction with its witness stripped."""
+    return TxRejectedError("x", witness_stripped=True)
+
+
+def test_a_witness_stripped_refusal_is_recorded_nowhere() -> None:
+    """ISS 2159: Core's `TX_WITNESS_STRIPPED` branch of `MempoolRejectedTx`.
+
+    No filter, no `extra_txns`, and the announcement stays; the orphan ends.
+    """
+    manager = make_manager([a_conn(1)])
+    tx = an_orphan()
+    manager.orphanage.add_tx(tx, 1)
+    manager.tx_requests.received_inv(1, tx.hash, preferred=True, reqtime=0)
+    assert manager.mempool_rejected_tx(tx, stripped(), 1, first_time=True) is None
+    mempool = manager.node.mempool
+    assert not mempool.was_recently_rejected(tx.hash)
+    assert not mempool.was_recently_rejected_reconsiderable(tx.hash)
+    assert not manager.extra_txns
+    assert announced(manager, 1, tx.hash) is not None
+    assert not manager.orphanage.have_tx(tx.hash)
+
+
+def test_a_child_of_a_witness_stripped_parent_is_kept_and_its_parent_asked() -> None:
+    """ISS 2159: Core's `test_orphan_rejected_parents_exceptions`.
+
+    Without a witness the parent's wtxid is its txid, so a refusal recorded
+    under it would refuse the child; the control shows it does.
+    """
+    for error, kept in ((stripped(), True), (TxRejectedError("x"), False)):
+        manager = make_manager([a_conn(1), a_conn(2)])
+        parent, child = a_parent_and_child()
+        assert parent.hash == parent.id
+        manager.mempool_rejected_tx(parent, error, 1, first_time=True)
+        manager.mempool_rejected_tx(child, MissingPrevoutError("x"), 2, first_time=True)
+        assert manager.orphanage.have_tx(child.hash) is kept
+        assert (announced(manager, 2, parent.id) is not None) is kept
+
+
 def test_a_child_of_one_reconsiderable_parent_is_kept_and_of_two_refused() -> None:
     """One parent and one child are a package; two parents are not."""
     manager = make_manager([a_conn(1)])

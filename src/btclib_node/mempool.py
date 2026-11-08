@@ -421,29 +421,25 @@ class Mempool:
     def mark_rejected(self, wtxid: bytes) -> None:
         """Record a mempool candidate's own refusal.
 
-        `p2p.callbacks` calls this for every refusal
-        `verify_mempool_acceptance`'s two halves can make except
-        `MissingPrevoutError` -- a relay-policy-only one
-        exactly as much as a genuine consensus one, since Core bounds a
-        resubmission of either the same way. `active_tip_change` forgets
-        every refusal: one can turn on the chain tip -- finality, a
-        sequence lock, coinbase maturity -- and stop holding once that
-        tip moves.
+        `DownloadManager.mempool_rejected_tx` says which refusals this
+        records -- a relay-policy-only one exactly as much as a genuine
+        consensus one, since Core bounds a resubmission of either the same
+        way.
+        `active_tip_change` forgets every refusal: one can turn on the
+        chain tip -- finality, a sequence lock, coinbase maturity -- and
+        stop holding once that tip moves.
 
         Keyed on wtxid alone, matching Core's own general case
         (`RecentRejectsFilter().insert(ptx->GetWitnessHash())`,
         `src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040,
-        the v32.1 tag), not Core's
-        narrower `TX_INPUTS_NOT_STANDARD` special case, which also
-        records the txid because that one failure is provably
-        independent of the witness -- nothing here tells a
-        witness-dependent refusal from a witness-independent one, every
-        refusal reaching this call through the same `except` clause. So
-        a sender that mutates the witness of an already-refused
-        candidate (a different trailing push, say) draws a different
-        wtxid and is verified again in full: the same gap Core's own
-        filter leaves open for the identical reason, not one specific
-        to this mempool. btclib-org/btclib-node#845
+        the v32.1 tag), not Core's narrower `TX_INPUTS_NOT_STANDARD`
+        special case, which also records the txid because that one failure
+        is provably independent of the witness -- nothing here marks a
+        refusal as independent of the witness. So a sender that mutates
+        the witness of an already-refused candidate (a different trailing
+        push, say) draws a different wtxid and is verified again in full:
+        the same gap Core's own filter leaves open for the identical
+        reason, not one specific to this mempool. btclib-org/btclib-node#845
         """
         self._recent_rejects.add(wtxid)
 

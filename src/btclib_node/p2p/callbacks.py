@@ -1265,7 +1265,7 @@ def _pre_verify(
         # transaction failure -- there is no `MaybePunishNodeForTx`, where
         # `MaybePunishNodeForBlock` exists and is called. None of these is a
         # `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage the
-        # peer either; caught here for the record in `_rejected`.
+        # peer either; caught here and handed to `_rejected`.
         # btclib-org/btclib-node#843
         _rejected(node, tx, refusal, conn, first_time=first_time)
         return None
@@ -1405,7 +1405,7 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     if candidate is None:
         return
     if isinstance(refusal, BTClibValueError):
-        # recorded and the peer kept, `_pre_verify`'s comment says why
+        # refused, and the peer kept: `_pre_verify`'s comment says why
         _rejected(node, tx, refusal, conn, first_time=check.first_time)
         return
     if refusal is not None:

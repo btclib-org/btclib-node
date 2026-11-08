@@ -19,6 +19,7 @@ pay for.
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibValueError, ScriptError
+from btclib.policy import spends_non_anchor_witness_prog
 from btclib.script.engine import (
     verify_input,
     verify_transaction,
@@ -294,6 +295,10 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     verified in turn, as Core's own loop does, to name the first that
     fails; the amounts are `main.verify_mempool_acceptance`'s to check,
     before this.
+
+    Either refusal is `witness_stripped` where `tx` carries no witness and
+    spends a witness program other than a bare pay-to-anchor, Core's
+    `TX_WITNESS_STRIPPED` (`PolicyScriptChecks`, same commit).
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
@@ -310,9 +315,14 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
                 f"input {i} of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
                 f"spending {prev_out.tx_id.hex()}:{prev_out.vout}"
             )
+            stripped = not tx.is_segwit and spends_non_anchor_witness_prog(prevouts, tx)
             if _consensus_accepts(prevouts, tx):
-                raise NonStandardTxError(reason, details) from refusal
-            raise TxRejectedError(reason, details) from refusal
+                raise NonStandardTxError(
+                    reason, details, witness_stripped=stripped
+                ) from refusal
+            raise TxRejectedError(
+                reason, details, witness_stripped=stripped
+            ) from refusal
 
 
 def check_package(
