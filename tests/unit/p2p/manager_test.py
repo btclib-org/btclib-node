@@ -879,9 +879,15 @@ def test_a_closed_connection_due_a_ping_is_not_pinged(
 
 
 # Core's `PING_INTERVAL` and `TIMEOUT_INTERVAL`, which `_keep_alive`
-# applies
+# applies, and `DEFAULT_PEER_CONNECT_TIMEOUT`, before which it drops none
 PING_INTERVAL = 120
 TIMEOUT_INTERVAL = 1200
+PEER_CONNECT_TIMEOUT = 60
+
+
+def connected_an_hour_ago() -> int:
+    """Return a `connected_time` an hour back, past `PEER_CONNECT_TIMEOUT`."""
+    return int(time.time()) - 3600
 
 
 @pytest.mark.parametrize(
@@ -911,7 +917,7 @@ def test_a_peer_that_never_answers_a_ping_is_dropped_after_the_timeout_interval(
     The peer keeps sending and being sent to, so only the `pong` is overdue.
     """
     sent_at = time.time() - overdue
-    conn = a_conn(1, ping_start=sent_at)
+    conn = a_conn(1, ping_start=sent_at, connected_time=connected_an_hour_ago())
     conn.ping_sent = sent_at
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
@@ -947,7 +953,7 @@ def test_a_peer_with_nothing_received_or_sent_for_the_timeout_interval_is_droppe
     a_manager: AManagerFactory, side: str, quiet: int, *, dropped: bool
 ) -> None:
     """ISS 1768: `InactivityCheck` drops on either direction's silence."""
-    conn = a_conn(1)
+    conn = a_conn(1, connected_time=connected_an_hour_ago())
     setattr(conn, side, time.time() - quiet)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
@@ -964,7 +970,12 @@ def test_a_peer_at_bip31_or_below_is_pinged_without_a_pong_to_wait_for(
     silence, or a pause that lasts, drops it.
     """
     pinged = a_conn(1, ping_start=time.time() - PING_INTERVAL - 10, protocol=60000)
-    silent = a_conn(2, last_receive=time.time() - TIMEOUT_INTERVAL - 10, protocol=60000)
+    silent = a_conn(
+        2,
+        last_receive=time.time() - TIMEOUT_INTERVAL - 10,
+        protocol=60000,
+        connected_time=connected_an_hour_ago(),
+    )
     manager = a_manager([pinged, silent])
     asyncio.run(one_pass(manager))
     asyncio.run(one_pass(manager))
@@ -984,7 +995,7 @@ def test_a_peer_paused_for_the_timeout_interval_is_dropped(
     The peer is at `BIP0031_VERSION`, so it owes no `pong`, and it is heard
     from and takes octets, so only the pause can drop it.
     """
-    conn = a_conn(1, protocol=BIP0031_VERSION)
+    conn = a_conn(1, protocol=BIP0031_VERSION, connected_time=connected_an_hour_ago())
     conn.pause_send = True
     conn.pause_send_since = time.time() - paused
     manager = a_manager([conn])
@@ -999,6 +1010,100 @@ def test_a_peer_that_unpaused_in_time_is_kept(a_manager: AManagerFactory) -> Non
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert list(manager.connections) == [1]
+
+
+def stamp_under_a_set_back_clock(conn: Any, stamp: str) -> None:
+    """Stamp `conn`'s `stamp` sixty days back, as a mock time would.
+
+    `ping_sent` and `pause_send_since` stand for a ping sent, or a pause
+    begun, while the clock was held there. `last_receive` and `last_send`
+    are stamped there by any message.
+    """
+    clock_module.set_mock_time(int(time.time()) - 60 * 24 * 3600)
+    setattr(conn, stamp, clock_module.now())
+    match stamp:
+        case "pause_send_since":
+            conn.pause_send = True
+        case "ping_sent":
+            conn.ping_start = conn.ping_sent
+        case _:
+            # `last_receive` and `last_send` need nothing more
+            pass
+    clock_module.set_mock_time(0)
+
+
+@pytest.mark.parametrize(
+    "stamp", ["last_receive", "last_send", "ping_sent", "pause_send_since"]
+)
+@pytest.mark.parametrize(
+    "kind",
+    [
+        {"inbound": True},
+        {"automatic": True},
+        {},
+    ],
+    ids=["inbound", "automatic", "manual"],
+)
+def test_a_peer_connected_under_a_minute_ago_outlives_a_mock_time_set_back(
+    a_manager: AManagerFactory, stamp: str, kind: dict[str, Any]
+) -> None:
+    """ISS 2164: no check runs until `PEER_CONNECT_TIMEOUT` has passed.
+
+    The peer connected just now. A stamp taken while the mock time was
+    sixty days back is that old once the clock is released, which drops
+    the peer at once without the grace. Core's
+    `ShouldRunInactivityChecks` keeps it, whatever kind of connection it
+    is.
+    """
+    conn = a_conn(1, **kind)
+    stamp_under_a_set_back_clock(conn, stamp)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert list(manager.connections) == [1]
+
+
+def test_a_pending_connection_outlives_a_mock_time_set_back(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2164: the handshake timeout waits out the same grace."""
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    stamp_under_a_set_back_clock(conn, "last_receive")
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert list(manager.pending_connections) == [1]
+
+
+@pytest.mark.parametrize("pending", [False, True], ids=["connected", "pending"])
+@pytest.mark.parametrize(
+    ("since_connected", "dropped"),
+    [(PEER_CONNECT_TIMEOUT, False), (PEER_CONNECT_TIMEOUT + 1, True)],
+)
+def test_the_checks_start_once_the_connect_timeout_is_past_on_the_mock_clock(
+    a_manager: AManagerFactory, since_connected: int, *, pending: bool, dropped: bool
+) -> None:
+    """ISS 2164: `m_connected + m_peer_connect_timeout < now`, mocked.
+
+    The mock time is set forward, past `TIMEOUT_INTERVAL` of silence, while
+    the system clock says the peer connected just now. Core reads both
+    ends off `NodeClock`, so the mock time decides. Exactly
+    `PEER_CONNECT_TIMEOUT` after connecting is not yet past it, as Core's
+    `<` says.
+    """
+    connected = int(time.time())
+    conn = a_conn(
+        1,
+        status=P2pConnStatus.Open if pending else P2pConnStatus.Connected,
+        connected_time=connected,
+        last_receive=connected - TIMEOUT_INTERVAL,
+    )
+    clock_module.set_mock_time(connected + since_connected)
+    manager = a_manager([] if pending else [conn])
+    if pending:
+        manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    held = manager.pending_connections if pending else manager.connections
+    assert (conn.id not in held) is dropped
 
 
 def test_an_addr_fetch_connection_is_dropped_once_its_timeout_passes(
@@ -1053,6 +1158,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         last_receive = time.time()
         last_send = time.time()
         ping_start = time.time() - 200
+        connected_time = connected_an_hour_ago()
         pause_send = False
         relay_tx = True
         feefilter = 0

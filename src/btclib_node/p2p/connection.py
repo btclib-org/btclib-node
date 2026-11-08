@@ -744,7 +744,7 @@ class Connection:
         # Core's `nSendBufferMaxSize`, `-maxsendbuffer` in bytes. Past it
         # a connection sets `pause_send`, as Core sets `fPauseSend`, and
         # `_keep_alive` (`p2p/manager.py`) drops a peer whose pause lasts
-        # `_TIMEOUT_INTERVAL`.
+        # `_TIMEOUT_INTERVAL`, once `_PEER_CONNECT_TIMEOUT` has passed.
         #
         # The pause is what bounds a peer that does not read, as in Core.
         # While it is set, `_hold_message` (`p2p/main.py`) reads nothing

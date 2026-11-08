@@ -603,6 +603,18 @@ def test_a_connection_starts_with_one_address_token_topped_up_now() -> None:
         assert before <= connection.addr_token_timestamp <= time.time()
 
 
+def test_a_connection_is_stamped_connected_at_the_mock_time() -> None:
+    """ISS 2164: Core's `m_connected{NodeClock::now()}`, its mockable clock.
+
+    `_inactivity_checks_due` (`p2p/manager.py`) compares it with a `now`
+    off the same clock.
+    """
+    clock_module.set_mock_time(1_296_688_602)
+    connection, _ = a_connection()
+    with connection.client:
+        assert connection.connected_time == 1_296_688_602
+
+
 def test_a_connection_whose_socket_is_gone_says_so() -> None:
     """`repr` on a connection whose socket already closed does not raise.
 
