@@ -440,6 +440,12 @@ class Node(threading.Thread):
         # `main.check_fork_warning_conditions` and
         # `versionbits.check_unknown_activations` write it
         self.warnings = Warnings()
+        # Core's `TimeOffsets` (`src/node/timeoffsets.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the offsets of the
+        # last `MAX_SIZE{50}` peers this node dialled, which
+        # `p2p.callbacks.version` appends and `get_network_info` reads, both
+        # on this thread alone, so it needs no lock
+        self.outbound_time_offsets: deque[int] = deque(maxlen=50)
         # reached by `update_chain` and the mining RPCs, which run on this
         # thread alone (ARCHITECTURE.md), so it needs no lock
         self.unknown_activations = UnknownActivations(self.chain)

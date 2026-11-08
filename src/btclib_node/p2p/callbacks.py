@@ -622,12 +622,27 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     )
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
-    conn.stats.time_offset = version_msg.timestamp - int(clock.now())
+    _record_time_offset(node, conn, version_msg.timestamp)
     # and where it sends the final `alert` to a peer "old enough to have
     # the old alert system". btclib-org/btclib-node#1205
     if common_version(conn) <= _FINAL_ALERT_VERSION:
         conn.send(FinalAlert())
     _end_if_feeler(node, conn)
+
+
+def _record_time_offset(node: Node, conn: Connection, timestamp: int) -> None:
+    """Record the peer's clock against this node's, as Core's `VERSION` does.
+
+    `conn.stats.time_offset` is Core's `Peer::m_time_offset`. Where this
+    node dialled the peer, a feeler included, the offset also joins
+    `node.outbound_time_offsets`, Core's `m_outbound_time_offsets`
+    (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    Split out of `version` for ruff's complexity ceiling.
+    """
+    offset = timestamp - int(clock.now())
+    conn.stats.time_offset = offset
+    if not conn.inbound:
+        node.outbound_time_offsets.append(offset)
 
 
 def _end_if_feeler(node: Node, conn: Connection) -> None:

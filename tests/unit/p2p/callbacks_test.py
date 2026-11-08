@@ -890,6 +890,8 @@ def a_handshake_node(
             alert_notify="",
         ),
         warnings=Warnings(),
+        # `Node.outbound_time_offsets`, which `version` appends to
+        outbound_time_offsets=deque(maxlen=50),
         p2p_manager=SimpleNamespace(
             connections={},
             pending_outbound_nonces=own_nonces,
@@ -1014,6 +1016,29 @@ def test_a_version_records_the_peer_s_clock_against_this_node_s() -> None:
     version(a_handshake_node(), a_version(), peer)
     after = int(time.time())
     assert 1 - after <= peer.stats.time_offset <= 1 - before
+
+
+@pytest.mark.parametrize(
+    ("inbound", "feeler", "sampled"),
+    [(False, False, True), (False, True, True), (True, False, False)],
+    ids=["outbound", "feeler", "inbound"],
+)
+def test_a_version_samples_the_clock_of_a_peer_this_node_dialled(
+    *, inbound: bool, feeler: bool, sampled: bool
+) -> None:
+    """ISS 2128: an outbound peer's `time_offset` joins `outbound_time_offsets`.
+
+    Core adds the offset of every peer that is not inbound, a feeler
+    included, to `m_outbound_time_offsets` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), whose median
+    `getnetworkinfo` answers as `timeoffset`.
+    """
+    node = a_handshake_node()
+    peer = a_peer(inbound=inbound, feeler=feeler)
+    version(node, a_version(), peer)
+    assert list(node.outbound_time_offsets) == (
+        [peer.stats.time_offset] if sampled else []
+    )
 
 
 def test_a_second_version_ahead_of_verack_is_ignored_outright() -> None:

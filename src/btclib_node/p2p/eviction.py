@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from btclib.p2p.addrv2 import NetworkAddressV2
 
 __all__ = [
+    "NETWORK_OF_ID",
     "EvictionCandidate",
     "Network",
     "get_network",
@@ -413,7 +414,7 @@ def _ip_net_class(ip: _IP) -> Network:
 
 
 # `CNetAddr::m_net` of each BIP155 id `is_routable` can answer for
-_NETWORK_OF_ID: dict[int, Network] = {
+NETWORK_OF_ID: dict[int, Network] = {
     BIP155Network.IPV4: Network.IPV4,
     BIP155Network.IPV6: Network.IPV6,
     BIP155Network.TORV3: Network.ONION,
@@ -431,7 +432,7 @@ def get_network(address: NetworkAddressV2) -> Network:
         return Network.INTERNAL
     if not is_routable(address):
         return Network.UNROUTABLE
-    return _NETWORK_OF_ID[address.network_id]
+    return NETWORK_OF_ID[address.network_id]
 
 
 def _overlay_group(address: NetworkAddressV2) -> bytes:

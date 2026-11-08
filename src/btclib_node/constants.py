@@ -13,6 +13,7 @@ than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
 """
 
 import enum
+import re
 import sys
 from datetime import timedelta
 from importlib.metadata import version
@@ -28,12 +29,14 @@ __all__ = [
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
+    "NUMERIC_CLIENT_VERSION",
     "RPC_THREADS",
     "RPC_WORK_QUEUE",
     "USER_AGENT",
     "NodeStatus",
     "P2pConnStatus",
     "default_data_dir",
+    "numeric_version",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
@@ -113,6 +116,28 @@ MIN_PRUNE_TARGET_MIB = 550
 # btclib-org/btclib-node#580
 CLIENT_VERSION = version("btclib-node")
 USER_AGENT = f"/btclib:{CLIENT_VERSION}/"
+
+
+def numeric_version(text: str) -> int:
+    """Return `text`, a version of this package, in Core's numeric form.
+
+    Core's `CLIENT_VERSION` is `10000 * MAJOR + 100 * MINOR + BUILD`
+    (`src/clientversion.h`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). Here the three are the leading numbers of `text`, 0 for one it
+    lacks. A fourth number and a `.dev` suffix are left out, as Core's
+    `rc` is: `USER_AGENT` carries them.
+    """
+    leading = re.match(r"\d+(?:\.\d+)*", text)
+    if leading is None:
+        msg = f"no leading number in version {text!r}"
+        raise ValueError(msg)
+    major, minor, build = [*map(int, leading[0].split(".")[:3]), 0, 0][:3]
+    return 10000 * major + 100 * minor + build
+
+
+# `CLIENT_VERSION` in Core's numeric form, what `getnetworkinfo` answers as
+# `version`
+NUMERIC_CLIENT_VERSION = numeric_version(CLIENT_VERSION)
 
 # Core's own `CLIENT_NAME`, what its refusals name as probably already
 # running where a port or a data directory is taken
