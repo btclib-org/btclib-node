@@ -25,6 +25,7 @@ import re
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+from bip32_descriptors.descriptors import multipath_descriptors, strip_checksum
 from bip32_descriptors.descriptors import parse as parse_descriptor
 from bitcoin_core_rpc import RPCErrorCode
 from btclib import b32
@@ -56,6 +57,7 @@ from btclib_node.rpc.errors import (
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT
+from btclib_node.rpc.utxo_set import _TOP, _core_refusal
 from btclib_node.signet import SIGNET_CHALLENGE
 
 if TYPE_CHECKING:
@@ -147,6 +149,24 @@ def _has_key_of_another_chain(node: Node, text: str) -> bool:
     return False
 
 
+def _parse_refuses(node: Node, text: str) -> bool:
+    """Say whether Core's `Parse` refuses `text`, which `parse` reads.
+
+    A multipath `text`, which `parse` refuses as such, is read one
+    descriptor at a time, as `scantxoutset` reads it. Where one does not
+    read, `text` is refused, as `Parse` refuses `<0;0>` and steps of
+    different lengths. Otherwise `Parse` refuses what
+    `utxo_set._core_refusal` does, which walks only what `parse` has read.
+    """
+    try:
+        stripped = strip_checksum(text)
+        for one in multipath_descriptors(stripped):
+            parse_descriptor(one, node.chain.name, {})
+    except BTClibException:
+        return True
+    return _core_refusal(stripped, _TOP) is not None
+
+
 def _descriptor_script(node: Node, text: str) -> ScriptPubKey | None:
     """Return the script of the descriptor `text`, `None` where it is not one.
 
@@ -155,10 +175,12 @@ def _descriptor_script(node: Node, text: str) -> ScriptPubKey | None:
     from four and the p2pkh one from two.
 
     A key of another chain is refused: a WIF by `parse`, an extended key by
-    `_has_key_of_another_chain`.
+    `_has_key_of_another_chain`. So is a form `utxo_set._core_refusal`
+    finds, which `Parse` does not read: Core then tries the text as an
+    address, so the refusal carries none of `Parse`'s messages.
     """
-    # Core's order: a key of another chain fails `Parse`, then a multipath
-    # descriptor, then a ranged one, then `Expand`
+    # Core's order: a key of another chain or a draft form fails `Parse`,
+    # then a multipath descriptor, then a ranged one, then `Expand`
     if _has_key_of_another_chain(node, text):
         return None
     try:
@@ -166,10 +188,12 @@ def _descriptor_script(node: Node, text: str) -> ScriptPubKey | None:
         prv_keys: dict[str, str] = {}
         descriptor = parse_descriptor(text, node.chain.name, prv_keys)
     except BTClibException as err:
-        if "multipath" in str(err):
+        if "multipath" in str(err) and not _parse_refuses(node, text):
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER, "Multipath descriptor not accepted"
             ) from err
+        return None
+    if _parse_refuses(node, text):
         return None
     if descriptor.is_ranged:
         raise RpcError(
