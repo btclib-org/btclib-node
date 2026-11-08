@@ -1503,7 +1503,7 @@ def _peer_entry(node: Node, connection_id: int, p2p_conn: Connection) -> dict[st
     entry["last_block"] = p2p_conn.last_novel_block_time
     entry["bytessent"] = p2p_conn.stats.bytes_sent
     entry["bytesrecv"] = p2p_conn.stats.bytes_recv
-    entry["conntime"] = p2p_conn.connected_time
+    entry["conntime"] = int(p2p_conn.connected_time)
     entry["timeoffset"] = p2p_conn.stats.time_offset
     if p2p_conn.latency > 0:
         entry["pingtime"] = p2p_conn.latency

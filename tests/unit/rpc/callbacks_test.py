@@ -265,7 +265,7 @@ def a_peer(
         last_receive=2.7,
         last_novel_block_time=4,
         last_novel_tx_time=5,
-        connected_time=6,
+        connected_time=6.4,
         latency=latency,
         min_ping_time=min_ping_time,
         ping_sent=ping_sent,

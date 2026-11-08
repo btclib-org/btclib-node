@@ -67,15 +67,17 @@ class Network(IntEnum):
 class EvictionCandidate:
     """Core's `NodeEvictionCandidate` (`src/node/eviction.h`), field for field.
 
-    Times are whole seconds since the epoch, as Core's are, and 0 where
-    nothing has happened yet; `min_ping_time` is seconds and infinite
-    until a ping is answered, Core's `microseconds::max()`. `inbound`
-    stands for `m_conn_type == ConnectionType::INBOUND`, this node having
-    no other connection type an eviction would treat differently.
+    Times are seconds since the epoch: `connected` fractional, as Core's
+    `NodeClock` time point is, and the block and transaction times whole,
+    as Core's are, and 0 until one arrives. `min_ping_time` is seconds and
+    infinite until a ping is answered, Core's `NodeClock::duration::max()`.
+    `inbound` stands for `m_conn_type == ConnectionType::INBOUND`, this
+    node having no other connection type an eviction would treat
+    differently.
     """
 
     id: int
-    connected: int
+    connected: float
     min_ping_time: float
     last_block_time: int
     last_tx_time: int
@@ -106,7 +108,7 @@ def _erase_last_k(
     candidates[start:] = [c for c in candidates[start:] if not predicate(c)]
 
 
-def _reverse_connected(c: EvictionCandidate) -> int:
+def _reverse_connected(c: EvictionCandidate) -> float:
     # `ReverseCompareNodeTimeConnected`: the longest connected last
     return -c.connected
 
@@ -121,17 +123,17 @@ def _reverse_min_ping(c: EvictionCandidate) -> float:
     return -c.min_ping_time
 
 
-def _block_time(c: EvictionCandidate) -> tuple[int, bool, int]:
+def _block_time(c: EvictionCandidate) -> tuple[int, bool, float]:
     # `CompareNodeBlockTime`
     return (c.last_block_time, c.relevant_services, -c.connected)
 
 
-def _tx_time(c: EvictionCandidate) -> tuple[int, bool, bool, int]:
+def _tx_time(c: EvictionCandidate) -> tuple[int, bool, bool, float]:
     # `CompareNodeTXTime`: a bloom filter sorts ahead of none
     return (c.last_tx_time, c.relay_txs, not c.bloom_filter, -c.connected)
 
 
-def _block_relay_only_time(c: EvictionCandidate) -> tuple[bool, int, bool, int]:
+def _block_relay_only_time(c: EvictionCandidate) -> tuple[bool, int, bool, float]:
     # `CompareNodeBlockRelayOnlyTime`: a tx-relaying peer sorts first
     return (not c.relay_txs, c.last_block_time, c.relevant_services, -c.connected)
 
@@ -148,7 +150,7 @@ class _Net:
         """Whether `c` belongs to this disadvantaged network."""
         return c.is_local if self.is_local else c.network == self.id
 
-    def network_time(self, c: EvictionCandidate) -> tuple[bool, bool, int]:
+    def network_time(self, c: EvictionCandidate) -> tuple[bool, bool, float]:
         """`CompareNodeNetworkTime`: this network's peers last, oldest last."""
         return (self.is_local and c.is_local, c.network == self.id, -c.connected)
 
@@ -227,7 +229,7 @@ def select_node_to_evict(candidates: Iterable[EvictionCandidate]) -> int | None:
     # youngest first, so each group's own first entry is its youngest.
     groups: dict[int, list[EvictionCandidate]] = {}
     most_connections = 0
-    most_connections_time = 0
+    most_connections_time = 0.0
     most_connections_group = remaining[0].keyed_net_group
     for c in remaining:
         group = groups.setdefault(c.keyed_net_group, [])

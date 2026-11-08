@@ -20,7 +20,9 @@ import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
+from btclib_node import clock as clock_module
 from btclib_node.p2p import eviction
+from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
@@ -35,6 +37,7 @@ from btclib_node.p2p.eviction import (
     protect_eviction_candidates_by_ratio,
     select_node_to_evict,
 )
+from tests.unit.p2p.connection_test import a_connection
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -409,6 +412,31 @@ def test_the_largest_netgroup_loses_its_youngest() -> None:
     # old ones again, in a netgroup of their own
     old = [_unprotected(10 + i, group=5, connected=i - 100) for i in range(3)]
     assert select_node_to_evict([*_SHIELD, *old, *left]) == 2
+
+
+@pytest.mark.parametrize("later_first", [False, True])
+def test_of_two_peers_connected_in_one_second_the_later_is_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+    later_first: bool,  # noqa: FBT001
+) -> None:
+    """ISS 2252: Core orders two peers connected in the same second.
+
+    Its `m_connected` is a `NodeClock` time point (`src/net.h`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), not whole seconds. Each
+    `Connection` stamps its own time off `clock.now`, a quarter and three
+    quarters into one second, and the two share a netgroup: in either
+    order of arrival, that netgroup gives up the later one.
+    """
+    peers = []
+    for conn_id, stamp in ((1, 1_296_688_602.25), (2, 1_296_688_602.75)):
+        monkeypatch.setattr(clock_module, "now", lambda stamp=stamp: stamp)
+        connection, _ = a_connection(inbound=True)
+        with connection.client:
+            candidate = manager_module._eviction_candidate(connection)
+        peers.append(dataclasses.replace(candidate, id=conn_id, keyed_net_group=7))
+    if later_first:
+        peers.reverse()
+    assert select_node_to_evict([*_SHIELD, *peers]) == 2
 
 
 def test_a_tie_between_netgroups_goes_to_the_one_with_the_youngest_member() -> None:
