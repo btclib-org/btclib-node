@@ -24,7 +24,7 @@ from tests.integration.conftest import _started_bitcoind
 if TYPE_CHECKING:
     from pathlib import Path
 
-# What bitcoind answers and this node does not keep: relay-loop state
+# What bitcoind answers and this node does not answer yet
 # (`get_network_info`'s docstring)
 _LEFT_OUT = {"tx_send_rate", "inv_buckets"}
 

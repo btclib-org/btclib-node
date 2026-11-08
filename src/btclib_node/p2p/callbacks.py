@@ -1273,10 +1273,10 @@ def already_judged(node: Node, tx: Tx, conn: Connection) -> bool:
     if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
         # a `FORCE_RELAY` peer's transaction is announced to the others
         # all the same, where the mempool holds it, as Core's
-        # `InitiateTxBroadcastToAll` does. Core skips a peer whose
-        # `m_tx_inventory_known_filter` holds the hash
-        # (`net_processing.cpp:2262`, same sha), as `known_tx_inventory`
-        # does here.
+        # `InitiateTxBroadcastToAll` does. Core's trickle skips a peer
+        # whose `m_tx_inventory_known_filter` holds the hash, as
+        # `DownloadManager._send_trickle` skips one whose
+        # `known_tx_inventory` does.
         if NetPermissionFlags.FORCE_RELAY in conn.permissions:
             node.download_manager.received_txs.append((conn.id, tx.hash))
         return True

@@ -711,8 +711,12 @@ class Connection:
         # `m_next_inv_send_time`) rather than announcing a transaction the
         # instant it is accepted. 0 is "never scheduled", which the first
         # check always treats as due. The queue is an insertion-ordered set
-        # (keys only), as Core's is a `std::set`: a trickle erases what it
-        # pops and touches nothing else. btclib-org/btclib-node#141
+        # (keys only), which a trickle empties. btclib-org/btclib-node#141
+        # Core's `m_tx_inventory_to_send` is a `std::vector`, which
+        # `ProcessInvBacklog` appends to without dedup (at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `inv_to_send`
+        # counts a wtxid taken twice once here and twice in Core, though
+        # both send it once.
         self.tx_announce_queue: dict[bytes, None] = {}
         self.next_inv_send_time: float = 0.0
         # Core's `TxRelay::m_last_inv_sequence`: `Mempool.sequence` as of

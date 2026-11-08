@@ -1493,6 +1493,8 @@ def _peer_entry(node: Node, connection_id: int, p2p_conn: Connection) -> dict[st
     entry["servicesnames"] = service_names(services)
     entry["relaytxes"] = relays
     entry["last_inv_sequence"] = p2p_conn.last_inv_sequence if relays else 0
+    # a wtxid queued twice counts once, where Core counts it twice
+    # (`Connection.tx_announce_queue`'s comment)
     entry["inv_to_send"] = len(p2p_conn.tx_announce_queue) if relays else 0
     # Whole seconds, pushed unconditionally, and the ping fields in
     # fractional seconds, each only once it holds a value.
@@ -1680,11 +1682,9 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:671-797`,
     at bitcoin/bitcoin@f0de87f040, the v32.1 tag) also answers `inv_buckets`
-    and `tx_send_rate`, relay-loop state this node does not keep. Serving a
-    placeholder for either would be the same decoration
-    `get_mempool_info`'s own docstring already argues against, so they are
-    left out rather than answered with a made-up number. Core answers
-    `asmap_version` only under `-asmap`, which this node does not have.
+    and `tx_send_rate`, which this node does not answer yet
+    (btclib-org/btclib-node#2309). Core answers `asmap_version` only under
+    `-asmap`, which this node does not have.
 
     `version` is `constants.NUMERIC_CLIENT_VERSION`, this node's own
     version in the form of Core's `CLIENT_VERSION` (`:744`, same sha). The
