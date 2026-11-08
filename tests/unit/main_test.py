@@ -3219,6 +3219,8 @@ def test_each_connected_block_reaches_the_fee_estimator_at_its_height(
     monkeypatch.setattr(
         fee_estimator, "is_current_for_fee_estimation", lambda node: True
     )
+    # out of initial block download, where v32.1 signals each block
+    node.is_initial_block_download = False
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, common)
     estimator = node.fee_estimator
@@ -3251,6 +3253,8 @@ def test_a_reorg_reaches_the_fee_estimator_in_core_s_order(
     monkeypatch.setattr(
         fee_estimator, "is_current_for_fee_estimation", lambda node: True
     )
+    # out of initial block download, where v32.1 signals each block
+    node.is_initial_block_download = False
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
     funding = common[0].transactions[0].id
@@ -3309,6 +3313,8 @@ def test_a_transaction_a_reorg_puts_back_is_counted_untracked(
     monkeypatch.setattr(
         fee_estimator, "is_current_for_fee_estimation", lambda node: True
     )
+    # out of initial block download, where v32.1 signals each block
+    node.is_initial_block_download = False
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
     put_back = generate_random_transaction(common[0].transactions[0].id)
@@ -4055,6 +4061,107 @@ def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
     connect(node, recent)
     assert node.is_initial_block_download is False
     assert calls == [f"touch {recent[-1].header.hash.hex()}"]
+
+
+def _recorded_heights(node: Node, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Collect each height `node.fee_estimator.process_block` is given."""
+    heights: list[int] = []
+    process_block = node.fee_estimator.process_block
+
+    def spy(removed: Any, height: int) -> None:
+        heights.append(height)
+        process_block(removed, height)
+
+    monkeypatch.setattr(node.fee_estimator, "process_block", spy)
+    return heights
+
+
+def _commits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Collect how many blocks each `main._after_tip_change` call connects."""
+    commits: list[int] = []
+    after_tip_change = main._after_tip_change
+
+    def spy(node: Node, to_remove: list[Any], to_add: list[Block]) -> None:
+        commits.append(len(to_add))
+        after_tip_change(node, to_remove, to_add)
+
+    monkeypatch.setattr(main, "_after_tip_change", spy)
+    return commits
+
+
+def _dated_chain(times: list[datetime]) -> list[Block]:
+    """Return blocks extending regtest's genesis, dated `times` in turn."""
+    chain: list[Block] = []
+    for x, when in enumerate(times):
+        previous = chain[-1].header.hash if chain else RegTest().genesis.hash
+        coinbase = generate_coinbase(height=x + 1)
+        chain.append(build_block(previous, [coinbase], x, time=when))
+    return chain
+
+
+def test_the_fee_estimators_record_no_block_connected_during_ibd(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2178: v32.1's `ConnectTip` signals no block during IBD.
+
+    `generate_random_chain` dates every block too far back for the tip to
+    end initial block download.
+    """
+    heights = _recorded_heights(node, monkeypatch)
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    assert node.is_initial_block_download is True
+    assert heights == []
+    assert node.fee_estimator.best_seen_height == 0
+    assert node.mempool_estimator.blocks == []
+
+
+def test_a_fork_straddling_the_ibd_exit_is_recorded_from_the_block_ending_it(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2178: `UpdateIBDStatus` runs after each `SetTip`, before the signal.
+
+    The fork replaces a chain of two and connects in one commit. Only its
+    third block is recent, so that block ends initial block download and
+    is recorded, and the two before it are not. The block after it is
+    recorded too.
+    """
+    heights = _recorded_heights(node, monkeypatch)
+    commits = _commits(monkeypatch)
+    now = datetime.now(UTC)
+    old = now - timedelta(seconds=node.config.max_tip_age + 3600)
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    fork = _dated_chain([old, old + timedelta(seconds=1), now])
+    connect(node, fork)
+    assert node.is_initial_block_download is False
+    after = build_block(
+        fork[-1].header.hash, [generate_coinbase(height=4)], 3, time=now
+    )
+    connect(node, [after])
+    assert commits == [1, 1, 3, 1]
+    assert heights == [3, 4]
+    assert [stats.height for stats in node.mempool_estimator.blocks] == [3, 4]
+    assert node.fee_estimator.best_seen_height == 4
+
+
+def test_a_fork_ends_ibd_at_its_first_recent_block_whatever_its_tip(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2178: the latch reads each block of a fork as the tip in turn.
+
+    The fork connects in one commit. Its second block is recent and its
+    third is older than `max_tip_age`: Core leaves initial block download
+    at the second, and records it and the third.
+    """
+    heights = _recorded_heights(node, monkeypatch)
+    commits = _commits(monkeypatch)
+    now = datetime.now(UTC)
+    old = now - timedelta(seconds=node.config.max_tip_age + 3600)
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    connect(node, _dated_chain([old, now, old + timedelta(seconds=1)]))
+    assert commits == [1, 1, 3]
+    assert node.is_initial_block_download is False
+    assert heights == [2, 3]
+    assert [stats.height for stats in node.mempool_estimator.blocks] == [2, 3]
 
 
 def test_unknown_activations_are_not_checked_during_initial_block_download(
