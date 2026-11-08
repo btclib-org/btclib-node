@@ -2244,7 +2244,10 @@ def after_the_reply(
                 # the connection may be closed already
                 with contextlib.suppress(OSError):
                     await loop.sock_sendall(theirs, piece)
-            with contextlib.suppress(ConnectionResetError):
+            # A connection closed with bytes unread can end in
+            # `ConnectionResetError`, and one written to once closed in
+            # `ConnectionAbortedError` on Windows
+            with contextlib.suppress(ConnectionResetError, ConnectionAbortedError):
                 while chunk := await loop.sock_recv(theirs, 4096):
                     reply += chunk
             closed = time.monotonic() - answered
