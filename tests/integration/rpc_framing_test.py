@@ -5,20 +5,21 @@
 """The JSON-RPC listener's answers, this node's against a real bitcoind's.
 
 Each request is written over a raw socket to both, with each side's own
-cookie, and the two answers are held to the same status line, the same
-fields and body, and the same close: the request lines and
-`Content-Length` values Core refuses (btclib-org/btclib-node#1086), the
-legacy and 2.0 envelopes `HTTPReq_JSONRPC` answers with
-(btclib-org/btclib-node#1109), the request-targets and a `CONNECT`
-(btclib-org/btclib-node#1125), the version an answer is written in
-(btclib-org/btclib-node#1127), lines ended by a bare line feed
-(btclib-org/btclib-node#1150), an object naming a key twice
-(btclib-org/btclib-node#1151), the header fields, the header section's
-size and the chunked bodies Core reads or refuses
-(btclib-org/btclib-node#1126, btclib-org/btclib-node#1972), and named
-parameters (btclib-org/btclib-node#1168). Each exchange ends in a
-request asking for `Connection: close` or one Core closes after, so each
-answer ends at the close.
+cookie or a wrong credential, and the two answers are held to the same
+status line, the same fields and body, and the same close: the request
+lines and `Content-Length` values Core refuses
+(btclib-org/btclib-node#1086), the legacy and 2.0 envelopes
+`HTTPReq_JSONRPC` answers with (btclib-org/btclib-node#1109), the
+request-targets and a `CONNECT` (btclib-org/btclib-node#1125), the
+version an answer is written in (btclib-org/btclib-node#1127), lines
+ended by a bare line feed (btclib-org/btclib-node#1150), an object
+naming a key twice (btclib-org/btclib-node#1151), the header fields, the
+header section's size and the chunked bodies Core reads or refuses
+(btclib-org/btclib-node#1126, btclib-org/btclib-node#1972), named
+parameters (btclib-org/btclib-node#1168), and a request written once a
+closing 401 is read (btclib-org/btclib-node#2153). Each exchange ends in
+a request asking for `Connection: close` or one Core closes after, so
+each answer ends at the close.
 """
 
 import base64
@@ -371,9 +372,12 @@ def _request(case: str, credential: bytes) -> bytes:
     return line + b"\r\nHost: x\r\n" + auth + b"\r\n" + fields + b"\r\n" + body
 
 
-def _answer(port: int, data: bytes) -> list[tuple[bytes, list[bytes], bytes]]:
+def _answer(
+    port: int, data: bytes, later: bytes = b""
+) -> list[tuple[bytes, list[bytes], bytes]]:
     """Return each answer's status line, framing fields and body, to the close.
 
+    `later` is written once the first answer's header section is read.
     `Date` and `Content-Type` are left out: Core writes them and this
     node does not, as `RpcConnection._frame` says. An answer ends where
     the next status line starts, since an answer written with no
@@ -382,6 +386,12 @@ def _answer(port: int, data: bytes) -> list[tuple[bytes, list[bytes], bytes]]:
     with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
         client.sendall(data)
         reply = b""
+        if later:
+            while b"\r\n\r\n" not in reply:
+                chunk = client.recv(65536)
+                assert chunk, f"closed before a header section ended: {reply!r}"
+                reply += chunk
+            client.sendall(later)
         while chunk := client.recv(65536):
             reply += chunk
     answers = []
@@ -429,6 +439,30 @@ def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> 
         node.rpc_port, _request(case, cookie_path(node.config.data_dir).read_bytes())
     )
     assert theirs
+    assert ours == theirs
+
+
+@pytest.mark.parametrize(
+    "later", [b"POST /x HTTP/1.1\r\n\r\n", b"garbage\r\n\r\n"], ids=["404", "400"]
+)
+def test_a_request_sent_once_a_closing_401_arrives_is_answered_as_bitcoind_does(
+    later: bytes, bitcoind: Bitcoind, node: Node
+) -> None:
+    """A request written once a closing 401 is read gets `bitcoind`'s answer.
+
+    `RpcConnection._answer_past_a_close` says when Core reads it
+    (btclib-org/btclib-node#2153).
+    """
+    data = (
+        b"POST / HTTP/1.1\r\nAuthorization: Basic "
+        + base64.b64encode(b"__cookie__:wrong")
+        + b"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    )
+    theirs = _answer(bitcoind.rpc_port, data, later)
+    # set by the fixture's own `Config`
+    assert node.rpc_port is not None
+    ours = _answer(node.rpc_port, data, later)
+    assert len(theirs) == 2
     assert ours == theirs
 
 

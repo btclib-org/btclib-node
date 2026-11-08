@@ -23,7 +23,7 @@ import socket
 import threading
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 
@@ -132,12 +132,32 @@ def answering(conn: RpcConnection, data: bytes = b"") -> RpcConnection:
     return conn
 
 
+async def closes(conn: RpcConnection, *, past_a_close: bool = False) -> bool:
+    """Return whether `conn` closes once the reply written to it ends.
+
+    Loop turns, for a close the reply's own task makes. `past_a_close`
+    is for a worker's reply that closes, which waits up to
+    `_SELECT_TIMEOUT` for one more request first
+    (`RpcConnection._answer_past_a_close`): the loop's other tasks, that
+    reply's among them, are then waited for, up to four times that wait.
+    """
+    for _ in range(50):
+        if conn.client.fileno() == -1:
+            return True
+        await asyncio.sleep(0)
+    if past_a_close:
+        others = asyncio.all_tasks() - {asyncio.current_task()}
+        await asyncio.wait(others, timeout=4 * connection_module._SELECT_TIMEOUT)
+    return conn.client.fileno() == -1
+
+
 def drive(
     chunks: list[bytes],
     *,
     timeout: float = 1.0,
     hang_up: bool = False,
     idle_timeout: float = IDLE_TIMEOUT,
+    past_a_close: bool = False,
 ) -> tuple[str, list[Any], bool]:
     """Feed `chunks` to a RpcConnection.run and report what it did.
 
@@ -145,7 +165,7 @@ def drive(
     closed). The sender is async because a socketpair holds only a few
     kilobytes: a blocking send of a large chunk would deadlock before
     the loop starts. A test of the idle timeout lowers `idle_timeout`
-    rather than waiting out `IDLE_TIMEOUT`.
+    rather than waiting out `IDLE_TIMEOUT`. `past_a_close` is `closes`'s.
 
     `manager.connections` is seeded with the id `run` is given below,
     the way `RpcManager.create_connection` seeds it before scheduling
@@ -197,17 +217,12 @@ def drive(
             outcome = "waiting"
         sender.cancel()
         # A parse error's own reply is scheduled as a task of its own
-        # now (`RpcConnection.run`'s own comment on its `ValueError`
+        # (`RpcConnection.run`'s own comment on its `ValueError`
         # branch), so it may not have run yet the instant `task` above
-        # resolves -- everything else `run` refuses through closes
-        # `ours` synchronously, in its own frame, and `asyncio.sleep(0)`
-        # costs nothing but a loop turn, so this never waits any real
-        # time for those, only enough turns for a scheduled task to run.
-        for _ in range(50):
-            if ours.fileno() == -1:
-                break
-            await asyncio.sleep(0)
-        closed = ours.fileno() == -1
+        # resolves, and `closes` says how long it is given --
+        # everything else `run` refuses through closes `ours`
+        # synchronously, in its own frame.
+        closed = await closes(conn, past_a_close=past_a_close)
         if theirs.fileno() != -1:
             theirs.close()
         # `conn.run()` closes `ours` on a refusal, through `async_send`
@@ -271,7 +286,7 @@ def test_a_body_that_is_not_json_is_refused() -> None:
     """
     body = b"not json"
     headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(body)
-    _, messages, closed = drive([request(headers, body)])
+    _, messages, closed = drive([request(headers, body)], past_a_close=True)
     assert not messages
     assert closed
 
@@ -398,10 +413,12 @@ def sent(reply: HttpReply, *, keep_alive: bool = True) -> bytes:
         )
         answering(conn, request() if keep_alive else b"")
         # a kept-alive reply goes on to read the next request, which
-        # never comes: the reply is on the wire before that read
+        # never comes: the reply is on the wire before that read. A
+        # closing one ends once `_answer_past_a_close` has waited.
         task = asyncio.ensure_future(conn.async_send(reply))
         data = await asyncio.wait_for(loop.sock_recv(theirs, 4096), timeout=2)
-        task.cancel()
+        if keep_alive:
+            task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         theirs.close()
@@ -1148,6 +1165,7 @@ def refused(
     *,
     interrupted: bool = False,
     prepare: Callable[[SimpleNamespace], None] | None = None,
+    past_a_close: bool = False,
 ) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
     """Send `data` to a `RpcConnection.run` expecting a refusal, and read it.
 
@@ -1157,7 +1175,7 @@ def refused(
     queued for `handle_rpc`, and every warning logged. `interrupted`
     sets `manager.interrupted` before `run` reads it
     (btclib-org/btclib-node#1515), and `prepare` is handed the manager
-    last, before `run` starts.
+    last, before `run` starts. `past_a_close` is `closes`'s.
     """
     warnings: list[tuple[Any, ...]] = []
 
@@ -1193,12 +1211,8 @@ def refused(
                 reply += await loop.sock_recv(theirs, 4096)
         elapsed = time.monotonic() - start
         # the reply is on the wire before `_write` decides what comes
-        # next, so give it the turns it takes to get there
-        for _ in range(50):
-            if ours.fileno() == -1:
-                break
-            await asyncio.sleep(0)
-        closed = ours.fileno() == -1
+        # next, so give it the time it takes to get there
+        closed = await closes(conn, past_a_close=past_a_close)
         theirs.close()
         if not closed:
             ours.close()
@@ -1343,7 +1357,8 @@ def test_a_wrong_password_is_refused_401_after_the_delay() -> None:
 def test_a_refusal_closes_where_the_request_asked() -> None:
     """`Connection: close` on the request is honoured on a 401 too."""
     reply, _, closed, _, _ = refused(
-        request(b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY), auth=b"")
+        request(b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY), auth=b""),
+        past_a_close=True,
     )
     assert reply == UNAUTHORIZED.replace(b"\r\n\r\n", b"\r\nConnection: close\r\n\r\n")
     assert closed
@@ -1907,9 +1922,9 @@ def good(version: bytes, fields: bytes = b"") -> bytes:
     return request(fields + b"Content-Length: %d\r\n" % len(BODY), version=version)
 
 
-def framed(status_line: bytes, *fields: bytes) -> bytes:
-    """Return `ANSWER` as `async_send` frames it under `status_line`."""
-    body = json.dumps(ANSWER, separators=(",", ":")).encode() + b"\n"
+def framed(status_line: bytes, *fields: bytes, answer: Any = ANSWER) -> bytes:
+    """Return `answer` as `async_send` frames it under `status_line`."""
+    body = json.dumps(answer, separators=(",", ":")).encode() + b"\n"
     lines = [status_line, b"Content-Type: application/json", *fields]
     head = b"".join(line + b"\r\n" for line in lines) + b"\r\n"
     return head.replace(b"{length}", b"%d" % len(body)) + body
@@ -2168,6 +2183,181 @@ def test_a_request_sent_before_a_worker_s_close_is_read_past(
     reply, closed = conversation(CLOSING, later=later)
     assert reply == CLOSING_ANSWER + no_store(status)
     assert closed
+
+
+CLOSING_401 = request(b"Connection: close\r\n", b"", auth=b"")
+CLOSING_401_ANSWER = UNAUTHORIZED.removesuffix(b"\r\n") + b"Connection: close\r\n\r\n"
+
+
+class _CappedSocket(socket.socket):
+    """A socket whose every send takes at most `CAP` bytes.
+
+    It stands for a kernel send buffer smaller than a reply, whose size
+    differs by platform.
+    """
+
+    CAP = 4096
+
+    @override
+    def send(self, data: Buffer, flags: int = 0, /) -> int:
+        return super().send(memoryview(data)[: self.CAP], flags)
+
+
+def after_the_reply(
+    pieces: list[tuple[float, bytes]],
+    data: bytes = CLOSING_401,
+    answer: bytes = CLOSING_401_ANSWER,
+    *,
+    body: Any = ANSWER,
+    capped: bool = False,
+) -> tuple[bytes, float]:
+    """Write `data`, then each of `pieces` once `answer`, its reply, is read.
+
+    A piece is a delay in seconds and the bytes written after it, from
+    the loop the connection runs on. A request `run` queues is answered
+    `body`, as `conversation` answers it. `capped` makes the
+    connection's socket a `_CappedSocket`. Returns everything written
+    back, and the seconds from writing `data` to the close: the
+    connection's wait past a close starts after that, however late the
+    reply is read.
+    """
+
+    async def main() -> tuple[bytes, float]:
+        ours, theirs = socket.socketpair()
+        if capped:
+            ours = _CappedSocket(fileno=ours.detach())
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        started = time.monotonic()
+        await loop.sock_sendall(theirs, data)
+        await conn.run()
+        sent = None
+        if manager.messages:
+            sent = asyncio.create_task(conn.async_send(HttpReply(OK, body)))
+        reply = b""
+        async with asyncio.timeout(5):
+            while len(reply) < len(answer):
+                reply += await loop.sock_recv(theirs, 4096)
+            for delay, piece in pieces:
+                await asyncio.sleep(delay)
+                # the connection may be closed already
+                with contextlib.suppress(OSError):
+                    await loop.sock_sendall(theirs, piece)
+            # A connection closed with bytes unread can end in
+            # `ConnectionResetError`, and one written to once closed in
+            # `ConnectionAbortedError` on Windows
+            with contextlib.suppress(ConnectionResetError, ConnectionAbortedError):
+                while chunk := await loop.sock_recv(theirs, 4096):
+                    reply += chunk
+            closed = time.monotonic() - started
+            if sent is not None:
+                await sent
+        theirs.close()
+        ours.close()
+        return reply, closed
+
+    return asyncio.run(main())
+
+
+@pytest.mark.parametrize(
+    ("data", "answer", "later", "status"),
+    [
+        (CLOSING_401, CLOSING_401_ANSWER, TO_X, b"404 Not Found"),
+        (CLOSING_401, CLOSING_401_ANSWER, b"garbage\r\n\r\n", b"400 Bad Request"),
+        (CLOSING, CLOSING_ANSWER, TO_X, b"404 Not Found"),
+    ],
+    ids=["401-404", "401-400", "200-404"],
+)
+def test_a_request_sent_once_a_worker_s_close_arrives_is_answered(
+    data: bytes, answer: bytes, later: bytes, status: bytes
+) -> None:
+    """A request sent as soon as the closing reply is read is answered.
+
+    Core's socket thread receives it within its wait, as
+    `RpcConnection._answer_past_a_close` says, and `bitcoind` answers it
+    (btclib-org/btclib-node#2153). It is written from the loop the
+    connection waits on, so a wait that blocks that loop reads nothing.
+    """
+    reply, _ = after_the_reply([(0, later)], data, answer)
+    assert reply == answer + no_store(status)
+
+
+def test_a_close_waits_out_core_s_select_timeout() -> None:
+    """With nothing sent, the connection closes once `SELECT_TIMEOUT` ends.
+
+    `bitcoind` closes within it, as its socket thread's wait ends.
+    """
+    reply, closed = after_the_reply([])
+    assert reply == CLOSING_401_ANSWER
+    assert closed >= connection_module._SELECT_TIMEOUT - _WINDOWS_TIMER_TICK
+
+
+@pytest.mark.parametrize(
+    ("pieces", "data"),
+    [
+        ([(0.1, TO_X)], CLOSING_401),
+        ([(0, b"POST /x HTTP/1.1\r\n"), (0.01, b"\r\n")], CLOSING_401),
+        ([(0, b"\r\n")], CLOSING_401 + b"POST /x HTTP/1.1\r\n"),
+    ],
+    ids=["past-the-wait", "split", "rest-of-buffered"],
+)
+def test_what_core_s_one_receive_misses_is_not_answered(
+    pieces: list[tuple[float, bytes]], data: bytes
+) -> None:
+    """Past a close, a request is read in one receive within the wait, or not.
+
+    `bitcoind` answers none of these: a request sent past its wait; one
+    whose second piece follows its first, which the receive took alone;
+    and the rest of one it held when the reply was sent, which it does
+    not receive (btclib-org/btclib-node#2153).
+    """
+    reply, _ = after_the_reply(pieces, data)
+    assert reply == CLOSING_401_ANSWER
+
+
+def test_a_reply_the_first_send_does_not_take_is_not_read_past() -> None:
+    """Past a reply too large for one send, nothing more is received.
+
+    Core's socket thread sends the rest and disconnects in the same
+    pass, as `RpcConnection._answer_past_a_close` says: `bitcoind`
+    answers nothing to a request sent once such a reply is read.
+    """
+    body = {"result": "a" * (4 * _CappedSocket.CAP), "error": None, "id": 1}
+    answer = framed(
+        b"HTTP/1.1 200 OK",
+        b"Content-Length: {length}",
+        b"Connection: close",
+        answer=body,
+    )
+    reply, _ = after_the_reply([(0, TO_X)], CLOSING, answer, body=body, capped=True)
+    assert reply == answer
+
+
+def test_a_first_send_a_full_buffer_refuses_takes_nothing() -> None:
+    """`_send_at_once` counts nothing where the kernel takes nothing."""
+
+    async def main() -> int:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        # unread, so the send buffer fills
+        with contextlib.suppress(BlockingIOError):
+            while True:
+                ours.send(b"x" * 0x10000)
+        conn = RpcConnection(
+            asyncio.get_running_loop(),
+            ours,
+            cast("RpcManager", fake_manager(connections={})),
+            0,
+        )
+        sent = conn._send_at_once(memoryview(b"x"))
+        ours.close()
+        theirs.close()
+        return sent
+
+    assert asyncio.run(main()) == 0
 
 
 def test_a_get_with_the_work_queue_full_is_503() -> None:

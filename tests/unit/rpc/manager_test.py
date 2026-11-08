@@ -1041,6 +1041,8 @@ def test_stop_disconnects_an_idle_connection_once_the_replies_are_due(
         # its own id, as `_accept_loop` gives each connection
         manager.last_connection_id += 1
         answering = a_connection_answering(manager, busy)
+        # its reply all to `sock_sendall`, which holds it
+        answering._send_at_once = lambda view: 0  # type: ignore[method-assign]
         loop.sock_sendall = held_sendall  # type: ignore[method-assign]
         answering.send(HttpReply(OK, {"result": None, "error": None, "id": 2}))
         stopping.start()
@@ -1603,9 +1605,10 @@ def test_stop_gives_up_a_reply_after_disconnect_wait_with_no_idle_timeout(
     pair's own buffer: how much a write like this one can queue before
     it blocks is the platform's own number, not this test's, and Windows
     emulates `socketpair` over loopback TCP. `manager.loop.sock_sendall`
-    is what `RpcConnection._write` awaits to write the reply; patched
-    here, it blocks on `release` and writes nothing, `stop` cancelling
-    it first.
+    is what `RpcConnection._write` awaits to write what its first send,
+    `_send_at_once`, leaves of the reply: patched here, that send takes
+    nothing, and `sock_sendall` blocks on `release` and writes nothing,
+    `stop` cancelling it first.
     """
     manager = a_manager(get_random_port())
     manager.idle_timeout = None
@@ -1624,6 +1627,8 @@ def test_stop_gives_up_a_reply_after_disconnect_wait_with_no_idle_timeout(
     stopping = threading.Thread(target=manager.stop)
     try:
         conn = manager.create_connection(manager.loop, ours)
+        # its reply all to `sock_sendall`, which holds it
+        conn._send_at_once = lambda view: 0  # type: ignore[method-assign]
         conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
         manager.node.terminate_flag.set()
         reply = {"result": "stopping", "error": None, "id": 1}
@@ -1726,6 +1731,8 @@ def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     try:
         conn = manager.create_connection(loop, ours)
         conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        # its reply all to `sock_sendall`, which holds it
+        conn._send_at_once = lambda view: 0  # type: ignore[method-assign]
         loop.sock_sendall = held_sendall  # type: ignore[method-assign]
         manager._finish_replies = release_then_finish  # type: ignore[method-assign]
         sent = time.monotonic()
