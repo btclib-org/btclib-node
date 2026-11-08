@@ -93,14 +93,19 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # seconds. `RpcConnection` says how it is applied. A float, so that a
 # test can lower it below a second.
 IDLE_TIMEOUT = 30.0
-# The size of the pieces `RpcConnection._send_all` writes a reply in,
-# the idle timeout reset after each. Core resets it after every `send`
-# that moves a byte (`HTTPRemoteClient::MaybeSendBytesFromBuffer`,
-# `src/httpserver.cpp`, same tag), and `loop.sock_sendall` reports no
-# progress until it has sent everything, so a piece is the finest step
-# this node sees. The size is that of Core's own reads
-# (`HTTPRemoteClient::Receive`).
+# The size of the pieces `RpcConnection._send_all` writes a reply in
+# past its first send, the idle timeout reset after each. Core resets it
+# after every `send` that moves a byte
+# (`HTTPRemoteClient::MaybeSendBytesFromBuffer`, `src/httpserver.cpp`,
+# same tag), and `loop.sock_sendall` reports no progress until it has
+# sent everything, so a piece is the finest step this node sees. The
+# size is that of Core's own reads (`HTTPRemoteClient::Receive`).
 _SEND_CHUNK = 0x10000
+# The longest Core's socket thread waits for a socket to be ready, in
+# seconds: `SELECT_TIMEOUT` (`src/httpserver.cpp:47`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+# `RpcConnection._answer_past_a_close` says what it bounds here.
+_SELECT_TIMEOUT = 0.05
 
 
 class RawJSON:
@@ -692,18 +697,19 @@ class RpcConnection:
     `idle_timeout` seconds, as Core's `HTTPRemoteClient::MaybeDisconnect`
     closes it (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
     v32.1 tag). Idle time starts at the accept and again at every receive
-    and after every `_SEND_CHUNK` piece of a reply, where Core restarts it
-    after every `send` that moves a byte. So a reader that takes longer
-    than `idle_timeout` to drain one piece is closed here, however steadily
-    it reads, though Core can restart the time partway through that piece.
-    Idle time is not counted while a request is being served, from its last
-    byte read until its reply begins: `run` and `_write` apply it, and
-    nothing between them does. `_write` restarts it as the reply begins,
-    where Core restarts it once the first bytes are sent. `None` arms no
-    timeout. Core counts idle time in whole seconds and checks it at least
-    every 50 ms (`SELECT_TIMEOUT`), so it closes up to about a second later
-    than this does, or, for a value that wraps
-    (`rpc.manager._idle_timeout`), possibly earlier.
+    and after every send of a reply, its first one and each `_SEND_CHUNK`
+    piece after it, where Core restarts it after every `send` that moves a
+    byte. So a reader that takes longer than `idle_timeout` to drain one
+    piece is closed here, however steadily it reads, though Core can
+    restart the time partway through that piece. Idle time is not counted
+    while a request is being served, from its last byte read until its
+    reply begins: `run` and `_write` apply it, and nothing between them
+    does. `_write` restarts it as the reply begins, where Core restarts it
+    once the first bytes are sent. `None` arms no timeout. Core counts
+    idle time in whole seconds and checks it at least every 50 ms
+    (`SELECT_TIMEOUT`), so it closes up to about a second later than this
+    does, or, for a value that wraps (`rpc.manager._idle_timeout`),
+    possibly earlier.
     """
 
     def __init__(
@@ -1384,9 +1390,10 @@ class RpcConnection:
         # closes the connection: the close branch below, or `run`,
         # which finds it still idle.
         self._touch()
+        whole = False
         with contextlib.suppress(OSError):
             async with self._idle_bound():
-                await self._send_all(http_response)
+                whole = await self._send_all(http_response)
         # The reply is written, or its client gone: `RpcManager.stop`
         # waits for no more of this task, which on a kept-alive
         # connection goes on below to read the next request, idle until
@@ -1407,7 +1414,7 @@ class RpcConnection:
             return
         try:
             if on_worker and self._request_closes:
-                await self._answer_past_a_close()
+                await self._answer_past_a_close(wait=whole)
         finally:
             self.client.close()
             # The only place besides `run`'s own `except Exception` above
@@ -1420,7 +1427,7 @@ class RpcConnection:
             # round 2).
             self.manager.forget_connection(self.id)
 
-    async def _answer_past_a_close(self) -> None:
+    async def _answer_past_a_close(self, *, wait: bool) -> None:
         """Answer one buffered request as Core's socket thread answers it.
 
         A worker's reply that closes the connection sets
@@ -1431,38 +1438,80 @@ class RpcConnection:
         bitcoin/bitcoin@f0de87f040, the v32.1 tag). While the worker
         runs, that thread receives whenever its buffer is empty
         (`HTTPServer::GenerateWaitSockets`), so it holds what the client
-        sent after the closing request too, and what arrives within its
-        next wait, up to `SELECT_TIMEOUT` (50 ms). This reads `client`
-        once, without waiting, where `self.buffer` is empty, which takes
-        in what the client sent before the reply, and not what arrives
-        after it (btclib-org/btclib-node#2153). A request that thread
-        answers itself is then answered, as `_socket_thread_answer`
-        says. One it hands to a worker is not: that worker races the
-        disconnect and sometimes answers, and this takes the more common
-        outcome, no answer (btclib-org/btclib-node#2101).
+        sent after the closing request too.
+
+        Where the worker's own send takes the whole reply, that thread
+        is still waiting, up to `SELECT_TIMEOUT`, and receives once what
+        arrives before its wait ends, if its buffer is empty. Where it
+        does not, that thread sends the rest itself and disconnects in
+        the same pass, receiving nothing more
+        (`HTTPRemoteClient::MaybeSendBytesFromBuffer`). Which of the two
+        happens depends on the kernel's send buffer, so on the platform.
+        `wait` says whether `_send_all`'s first send took the whole
+        reply. Where it did and `self.buffer` is empty, this waits for
+        `client` up to `_SELECT_TIMEOUT`, without blocking `loop`, and
+        reads it once (btclib-org/btclib-node#2153). Where it did not,
+        this reads once without waiting, which takes in what the client
+        sent before the reply, and also what arrived while the rest of
+        it was sent, which Core does not receive. Where `self.buffer`
+        holds anything, it reads nothing more: Core does not receive
+        then.
+
+        Core's wait ends early on any socket's event, at a moment no wait
+        here can know. This waits its longest, so that what it answers
+        does not depend on timing a test cannot control. So it answers a
+        request arriving late in that window that Core may not, and,
+        where nothing arrives, it closes once the whole wait has passed,
+        where Core closes within it.
+
+        A request that thread answers itself is then answered, as
+        `_socket_thread_answer` says. One it hands to a worker is not:
+        that worker races the disconnect and sometimes answers, and this
+        takes the more common outcome, no answer
+        (btclib-org/btclib-node#2101).
         """
         if not self.buffer:
-            # Non-blocking, as every socket `loop` reads: nothing waiting
-            # is `BlockingIOError`, a peer gone some other `OSError`
+            # A peer that resets the connection is an `OSError`, and so
+            # is the `TimeoutError` that ends the wait; one that closes
+            # it adds nothing
             with contextlib.suppress(OSError):
-                self.buffer += self.client.recv(65536)
+                if wait:
+                    async with asyncio.timeout(_SELECT_TIMEOUT):
+                        self.buffer += await self.loop.sock_recv(self.client, 65536)
+                else:
+                    # nothing waiting is `BlockingIOError`
+                    self.buffer += self.client.recv(65536)
         answer = self._socket_thread_answer()
         if answer is not None:
             with contextlib.suppress(OSError):
                 async with self._idle_bound():
                     await self._send_all(answer)
 
-    async def _send_all(self, data: bytes) -> None:
+    async def _send_all(self, data: bytes) -> bool:
         """Write `data` to `client`, restarting the idle time as it goes.
 
-        In pieces of `_SEND_CHUNK` bytes, the idle time restarted after
-        each, as Core restarts it after each `send` that moves a byte.
+        First in one send without waiting, which takes what the kernel's
+        send buffer holds, as `HTTPRemoteClient::Send` tries first, then
+        the rest in pieces of `_SEND_CHUNK` bytes. The idle time restarts
+        after each send that moves a byte, as Core restarts it. Returns
+        whether the first send took all of `data`.
         """
         view = memoryview(data)
-        for start in range(0, len(view), _SEND_CHUNK):
+        sent = self._send_at_once(view)
+        if sent:
+            self._touch()
+        for start in range(sent, len(view), _SEND_CHUNK):
             await self.loop.sock_sendall(self.client, view[start : start + _SEND_CHUNK])
             self._touch()
         self._received = False
+        return sent == len(view)
+
+    def _send_at_once(self, view: memoryview) -> int:
+        """Send what the kernel takes of `view` at once; return how much."""
+        try:
+            return self.client.send(view)
+        except BlockingIOError, InterruptedError:
+            return 0
 
     def _socket_thread_answer(self) -> bytes | None:
         """Frame Core's socket-thread answer to the request `self.buffer` holds.
