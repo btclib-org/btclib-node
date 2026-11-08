@@ -71,7 +71,11 @@ from btclib_node.main import (
 )
 from btclib_node.mempool_persist import FILENAME as MEMPOOL_FILENAME
 from btclib_node.mempool_persist import dump_mempool, load_mempool
-from btclib_node.mining import contextual_block_reason
+from btclib_node.mining import (
+    block_reject_reason,
+    check_block_reason,
+    contextual_block_reason,
+)
 from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port, network_class
 from btclib_node.p2p.banman import (
     SpecialAddress,
@@ -1145,11 +1149,13 @@ def _submitted_body_refusal(
     `CheckBlockHeader` before anything of the body. A body failing
     `main.assert_valid_block_proof` (on signet, its solution) is refused for
     it, and nothing is marked: Core asks it in `CheckBlock`, and
-    `ProcessNewBlock` marks nothing for a body failing that. A body that
-    passes `CheckBlock` (`main.passes_check_block`) is then asked Core's
-    `ContextualCheckBlock` (`mining.contextual_block_reason`), weight
-    included, as Core's `AcceptBlock` asks it before storing the block
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `ProcessNewBlock` marks nothing for a body failing that. A body failing
+    the rest of `CheckBlock` is refused with Core's word where
+    `mining.check_block_reason` has one, and nothing is marked either. A
+    body that passes `CheckBlock` is then asked Core's `ContextualCheckBlock`
+    (`mining.contextual_block_reason`), weight included, as Core's
+    `AcceptBlock` asks it before storing the block (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     Where `main.mark_contextual_failure` marks its header, the body is
     refused with that rule's word. A mutated body (`main.is_block_mutated`)
     is refused with the first rule it fails, whichever it is, which may come
@@ -1163,15 +1169,15 @@ def _submitted_body_refusal(
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
         return str(error)
+    # `CheckBlock` first: a body that was never indexed has no parent here
+    # to read a height from
+    if (reason := check_block_reason(block, check_merkle_root=True)) is not None:
+        return reason
     error_text = None
     try:
         block.assert_valid_structure()
     except BTClibException as error:
         error_text = str(error)
-    # `passes_check_block` first: a body that was never indexed has no
-    # parent here to read a height from
-    if not passes_check_block(block, node.chain):
-        return error_text
     mutated = is_block_mutated(block, check_witness_root=segwit)
     assert parent is not None  # noqa: S101
     reason = contextual_block_reason(node, block, parent.index + 1)
@@ -1210,9 +1216,7 @@ def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
     failed = node.last_rejected_block
     if failed is not None and failed[0] == block_hash:
         # Core answers `GetRejectReason()` alone, never its debug message
-        if isinstance(failed[1], TxRejectedError):
-            return failed[1].reason
-        return str(failed[1])
+        return block_reject_reason(failed[1])
     return None
 
 
@@ -1236,11 +1240,13 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `ContextualCheckBlockHeader`'s `bad-diffbits`, `time-too-old`,
     `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`, and
     `CheckBlockHeader`'s `high-hash`, which `block_index.check_headers_pow`
-    raises in Core's words whether or not the body passes `CheckBlock`. Any
-    other invalid block is answered with btclib's own exception message
-    instead of one of Core's: `BlockValidationResult` names dozens of
-    distinct single-word reasons across `validation.cpp`, and this tree does
-    not reproduce that vocabulary.
+    raises in Core's words whether or not the body passes `CheckBlock`, and
+    those of `CheckBlock`'s that `mining.check_block_reason` answers in
+    Core's words, as `_submitted_body_refusal` says. Any other invalid block
+    is answered with btclib's own exception message instead of one of
+    Core's: `BlockValidationResult` names dozens of distinct single-word
+    reasons across `validation.cpp`, and this tree does not reproduce that
+    vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -1275,14 +1281,17 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `BlockScriptVerifyError`, whose own `str()` is Core's
     `block-script-verify-flag-failed (%s)` (`CheckInputScripts`, same
     file and sha) with `ScriptErrorString`.
-    A spend `main._check_tx_inputs` refuses is answered with Core's
-    reason alone, as `GetRejectReason` gives it, and so are
-    `bad-txns-accumulated-fee-outofrange` and `bad-blk-sigops`, and the
-    words `main._CONTEXTUAL_REASONS` gives btclib's contextual refusals.
-    Anything else `update_chain`'s trial raises for this exact hash is
-    answered with btclib's own text, the same divergence the paragraph
-    above already argues for every reason this function has no literal
-    word for.
+    What `update_chain`'s trial raises for this exact hash is answered by
+    `mining.block_reject_reason`, as a proposal is. A `TxRejectedError`,
+    such as a spend `main._check_tx_inputs` refuses, is answered with its
+    reason alone, as `GetRejectReason` gives it. A missing or spent input is
+    `bad-txns-inputs-missingorspent`. A message that is a word in Core's
+    form, or opens with one before `: `, is answered with that word alone:
+    `bad-cb-amount: <detail>` is `bad-cb-amount`, and `bad-blk-sigops` and
+    the words `main._CONTEXTUAL_REASONS` gives btclib's contextual refusals
+    stand as they are. Anything else is answered with btclib's own text, the
+    same divergence the paragraph above already argues for every reason this
+    function has no literal word for.
 
     A failure `update_chain`'s own trial does not swallow into a
     rejection -- this node's own storage or bookkeeping, not the
