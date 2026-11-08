@@ -1055,7 +1055,7 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     # a take with no peer to feed empties the backlog
     inbound.count_bucket.value = 1.0
     manager._process_inv_backlog(now + 3)
-    assert inbound.backlog == []
+    assert not inbound.backlog
     manager._process_inv_backlog(now + 4)
     manager._process_inv_backlog(now + 6)
     assert len(lines) == 3
@@ -1097,7 +1097,7 @@ def test_a_backlog_short_of_a_hundred_logs_no_heartbeat() -> None:
     manager._inbound_inv_bucket.backlog = [tx.hash for tx in txs]
     manager._outbound_inv_bucket.backlog = [tx.hash for tx in txs]
     manager._process_inv_backlog(1_700_000_000.0, bumped=True)
-    assert lines == []
+    assert not lines
     manager._outbound_inv_bucket.backlog.append(paying(manager, fee=1000).hash)
     manager._process_inv_backlog(1_700_000_001.0, bumped=True)
     assert [line[1].split()[3:7:3] for line in lines] == [
