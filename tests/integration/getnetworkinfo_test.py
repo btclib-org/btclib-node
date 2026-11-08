@@ -4,10 +4,10 @@
 
 """`getnetworkinfo`, this node's answer against a real bitcoind's.
 
-Both start on regtest with the same relay feerates, neither with a peer
-or a proxy, so `localrelay`, `timeoffset`, `networks`, `relayfee` and
-`incrementalfee` hold the same value on each side. The client reads a
-JSON fraction as a `Decimal`, the same for either answer.
+Both start on regtest with the same relay feerates, neither with a peer,
+a transaction or a proxy, so the fields the test names hold the same
+value on each side. The client reads a JSON fraction as a `Decimal`, the
+same for either answer.
 """
 
 from decimal import Decimal
@@ -24,19 +24,16 @@ from tests.integration.conftest import _started_bitcoind
 if TYPE_CHECKING:
     from pathlib import Path
 
-# What bitcoind answers and this node does not answer yet
-# (`get_network_info`'s docstring)
-_LEFT_OUT = {"tx_send_rate", "inv_buckets"}
-
 
 def test_the_fields_are_bitcoind_s_with_bitcoind_s_values(
     bitcoind_path: str, tmp_path: Path
 ) -> None:
-    """ISS 2128: every key bitcoind answers but two, in its order and types.
+    """ISS 2128: every key bitcoind answers, in its order and types.
 
-    `localrelay`, `timeoffset`, `networks`, `relayfee` and
-    `incrementalfee` hold bitcoind's own values. `version` is this
-    node's own, in the form bitcoind's takes.
+    `localrelay`, `timeoffset`, `tx_send_rate`, `inv_buckets`, `networks`,
+    `relayfee` and `incrementalfee` hold bitcoind's own values: with no
+    peer and no transaction, the buckets stay as they started (ISS 2309).
+    `version` is this node's own, in the form bitcoind's takes.
     """
     with _started_bitcoind(
         bitcoind_path,
@@ -66,11 +63,19 @@ def test_the_fields_are_bitcoind_s_with_bitcoind_s_values(
         node.join()
     ours = cast("dict[str, Any]", body["result"])
 
-    assert list(ours) == [key for key in theirs if key not in _LEFT_OUT]
+    assert list(ours) == list(theirs)
     assert {key: type(value) for key, value in ours.items()} == {
         key: type(theirs[key]) for key in ours
     }
-    for key in ("localrelay", "timeoffset", "networks", "relayfee", "incrementalfee"):
+    for key in (
+        "localrelay",
+        "timeoffset",
+        "tx_send_rate",
+        "inv_buckets",
+        "networks",
+        "relayfee",
+        "incrementalfee",
+    ):
         assert ours[key] == theirs[key], key
     assert ours["relayfee"] == Decimal("0.00002")
     assert ours["incrementalfee"] == Decimal("0.00003")

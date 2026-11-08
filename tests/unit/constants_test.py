@@ -16,6 +16,7 @@ from btclib_node import constants
 from btclib_node.config import (
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
     DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
 )
 from btclib_node.notify import Warnings
 from btclib_node.p2p import connection
@@ -40,7 +41,9 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
                 v2transport=False,
                 v1transport=True,
                 min_relay_feerate=DEFAULT_MIN_RELAY_FEERATE,
+                tx_send_rate=DEFAULT_TX_SEND_RATE,
             ),
+            download_manager=SimpleNamespace(inv_bucket_info=dict),
             mempool=SimpleNamespace(
                 incremental_relay_feerate=DEFAULT_INCREMENTAL_RELAY_FEERATE
             ),

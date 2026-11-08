@@ -93,7 +93,7 @@ from btclib_node import clock
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, DEFAULT_TX_SEND_RATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
@@ -888,6 +888,7 @@ def a_handshake_node(
             minimum_chain_work=0,
             block_notify="",
             alert_notify="",
+            tx_send_rate=DEFAULT_TX_SEND_RATE,
         ),
         warnings=Warnings(),
         # `Node.outbound_time_offsets`, which `version` appends to

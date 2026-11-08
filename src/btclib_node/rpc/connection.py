@@ -73,6 +73,7 @@ __all__ = [
     "RpcConnection",
     "btc_amount",
     "parse_request_head",
+    "univalue_float",
 ]
 
 # Bounds on the read below, which is fed by whoever connects: the header
@@ -167,6 +168,16 @@ def btc_amount(sats: int) -> RawJSON:
     quotient, remainder = divmod(abs(sats), COIN)
     sign = "-" if sats < 0 else ""
     return RawJSON(f"{sign}{quotient}.{remainder:08d}")
+
+
+def univalue_float(value: float) -> RawJSON:
+    """Write `value` as `UniValue::setFloat` does: 16 significant digits.
+
+    `std::setprecision(16)` (`src/univalue/lib/univalue.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a whole value has no
+    point, as `420`.
+    """
+    return RawJSON(format(value, ".16g"))
 
 
 class JSONEncoder(json.JSONEncoder):

@@ -21,7 +21,7 @@ import time
 from bisect import bisect_left
 from collections import deque
 from random import SystemRandom
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
@@ -68,6 +68,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MAX_BLOCKS_IN_TRANSIT_PER_PEER",
     "DownloadManager",
+    "InvBucketInfo",
     "block_inventory_type",
 ]
 
@@ -84,18 +85,19 @@ _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 
 # The global rate limits on transaction announcements, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag: `DEFAULT_TX_SEND_RATE`
-# (`net_processing.h`), and `OUTBOUND_INVENTORY_BUCKET_MULTIPLIER`,
-# `INVENTORY_BUCKET_CHECK_DELAY` and `InvToSendBucket`'s own constants
-# (`net_processing.cpp`). `_InvToSendBucket` says what its constants
-# bound, and `_process_inv_backlog` what the check delay does.
-# Core's `-txsendrate`, a debug-only option, is not offered: the rate is
-# always the default (btclib-org/btclib-node#2309).
-_TX_SEND_RATE = 14
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag:
+# `OUTBOUND_INVENTORY_BUCKET_MULTIPLIER`, `INVENTORY_BUCKET_CHECK_DELAY`,
+# `INVENTORY_BUCKET_BACKLOG_HEARTBEAT`,
+# `INVENTORY_BUCKET_BACKLOG_HEARTBEAT_MIN` and `InvToSendBucket`'s own
+# constants (`net_processing.cpp`). `Config.tx_send_rate` is the rate.
+# `_InvToSendBucket` says what its constants bound, and
+# `_process_inv_backlog` what the check delay and the heartbeat do.
 _OUTBOUND_INV_BUCKET_MULTIPLIER = (
     _INBOUND_TX_ANNOUNCE_INTERVAL / _OUTBOUND_TX_ANNOUNCE_INTERVAL
 )
 _INV_BUCKET_CHECK_DELAY = 0.1
+_INV_BACKLOG_HEARTBEAT = 2.0
+_INV_BACKLOG_HEARTBEAT_MIN = 100
 _INV_SIZE_INIT = 12_000_000
 _INV_SIZE_CAP = 50_000_000
 _INV_SIZE_REFILL = 20_000
@@ -130,6 +132,18 @@ class _TokenBucket:
         return self.value > floor
 
 
+class InvBucketInfo(NamedTuple):
+    """Core's `PeerManagerInfo::InvBucketInfo` (`net_processing.h`, v32.1).
+
+    A backlog's length and the tokens each of its two buckets holds. The
+    read refills neither, as Core's `GetInfo` does not.
+    """
+
+    backlog: int
+    count_tokens: float
+    size_tokens: float
+
+
 class _InvToSendBucket:
     """Core's `InvToSendBucket` (`net_processing.cpp`, v32.1 as above).
 
@@ -139,9 +153,9 @@ class _InvToSendBucket:
     tokens. Each transaction taken spends one token of the count bucket,
     and one token of the size bucket per byte of its serialization.
 
-    The count bucket refills at `_TX_SEND_RATE` times `mult` a second,
-    up to `_INV_COUNT_SECONDS` of the inbound rate, where it starts. The
-    size bucket refills at `_INV_SIZE_REFILL` times `mult` a second, from
+    The count bucket refills at `rate` times `mult` a second, up to
+    `_INV_COUNT_SECONDS` of `rate`, where it starts. The size bucket
+    refills at `_INV_SIZE_REFILL` times `mult` a second, from
     `_INV_SIZE_INIT` up to `_INV_SIZE_CAP`. A take may run either into
     debt: the count bucket by up to one inbound interval of the rate
     (`count_floor`), the size bucket to `_INV_SIZE_FLOOR`, which the take
@@ -159,6 +173,12 @@ class _InvToSendBucket:
         )
         count = rate * _INV_COUNT_SECONDS
         self.count_bucket = _TokenBucket(rate * mult, count, count)
+
+    def info(self) -> InvBucketInfo:
+        """Return what `getnetworkinfo` reports of this bucket."""
+        return InvBucketInfo(
+            len(self.backlog), self.count_bucket.value, self.size_bucket.value
+        )
 
     def avail(self) -> bool:
         """Answer whether there is a backlog and both buckets hold tokens."""
@@ -578,14 +598,17 @@ class DownloadManager:
         # Core, so a family's entry outlives the connections that drew
         # it.
         self._next_inv_to_inbounds: dict[BIP155Network | int, float] = {}
-        # Core's `m_inbound_inv_bucket`, `m_outbound_inv_bucket` and
-        # `m_next_inv_bucket_check` (v32.1, as `_InvToSendBucket` says),
-        # which `_process_inv_backlog` reads.
-        self._inbound_inv_bucket = _InvToSendBucket(_TX_SEND_RATE, 1.0)
+        # Core's `m_inbound_inv_bucket`, `m_outbound_inv_bucket`,
+        # `m_next_inv_bucket_check` and `m_next_inv_bucket_heartbeat`
+        # (v32.1, as `_InvToSendBucket` says), which
+        # `_process_inv_backlog` reads.
+        rate = node.config.tx_send_rate
+        self._inbound_inv_bucket = _InvToSendBucket(rate, 1.0)
         self._outbound_inv_bucket = _InvToSendBucket(
-            _TX_SEND_RATE, _OUTBOUND_INV_BUCKET_MULTIPLIER
+            rate, _OUTBOUND_INV_BUCKET_MULTIPLIER
         )
         self._next_inv_bucket_check = -math.inf
+        self._next_inv_bucket_heartbeat: float | None = None
 
         # Built once, from this node's own configured floor, rather than
         # per call: Core's own `FeeFilterRounder` is a `PeerManagerImpl`
@@ -1322,11 +1345,15 @@ class DownloadManager:
         # so the gap between a `tx` this node receives and the `inv` it
         # sends on carries no information about when that arrival was.
         # Core's `SendMessages` reads the backlogs first (v32.1, as
-        # `_process_inv_backlog` says).
+        # `_process_inv_backlog` says), and only for a peer past its
+        # handshake, so with none the buckets are not refilled and
+        # `getnetworkinfo` answers them as they were.
         now = clock.now()
-        self._process_inv_backlog(now)
+        conns = self.node.p2p_manager.connections.copy().values()
+        if any(conn.status == P2pConnStatus.Connected for conn in conns):
+            self._process_inv_backlog(now)
         due_conns = []
-        for conn in self.node.p2p_manager.connections.copy().values():
+        for conn in conns:
             if not conn.relay_tx:
                 continue
             due = now >= conn.next_inv_send_time
@@ -1367,8 +1394,7 @@ class DownloadManager:
         that relays transactions and has had its first trickle. Where a
         take finds no such peer, the rest of that backlog is dropped, so
         that it does not spend the bucket before the next peer connects.
-        Core's debug log of the backlogs is not written
-        (btclib-org/btclib-node#2309).
+        `_log_inv_backlog` runs after the refill, before the take.
         """
         if not bumped and now <= self._next_inv_bucket_check:
             return
@@ -1376,6 +1402,7 @@ class DownloadManager:
         inbound, outbound = self._inbound_inv_bucket, self._outbound_inv_bucket
         inbound.increment(now)
         outbound.increment(now)
+        self._log_inv_backlog(now)
         mempool = self.node.mempool
         for_inbound = inbound.take_for_processing(mempool) if inbound.avail() else []
         for_outbound = outbound.take_for_processing(mempool) if outbound.avail() else []
@@ -1399,6 +1426,54 @@ class DownloadManager:
             inbound.backlog.clear()
         if not any_outbound:
             outbound.backlog.clear()
+
+    def _log_inv_backlog(self, now: float) -> None:
+        """Log both backlogs under `net`, a line at most every period.
+
+        Core's heartbeat in `ProcessInvBacklog` (v32.1, as that method
+        says): a line once either backlog holds
+        `_INV_BACKLOG_HEARTBEAT_MIN`, then one at the first pass
+        `_INV_BACKLOG_HEARTBEAT` after the last, until a line finds both
+        backlogs empty.
+        """
+        inbound, outbound = self._inbound_inv_bucket, self._outbound_inv_bucket
+        if self._next_inv_bucket_heartbeat is None and (
+            max(len(inbound.backlog), len(outbound.backlog))
+            >= _INV_BACKLOG_HEARTBEAT_MIN
+        ):
+            self._next_inv_bucket_heartbeat = now
+        if (
+            self._next_inv_bucket_heartbeat is None
+            or now < self._next_inv_bucket_heartbeat
+        ):
+            return
+        self.logger.log_debug(
+            "net",
+            "Transaction rate-limiting backlog inbound=%d itok=%.1f isz=%.1f "
+            "outbound=%d otok=%.1f osz=%.1f",
+            len(inbound.backlog),
+            inbound.count_bucket.value,
+            inbound.size_bucket.value,
+            len(outbound.backlog),
+            outbound.count_bucket.value,
+            outbound.size_bucket.value,
+        )
+        if inbound.backlog or outbound.backlog:
+            self._next_inv_bucket_heartbeat = now + _INV_BACKLOG_HEARTBEAT
+        else:
+            self._next_inv_bucket_heartbeat = None
+
+    def inv_bucket_info(self) -> dict[str, InvBucketInfo]:
+        """Return the inbound and the outbound bucket, as Core's `GetInfo`.
+
+        `getnetworkinfo` reads them on `Node`'s thread, which `step`
+        changes them on, so no lock is taken where Core takes
+        `m_inv_to_send_mutex`.
+        """
+        return {
+            "inbound": self._inbound_inv_bucket.info(),
+            "outbound": self._outbound_inv_bucket.info(),
+        }
 
     def _mining_order_keys(self, conns: list[Connection]) -> dict[bytes, MiningKey]:
         """Return the sort key of each held wtxid queued for `conns`.

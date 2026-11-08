@@ -69,7 +69,11 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.cluster_linearize import FeeFrac
-from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import (
+    DEFAULT_MAX_DATACARRIER_BYTES,
+    DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
+)
 from btclib_node.constants import (
     CLIENT_VERSION,
     MIN_BLOCKS_TO_KEEP,
@@ -78,6 +82,7 @@ from btclib_node.constants import (
     P2pConnStatus,
     numeric_version,
 )
+from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
@@ -316,6 +321,7 @@ def a_node(
     local_addresses: dict[bytes, LocalService] | None = None,
     network_active: bool = True,
     outbound_time_offsets: list[int] | None = None,
+    tx_send_rate: int = DEFAULT_TX_SEND_RATE,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -333,12 +339,14 @@ def a_node(
     `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
     and unset by default -- nothing else here reads either.
     `outbound_time_offsets` is `get_network_info`'s `timeoffset` samples,
-    none by default.
+    none by default. `tx_send_rate` is `Config`'s, which a real
+    `DownloadManager`'s buckets, `get_network_info`'s `inv_buckets`, start
+    from.
     """
     known = heights if heights is not None else {}
     flag = [network_active]
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
-    return SimpleNamespace(
+    node = SimpleNamespace(
         # the network `decoderawtransaction` spells its addresses for
         chain=RegTest(),
         chainstate=SimpleNamespace(
@@ -381,6 +389,7 @@ def a_node(
             v1transport=v1transport,
             permit_bare_multisig=permit_bare_multisig,
             max_datacarrier_bytes=max_datacarrier_bytes,
+            tx_send_rate=tx_send_rate,
         ),
         warnings=Warnings(),
         # a file that is not there: an estimator with no history
@@ -395,6 +404,8 @@ def a_node(
         outbound_time_offsets=outbound_time_offsets or [],
         _accept=accept,
     )
+    node.download_manager = DownloadManager(cast("Any", node), Logger(debug=True))
+    return node
 
 
 def test_the_transactions_here_tell_a_txid_from_a_wtxid() -> None:
@@ -5210,8 +5221,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     `protocolversion` is included beside it as a real, cheaply-answered
     constant rather than as decoration. `NETWORK | WITNESS |
     NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give. The keys
-    are those bitcoind v32.1.0 answers on regtest, in its order, less
-    `tx_send_rate` and `inv_buckets`.
+    are those bitcoind v32.1.0 answers on regtest, in its order.
     """
     result = get_network_info(a_node(), _CONN, [])
     assert list(result) == [
@@ -5222,6 +5232,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "localservicesnames",
         "localrelay",
         "timeoffset",
+        "tx_send_rate",
+        "inv_buckets",
         "networkactive",
         "connections",
         "connections_in",
@@ -5240,6 +5252,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
             "version",
             "localrelay",
             "timeoffset",
+            "tx_send_rate",
+            "inv_buckets",
             "networks",
             "relayfee",
             "incrementalfee",
@@ -5257,6 +5271,64 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "localaddresses": [],
         "warnings": [],
     }
+
+
+def _bucket_text(answer: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return `inv_buckets` with each token count as the wire carries it."""
+    return {
+        direction: {
+            key: value.text if isinstance(value, RawJSON) else value
+            for key, value in bucket.items()
+        }
+        for direction, bucket in answer["inv_buckets"].items()
+    }
+
+
+@pytest.mark.parametrize(
+    ("rate", "count"), [(DEFAULT_TX_SEND_RATE, "420"), (1, "30"), (1000, "30000")]
+)
+def test_get_network_info_answers_the_announcement_buckets_at_rest(
+    rate: int, count: str
+) -> None:
+    """ISS 2309: bitcoind v32.1.0's answer before any transaction arrives.
+
+    Measured on regtest at `-txsendrate` unset, `1` and `5000`, which
+    Core clamps to 1000: `tx_send_rate`, then both buckets full, a whole
+    token count written with no point.
+    """
+    result = get_network_info(a_node(tx_send_rate=rate), _CONN, [])
+    assert result["tx_send_rate"] == rate
+    full = {"backlog": 0, "count_tok": count, "size_tok": "12000000"}
+    assert _bucket_text(result) == {"inbound": full, "outbound": full}
+
+
+def test_get_network_info_answers_the_buckets_as_the_backlog_left_them() -> None:
+    """ISS 2309: each direction's backlog and tokens, unrefilled by the read.
+
+    A fraction is written to 16 significant digits, as bitcoind v32.1.0
+    wrote `-2.286893999999989` and `12305094.12000001` on regtest.
+    """
+    node = a_node()
+    manager = node.download_manager
+    inbound, outbound = manager._inbound_inv_bucket, manager._outbound_inv_bucket
+    inbound.backlog = [b"\x01" * 32, b"\x02" * 32]
+    inbound.count_bucket.value = -2.286893999999989
+    inbound.size_bucket.value = 12305094.12000001
+    outbound.count_bucket.value = 419.0
+    outbound.size_bucket.value = 12009769.4
+    # a refill from then to now would move every value below
+    inbound.increment(1_700_000_000.0)
+    outbound.increment(1_700_000_000.0)
+    first = _bucket_text(get_network_info(node, _CONN, []))
+    assert first == {
+        "inbound": {
+            "backlog": 2,
+            "count_tok": "-2.286893999999989",
+            "size_tok": "12305094.12000001",
+        },
+        "outbound": {"backlog": 0, "count_tok": "419", "size_tok": "12009769.4"},
+    }
+    assert _bucket_text(get_network_info(node, _CONN, [])) == first
 
 
 def test_get_network_info_answers_networkactive_as_setnetworkactive_left_it() -> None:

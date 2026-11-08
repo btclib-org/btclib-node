@@ -23,6 +23,7 @@ from btclib_node.config import (
     DEFAULT_FULL_RELAY_INBOUND_PCT,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
     BindAddress,
     Config,
     default_onion_bind,
@@ -616,6 +617,13 @@ def test_max_connections_and_the_relay_share_default_to_core_s() -> None:
     assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
     assert config.inbound_relay_percent == DEFAULT_FULL_RELAY_INBOUND_PCT
     assert Config(chain="regtest", inbound_relay_percent=7).inbound_relay_percent == 7
+
+
+def test_the_transaction_send_rate_defaults_to_core_s() -> None:
+    """ISS 2309: Core's `DEFAULT_TX_SEND_RATE`, 14 a second."""
+    assert DEFAULT_TX_SEND_RATE == 14
+    assert Config(chain="regtest").tx_send_rate == DEFAULT_TX_SEND_RATE
+    assert Config(chain="regtest", tx_send_rate=3).tx_send_rate == 3
 
 
 def test_max_connections_given_is_stored_back() -> None:
