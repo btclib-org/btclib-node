@@ -662,6 +662,7 @@ def unstarted_node_context(
     prune_target_mib: int | None = None,
     incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
     mempool_expiry: int = DEFAULT_MEMPOOL_EXPIRY_HOURS * 3600,
+    addnode: tuple[str, ...] = (),
 ) -> Iterator[Node]:
     """Build and drive a node directly, never `start()`ed; close it on exit.
 
@@ -712,6 +713,7 @@ def unstarted_node_context(
             prune_target_mib=prune_target_mib,
             incremental_relay_feerate=incremental_relay_feerate,
             mempool_expiry=mempool_expiry,
+            addnode=addnode,
         )
     )
     # the stores `run` would open once its RPC listener were up

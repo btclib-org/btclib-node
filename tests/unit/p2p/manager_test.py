@@ -282,6 +282,7 @@ class AManagerFactory(Protocol):
         port: int | None = None,
         connect: Sequence[str] = (),
         addnode_args: Sequence[str] = (),
+        addnode_empty: int = 0,
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
@@ -318,6 +319,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         port: int | None = None,
         connect: Sequence[str] = (),
         addnode_args: Sequence[str] = (),
+        addnode_empty: int = 0,
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
@@ -373,6 +375,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 connect_given=bool(connect),
                 connect_args=tuple(connect),
                 addnode_args=tuple(addnode_args),
+                addnode_empty=addnode_empty,
                 seednode=seednode,
                 seednode_args=tuple(seednode),
                 listen=listen,
@@ -3084,6 +3087,20 @@ def test_run_does_not_log_it_without_a_seednode(
     wait_until(manager.loop.is_running)
     _let_runs_own_coroutines_start(manager)
     assert "-seednode is ignored when -connect is used" not in logged
+
+
+@pytest.mark.parametrize("addnode_empty", [0, 2])
+def test_run_warns_once_for_each_empty_addnode(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, addnode_empty: int
+) -> None:
+    """ISS 2248: Core's own warning, once for each value `Config` left out."""
+    logged: list[Any] = []
+    manager = a_manager(addnode_empty=addnode_empty, listen=False)
+    monkeypatch.setattr(manager.logger, "warning", logged.append)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
+    assert logged.count("Ignoring empty -addnode value") == addnode_empty
 
 
 def test_run_schedules_the_dns_lookup_without_connect(

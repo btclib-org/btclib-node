@@ -761,16 +761,22 @@ class Config:
     # (`add_added_peer`/`remove_added_peer`, `p2p/manager.py`), which a
     # value split once here could not follow (btclib-org/btclib-node#1350).
     addnode: tuple[tuple[str, int], ...]
-    # `-addnode`, each as given: Core's own `m_added_node_params`
+    # `-addnode`, each as given but for an empty one (`addnode_empty`
+    # below): Core's own `m_added_node_params`
     # (`connOptions.m_added_nodes`, `src/init.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-    # until ISS 2248), dialled alongside the ordinary draw and compared,
-    # as text, against a drawn address by `AddedNodesContain`
-    # (`src/net.cpp`, same sha) -- both `P2pManager._open_added_peers` and
-    # `_added_node` read this, not `addnode` above, since
-    # `add_added_peer`/`remove_added_peer` mutate it at runtime
-    # (btclib-org/btclib-node#1350).
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), dialled alongside the
+    # ordinary draw and compared, as text, against a drawn address by
+    # `AddedNodesContain` (`src/net.cpp`, same sha) -- both
+    # `P2pManager._open_added_peers` and `_added_node` read this, not
+    # `addnode` above, since `add_added_peer`/`remove_added_peer` mutate
+    # it at runtime (btclib-org/btclib-node#1350).
     addnode_args: tuple[str, ...]
+    # How many `-addnode` values are empty once `TrimStringView` has
+    # trimmed them: Core skips each (`src/init.cpp:2196-2203`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `addnode` and
+    # `addnode_args` above hold none, and `P2pManager.run` logs Core's
+    # warning once for each.
+    addnode_empty: int
     # Core's own `-seednode`: peers `P2pManager` opens an `ADDR_FETCH`
     # connection to, one at a time, to draw a `getaddr` answer and
     # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
@@ -1060,8 +1066,12 @@ class Config:
         # `["0"]` the same "dial nobody" spelling as `connect` above,
         # rather than a literal peer named `"0"`.
         self.connect_args = () if list(connect) == ["0"] else tuple(connect)
-        self.addnode = _split_peers(addnode, self.chain.port)
-        self.addnode_args = tuple(addnode)
+        # `TrimStringView`'s own six characters, not `str.strip`'s Unicode
+        # whitespace: Core keeps `-addnode=\xa0` as a value
+        added = tuple(spec for spec in addnode if spec.strip(" \f\n\r\t\v"))
+        self.addnode = _split_peers(added, self.chain.port)
+        self.addnode_args = added
+        self.addnode_empty = len(addnode) - len(added)
         self.seednode = _split_peers(seednode, self.chain.port)
         self.seednode_args = tuple(seednode)
         self.listen = listen

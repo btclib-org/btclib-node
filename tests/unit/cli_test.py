@@ -3409,6 +3409,16 @@ def test_build_config_connect_and_addnode_reach_config() -> None:
     assert config.addnode == (("10.0.0.2", 2),)
 
 
+def test_build_config_drops_an_empty_addnode() -> None:
+    """ISS 2248: `-addnode=` and `-addnode=" "` name no peer, as in Core."""
+    config = cli.build_config(
+        ["-regtest", "-addnode=", "-addnode= ", "-addnode=10.0.0.2"]
+    )
+    assert config.addnode_args == ("10.0.0.2",)
+    assert config.addnode == (("10.0.0.2", RegTest().port),)
+    assert config.addnode_empty == 2
+
+
 def test_build_config_connect_alone_defaults_listen_to_false() -> None:
     """`-connect` alone: not listening, `config.connect` still carries the peer.
 

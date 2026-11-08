@@ -411,6 +411,21 @@ def test_addnode_keeps_its_values_as_given() -> None:
     """ISS 1224: `AddedNodesContain` compares the values as given."""
     config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
     assert config.addnode_args == ("10.0.0.1:1", "10.0.0.2")
+    assert config.addnode_empty == 0
+
+
+def test_addnode_leaves_out_a_value_trimmed_to_nothing() -> None:
+    """ISS 2248: `TrimStringView`'s six characters, and no other whitespace.
+
+    Core keeps a value with text in it untrimmed, and keeps a no-break
+    space, which its trim does not remove (measured on a regtest bitcoind
+    of the v32.1 tag, with `getaddednodeinfo`).
+    """
+    addnode = ["", " ", " \f\n\r\t\v", " 10.0.0.1 ", "\xa0", "10.0.0.2"]
+    config = Config(chain="regtest", addnode=addnode)
+    assert config.addnode_args == (" 10.0.0.1 ", "\xa0", "10.0.0.2")
+    assert [host for host, _ in config.addnode] == [" 10.0.0.1 ", "\xa0", "10.0.0.2"]
+    assert config.addnode_empty == 3
 
 
 def test_connect_keeps_its_values_as_given() -> None:

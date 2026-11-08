@@ -691,10 +691,10 @@ class P2pManager(threading.Thread):
         )
         # Core's `m_added_node_params`, `AddNode`/`RemoveAddedNode`'s
         # own list (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
-        # v32.1 tag): every `-addnode` value, as given, plus whatever
-        # the `addnode` RPC's own `add` (`add_added_peer`, reached from
-        # `rpc/callbacks.py`) has appended and `remove`
-        # (`remove_added_peer`) not yet taken back out. `dict[str,
+        # v32.1 tag): every `-addnode` value `Config.addnode_args` keeps,
+        # as given, plus whatever the `addnode` RPC's own `add`
+        # (`add_added_peer`, reached from `rpc/callbacks.py`) has appended
+        # and `remove` (`remove_added_peer`) not yet taken back out. `dict[str,
         # bool]`, not a `set`, for its insertion order: `GetAddedNodeInfo`
         # dials this list in the order `AddNode`'s own `push_back` built
         # it, oldest first. Read by `_open_added_peers` (the dial loop) and
@@ -3866,6 +3866,12 @@ class P2pManager(threading.Thread):
         # on `self.listen`: Core calls `Discover()` off `bind_on_any`,
         # never off `fListen` (`_discover`'s own docstring).
         server_sockets: list[socket.socket] = []
+        # Core's own warning, logged as it builds the options
+        # `CConnman::Start` takes (`src/init.cpp:2196-2203`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), once for each empty
+        # `-addnode` value `Config` left out
+        for _ in range(self.node.config.addnode_empty):
+            self.logger.warning("Ignoring empty -addnode value")
         try:
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
