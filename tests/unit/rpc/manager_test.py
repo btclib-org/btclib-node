@@ -392,9 +392,13 @@ def test_the_protection_level_is_set_on_windows_and_its_failure_logged(
     expected: list[object] = [(socket.SOL_SOCKET, exclusive, 1)]
     logged: list[tuple[object, ...]] = []
     if isinstance(host, IPv6Address):
-        expected.append((socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1))
-        # the numbers of the Windows SDK's `ws2ipdef.h` (10.0.28000.0)
-        expected.append((socket.IPPROTO_IPV6, 23, 10))
+        expected.extend(
+            [
+                (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1),
+                # the numbers of the Windows SDK's `ws2ipdef.h` (10.0.28000.0)
+                (socket.IPPROTO_IPV6, 23, 10),
+            ]
+        )
         line = "Cannot set %s on %s listen socket: %s, continuing anyway"
         text = f"Protocol not available ({errno.ENOPROTOOPT})"
         address = service_text(host, 0)
