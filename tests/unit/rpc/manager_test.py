@@ -38,6 +38,7 @@ from btclib_node.config import Config, lookup_service, service_text
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.log import Logger
 from btclib_node.p2p.banman import SpecialAddress
+from btclib_node.p2p.manager import IPV6_PROTECTION_LEVEL, PROTECTION_LEVEL_UNRESTRICTED
 from btclib_node.rpc import manager as manager_module
 from btclib_node.rpc.connection import IDLE_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
@@ -309,15 +310,21 @@ def test_a_request_is_answered_on_either_loopback(
 
 
 def test_a_listening_socket_carries_cores_options(
-    a_manager: AManagerFactory,
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ISS 2152: `HTTPServer::BindAndStartListening`'s options.
 
-    `SO_EXCLUSIVEADDRUSE` on Windows and `SO_REUSEADDR` elsewhere, and
-    `IPV6_V6ONLY` on the `::1` socket (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    `SO_EXCLUSIVEADDRUSE` on Windows and `SO_REUSEADDR` elsewhere, and on
+    the `::1` socket `IPV6_V6ONLY`, with `IPV6_PROTECTION_LEVEL` on
+    Windows (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). No failure to set the last is logged, on any platform: a
+    set refused on Windows would be logged and leave the default.
     """
     manager = a_manager(get_random_port())
+    debugged: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        manager.logger, "log_debug", lambda *args: debugged.append(args)
+    )
     server_sockets = manager._bind()
     try:
         for server_socket in server_sockets:
@@ -330,8 +337,70 @@ def test_a_listening_socket_carries_cores_options(
             if server_socket.family == socket.AF_INET6:
                 v6only = socket.IPV6_V6ONLY
                 assert server_socket.getsockopt(socket.IPPROTO_IPV6, v6only)
+                if sys.platform == "win32":  # pragma: no cover -- windows-latest
+                    level = server_socket.getsockopt(
+                        socket.IPPROTO_IPV6, IPV6_PROTECTION_LEVEL
+                    )
+                    assert level == PROTECTION_LEVEL_UNRESTRICTED
     finally:
         bound_hosts(server_sockets)
+    assert not [args for args in debugged if "IPV6_PROTECTION_LEVEL" in args]
+
+
+@pytest.mark.parametrize("loopback", LOOPBACKS)
+def test_the_protection_level_is_set_on_windows_and_its_failure_logged(
+    monkeypatch: pytest.MonkeyPatch, loopback: str
+) -> None:
+    """ISS 2163: `IPV6_PROTECTION_LEVEL` on an IPv6 socket, before `bind`.
+
+    `HTTPServer::BindAndStartListening` sets it on Windows, logs a failure
+    at debug and goes on (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The module reads Windows
+    as its platform, and the stand-in records each call and refuses this
+    option, so any platform runs it.
+    """
+    debugged: list[tuple[object, ...]] = []
+    logger = Logger(debug=True)
+    monkeypatch.setattr(logger, "log_debug", lambda *args: debugged.append(args))
+    monkeypatch.setattr(manager_module, "sys", SimpleNamespace(platform="win32"))
+    # a number of the test's own, on every platform: the stand-in sets nothing
+    exclusive = -5
+    monkeypatch.setattr(socket, "SO_EXCLUSIVEADDRUSE", exclusive, raising=False)
+    calls: list[object] = []
+    unrestricted = (socket.IPPROTO_IPV6, IPV6_PROTECTION_LEVEL)
+
+    class Recording(socket.socket):
+        """A socket recording its options and `bind`, refusing one option."""
+
+        @override
+        def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
+            calls.append((level, optname, value))
+            if (level, optname) == unrestricted:
+                raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+        @override
+        def bind(self, address: Any, /) -> None:
+            calls.append("bind")
+            super().bind(address)
+
+    monkeypatch.setattr(socket, "socket", Recording)
+    service = lookup_service(loopback, 0)
+    assert service is not None
+    host = service[0]
+    with manager_module._bind_and_listen(host, 0, logger) as server_socket:
+        assert server_socket.getsockname()[1]
+    expected: list[object] = [(socket.SOL_SOCKET, exclusive, 1)]
+    logged: list[tuple[object, ...]] = []
+    if isinstance(host, IPv6Address):
+        expected.append((socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1))
+        # the numbers of the Windows SDK's `ws2ipdef.h` (10.0.28000.0)
+        expected.append((socket.IPPROTO_IPV6, 23, 10))
+        line = "Cannot set %s on %s listen socket: %s, continuing anyway"
+        text = f"Protocol not available ({errno.ENOPROTOOPT})"
+        address = service_text(host, 0)
+        logged.append(("http", line, "IPV6_PROTECTION_LEVEL", address, text))
+    assert calls == [*expected, "bind"]
+    assert debugged == logged
 
 
 @pytest.mark.parametrize("loopback", LOOPBACKS)
@@ -355,7 +424,7 @@ def test_an_option_core_passes_over_is_logged_at_debug(
 
         @override
         def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
-            # `SO_EXCLUSIVEADDRUSE`, the one option set and not refused
+            # Windows' own options, set and not refused
             if (level, optname) not in refused:  # pragma: no cover -- Windows alone
                 super().setsockopt(level, optname, value, *rest)
                 return

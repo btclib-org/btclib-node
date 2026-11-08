@@ -46,7 +46,12 @@ from btclib_node.constants import CLIENT_NAME
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.banman import SpecialAddress
-from btclib_node.p2p.manager import network_error_string, socket_address
+from btclib_node.p2p.manager import (
+    IPV6_PROTECTION_LEVEL,
+    PROTECTION_LEVEL_UNRESTRICTED,
+    network_error_string,
+    socket_address,
+)
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import RpcConnection
@@ -93,13 +98,10 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
     Core's `HTTPServer::BindAndStartListening` (`src/httpserver.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): `SO_EXCLUSIVEADDRUSE` on
     Windows, so that no other process binds the port, `SO_REUSEADDR`
-    elsewhere, and `IPV6_V6ONLY` on an IPv6 socket, a failure to set
-    either of the last two logged and passed over. Raises `OSError` in
-    Core's words where any other step fails, the socket closed.
-
-    Core also sets `IPV6_PROTECTION_LEVEL` on Windows, and this does not:
-    `P2pManager._bind_one` leaves it unset for Core's `BindListenPort`
-    too (btclib-org/btclib-node#2163).
+    elsewhere, and on an IPv6 socket `IPV6_V6ONLY`, then
+    `IPV6_PROTECTION_LEVEL` on Windows, a failure to set any but the first
+    logged and passed over. Raises `OSError` in Core's words where any
+    other step fails, the socket closed.
     """
     address = service_text(host, port)
     if isinstance(host, SpecialAddress):
@@ -126,13 +128,10 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
                 )
                 raise OSError(err_msg) from error
         else:
-            _set_or_log(
-                server_socket, socket.SOL_SOCKET, "SO_REUSEADDR", address, logger
-            )
+            reuse = (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            _set_or_log(server_socket, reuse, "SO_REUSEADDR", address, logger)
         if family == socket.AF_INET6:
-            _set_or_log(
-                server_socket, socket.IPPROTO_IPV6, "IPV6_V6ONLY", address, logger
-            )
+            _set_ipv6_or_log(server_socket, address, logger)
         try:
             server_socket.bind(socket_address(host, port))
         except OSError as error:
@@ -159,12 +158,36 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
     return server_socket
 
 
-def _set_or_log(
-    server_socket: socket.socket, level: int, name: str, address: str, logger: Logger
+def _set_ipv6_or_log(
+    server_socket: socket.socket, address: str, logger: Logger
 ) -> None:
-    """Turn the option `name` on, or log at debug that it could not be."""
+    """Set `IPV6_V6ONLY`, then `IPV6_PROTECTION_LEVEL` on Windows, or log."""
+    v6only = (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    _set_or_log(server_socket, v6only, "IPV6_V6ONLY", address, logger)
+    if sys.platform == "win32":
+        unrestricted = (
+            socket.IPPROTO_IPV6,
+            IPV6_PROTECTION_LEVEL,
+            PROTECTION_LEVEL_UNRESTRICTED,
+        )
+        _set_or_log(
+            server_socket, unrestricted, "IPV6_PROTECTION_LEVEL", address, logger
+        )
+
+
+def _set_or_log(
+    server_socket: socket.socket,
+    option: tuple[int, int, int],
+    name: str,
+    address: str,
+    logger: Logger,
+) -> None:
+    """Set `option` (level, number, value), or log at debug that it failed.
+
+    `name` names the option in the line logged.
+    """
     try:
-        server_socket.setsockopt(level, getattr(socket, name), 1)
+        server_socket.setsockopt(*option)
     except OSError as error:
         logger.log_debug(
             "http",

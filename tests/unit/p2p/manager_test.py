@@ -78,7 +78,12 @@ from btclib_node.p2p.banman import (
 from btclib_node.p2p.connection import AddrKnown, Connection, local_services
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
-from btclib_node.p2p.manager import P2pManager, socket_address
+from btclib_node.p2p.manager import (
+    IPV6_PROTECTION_LEVEL,
+    PROTECTION_LEVEL_UNRESTRICTED,
+    P2pManager,
+    socket_address,
+)
 from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION
@@ -6660,6 +6665,81 @@ def test_bind_one_binds_an_ipv6_host_with_its_scope(
     with pytest.raises(OSError, match=r"^Unable to bind to \[fe80::1%3\]:7 "):
         manager._bind_one(socket.AF_INET6, "fe80::1%3", 7)
     assert stand_in.bound == [("fe80::1", 7, 0, 3)]
+
+
+def test_a_listening_ipv6_socket_carries_cores_options(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2163: `IPV6_V6ONLY`, and `IPV6_PROTECTION_LEVEL` on Windows.
+
+    Core's `CConnman::BindListenPort` sets both on an IPv6 socket
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). No
+    failure to set the second is logged, on any platform: a set refused
+    on Windows would be logged and leave the default.
+    """
+    manager = a_manager(port=8333)
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    with closing(manager._bind_one(socket.AF_INET6, "::1", 0)) as server_socket:
+        assert server_socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY)
+        if sys.platform == "win32":  # pragma: no cover -- windows-latest
+            level = server_socket.getsockopt(socket.IPPROTO_IPV6, IPV6_PROTECTION_LEVEL)
+            assert level == PROTECTION_LEVEL_UNRESTRICTED
+    assert not [args for args in infos if "IPV6_PROTECTION_LEVEL" in str(args[0])]
+
+
+@pytest.mark.parametrize(
+    ("family", "host"),
+    [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")],
+    ids=["ipv4", "ipv6"],
+)
+def test_the_protection_level_is_set_on_windows_and_its_failure_logged(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    family: socket.AddressFamily,
+    host: str,
+) -> None:
+    """ISS 2163: `IPV6_PROTECTION_LEVEL` on an IPv6 socket, before `bind`.
+
+    `CConnman::BindListenPort` sets it on Windows, logs a failure at info
+    and goes on (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag). The module reads Windows as its platform, and the stand-in
+    records each call and refuses this option, so any platform runs it.
+    """
+    manager = a_manager(port=8333)
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    monkeypatch.setattr(manager_module, "sys", SimpleNamespace(platform="win32"))
+    calls: list[object] = []
+    unrestricted = (socket.IPPROTO_IPV6, IPV6_PROTECTION_LEVEL)
+
+    class Recording(socket.socket):
+        """A socket recording its options and `bind`, refusing one option."""
+
+        @override
+        def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
+            calls.append((level, optname, value))
+            if (level, optname) == unrestricted:
+                raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+        @override
+        def bind(self, address: Any, /) -> None:
+            calls.append("bind")
+            super().bind(address)
+
+    monkeypatch.setattr(socket, "socket", Recording)
+    with closing(manager._bind_one(family, host, 0)) as server_socket:
+        assert server_socket.getsockname()[1]
+    expected: list[object] = [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
+    logged: list[tuple[object, ...]] = []
+    if family == socket.AF_INET6:
+        expected.append((socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1))
+        # the numbers of the Windows SDK's `ws2ipdef.h` (10.0.28000.0)
+        expected.append((socket.IPPROTO_IPV6, 23, 10))
+        line = "Error setting IPV6_PROTECTION_LEVEL on socket: %s, continuing anyway"
+        logged.append((line, f"Protocol not available ({errno.ENOPROTOOPT})"))
+    assert calls == [*expected, "bind"]
+    assert infos == logged
 
 
 def _binds(host: IPv6Address, scope: int) -> bool:
