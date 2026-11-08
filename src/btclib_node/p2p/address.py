@@ -340,11 +340,17 @@ def ip_and_port(ip: str, port: int, scope_id: int = 0) -> str:
 _DIAL_TIMEOUT = 5.0
 
 
-async def dial(address: NetworkAddressV2) -> socket.socket | None:
+async def dial(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket | None:
     """Return a socket connected to the peer, or nothing if it never came up.
 
     `dial` and not `connect`, which is what `P2pManager` calls the whole
     of making a connection out of one: this is the socket alone.
+
+    An IPv6 peer is dialled at `scope_id`, which BIP155 has no room for:
+    a link-local address is reached only at its interface's scope. Core's
+    `ConnectDirectly` dials at the scope `CService::GetSockAddr` sets in
+    `sin6_scope_id` (`src/netbase.cpp`, `src/netaddress.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 
     `loop.sock_connect` is the kernel's own answer rather than a guess at
     it: a refusal is `SO_ERROR` on the socket, read the moment the OS
@@ -395,7 +401,7 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
         # argument was supplied', None, 10022, None)`. The four-tuple
         # form names the family explicitly and is accepted on every
         # platform this node runs on, POSIX included.
-        peer = (host, address.port, 0, 0)
+        peer = (host, address.port, 0, scope_id)
     try:
         client = socket.socket(family, socket.SOCK_STREAM)
     except OSError:

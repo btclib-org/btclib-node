@@ -3854,7 +3854,7 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     held = a_conn(1, addr_name="other.example")
@@ -3877,6 +3877,7 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
             "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -3894,7 +3895,7 @@ def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -3916,6 +3917,7 @@ def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
             "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example:9999",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4070,7 +4072,7 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
     """A resolved candidate not already held is dialled and connected."""
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -4092,6 +4094,7 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
             "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4106,6 +4109,7 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
 
     async def only_the_second_connects(
         address: NetworkAddressV2,
+        scope_id: int = 0,
     ) -> socket.socket | None:
         tried.append(str(address.address))
         return None if len(tried) == 1 else ours
@@ -4131,6 +4135,7 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
             "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4147,7 +4152,7 @@ def test_process_addr_fetch_gives_up_when_no_candidate_connects(
     (btclib-org/btclib-node#1284).
     """
 
-    async def never_connects(address: NetworkAddressV2) -> None:
+    async def never_connects(address: NetworkAddressV2, scope_id: int = 0) -> None:
         return None
 
     monkeypatch.setattr(
@@ -4758,7 +4763,7 @@ def test_open_connect_peers_resolves_a_hostname(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -4784,6 +4789,7 @@ def test_open_connect_peers_resolves_a_hostname(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example:8333",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4800,7 +4806,7 @@ def test_open_connect_peers_keeps_a_portless_hostname_without_one(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -4826,6 +4832,7 @@ def test_open_connect_peers_keeps_a_portless_hostname_without_one(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4851,7 +4858,7 @@ def test_open_added_peers_resolves_a_hostname(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -4877,6 +4884,7 @@ def test_open_added_peers_resolves_a_hostname(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -4892,7 +4900,7 @@ def test_open_added_peers_keeps_a_port_when_given(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
@@ -4918,6 +4926,7 @@ def test_open_added_peers_keeps_a_port_when_given(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example:9999",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -5062,7 +5071,7 @@ def test_async_connect_host_logs_when_no_candidate_comes_up(
     """
     logged, info = log_recorder()
 
-    async def never_connects(address: NetworkAddressV2) -> None:
+    async def never_connects(address: NetworkAddressV2, scope_id: int = 0) -> None:
         return None
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
@@ -5079,7 +5088,7 @@ def test_async_connect_host_logs_the_port_when_dest_names_one(
     """ISS 1493: a `dest` naming its own port keeps it on the give-up line."""
     logged, info = log_recorder()
 
-    async def never_connects(address: NetworkAddressV2) -> None:
+    async def never_connects(address: NetworkAddressV2, scope_id: int = 0) -> None:
         return None
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
@@ -5107,7 +5116,7 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
     """
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     valid_answers = [f"10.0.0.{i}" for i in range(256)]
@@ -5133,6 +5142,7 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
+            "scope_id": 0,
         }
     ]
     theirs.close()
@@ -5165,7 +5175,9 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
     survivor = peer_address(valid_answers[-1], port)
     tried: list[NetworkAddressV2] = []
 
-    async def connects(address: NetworkAddressV2) -> socket.socket | None:
+    async def connects(
+        address: NetworkAddressV2, scope_id: int = 0
+    ) -> socket.socket | None:
         tried.append(address)
         if address == survivor:
             return ours
@@ -5194,8 +5206,62 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
             "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
+            "scope_id": 0,
         }
     ]
+    theirs.close()
+
+
+def test_async_connect_host_dials_each_answer_at_its_scope(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2292: an IPv6 answer is dialled at the scope it resolved to.
+
+    `WrappedGetAddrInfo` keeps each answer's `sin6_scope_id`, and
+    `ConnectDirectly` dials at it (`src/netbase.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). One address at two scopes
+    is two answers. An IPv4 answer has no scope. The connection made holds
+    the scope it was dialled at, as `CNode::addr` does.
+    """
+    v6, v4 = socket.AF_INET6, socket.AF_INET
+    answers = [
+        (v4, ("1.2.3.4", 18444)),
+        (v6, ("fe80::1", 18444, 0, 5)),
+        (v6, ("fe80::1", 18444, 0, 6)),
+    ]
+
+    async def getaddrinfo(host: str, port: int, **kwargs: object) -> list[Any]:
+        return [(family, None, None, None, sockaddr) for family, sockaddr in answers]
+
+    ours, theirs = socket.socketpair()
+    dialled: list[tuple[NetworkAddressV2, int]] = []
+
+    async def connects_at_6(
+        address: NetworkAddressV2, scope_id: int = 0
+    ) -> socket.socket | None:
+        dialled.append((address, scope_id))
+        return ours if scope_id == 6 else None
+
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: SimpleNamespace(getaddrinfo=getaddrinfo),
+    )
+    monkeypatch.setattr(manager_module, "dial", connects_at_6)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager.async_connect_host("peer.example", 18444))
+    assert dialled == [
+        (peer_address("1.2.3.4", 18444), 0),
+        (peer_address("fe80::1", 18444), 5),
+        (peer_address("fe80::1", 18444), 6),
+    ]
+    assert [kwargs["scope_id"] for kwargs in made] == [6]
+    ours.close()
     theirs.close()
 
 
@@ -10169,7 +10235,7 @@ def test_a_dialled_name_is_given_the_choice_its_caller_made(
     """A name has no services: `async_connect_host` passes on the choice."""
     ours, theirs = socket.socketpair()
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
+    async def connects(address: NetworkAddressV2, scope_id: int = 0) -> socket.socket:
         return ours
 
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
