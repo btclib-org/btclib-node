@@ -223,6 +223,36 @@ def test_a_block_short_of_transactions_asks_for_them_and_takes_them(
     assert peer.download_queue == []
 
 
+def test_a_compact_block_and_its_transactions_with_octets_past_them_are_taken(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """ISS 2097: Core's `CMPCTBLOCK` and `BLOCKTXN` read no further."""
+    node, _ = a_node(regtest_node)
+    missing = generate_random_transaction()
+    block = next_block(node, missing)
+    peer = a_compact_peer(node)
+    cmpctblock(node, compact_block(block, 7).serialize() + b"\x00", peer)
+    (request,) = sent(peer, GetBlockTxn)
+    assert list(request.indexes) == [1]
+    blocktxn(node, BlockTxn(block.header.hash, [missing]).serialize() + b"\x00", peer)
+    assert held(node, block)
+
+
+def test_a_block_with_octets_past_it_is_stored_without_them(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """ISS 2097: Core's `BLOCK` reads the block; nothing after it is kept."""
+    node, _ = a_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node)
+    peer.download_queue.append(block.header.hash)
+    payload = BlockPayload(block, include_witness=True, check_validity=False)
+    block_callback(node, payload.serialize(check_validity=False) + b"\x00", peer)
+    assert held(node, block)
+    stored = node.block_db.get_raw_block(block.header.hash)
+    assert stored == block.serialize(check_validity=False)
+
+
 def test_transactions_other_than_those_missing_are_misbehaviour(
     regtest_node: Callable[[], Node],
 ) -> None:

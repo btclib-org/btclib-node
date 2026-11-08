@@ -330,6 +330,45 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
         raise MisbehavingError(err_msg)
 
 
+def _fields(msg: bytes) -> BytesIO:
+    """Return `msg` as a stream, so that a parse reads its fields and no more.
+
+    Core's `ProcessMessage` reads the fields it needs out of `vRecv` and
+    never asks what is left (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a payload with octets
+    past its fields is answered as the one without them. btclib's parsers
+    refuse such octets, its malleability guard, except in a stream, which
+    `assert_no_trailing` leaves to the caller. btclib-org/btclib-node#149,
+    btclib-org/btclib-node#2097
+    """
+    return BytesIO(msg)
+
+
+# A `version`'s fields ahead of its user agent: the protocol version, the
+# services, the time, both addresses and the nonce. The start height and
+# the relay flag follow the user agent.
+_VERSION_HEAD_SIZE = 80
+_START_HEIGHT_SIZE = 4
+_RELAY_SIZE = 1
+
+
+def _version_fields(msg: bytes) -> bytes:
+    """Return the octets of a `version` that Core's `VERSION` handler reads.
+
+    `Version.parse` takes no stream, its docstring says why, so `_fields`
+    does not serve it: the octets past the relay flag are cut off here
+    instead. Core reads the first octet past the start height as the
+    flag, and nothing after it (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Where the user agent's
+    length cannot be read, `msg` is returned whole, for `Version.parse`
+    to refuse.
+    """
+    size, pos = _compact_size(msg, _VERSION_HEAD_SIZE)
+    if pos < 0:
+        return msg
+    return msg[: pos + size + _START_HEIGHT_SIZE + _RELAY_SIZE]
+
+
 def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bool:
     """Answer whether `msg_type` from `conn` is dropped as the blocks load.
 
@@ -541,7 +580,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     """
     if conn.version_message is not None:
         return
-    version_msg = Version.parse(msg)
+    version_msg = Version.parse(_version_fields(msg))
 
     conn.version_message = version_msg
     # Core's `SetServices` of an outbound peer's own services, ahead of
@@ -793,7 +832,7 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     conn.requested_hb_cmpctblocks = announce != 0
 
 
-# the octets of a `ping`'s or a `pong`'s nonce, Core's `sizeof(nonce)`
+# the octets of a `pong`'s nonce, Core's `sizeof(nonce)`
 _NONCE_SIZE = 8
 
 
@@ -810,9 +849,7 @@ def ping(node: Node, msg: bytes, conn: Connection) -> None:
     """
     if common_version(conn) <= BIP0031_VERSION:
         return
-    # btclib's `Ping.parse` refuses octets past the nonce, so it is given
-    # the nonce's octets alone
-    nonce = Ping.parse(msg[:_NONCE_SIZE]).nonce
+    nonce = Ping.parse(_fields(msg)).nonce
     conn.send(Pong(nonce))
 
 
@@ -995,23 +1032,10 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     reads a count past that bound where btclib's refuses it.
     """
     if _refuses_addr_relay(conn):
-        Addr.parse(BytesIO(msg))
+        Addr.parse(_fields(msg))
         return
-    # Addr.parse(msg) would refuse an octet past the last address
-    # (btclib's own assert_no_trailing, a malleability guard that holds
-    # across the library) by raising out of this callback, which
-    # main.handle_p2p logs, keeping the peer: gossip this node could
-    # read in full would be thrown away for one octet after it. Core does
-    # not: ProcessMessage reads AddrMan-worth of entries out of vRecv and
-    # never checks for anything left. Wrapping the payload in a stream is
-    # btclib's own answer for exactly this -- assert_no_trailing's
-    # docstring calls a stream "the caller's", the same shape a
-    # transaction inside a block is read through, with nothing after it
-    # checked -- so this reads every address BIP155 defines and silently
-    # drops whatever else the peer appended, matching Core's leniency
-    # without a second copy of Addr's codec. btclib-org/btclib-node#149
     _refuse_past_bound("addr", _count_past(msg, MAX_ADDR_TO_SEND, _ADDR_ENTRY_SIZE))
-    entries = Addr.parse(BytesIO(msg)).addresses
+    entries = Addr.parse(_fields(msg)).addresses
     conn.addr_relay_enabled = True
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
@@ -1024,13 +1048,10 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     Ignored once parsed where `addr` above ignores it.
     """
     if _refuses_addr_relay(conn):
-        AddrV2.parse(BytesIO(msg))
+        AddrV2.parse(_fields(msg))
         return
-    # the same leniency as addr above, and the same reason: BIP155
-    # entries fully read, anything past them left unchecked rather than
-    # costing this node the gossip. btclib-org/btclib-node#149
     _refuse_past_bound("addrv2", _addrv2_count_past(msg, MAX_ADDR_TO_SEND))
-    addresses = AddrV2.parse(BytesIO(msg)).addresses
+    addresses = AddrV2.parse(_fields(msg)).addresses
     conn.addr_relay_enabled = True
     _store_gossip(node, conn, addresses)
 
@@ -1174,7 +1195,7 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # its upper bound un-exported by name (btclib.amount's own
     # _MAX_SATOSHI), so it is what stands in for MoneyRange here.
     try:
-        conn.feefilter = valid_sats_amount(FeeFilter.parse(msg).feerate)
+        conn.feefilter = valid_sats_amount(FeeFilter.parse(_fields(msg)).feerate)
     except BTClibValueError:
         return
 
@@ -1195,6 +1216,11 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     discouraged, as Core's `TX` handler does first of all where
     `RejectIncomingTxs` holds (`net_processing.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+
+    Octets past the transaction are read past (`_fields`), and neither
+    kept nor relayed: what is kept is the parsed `Tx`, and what is relayed
+    is that `Tx` written again, as Core keeps and relays the
+    `CTransaction` it read.
     """
     if conn.block_relay:
         node.logger.log_debug(
@@ -1212,7 +1238,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # peer. btclib-org/btclib-node#129
     if node.is_initial_block_download:
         return
-    tx = TxMsg.parse(msg).tx
+    tx = TxMsg.parse(_fields(msg)).tx
     # Core's `AddKnownTx`: the sender has what it sent, under the hash it
     # announces by.
     conn.known_tx_inventory.add(tx.hash if conn.wtxidrelay_received else tx.id)
@@ -1705,6 +1731,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     its peer kept: Core's `too-little-chainwork`
     (btclib-org/btclib-node#1505).
 
+    Octets past the block are read past (`_fields`), and neither stored
+    nor relayed: `block_db` stores the parsed `Block` written again, as
+    Core's `WriteBlock` writes the `CBlock` it read
+    (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
+
     While the stored blocks connect, the message is dropped unread
     (`_ignored_while_reindexing`).
     """
@@ -1714,7 +1746,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     # default, which no regtest or signet block meets. Its own docstring
     # names the shape: build unchecked and ask afterwards, which is what
     # block.assert_valid below does, against this chain's limit.
-    block = BlockMsg.parse(msg, check_validity=False).block
+    block = BlockMsg.parse(_fields(msg), check_validity=False).block
     block_hash = block.header.hash
 
     # a snapshot, as every other reader on Node's thread takes: P2pManager's
@@ -1886,7 +1918,7 @@ def inv(  # sourcery skip: low-code-quality
     it, `MSG_WTX` from one that did not.
     """
     _refuse_past_bound("inv", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
-    inv = Inv.parse(msg)
+    inv = Inv.parse(_fields(msg))
     rejected = _first_rejected_item(conn, inv.items)
 
     block_index = node.chainstate.block_index
@@ -2294,7 +2326,7 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     bounds what a peer can pile up behind a paused answer.
     """
     _refuse_past_bound("getdata", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
-    items = deque(GetData.parse(msg).items)
+    items = deque(GetData.parse(_fields(msg)).items)
     if not advance_getdata(node, conn, items):
         node.pending_getdata[conn.id] = (conn, items)
 
@@ -2344,7 +2376,9 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # and the transaction counts are bounded either way, and
     # `add_headers` checks the work and both of Core's own contextual
     # refusals.
-    headers: Sequence[BlockHeader] = Headers.parse(msg, check_validity=False).headers
+    headers: Sequence[BlockHeader] = Headers.parse(
+        _fields(msg), check_validity=False
+    ).headers
     _process_headers(node, conn, headers, via_compact_block=False)
 
 
@@ -2673,7 +2707,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     if _count_past(msg[:-_HASH_SIZE], MAX_LOCATOR_SZ, _HASH_SIZE, offset=4):
         conn.stop()
         return
-    getheaders = GetHeaders.parse(msg)
+    getheaders = GetHeaders.parse(_fields(msg))
     if node.status == NodeStatus.Reindexing:
         node.logger.log_debug(
             "net",
@@ -2740,7 +2774,7 @@ def getblocks(node: Node, msg: bytes, conn: Connection) -> None:
     if _count_past(msg[:-_HASH_SIZE], MAX_LOCATOR_SZ, _HASH_SIZE, offset=4):
         conn.stop()
         return
-    request = GetBlocks.parse(msg)
+    request = GetBlocks.parse(_fields(msg))
     # Core's `ActivateBestChain(a_recent_block)`: a block announced from
     # `block` is connected only in `update_chain`, after this share of the
     # loop, so without it the `inv` would leave out the block this node
@@ -3052,7 +3086,7 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     A range with a block whose filter is not stored is answered with
     nothing, the peer kept: `_log_missing_filters`' own docstring.
     """
-    request = GetCFilters.parse(msg)
+    request = GetCFilters.parse(_fields(msg))
     block_hashes = _filter_range(
         node,
         conn,
@@ -3080,7 +3114,7 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     or the header before it, are not stored is answered with nothing, the
     peer kept: `_log_missing_filters`' own docstring.
     """
-    request = GetCFHeaders.parse(msg)
+    request = GetCFHeaders.parse(_fields(msg))
     block_hashes = _filter_range(
         node,
         conn,
@@ -3134,7 +3168,7 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     (ISS 1477). A checkpoint whose header is not stored is answered with
     nothing, the peer kept: `_log_missing_filters`' own docstring.
     """
-    request = GetCFCheckpt.parse(msg)
+    request = GetCFCheckpt.parse(_fields(msg))
     # not _filter_range: this request carries no start height, a
     # checkpoint chain always beginning at the genesis block, so the
     # start-height and range-size checks `_prepare_filter_request` folds
@@ -3198,7 +3232,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     instead drops the peer directly, matching `tx`'s own block-relay-only
     refusal above.
     """
-    request = GetBlockTxn.parse(msg)
+    request = GetBlockTxn.parse(_fields(msg))
     if not request.indexes:
         node.logger.log_debug(
             "net", "getblocktxn received with no transaction indexes, peer=%s", conn.id
@@ -3396,7 +3430,7 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
         or not conn.provides_cmpctblocks
     ):
         return
-    compact = CmpctBlock.parse(msg, check_validity=False)
+    compact = CmpctBlock.parse(_fields(msg), check_validity=False)
     header = compact.header
     block_hash = header.hash
     if not _index_compact_header(node, conn, header):
@@ -3563,7 +3597,7 @@ def blocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     """
     if _ignored_while_reindexing(node, "blocktxn", conn):
         return
-    answer = BlockTxn.parse(msg, check_validity=False)
+    answer = BlockTxn.parse(_fields(msg), check_validity=False)
     _process_compact_block_txns(node, conn, answer.block_hash, answer.transactions)
 
 
@@ -3624,7 +3658,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     A block item carries no such bookkeeping to complete -- the comment
     below argues why.
     """
-    missing = NotFound.parse(msg)
+    missing = NotFound.parse(_fields(msg))
     # `TxDownloadManagerImpl::ReceivedNotFound`
     # (`src/node/txdownloadman_impl.cpp:291-298`,
     # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a `notfound` for a
