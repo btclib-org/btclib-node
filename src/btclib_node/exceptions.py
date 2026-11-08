@@ -142,27 +142,34 @@ _RECONSIDERABLE_REASONS = frozenset(
 class TxRejectedError(BTClibValueError):
     """A mempool candidate refused with one of Core's own reject reasons.
 
-    `reason` is `ValidationState::GetRejectReason` and `details` its
-    debug message; `str()` is `ToString`, the two joined by ", ", or the
-    reason alone where there is no debug message
-    (`src/consensus/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
-    `reject-reason` and `reject-details` with them, and
-    `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
-    `p2p.callbacks.tx` records it as it records any other refusal until
-    the next block. A fee floor's refusal is `reconsiderable`: Core keeps
-    it apart in `RecentRejectsReconsiderableFilter` and looks for a
-    child that pays for it, as `DownloadManager.mempool_rejected_tx`
-    does. `details` defaults to empty for a reason Core's own checks
-    never attach a debug message to (`non-final`,
-    `txn-already-in-mempool`), matching `ToString`'s own fallback
-    rather than printing a trailing ", ".
+    `reason` is `ValidationState::GetRejectReason` and `details` its debug
+    message; `str()` is `ToString`, the two joined by ", ", or the reason
+    alone where there is no debug message (`src/consensus/validation.h`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `rpc.callbacks` answers
+    `testmempoolaccept`'s `reject-reason` and `reject-details` with them,
+    and `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
+    `p2p.callbacks.tx` hands it to `DownloadManager.mempool_rejected_tx`,
+    which says what it records until the next block. A fee floor's refusal
+    is `reconsiderable`: Core keeps it apart in
+    `RecentRejectsReconsiderableFilter` and looks for a child that pays for
+    it, as `DownloadManager.mempool_rejected_tx` does. `details` defaults to
+    empty for a reason Core's own checks never attach a debug message to
+    (`non-final`, `txn-already-in-mempool`), matching `ToString`'s own
+    fallback rather than printing a trailing ", ".
+
+    `witness_stripped` is Core's `TX_WITNESS_STRIPPED`, which
+    `interpreter.check_transaction` sets. A transaction with its witness
+    stripped has the txid of the one with the witness, so
+    `DownloadManager.mempool_rejected_tx` records the refusal nowhere.
     """
 
-    def __init__(self, reason: str, details: str = "") -> None:
+    def __init__(
+        self, reason: str, details: str = "", *, witness_stripped: bool = False
+    ) -> None:
         super().__init__(f"{reason}, {details}" if details else reason)
         self.reason = reason
         self.details = details
+        self.witness_stripped = witness_stripped
 
     @property
     def reconsiderable(self) -> bool:
@@ -211,7 +218,8 @@ class NonStandardTxError(TxRejectedError):
     A `TxRejectedError`, so both RPC paths answer it in Core's words,
     as they answer any other refusal. Not a `MisbehavingError`, so
     `p2p.main.handle_p2p` would not discourage the peer for it either,
-    and `tx`'s catch is what records the refusal.
+    and `tx`'s catch hands it to `DownloadManager.mempool_rejected_tx`,
+    which says what it records.
     """
 
 

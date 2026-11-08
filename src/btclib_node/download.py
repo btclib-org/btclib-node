@@ -1001,20 +1001,23 @@ class DownloadManager:
         A transaction missing inputs is kept as an orphan on its first
         refusal, unless a parent was refused already (`_keep_orphan`). It is
         recorded as refused nowhere else, as a missing input says nothing of
-        the transaction: its parent may arrive. Any other refusal is
-        recorded, in the filter a package can undo for `error.reconsiderable`
-        and otherwise in `Mempool.mark_rejected`'s, and ends the orphan
-        if it was one.
+        the transaction: its parent may arrive. A refusal
+        `error.witness_stripped` is recorded nowhere either, as it says
+        nothing of the transaction with its witness, which shares its txid:
+        a child of it is kept as an orphan, and its parent asked for by
+        txid. Any other refusal is recorded, in the filter a package can
+        undo for `error.reconsiderable` and otherwise in
+        `Mempool.mark_rejected`'s. Every refusal but a missing input ends
+        the orphan if it was one.
 
         A first refusal keeps `tx` in `extra_txns`, Core's
         `AddToCompactExtraTransactions`, unless `_keep_orphan` found it
-        kept already or it weighs `MAX_EXTRA_TX_WEIGHT` or more.
+        kept already, it weighs `MAX_EXTRA_TX_WEIGHT` or more, or it was
+        refused `witness_stripped`.
 
-        Left out is what Core does for a witness-stripped refusal and for
-        `TX_INPUTS_NOT_STANDARD`, which tell the txid apart from the wtxid
-        in the filter: `Mempool.mark_rejected` has the reason this tree does
-        not. So a witness-stripped transaction is kept in `extra_txns`,
-        where Core keeps none.
+        Left out is what Core does for `TX_INPUTS_NOT_STANDARD`, which also
+        records the txid: `Mempool.mark_rejected` has the reason this tree
+        does not.
         """
         mempool = self.node.mempool
         wtxid = tx.hash
@@ -1026,13 +1029,19 @@ class DownloadManager:
                 self.extra_txns.append(tx)
             return None
         package = None
-        if isinstance(error, TxRejectedError) and error.reconsiderable:
-            mempool.mark_rejected_reconsiderable(wtxid)
-            if first_time:
-                package = self.find_1p1c_package(tx, conn_id)
+        if isinstance(error, TxRejectedError) and error.witness_stripped:
+            # Core's `TX_WITNESS_STRIPPED` branch (`MempoolRejectedTx`,
+            # `src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040,
+            # the v32.1 tag)
+            extra = False
         else:
-            mempool.mark_rejected(wtxid)
-        self.tx_requests.forget_tx_hash(wtxid)
+            if isinstance(error, TxRejectedError) and error.reconsiderable:
+                mempool.mark_rejected_reconsiderable(wtxid)
+                if first_time:
+                    package = self.find_1p1c_package(tx, conn_id)
+            else:
+                mempool.mark_rejected(wtxid)
+            self.tx_requests.forget_tx_hash(wtxid)
         self.orphanage.erase_tx(wtxid)
         if extra:
             self.extra_txns.append(tx)

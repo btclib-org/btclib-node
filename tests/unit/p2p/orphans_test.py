@@ -13,9 +13,13 @@ from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from btclib.p2p.data import TxPayload as TxMsg
+from btclib.script.script_pub_key import ScriptPubKey
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 import btclib_node.main as node_main
 import btclib_node.mempool as mempool_module
@@ -38,12 +42,11 @@ from tests import (
     generate_random_chain,
 )
 from tests.unit.main_test import connect, spend
+from tests.unit.orphan_download_test import announced
 from tests.unit.p2p.callbacks_test import a_peer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from btclib.tx.tx import Tx
 
     from btclib_node import Node
 
@@ -53,14 +56,20 @@ class Settled:
 
     def __init__(self, function: Any, args: tuple[Any, ...]) -> None:
         """Run `function` now."""
-        self.value = function(*args)
+        self.error: Exception | None = None
+        try:
+            self.value = function(*args)
+        except Exception as error:  # noqa: BLE001
+            self.error = error
 
     def ready(self) -> bool:
         """Answer that it is."""
         return True
 
     def get(self) -> Any:
-        """Answer what the check answered."""
+        """Answer what the check answered, or raise what it raised."""
+        if self.error is not None:
+            raise self.error
         return self.value
 
 
@@ -623,6 +632,49 @@ def test_a_parent_that_pays_for_itself_is_accepted_with_its_orphan_after(
     assert node.mempool.contains_tx(pair.parent)
     assert node.mempool.contains_tx(pair.child)
     assert not node.download_manager.orphanage.have_tx(pair.child.hash)
+
+
+def test_a_child_of_a_parent_sent_without_its_witness_is_kept_as_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2159: Core's `test_orphan_rejected_parents_exceptions`, last case.
+
+    `test/functional/p2p_orphan_handling.py`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag: the parent with its witness stripped is refused, its child
+    kept and the parent asked for by txid, and the parent with its witness
+    taken in with the child.
+    """
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node = pair.node
+    sender, announcer = a_connected_peer(node, 3), a_connected_peer(node, 4)
+    funding = pair.parent
+    witness_script = b"\x51"
+    holder = Tx(
+        version=1,
+        lock_time=0,
+        vin=funding.vin,
+        vout=[
+            TxOut(
+                funding.vout[0].value,
+                ScriptPubKey.p2wsh(witness_script, network="regtest"),
+            )
+        ],
+    )
+    relay(node, sender, holder)
+    assert node.mempool.contains_tx(holder)
+    parent = spend(holder, holder.vout[0].value - 50_000, b"")
+    parent.vin[0].script_witness = Witness([witness_script])
+    without_witness = Tx.parse(parent.serialize(include_witness=False))
+    assert without_witness.hash == parent.id != parent.hash
+    child = spend(parent, parent.vout[0].value - 50_000)
+    relay(node, sender, without_witness)
+    assert not node.mempool.contains_tx(without_witness)
+    relay(node, announcer, child)
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    assert announced(node.download_manager, announcer.id, parent.id) is not None
+    relay(node, sender, parent)
+    assert node.mempool.contains_tx(parent)
+    assert node.mempool.contains_tx(child)
 
 
 def test_an_orphan_is_taken_in_once_a_block_confirms_its_parent(
