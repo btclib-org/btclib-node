@@ -4,6 +4,7 @@
 
 """Orphans and one-parent-one-child packages, through `tx` and the loop."""
 
+import itertools
 import threading
 from collections import deque
 from dataclasses import replace
@@ -69,6 +70,10 @@ class InlinePool:
     def apply_async(self, function: Any, args: tuple[Any, ...]) -> Settled:
         """Run the check now."""
         return Settled(function, args)
+
+    def starmap(self, function: Any, tasks: Any) -> list[Any]:
+        """Run a block's checks now."""
+        return list(itertools.starmap(function, tasks))
 
     def terminate(self) -> None:
         """Nothing runs, so nothing to stop."""
@@ -616,6 +621,29 @@ def test_a_parent_that_pays_for_itself_is_accepted_with_its_orphan_after(
     assert node.download_manager.orphanage.have_tx(pair.child.hash)
     relay(node, peer, pair.parent)
     assert node.mempool.contains_tx(pair.parent)
+    assert node.mempool.contains_tx(pair.child)
+    assert not node.download_manager.orphanage.have_tx(pair.child.hash)
+
+
+def test_an_orphan_is_taken_in_once_a_block_confirms_its_parent(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2160: Core's `test_orphan_parent_confirmed`.
+
+    `test/functional/p2p_orphan_handling.py`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag.
+    """
+    pair = a_pair(regtest_node)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    relay(node, peer, pair.child)
+    assert node.download_manager.orphanage.have_tx(pair.child.hash)
+    active_chain = node.chainstate.block_index.active_chain
+    height = len(active_chain)
+    block = build_block(
+        active_chain[-1], [generate_coinbase(height=height), pair.parent], height - 1
+    )
+    connect(node, [block])
+    settle(node)
     assert node.mempool.contains_tx(pair.child)
     assert not node.download_manager.orphanage.have_tx(pair.child.hash)
 
