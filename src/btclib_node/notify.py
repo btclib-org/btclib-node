@@ -140,7 +140,7 @@ _ORDER = (
 def _check_id(warning_id: str) -> None:
     """Raise `ValueError` where `warning_id` is not in `_ORDER`."""
     if warning_id not in _ORDER:
-        err_msg = f"unknown warning id: {warning_id!r}"
+        err_msg = "unknown warning id"
         raise ValueError(err_msg)
 
 

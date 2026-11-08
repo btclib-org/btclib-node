@@ -25,6 +25,7 @@ from btclib_node.notify import (
     run_shutdown_notify,
 )
 from tests import wait_until
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -282,6 +283,9 @@ def test_unset_warning_answers_whether_it_had_been_set() -> None:
     assert warnings.get_messages() == []
 
 
+# a fixed random value, as `assert_secret_free` asks of a secret it is fed
+_LEAK = "5f1c9a07e3b24d6880af3c5e91d2b74a"
+
 _CORE_ORDER = [
     "unknown_new_rules_activated",
     "large_work_invalid_chain",
@@ -303,11 +307,17 @@ def test_get_messages_answers_in_core_s_order(set_order: tuple[str, ...]) -> Non
     assert warnings.get_messages() == [_CORE_ORDER[0], _CORE_ORDER[2]]
 
 
-def test_an_unknown_warning_id_raises() -> None:
-    """Core's ids are enum members: there is no id outside them."""
+def test_an_unknown_warning_id_raises_without_quoting_it() -> None:
+    """Core's ids are enum members: there is no id outside them.
+
+    The refusal does not quote the id, which may be a secret passed in
+    the wrong place (section 7 of the standard).
+    """
     warnings = Warnings()
-    with pytest.raises(ValueError, match="unknown warning id: 'w'"):
-        warnings.set_warning("w", "message")
-    with pytest.raises(ValueError, match="unknown warning id: 'w'"):
-        warnings.unset_warning("w")
+    with pytest.raises(ValueError, match=r"^unknown warning id$") as refused:
+        warnings.set_warning(_LEAK, "message")
+    assert_secret_free(refused.value, [_LEAK])
+    with pytest.raises(ValueError, match=r"^unknown warning id$") as refused:
+        warnings.unset_warning(_LEAK)
+    assert_secret_free(refused.value, [_LEAK])
     assert warnings.get_messages() == []
