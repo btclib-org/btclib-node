@@ -125,6 +125,25 @@ def alert_notify(logger: logging.Logger, command: str, message: str) -> None:
     run_detached(logger, command.replace("%s", safe))
 
 
+# Core's `m_warnings` is a `std::map` keyed by
+# `std::variant<kernel::Warning, node::Warning>`, and `GetMessages` walks
+# it in key order: the alternative's index first, then the enum value
+# (`src/kernel/warning.h` and `src/node/warnings.h`, same citation as the
+# module docstring)
+_ORDER = (
+    "unknown_new_rules_activated",
+    "large_work_invalid_chain",
+    "clock_out_of_sync",
+)
+
+
+def _check_id(warning_id: str) -> None:
+    """Raise `ValueError` where `warning_id` is not in `_ORDER`."""
+    if warning_id not in _ORDER:
+        err_msg = f"unknown warning id: {warning_id!r}"
+        raise ValueError(err_msg)
+
+
 class Warnings:
     """The node-wide warnings this tree raises, Core's `node::Warnings`.
 
@@ -144,6 +163,10 @@ class Warnings:
     whether to fire `-alertnotify` again for a condition that was
     already true, Core's own `Warnings::Set`'s `bool inserted` doing the
     same work for `KernelNotifications::warningSet`.
+
+    `get_messages` answers in `_ORDER`, whatever order the warnings were
+    set in. An id outside `_ORDER` raises `ValueError`: Core's ids are
+    enum members, so it has no such id.
     """
 
     def __init__(self) -> None:
@@ -152,6 +175,7 @@ class Warnings:
 
     def set_warning(self, warning_id: str, message: str) -> bool:
         """Set `warning_id`'s message; answer whether it was not already set."""
+        _check_id(warning_id)
         if warning_id in self._messages:
             return False
         self._messages[warning_id] = message
@@ -159,8 +183,9 @@ class Warnings:
 
     def unset_warning(self, warning_id: str) -> bool:
         """Unset `warning_id`; answer whether it had been set."""
+        _check_id(warning_id)
         return self._messages.pop(warning_id, None) is not None
 
     def get_messages(self) -> list[str]:
         """Return every active warning's message, Core's own `GetMessages`."""
-        return list(self._messages.values())
+        return [self._messages[i] for i in _ORDER if i in self._messages]
