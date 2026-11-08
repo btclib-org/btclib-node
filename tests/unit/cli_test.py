@@ -2,7 +2,11 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
+"""`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch.
+
+`bitcoind` in these tests is the Bitcoin Core release
+`integration-bitcoind.yml` pins.
+"""
 
 import functools
 import io
@@ -119,9 +123,9 @@ LEAK = "correct-horse-battery-staple"
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
-# (`src/common/config.cpp`, `src/common/args.cpp`,
-# at bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
-# the line below `regtest=1`, which is what numbers it 2
+# (`src/common/config.cpp`, `src/common/args.cpp`, at
+# bitcoin/bitcoin@f0de87f040), each measured on `bitcoind` with the line
+# below `regtest=1`, which is what numbers it 2
 @pytest.mark.parametrize(
     ("line", "refusal"),
     [
@@ -317,8 +321,8 @@ def test_an_unknown_key_is_warned_about_by_its_name_alone(
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     """ISS 1267: `std::getline`'s lines, so a form feed ends none.
 
-    Measured on `bitcoind` v31.1.0: `foo`, a form feed and `bar=1` on
-    line 2 are one line, and `bad` below it is refused as line 3.
+    Measured on `bitcoind`: `foo`, a form feed and `bar=1` on line 2
+    are one line, and `bad` below it is refused as line 3.
     """
     with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
         cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n", warnings=[])
@@ -337,11 +341,11 @@ def test_read_conf_file_reads_a_byte_utf8_refuses(
 ) -> None:
     """ISS 1290: the file is read as `bitcoind` reads it, as bytes.
 
-    `0xe9`, Latin-1's `e` acute, is no UTF-8. `bitcoind` v31.1.0 reads
-    past it in a comment, and quotes it in the line it refuses; here it
-    is the lone surrogate `surrogateescape` keeps it as, compared as the
-    byte it stands for: a surrogate in a failure's text is one `xdist`
-    cannot send back from its worker.
+    `0xe9`, Latin-1's `e` acute, is no UTF-8. `bitcoind` reads past it
+    in a comment, and quotes it in the line it refuses; here it is the
+    lone surrogate `surrogateescape` keeps it as, compared as the byte
+    it stands for: a surrogate in a failure's text is one `xdist` cannot
+    send back from its worker.
     """
     path = tmp_path / "bitcoin.conf"
     path.write_bytes(content)
@@ -356,9 +360,9 @@ def test_main_writes_a_byte_utf8_refuses_as_that_byte(
 ) -> None:
     """ISS 1290: stderr holds the byte the file held, as `bitcoind` writes it.
 
-    Measured on `bitcoind` v31.1.0 over this file: `Error: Error reading
-    configuration file: parse error on line 2: x<0xe9>y`, the prefix
-    being `InitConfig`'s.
+    Measured on `bitcoind` over this file: `Error: Error reading
+    configuration file: parse error on line 2: x<0xe9>y`, the prefix being
+    `InitConfig`'s.
     """
     (tmp_path / "bitcoin.conf").write_bytes(b"regtest=1\nx\xe9y\n")
     with pytest.raises(SystemExit):
@@ -393,7 +397,7 @@ def test_read_conf_file_ends_a_line_at_a_newline_alone(
 ) -> None:
     """ISS 1267: a lone carriage return ends no line, as `bitcoind` reads it.
 
-    Each measured on `bitcoind` v31.1.0, which names the same line.
+    Each measured on `bitcoind`, which names the same line.
     """
     path = tmp_path / "bitcoin.conf"
     path.write_bytes(content)
@@ -406,9 +410,9 @@ def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
 ) -> None:
     """ISS 1295: an unknown key is dropped, and warned about for the log alone.
 
-    As written, section and all: `bitcoind` v31.1.0 logs `[y]`'s `bar=2`
-    as "Ignoring unknown configuration value y.bar", and writes nothing
-    on stderr. This tree puts the file and line first, and bounds a long name.
+    As written, section and all: `bitcoind` logs `[y]`'s `bar=2` as "Ignoring
+    unknown configuration value y.bar", and writes nothing on stderr. This
+    tree puts the file and line first, and bounds a long name.
     """
     warnings: list[str] = []
     text = "[regtest]\nbar=x\n"
@@ -626,8 +630,8 @@ def test_load_conf_tree_reads_the_chain_sections_includes_first(tmp_path: Path) 
     """ISS 1302: the chain's own section's `includeconf`, then the default's.
 
     As `ReadConfigFiles`'s `add_includes(chain_id)` before
-    `add_includes({})`: `bitcoind` v31.1.0 warns of `a.conf`'s section
-    before `b.conf`'s with this root file.
+    `add_includes({})`: `bitcoind` warns of `a.conf`'s section before
+    `b.conf`'s with this root file.
     """
     (tmp_path / "a.conf").write_text("port=1\n", encoding="utf-8")
     (tmp_path / "b.conf").write_text("port=2\n", encoding="utf-8")
@@ -664,8 +668,8 @@ def test_load_conf_tree_warns_of_the_includes_of_either_section_it_read(
 ) -> None:
     """ISS 1302: the chain's section's first, and never another chain's.
 
-    Measured on `bitcoind` v31.1.0 with these files: it warns of `y.conf`,
-    then `x.conf`, and says nothing of `z.conf`.
+    Measured on `bitcoind` with these files: it warns of `y.conf`, then
+    `x.conf`, and says nothing of `z.conf`.
     """
     (tmp_path / "inc.conf").write_text(
         "includeconf=x.conf\n[regtest]\nincludeconf=y.conf\n[main]\nincludeconf=z.conf\n",
@@ -682,8 +686,8 @@ def test_load_conf_tree_warns_of_the_includes_of_a_chain_an_include_chose(
 ) -> None:
     """ISS 1302: `chain_id_final`'s every `includeconf`, the root file's too.
 
-    Measured on `bitcoind` v31.1.0 with these files: `r.conf` is warned
-    about and not read.
+    Measured on `bitcoind` with these files: `r.conf` is warned about
+    and not read.
     """
     (tmp_path / "inc.conf").write_text("regtest=1\n", encoding="utf-8")
     (tmp_path / "r.conf").write_text("port=1\n", encoding="utf-8")
@@ -717,7 +721,7 @@ def test_load_conf_tree_a_missing_included_file_is_fatal(tmp_path: Path) -> None
     """An `includeconf` naming a file that does not exist is refused.
 
     In `ReadConfigFiles`'s words, naming the value as written, as
-    `bitcoind` v31.1.0 names `inc/../nosuch.conf`.
+    `bitcoind` names `inc/../nosuch.conf`.
     """
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("includeconf=missing.conf\n", encoding="utf-8")
@@ -733,8 +737,8 @@ def test_build_config_a_files_chain_selector_is_read_as_interpret_bool(
 ) -> None:
     """`testnet=<value>` is false where `InterpretBool` reads it as false.
 
-    `bitcoind` v31.1.0, run as `-regtest -version` beside a `bitcoin.conf`
-    holding each of these, printed its version rather than refusing the
+    `bitcoind`, run as `-regtest -version` beside a `bitcoin.conf` holding
+    each of these, printed its version rather than refusing the
     combination of two chains.
     """
     (tmp_path / "bitcoin.conf").write_text(f"testnet={value}\n", encoding="utf-8")
@@ -777,7 +781,7 @@ def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
 def test_build_config_an_rpcbind_port_int_would_read_is_refused(
     tmp_path: Path, port: str
 ) -> None:
-    """`CheckHostPortOptions`' refusal, as `bitcoind` v31.1.0 words each."""
+    """`CheckHostPortOptions`' refusal, as `bitcoind` words each."""
     value = f"127.0.0.1:{port}"
     expected = re.escape(f"Invalid port specified in -rpcbind: '{value}'")
     with pytest.raises(ValueError, match=f"^{expected}$"):
@@ -790,7 +794,7 @@ def test_build_config_a_peer_s_port_int_would_read_is_a_name(
 ) -> None:
     """Kept whole, as a name, where `int` would dial port 80 (ISS 1292).
 
-    `bitcoind` v31.1.0 starts with `-connect` or `-addnode` at
+    `bitcoind` starts with `-connect` or `-addnode` at
     `127.0.0.1:+<port>` or `127.0.0.1:0x50` and never connects.
     """
     config = _build(
@@ -869,7 +873,7 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
     ],
 )
 def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) -> None:
-    """Each message as `bitcoind` v31.1.0 printed it, but for the argument.
+    """Each message as `bitcoind` printed it, but for the argument.
 
     Core quotes the argument whole; `_quoted_line` stops at the `=`.
     """
@@ -955,7 +959,7 @@ def test_build_config_reads_the_buffer_options_in_thousands_of_bytes(
 
 
 def test_help_names_the_buffer_options() -> None:
-    """ISS 1812: in `bitcoind` v31.1.0's words, among the connection options."""
+    """ISS 1812: in `bitcoind`'s words, among the connection options."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-maxreceivebuffer=<n> Maximum per-connection receive buffer, <n>*1000 "
@@ -983,12 +987,15 @@ def test_help_names_the_buffer_options() -> None:
 def test_build_config_reads_the_relay_share_as_core_clamps_it(
     tmp_path: Path, argv: list[str], conf: str, percent: int
 ) -> None:
-    """ISS 1769: `-inboundrelaypercent`, clamped to 0 to 100 as in v32.1."""
+    """ISS 1769: `-inboundrelaypercent`, clamped to 0 to 100 as in Core."""
     assert _build(tmp_path, *argv, conf=conf).inbound_relay_percent == percent
 
 
 def test_help_names_the_relay_share() -> None:
-    """ISS 1769: in v32.1's words, among the connection options."""
+    """ISS 1769: in `bitcoind`'s words.
+
+    `-maxconnections` names no maximum (ISS 2127).
+    """
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-inboundrelaypercent=<n> Permit a maximum percent of inbound "
@@ -1076,9 +1083,9 @@ def test_build_config_reads_rpcservertimeout(
 ) -> None:
     """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does.
 
-    As the `int64_t` `InitHTTPServer` reads (ISS 2152): bitcoind v32.1.0
-    run with `-rpcservertimeout=4294967297` keeps an idle connection
-    open past 6 seconds, where one second would close it.
+    As the `int64_t` `InitHTTPServer` reads (ISS 2152): bitcoind run
+    with `-rpcservertimeout=4294967297` keeps an idle connection open
+    past 6 seconds, where one second would close it.
     """
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
@@ -1178,7 +1185,7 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
 ) -> None:
     """ISS 1295: the command line's, the file's in its order, then the sections.
 
-    Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
+    Measured on `bitcoind` with this file and `-nolisten=0`: its
     `debug.log` opens, after five blank lines, on the first four, then
     its version line, then the section warning, which its stderr holds
     alone (ISS 1309's own version line and ISS 1305's own `LogArgs` sit
@@ -1208,7 +1215,7 @@ def test_build_config_logs_its_config_file_and_command_line_args(
     """ISS 1305: `LogArgs`'s two prefixes, `[section] ` and a written value.
 
     `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): the config file's args, then the command
+    bitcoin/bitcoin@f0de87f040): the config file's args, then the command
     line's; a plain value quoted as `SettingsValue::write()` writes it, a
     negation's `true`, and `-rpcpassword`'s masked to `****` on either.
     `SettingsValue::write()`'s own `json_escape`
@@ -1261,7 +1268,7 @@ def test_log_args_escapes_a_backslash_in_datadir() -> None:
 
     A manufactured Windows-style path exercises `SettingsValue::write()`'s
     `json_escape` (`src/univalue/lib/univalue_write.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, `escapes[0x5c] == "\\"`) without a
+    bitcoin/bitcoin@f0de87f040, `escapes[0x5c] == "\\"`) without a
     Windows runner: a literal single backslash in `datadir` is doubled in
     the logged line, exactly as any other string value is. The expected
     value is a hand-written literal, not `_setting_to_write_str` again,
@@ -1335,8 +1342,8 @@ def test_build_config_reads_a_chain_selector_as_get_chain_arg(
     """ISS 1124 and ISS 1137: a value, a negation, and Core's precedence.
 
     `-noregtest` on the command line is skipped, Core's own "weird
-    behavior preserved" (`GetSetting`, `src/common/settings.cpp`), so
-    the file's `regtest=1` still selects regtest; `bitcoind` v31.1.0 read
+    behavior preserved" (`GetSetting`, `src/common/settings.cpp`), so the
+    file's `regtest=1` still selects regtest; `bitcoind` read
     `notestnet=0` as selecting testnet.
     """
     assert _build(tmp_path, *argv, conf=conf).chain.name == chain_name
@@ -1454,7 +1461,7 @@ def test_build_config_a_network_only_value_given_on_the_command_line_too(
 def test_build_config_refuses_a_port_as_check_host_port_options(
     tmp_path: Path, argv: list[str], conf: str, message: str
 ) -> None:
-    """Each message as `bitcoind` v31.1.0 printed it for the same argument.
+    """Each message as `bitcoind` printed it for the same argument.
 
     A negation in the default section reaches a network-only option off
     `main` too, `GetSetting`'s own exception to skipping that section.
@@ -1469,12 +1476,12 @@ def test_build_config_refuses_a_port_as_check_host_port_options(
 def test_build_config_refuses_every_network_only_option_off_main(
     tmp_path: Path, name: str
 ) -> None:
-    """ISS 1327: `bitcoind` v31.1.0 refuses to start on this, not only `-port`.
+    """ISS 1327: `bitcoind` refuses to start on this, not only `-port`.
 
     Each of this node's own `network_only` options, set only in the
     default section while regtest is the chain: Core's own words for
     each, `AppInitParameterInteraction`'s `GetUnsuitableSectionOnlyArgs`
-    loop (`src/init.cpp:936-950`, at bitcoin/bitcoin@9be056a8a7).
+    loop (`src/init.cpp:966-980`, at bitcoin/bitcoin@f0de87f040).
     """
     value = "127.0.0.1:99999" if name == "rpcbind" else "127.0.0.1"
     message = (
@@ -1488,9 +1495,9 @@ def test_build_config_refuses_every_network_only_option_off_main(
 def test_build_config_refuses_a_network_only_value_before_a_blocksdir_check(
     tmp_path: Path,
 ) -> None:
-    """ISS 1327: `bitcoind` v31.1.0 refuses this before naming `-blocksdir`.
+    """ISS 1327: `bitcoind` refuses this before naming `-blocksdir`.
 
-    Measured on `bitcoind` v31.1.0 with `-datadir=<dir> -listen=0
+    Measured on `bitcoind` with `-datadir=<dir> -listen=0
     -rpcport=47391`, `regtest=1` and `port=18999` both in the default
     section, and `-blocksdir=/nonexistent`: the network-only refusal,
     not "Specified blocks directory ... does not exist.", `init.cpp`
@@ -1518,14 +1525,14 @@ def test_build_config_refuses_a_logging_category_first(
 ) -> None:
     """`-debug` is checked ahead of `-prune` and the ports, as in Core.
 
-    `bitcoind` v31.1.0 named the category for each of these.
+    `bitcoind` named the category for each of these.
     """
     with pytest.raises(ValueError, match=r"^Unsupported logging category"):
         _build(tmp_path, *argv)
 
 
 def test_build_config_reads_a_port_with_leading_zeros(tmp_path: Path) -> None:
-    """`-port=0080` is `80`: `bitcoind` v31.1.0 started on it."""
+    """`-port=0080` is `80`: `bitcoind` started on it."""
     assert _build(tmp_path, "-port=0080").p2p_port == 80
 
 
@@ -1566,7 +1573,7 @@ def test_build_config_reads_debug_as_logging_categories(
 def test_build_config_refuses_an_unknown_logging_category(
     tmp_path: Path, argv: list[str], conf: str, category: str
 ) -> None:
-    """`SetLoggingCategories`' own message, as `bitcoind` v31.1.0 printed it."""
+    """`SetLoggingCategories`' own message, as `bitcoind` printed it."""
     message = f"Unsupported logging category -debug={category}."
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, *argv, conf=conf)
@@ -1620,8 +1627,8 @@ def test_build_config_server_off_reads_no_rpc_option(
 ) -> None:
     """A malformed RPC option refuses nothing without `-server`, as in Core.
 
-    `bitcoind` v31.1.0 started with `-noserver` and each of these, which
-    it refuses with the server on.
+    `bitcoind` started with `-noserver` and each of these, which it
+    refuses with the server on.
     """
     config = _build(tmp_path, "-server=0", argument)
     assert config.rpc_auth == ()
@@ -1643,8 +1650,8 @@ def test_main_a_refused_rpc_credential_prints_core_s_one_line(
 ) -> None:
     """Stderr holds "Unable to start HTTP server" alone, as `bitcoind` has it.
 
-    `bitcoind` v31.1.0 with either value, and with both, prints this line
-    alone and exits 1; the value's own line is in its log.
+    `bitcoind` with either value, and with both, prints this line alone
+    and exits 1; the value's own line is in its log.
     """
     monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
     with pytest.raises(SystemExit) as excinfo:
@@ -1712,9 +1719,10 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
     assert cli._atoi64(value) == read
 
 
-# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`: the limit its
-# "Using at most <n> automatic connections" line gives, `None` where
-# it refuses "-maxconnections must be greater or equal than zero"
+# measured on `bitcoind` v31.1.0, which this node follows until ISS 2127,
+# with `-regtest -listen=0`: the limit its "Using at most <n> automatic
+# connections" line gives, `None` where it refuses "-maxconnections must
+# be greater or equal than zero"
 @pytest.mark.parametrize(
     ("value", "limit"),
     [
@@ -1738,7 +1746,12 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
 def test_maxconnections_is_the_int_bitcoind_reads(
     tmp_path: Path, value: str, limit: int | None
 ) -> None:
-    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`."""
+    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`.
+
+    That is `AppInitParameterInteraction`'s reading (`src/init.cpp:1033`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+    until ISS 2127).
+    """
     if limit is None:
         with pytest.raises(
             ValueError, match=r"^-maxconnections must be greater or equal than zero$"
@@ -1757,9 +1770,9 @@ def test_the_listen_soft_set_reads_maxconnections_before_the_int(
 ) -> None:
     """ISS 1324: `InitParameterInteraction` compares the `int64_t` with zero.
 
-    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs no
-    "setting -listen=0" though its limit is 0, and `-4294967295` logs
-    it though its limit is 1.
+    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
+    `-maxconnections=4294967296` logs no "setting -listen=0" though its
+    limit is 0, and `-4294967295` logs it though its limit is 1.
     """
     assert _build(tmp_path, f"-maxconnections={value}").listen is listen
 
@@ -1773,14 +1786,15 @@ def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
 ) -> None:
     """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
 
-    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs
-    "dnsseed thread start", and `-4294967295` logs "setting -dnsseed=0".
+    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
+    `-maxconnections=4294967296` logs "dnsseed thread start", and
+    `-4294967295` logs "setting -dnsseed=0".
     """
     assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
 
 
 def test_forcednsseed_defaults_to_false(tmp_path: Path) -> None:
-    """`DEFAULT_FORCEDNSSEED` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7)."""
+    """`DEFAULT_FORCEDNSSEED` (`src/net.h`, at bitcoin/bitcoin@f0de87f040)."""
     assert _build(tmp_path).forcednsseed is False
 
 
@@ -1797,7 +1811,7 @@ def test_forcednsseed_is_read(tmp_path: Path) -> None:
 def test_forcednsseed_is_refused_alongside_the_dnsseed_soft_set_off(
     tmp_path: Path, argv: tuple[str, ...]
 ) -> None:
-    """ISS 1265: refused as `bitcoind` v31.1.0 refuses it, its own wording.
+    """ISS 1265: refused as `bitcoind` refuses it, its own wording.
 
     Measured there with `-forcednsseed=1 -dnsseed=0`: exit 1,
     "Error: Cannot set -forcednsseed to true when setting -dnsseed to
@@ -1827,7 +1841,7 @@ def test_an_explicit_dnsseed_true_wins_over_the_soft_set(
     """ISS 1265, review round 3: `-dnsseed=1` wins over the soft-set-off.
 
     `InitParameterInteraction`'s `SoftSetBoolArg` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    bitcoin/bitcoin@f0de87f040) never overwrites an arg already set,
     whichever condition would otherwise have turned `-dnsseed` off.
     This reaches `_before_lock`'s own early `Config(...)` call: a
     version reading the raw soft-set alone, ignoring the explicit
@@ -1856,7 +1870,7 @@ def test_forcednsseed_refusal_precedes_the_maxconnections_refusal(
         _build(tmp_path, "-forcednsseed=1", "-maxconnections=-1")
 
 
-# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`:
+# measured on `bitcoind` with `-regtest -listen=0`:
 # `getblockchaininfo`'s `pruned` and `prune_target_size`, the target in
 # MiB here, and `None` for a start it refuses as below the minimum
 @pytest.mark.parametrize(
@@ -1904,7 +1918,7 @@ def test_prune_is_the_target_bitcoind_reads(
 def test_prune_is_refused_as_bitcoind_refuses_it(
     tmp_path: Path, value: str, message: str
 ) -> None:
-    """ISS 1313, ISS 1324: measured on `bitcoind` v31.1.0, the same words."""
+    """ISS 1313, ISS 1324: measured on `bitcoind`, the same words."""
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, f"-prune={value}")
 
@@ -1969,7 +1983,7 @@ def test_build_config_refuses_two_chain_selectors(
 ) -> None:
     """More than one selector, counted over the command line and the file.
 
-    `bitcoind` v31.1.0's own words, `-testnet4` named among the five
+    `bitcoind`'s own words, `-testnet4` named among the five
     selectors (btclib-org/btclib-node#1311).
     """
     with pytest.raises(
@@ -1991,8 +2005,8 @@ def test_build_config_refuses_an_unknown_chain(
 ) -> None:
     """An alias outside Core's five, `-nochain`'s `0` among them.
 
-    `bitcoind` v31.1.0's own words: "Unknown chain bogus.", not quoted
-    and ending in a full stop (btclib-org/btclib-node#1311).
+    `bitcoind`'s own words: "Unknown chain bogus.", not quoted and
+    ending in a full stop (btclib-org/btclib-node#1311).
     """
     with pytest.raises(ValueError, match=f"^Unknown chain {alias}\\.$"):
         _build(tmp_path, *argv, conf=conf)
@@ -2045,7 +2059,7 @@ def test_build_config_minrelaytxfee_is_read_in_btc_per_kvb(
 ) -> None:
     """`-minrelaytxfee` sets `min_relay_feerate`, as `ParseMoney` reads it.
 
-    `bitcoind` v31.1.0 starts with each of these, and answers
+    `bitcoind` starts with each of these, and answers
     `-minrelaytxfee=0.00002` with a `getmempoolinfo` `minrelaytxfee` of
     0.00002000 (btclib-org/btclib-node#1332).
     """
@@ -2086,7 +2100,7 @@ def test_build_config_minrelaytxfee_defaults_negates_and_reads_the_file(
 def test_build_config_minrelaytxfee_that_is_no_amount_is_refused(
     tmp_path: Path, value: str
 ) -> None:
-    """`AmountErrMsg`'s words, as `bitcoind` v31.1.0 refuses each at start.
+    """`AmountErrMsg`'s words, as `bitcoind` refuses each at start.
 
     `1.5.3` and a NUL were not run against `bitcoind`, whose `ParseMoney`
     stops at the second `.` and refuses a string holding a NUL.
@@ -2275,7 +2289,7 @@ def test_build_config_acceptstalefeeestimates_is_a_debug_only_flag(
     assert "-acceptstalefeeestimates" not in capsys.readouterr().out
     with pytest.raises(SystemExit):
         _build(tmp_path, "-help-debug")
-    # bitcoind v31.1.0's own `-help-debug`
+    # bitcoind's own `-help-debug`
     assert (
         "  -acceptstalefeeestimates\n"
         "       Read fee estimates even if they are stale (regtest only; default: "
@@ -2583,10 +2597,10 @@ def test_build_config_norpcauth_is_get_settings_list(
     """`-norpcauth` discards every `-rpcauth` before it, and the file's.
 
     `gArgs.GetArgs("-rpcauth")` (`src/httprpc.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) is `GetSettingsList`'s: a value after the
-    negation still brings the file's back. `bitcoind` v31.1.0 answers a
-    request with the credential each case leaves out 401, and with one it
-    keeps 200.
+    bitcoin/bitcoin@f0de87f040) is `GetSettingsList`'s: a value after the
+    negation still brings the file's back. `bitcoind` answers a request
+    with the credential each case leaves out 401, and with one it keeps
+    200.
     """
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\n" + conf.format(RPCAUTH), encoding="utf-8"
@@ -2679,7 +2693,7 @@ def test_build_config_conf_explicit_and_missing_raises(tmp_path: Path) -> None:
 def _ignored_conf(datadir: str, config: str, conf: str) -> str:
     """Return `InitConfig`'s refusal of an ignored `bitcoin.conf`, as measured.
 
-    `bitcoind` v31.1.0 printed it after `Error: `, the paths absolute.
+    `bitcoind` printed it after `Error: `, the paths absolute.
     """
     return (
         f'Data directory "{datadir}" contains a "bitcoin.conf" file which is '
@@ -2716,8 +2730,8 @@ def test_build_config_an_ignored_bitcoin_conf_is_refused(
 ) -> None:
     """A `bitcoin.conf` `-conf` leaves unread stops the node, as it stops Core.
 
-    Each case is one `bitcoind` v31.1.0 was run against, from the same
-    working directory, with `-help`: Core refuses ahead of the help.
+    Each case is one `bitcoind` was run against, from the same working
+    directory, with `-help`: Core refuses ahead of the help.
     """
     data = tmp_path / "d"
     (data / "sub").mkdir(parents=True)
@@ -2887,8 +2901,8 @@ def test_build_config_an_ignored_bitcoin_conf_through_a_symbolic_link(
 
     `a/sym` and `D/sym` link to `real/inner`, so `sym/..` is `real` to the
     operating system and `a` or `D` to Core's lexical normalisation.
-    `bitcoind` v31.1.0 starts on the first two, and refuses the third
-    because `D/other.conf` could not be opened, its message measured.
+    `bitcoind` starts on the first two, and refuses the third because
+    `D/other.conf` could not be opened, its message measured.
     """
     for directory in ("real/inner", "a", "D"):
         (tmp_path / directory).mkdir(parents=True)
@@ -2959,9 +2973,9 @@ def paths(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# `GetPathArg`, measured on `bitcoind` v31.1.0 over the same layout: each
-# `..` is taken off the path before the file system is asked, so neither a
-# missing directory nor a symbolic link before it changes where it lands
+# `GetPathArg`, measured on `bitcoind` over the same layout: each `..` is
+# taken off the path before the file system is asked, so neither a missing
+# directory nor a symbolic link before it changes where it lands
 @pytest.mark.parametrize(
     "datadir",
     ["{x}/nosuch/../d", "{x}/d/", pytest.param("{x}/sym/../d", marks=_SYMLINK)],
@@ -3003,7 +3017,7 @@ def test_build_config_blocksdir_is_lexically_normal(
 def test_build_config_a_missing_blocksdir_is_named_as_given(
     paths: Path, blocksdir: str
 ) -> None:
-    """`bitcoind` v31.1.0 names `-blocksdir` as written, `..` and all."""
+    """`bitcoind` names `-blocksdir` as written, `..` and all."""
     blocksdir = blocksdir.format(x=paths)
     expected = re.escape(f'Specified blocks directory "{blocksdir}" does not exist.')
     with pytest.raises(ValueError, match=f"^{expected}$"):
@@ -3048,7 +3062,7 @@ def test_build_config_a_datadir_that_normalises_to_dot_keeps_it_in_a_refusal(
 ) -> None:
     """`-datadir=.` keeps its `.` when joined onto a missing `-conf` value.
 
-    Measured on `bitcoind` v31.1.0: `-datadir=. -conf=missing.conf` names
+    Measured on `bitcoind`: `-datadir=. -conf=missing.conf` names
     "<cwd>/./missing.conf", not "<cwd>/missing.conf" -- `fs::absolute`
     joins the `.` on literally, where `pathlib.Path` drops it
     (btclib-org/btclib-node#1273).
@@ -3068,7 +3082,7 @@ def test_build_config_a_conf_that_normalises_to_dot_keeps_it_in_a_refusal(
 ) -> None:
     """`-conf=nosuch/..` is `.` once normal, kept joined onto `-datadir`.
 
-    Measured on `bitcoind` v31.1.0: names "<X>/.", not "<X>" --
+    Measured on `bitcoind`: names "<X>/.", not "<X>" --
     `AbsPathForConfigVal`'s join is as literal as `fs::absolute`'s above
     (btclib-org/btclib-node#1273).
     """
@@ -3089,9 +3103,9 @@ def test_build_config_an_includeconf_value_is_not_lexically_normalised(
 ) -> None:
     """Core never normalises `includeconf`, unlike `-datadir` and `-conf`.
 
-    Measured on `bitcoind` v31.1.0 with a directory `confdir` and a
-    directory `sub` under the data directory: each of these three names
-    the directory `includeconf=confdir` also names, and each is refused
+    Measured on `bitcoind` with a directory `confdir` and a directory
+    `sub` under the data directory: each of these three names the
+    directory `includeconf=confdir` also names, and each is refused
     with its own value joined onto the data directory exactly as
     written, `.` segments and the repeated `/` both kept
     (btclib-org/btclib-node#1273, comment).
@@ -3115,7 +3129,7 @@ def test_build_config_a_relative_datadir_is_refused_by_its_full_path(
 ) -> None:
     """`GetDataDir`'s `fs::absolute`: the working directory joins the path.
 
-    Measured on `bitcoind` v31.1.0, which names the file in full.
+    Measured on `bitcoind`, which names the file in full.
     """
     monkeypatch.chdir(paths)
     missing = Path.cwd() / "d" / "missing.conf"
@@ -3154,7 +3168,7 @@ def test_build_config_an_unreadable_configuration_file_is_refused_as_core_s(
 ) -> None:
     """Core's `!stream.good()`: a file it may not read is one it cannot open.
 
-    Measured on `bitcoind` v31.1.0 with the file at mode 000.
+    Measured on `bitcoind` with the file at mode 000.
     """
     data = paths / "d"
     (data / "j.conf").write_text("regtest=1\nincludeconf=inc.conf\n", encoding="utf-8")
@@ -3168,7 +3182,7 @@ def test_build_config_an_unreadable_configuration_file_is_refused_as_core_s(
 
 @_UNREADABLE
 def test_build_config_an_unreadable_default_file_is_left_unread(tmp_path: Path) -> None:
-    """`bitcoind` v31.1.0 runs on mainnet past a `regtest=1` it cannot read."""
+    """`bitcoind` runs on mainnet past a `regtest=1` it cannot read."""
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("regtest=1\n", encoding="utf-8")
     conf.chmod(0)
@@ -3191,7 +3205,7 @@ def test_build_config_names_a_leading_double_slash_as_one(paths: Path) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="`//` starts a UNC path on Windows")
 def test_build_config_names_an_ignored_conf_s_double_slash_as_one(paths: Path) -> None:
-    """`bitcoind` v31.1.0 names "/<X>/d" for `-datadir=//<X>/d` here too."""
+    """`bitcoind` names "/<X>/d" for `-datadir=//<X>/d` here too."""
     data = paths / "d"
     (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
     with pytest.raises(ValueError, match=f'^Data directory "{re.escape(str(data))}"'):
@@ -3223,7 +3237,7 @@ def test_build_config_cli_port_overrides_the_file(tmp_path: Path) -> None:
 def test_build_config_rpcbind_is_ignored_without_rpcallowip(argv: list[str]) -> None:
     """ISS 1211: Core binds `-rpcbind` only beside `-rpcallowip`.
 
-    bitcoind v31.1.0 given each of these and no `-rpcallowip` listens on
+    bitcoind given each of these and no `-rpcallowip` listens on
     loopback at `-rpcport`, and logs a warning. The values are kept, for
     `RpcManager` to warn over.
     """
@@ -3274,7 +3288,7 @@ def test_build_config_rpcallowip_is_read_as_a_list(
 def test_build_config_every_rpcbind_value_is_checked() -> None:
     """ISS 1211: `CheckHostPortOptions` checks every value, bound or not.
 
-    bitcoind v31.1.0 refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
+    bitcoind refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
     "Invalid port specified in -rpcbind: '1.2.3.4:0'", where only the
     last value was read here.
     """
@@ -3296,7 +3310,7 @@ def test_build_config_prune_at_or_above_the_minimum_sets_the_mib_target() -> Non
 
     Core's own automatic pruning: `<n>` itself is the MiB target, not
     collapsed to a fixed depth -- `node::ApplyArgsManOptions`
-    (`node/blockmanager_args.cpp:27-35`, at bitcoin/bitcoin@ca7162cde5)
+    (`node/blockmanager_args.cpp:27-35`, at bitcoin/bitcoin@f0de87f040)
     stores `nPruneArg * 1_MiB` verbatim as `opts.prune_target` for every
     `<n>` this branch reaches.
     """
@@ -3313,7 +3327,7 @@ def test_build_config_prune_one_is_manual_and_sets_no_mib_target() -> None:
     """`-prune=1` is Core's own manual pruning: no MiB target, RPC-only.
 
     `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:28-29`, at
-    bitcoin/bitcoin@ca7162cde5): `nPruneArg == 1` is the one value
+    bitcoin/bitcoin@f0de87f040): `nPruneArg == 1` is the one value
     `PRUNE_TARGET_MANUAL` rather than `nPruneArg * 1_MiB` reaches, and
     `main._prune_chain` reads `prune_target_mib is None` as exactly
     this -- nothing deleted automatically, only
@@ -3327,7 +3341,7 @@ def test_build_config_prune_between_two_and_the_minimum_refuses_to_start() -> No
     """`-prune=<n>` for `2 <= n < MIN_PRUNE_TARGET_MIB` refuses, Core's wording.
 
     `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:31-33`, at
-    bitcoin/bitcoin@ca7162cde5): too small a target to actually run a
+    bitcoin/bitcoin@f0de87f040): too small a target to actually run a
     node on, and Core refuses to start rather than rounding it up to
     the floor or collapsing it to manual pruning.
     """
@@ -3349,7 +3363,7 @@ def test_build_config_prune_negative_refuses_to_start() -> None:
     """A negative `-prune` refuses to start, matching Core's own wording.
 
     `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:23-25`, at
-    bitcoin/bitcoin@ca7162cde5): `if (nPruneArg < 0) return
+    bitcoin/bitcoin@f0de87f040): `if (nPruneArg < 0) return
     util::Error{_("Prune cannot be configured with a negative value.")};`
     """
     with pytest.raises(
@@ -3770,7 +3784,7 @@ def test_help_names_v1transport() -> None:
 
 
 def test_help_names_persistmempool_in_core_s_words() -> None:
-    """`bitcoind` v31.1.0's `-help` text for both options."""
+    """`bitcoind`'s `-help` text for both options."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-persistmempool Whether to save the mempool on shutdown and load on "
@@ -3785,7 +3799,7 @@ def test_help_names_persistmempool_in_core_s_words() -> None:
 
 
 def test_help_names_mempoolexpiry_in_core_s_words() -> None:
-    """`bitcoind` v31.1.0's `-help` text."""
+    """`bitcoind`'s `-help` text."""
     assert (
         "  -mempoolexpiry=<n>\n"
         "       Do not keep transactions in the mempool longer than <n> hours (default:\n"
@@ -3896,7 +3910,7 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
 ) -> None:
     """Each of `Node.init_errors` is a line, in order, and the status is `1`.
 
-    `bitcoind` v31.1.0's two lines for a taken P2P port, named for this node.
+    `bitcoind`'s two lines for a taken P2P port, named for this node.
     """
 
     class FakeNode:
@@ -3929,9 +3943,9 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
     )
 
 
-# Each row measured on `bitcoind` v31.1.0, a first instance running over
-# the data directory: the options Core refuses after `AppInitLockDirectories`
-# are answered with the lock, the others with their own refusal
+# Each row measured on `bitcoind`, a first instance running over the data
+# directory: the options Core refuses after `AppInitLockDirectories` are
+# answered with the lock, the others with their own refusal
 _AFTER_THE_LOCK = [
     ["-port=0"],
     ["-rpcport=0"],
@@ -4032,7 +4046,7 @@ def test_build_config_refuses_in_core_order(
 ) -> None:
     """Two refusals in one command line: the one `bitcoind` names first.
 
-    Each measured on `bitcoind` v31.1.0.
+    Each measured on `bitcoind`.
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
     expected = re.escape(refusal.format(x=tmp_path))
@@ -4120,7 +4134,7 @@ def test_main_reads_the_includes_of_a_chain_core_does_not_know(
 ) -> None:
     """ISS 1302: `GetChainTypeString` names it; `GetChainType` refuses later.
 
-    Measured on `bitcoind` v31.1.0 with these files: the include's own
+    Measured on `bitcoind` with these files: the include's own
     refusal, and not "Unknown chain bogus.", which it gives with no
     include at all.
     """
@@ -4139,9 +4153,9 @@ def test_main_refuses_a_conflicting_chain_before_any_include(
 ) -> None:
     """ISS 1302: the chain `ReadConfigFiles` resolves first, with no prefix.
 
-    `bitcoind` v31.1.0 refuses the combination, not the missing file,
-    and without `InitConfig`'s "Error reading configuration file: ",
-    the refusal being thrown rather than returned; its words are
+    `bitcoind` refuses the combination, not the missing file, and
+    without `InitConfig`'s "Error reading configuration file: ", the
+    refusal being thrown rather than returned; its words are
     `bitcoind`'s own (btclib-org/btclib-node#1311).
     """
     (tmp_path / "bitcoin.conf").write_text(
@@ -4158,8 +4172,8 @@ def test_config_options_records_every_section_as_core_does() -> None:
     A `[section]` line, and a key's part before its last `.` where that
     `.` sits at or past the `[section]` prefix's length: `regtest.x`
     under `[regtest]`, `regtest` for a top-level `regtest.port`, and
-    `x.` for `.foo` under `[x]`, as `bitcoind` v31.1.0 names it, but not
-    `x` again for `foo` under `[x]`.
+    `x.` for `.foo` under `[x]`, as `bitcoind` names it, but not `x`
+    again for `foo` under `[x]`.
     """
     sections: list[tuple[str, str, int]] = []
     text = "regtest.port=1\n[x]\nfoo=1\n.foo=1\n[regtest]\nx.bar=1\nbar=2\n"
@@ -4262,9 +4276,8 @@ def test_main_warns_of_an_unrecognized_section_before_refusing(
 ) -> None:
     """ISS 1271: the warning, then the blocks directory, as `bitcoind` prints.
 
-    Measured on `bitcoind` v31.1.0 with this file and include: the root
-    file is named by its path, the included one as `includeconf=` names
-    it.
+    Measured on `bitcoind` with this file and include: the root file is
+    named by its path, the included one as `includeconf=` names it.
     """
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nincludeconf=inc.conf\n[x]\n", encoding="utf-8"
@@ -4319,8 +4332,8 @@ def test_main_a_refusal_after_the_lock_reaches_history_log(
 ) -> None:
     """ISS 1306: `CheckHostPortOptions` fails after the log has started.
 
-    `init::StartLogging` (`src/init.cpp:1436`, at bitcoin/bitcoin@9be056a8a7)
-    runs ahead of `CheckHostPortOptions` (`:1525`, same file), so
+    `init::StartLogging` (`src/init.cpp:1511`, at bitcoin/bitcoin@f0de87f040)
+    runs ahead of `CheckHostPortOptions` (`:1600`, same file), so
     `bitcoind`'s own `debug.log` already holds a `[error]` line for this
     refusal, `LogError` reaching it through `noui_ThreadSafeMessageBox`
     the way it reaches stderr.
@@ -4513,7 +4526,7 @@ def test_build_config_rpcwhitelistdefault(
 def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     tmp_path: Path, value: str, *, expected: bool
 ) -> None:
-    """Each value as `bitcoind` v31.1.0 read `-rpcwhitelistdefault=<value>`.
+    """Each value as `bitcoind` read `-rpcwhitelistdefault=<value>`.
 
     Measured there with no `-rpcwhitelist`: a 403 for true, a 200 for false.
     """
@@ -4528,8 +4541,8 @@ def test_main_makes_what_the_node_creates_owner_only(
     """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
 
     Under a group- and world-readable umask, what is created after `main`
-    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
-    leaves its own chain directory and `debug.log`.
+    is 0700 for a directory and 0600 for a file, as `bitcoind` leaves its
+    own chain directory and `debug.log`.
     """
     os.umask(0o022)
     monkeypatch.setattr(cli, "_before_lock", _refused)
@@ -4618,8 +4631,8 @@ def test_main_history_log_names_the_data_directory_and_config_file(
 ) -> None:
     """ISS 1444: the lines `bitcoind`'s `debug.log` opens on, in its order.
 
-    `init::StartLogging` (`src/init/common.cpp:107-142`, at
-    bitcoin/bitcoin@9be056a8a7): "Default data directory", "Using data
+    `init::StartLogging` (`src/init/common.cpp:109-144`, at
+    bitcoin/bitcoin@f0de87f040): "Default data directory", "Using data
     directory", "Config file:", then `LogArgs`'s lines. A refusal after the
     lock opens the same log, and is what reaches it here without a node.
     """
@@ -4709,9 +4722,9 @@ def test_build_config_warns_over_libevent_and_selects_nothing(
 ) -> None:
     """ISS 2152: `GetLogCategory` warns once each time it reads `libevent`.
 
-    Measured on bitcoind v32.1.0: `-debug=libevent -debugexclude=libevent`
-    logs the warning twice, after the section warning, and starts. A
-    category discarded by a later `0` is not read at all.
+    Measured on bitcoind: `-debug=libevent -debugexclude=libevent` logs
+    the warning twice, after the section warning, and starts. A category
+    discarded by a later `0` is not read at all.
     """
     config = _build(tmp_path, *argv)
     assert config.debug_warnings == (_LIBEVENT_WARNING,) * warned
@@ -4720,12 +4733,12 @@ def test_build_config_warns_over_libevent_and_selects_nothing(
     assert not config.debug_exclude
 
 
-def test_build_config_takes_v32_1_s_mining_category(tmp_path: Path) -> None:
-    """ISS 2152: `mining` is in v32.1's `LOG_CATEGORIES_BY_STR`."""
+def test_build_config_takes_core_s_mining_category(tmp_path: Path) -> None:
+    """ISS 2152: `mining` is in Core's `LOG_CATEGORIES_BY_STR`."""
     assert _build(tmp_path, "-debug=mining").debug_categories == {"mining"}
 
 
-def test_help_lists_v32_1_s_categories() -> None:
+def test_help_lists_core_s_categories() -> None:
     """ISS 2152: `LogCategoriesString` lists `mining`, and not `libevent`."""
     message = " ".join(cli._help_message(show_debug=True).split())
     assert "mempoolrej, mining, net" in message
@@ -4834,7 +4847,7 @@ def _read(tmp_path: Path, *argv: str, conf: str = "") -> cli._Settings:
 
 
 def test_a_start_writes_the_settings_file_under_the_warning(tmp_path: Path) -> None:
-    """`bitcoind` v31.1.0 writes `_warning_` alone at a first start."""
+    """`bitcoind` writes `_warning_` alone at a first start."""
     _read(tmp_path)
     assert _settings(tmp_path).read_bytes().decode("utf-8") == (
         f'{{\n    "_warning_": "{_SETTINGS_WARNING}"\n}}\n'.replace("\n", os.linesep)
@@ -4955,7 +4968,7 @@ def test_a_malformed_file_is_refused_without_its_secret(
 def test_main_prints_a_malformed_file_as_core_does(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`bitcoind` v31.1.0 prints the refusal and its detail on stderr."""
+    """`bitcoind` prints the refusal and its detail on stderr."""
     _settings(tmp_path, '{"key": 1, "key": 2}')
     with pytest.raises(SystemExit) as exit_:
         cli.main([f"-datadir={tmp_path}", "-regtest"])
@@ -4967,7 +4980,7 @@ def test_main_prints_a_malformed_file_as_core_does(
 
 
 def test_a_file_that_cannot_be_written_refuses_the_start(tmp_path: Path) -> None:
-    """`bitcoind` v31.1.0 for `-settings=sub/s.json` with no `sub`."""
+    """`bitcoind` for `-settings=sub/s.json` with no `sub`."""
     with pytest.raises(ValueError, match=r".") as refused:
         _read(tmp_path, "-settings=sub/s.json")
     assert str(refused.value) == (
@@ -4992,7 +5005,7 @@ def test_a_chain_directory_that_cannot_be_made_refuses_the_start(
 def test_the_settings_file_is_written_ahead_of_help_and_a_stray_token(
     tmp_path: Path,
 ) -> None:
-    """`InitConfig` runs before both, as `bitcoind` v31.1.0 does."""
+    """`InitConfig` runs before both, as `bitcoind` does."""
     with pytest.raises(SystemExit):
         _read(tmp_path, "-help")
     assert _settings(tmp_path).exists()
@@ -5013,7 +5026,7 @@ def test_a_settings_key_moves_the_file_the_write_goes_to(tmp_path: Path) -> None
 
 
 def test_a_false_settings_key_refuses_the_write(tmp_path: Path) -> None:
-    """`bitcoind` v31.1.0: the `logic_error` `WriteSettingsFile` throws."""
+    """`bitcoind`: the `logic_error` `WriteSettingsFile` throws."""
     _settings(tmp_path, '{"settings":false}')
     with pytest.raises(
         ValueError, match=r"^Attempt to write settings file when dynamic settings"
@@ -5047,7 +5060,7 @@ def test_a_chain_selector_in_the_file_is_refused_as_a_number(tmp_path: Path) -> 
 def test_a_negated_chain_selector_in_the_file_is_skipped(tmp_path: Path) -> None:
     """`GetSetting` skips a negated chain selector at every level.
 
-    `bitcoind` v31.1.0 refuses `regtest=1` in `bitcoin.conf` beside
+    `bitcoind` refuses `regtest=1` in `bitcoin.conf` beside
     `{"regtest": false, "signet": true}` in `settings.json`: the file's
     negation does not hide the conf's `regtest`.
     """
@@ -5131,7 +5144,7 @@ def test_a_known_settings_name_past_the_limit_is_given_by_its_length(
 
 
 def test_the_help_names_settings_as_core_does() -> None:
-    """`bitcoind` v31.1.0's `-help` text for `-settings`."""
+    """`bitcoind`'s `-help` text for `-settings`."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-settings=<file> Specify path to dynamic settings data file. Can be "
@@ -5171,14 +5184,14 @@ def test_a_value_of_the_file_is_between_the_command_line_and_the_conf() -> None:
 
 
 def test_a_false_in_the_file_negates_the_conf() -> None:
-    """`bitcoind` v31.1.0: `{"blocksonly": false}` beats `blocksonly=1`."""
+    """`bitcoind`: `{"blocksonly": false}` beats `blocksonly=1`."""
     settings = _file_settings('{"listen":false}', conf="listen=1\n")
     assert cli._get_bool(settings, "listen") is False
     assert cli._is_negated(settings, "listen")
 
 
 def test_the_values_of_a_list_option_are_the_command_line_the_file_the_conf() -> None:
-    """`bitcoind` v31.1.0: `(cli; rw1; rw2; conf)`; an array is its values."""
+    """`bitcoind`: `(cli; rw1; rw2; conf)`; an array is its values."""
     settings = _file_settings(
         '{"rpcwhitelist":["rw1","rw2"]}',
         "-rpcwhitelist=cli",
@@ -5188,7 +5201,7 @@ def test_the_values_of_a_list_option_are_the_command_line_the_file_the_conf() ->
 
 
 def test_a_value_of_the_file_is_not_a_zombie() -> None:
-    """`bitcoind` v31.1.0: a negation brings the conf back, not the file."""
+    """`bitcoind`: a negation brings the conf back, not the file."""
     settings = _file_settings(
         '{"rpcwhitelist":"rw"}',
         "-norpcwhitelist",
@@ -5199,7 +5212,7 @@ def test_a_value_of_the_file_is_not_a_zombie() -> None:
 
 
 def test_a_negation_on_the_command_line_hides_the_file_and_the_conf() -> None:
-    """`bitcoind` v31.1.0: `-nouacomment` leaves neither."""
+    """`bitcoind`: `-nouacomment` leaves neither."""
     settings = _file_settings(
         '{"rpcwhitelist":"rw"}', "-norpcwhitelist", conf="rpcwhitelist=conf\n"
     )
@@ -5207,13 +5220,13 @@ def test_a_negation_on_the_command_line_hides_the_file_and_the_conf() -> None:
 
 
 def test_a_false_in_the_file_hides_the_conf_in_a_list() -> None:
-    """`bitcoind` v31.1.0: `{"uacomment": false}` with `uacomment=conf`."""
+    """`bitcoind`: `{"uacomment": false}` with `uacomment=conf`."""
     settings = _file_settings('{"rpcwhitelist":false}', conf="rpcwhitelist=conf\n")
     assert cli._get_args(settings, "rpcwhitelist") == []
 
 
 def test_a_null_is_no_value_and_hides_the_conf() -> None:
-    """One value reads it as unset, as `bitcoind` v31.1.0 reads `settings`."""
+    """One value reads it as unset, as `bitcoind` reads `settings`."""
     settings = _file_settings('{"rpcuser":null}', conf="rpcuser=conf\n")
     assert cli._get_arg(settings, "rpcuser") is None
     assert not cli._is_set(settings, "rpcuser")
@@ -5239,7 +5252,7 @@ def test_a_null_is_no_value_and_hides_the_conf() -> None:
 def test_a_json_type_an_option_cannot_read_is_refused(
     name: str, content: str, reader: object
 ) -> None:
-    """`bitcoind` v31.1.0 throws `JSON value of type <type> is not ...`."""
+    """`bitcoind` throws `JSON value of type <type> is not ...`."""
     settings = _file_settings(f'{{"{name}":{content}}}')
     with pytest.raises(ValueError, match="is not of expected type string"):
         reader(settings, name)  # type: ignore[operator]
@@ -5276,7 +5289,7 @@ def test_get_args_refuses_the_first_value_it_cannot_read() -> None:
     [("12", 12), ('"12"', 12), ("-0", 0), ("9223372036854775807", 2**63 - 1)],
 )
 def test_a_number_is_an_integer_option(content: str, expected: int) -> None:
-    """`bitcoind` v31.1.0: `{"maxconnections": 12}` and `"12"` alike."""
+    """`bitcoind`: `{"maxconnections": 12}` and `"12"` alike."""
     settings = _file_settings(f'{{"maxconnections":{content}}}')
     assert cli._get_int(settings, "maxconnections") == expected
 
@@ -5286,7 +5299,7 @@ def test_a_number_is_an_integer_option(content: str, expected: int) -> None:
     ["1.5", "1e1", "12.0", "9223372036854775808", "-9223372036854775809"],
 )
 def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
-    """`bitcoind` v31.1.0: `JSON integer out of range`."""
+    """`bitcoind`: `JSON integer out of range`."""
     settings = _file_settings(f'{{"maxconnections":{content}}}')
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
         cli._get_int(settings, "maxconnections")
@@ -5311,7 +5324,7 @@ def test_an_rpcmaxconnections_number_past_an_int_is_out_of_range(content: str) -
 
 
 def test_a_number_is_a_string_option_in_its_own_text() -> None:
-    """`bitcoind` v31.1.0 names the file `5` for `{"settings": 5}`."""
+    """`bitcoind` names the file `5` for `{"settings": 5}`."""
     assert cli._get_arg(_file_settings('{"rpcuser":1.50}'), "rpcuser") == "1.50"
 
 
