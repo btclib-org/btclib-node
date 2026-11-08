@@ -1512,27 +1512,28 @@ def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
     assert peer.relay_tx is True
 
 
-def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
-    """A `version` with a stray octet still raises, unlike `addr`/`addrv2`.
+@pytest.mark.parametrize("relay", [True, False])
+def test_a_version_with_octets_past_its_relay_flag_is_answered(*, relay: bool) -> None:
+    """ISS 2097: Core's `VERSION` reads up to the relay flag, and no further."""
+    peer = a_peer(relay_tx=not relay)
+    version(a_handshake_node(), a_version(relay=relay) + b"\x02\x00", peer)
+    assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack", "GetAddr"]
+    assert peer.relay_tx is relay
+    assert peer.version_message == a_parsed_version(relay=relay)
 
-    Issue #149 leaves this one asymmetric on purpose: addr and addrv2 (below)
-    accept a BinaryData stream, and btclib's own assert_no_trailing treats one
-    as "the caller's", nothing past it checked -- Core's own leniency, reached
-    with no second parser. Version.parse takes Octets alone (its own docstring:
-    "the envelope is what says where a payload ends"), because its optional
-    relay byte is detected by whether one more byte is there at all; handing it
-    a stream that could plausibly hold more would make a genuinely unknown
-    trailing octet misread as that flag. There is no btclib mechanism this node
-    can lean on for `version` without a private copy of its field-by-field
-    parse, so this still raises out of the callback. main.handle_p2p_handshake
-    logs that and keeps the peer, as Core only logs what ProcessMessage throws
-    (btclib-org/btclib-node#1170): the handshake never completes, and the
-    connection is left to the timeout of a pending one
-    (btclib-org/btclib-node#1169).
-    """
-    peer = a_peer()
+
+def test_the_octet_past_a_version_s_start_height_is_its_relay_flag() -> None:
+    """ISS 2097: with no flag, Core reads the first octet past as one."""
+    peer = a_peer(relay_tx=True)
+    version(a_handshake_node(), a_version(relay=None) + b"\x00\x02", peer)
+    assert "Verack" in commands(peer)
+    assert peer.relay_tx is False
+
+
+def test_a_version_with_no_user_agent_length_is_refused() -> None:
+    """ISS 2097: with no user agent length to read, nothing is cut off."""
     with pytest.raises(BTClibValueError):
-        version(a_handshake_node(), a_version() + b"\x00", peer)
+        version(a_handshake_node(), a_version()[:80], a_peer())
 
 
 def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
@@ -1540,19 +1541,12 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
 
     Issue #149's second half, closed on this: Core's own
     Unserialize<bool> (serialize.h) reads any nonzero octet as true,
-    where Version.parse raises for anything but 0x00/0x01. Reaching
-    Core's leniency here would mean either replaying Version.parse's
-    whole field walk (the fixed fields, both NetworkAddress entries and
-    the var_bytes user agent) to find where the flag sits in the
-    payload, or matching the wording of the BTClibValueError it raises
-    -- both bind this node to btclib's private shape rather than its
-    public contract, unlike the stream-based leniency addr/addrv2 use
-    above. And Core's own encoder (Serialize<bool>, the same
-    serialize.h) can never write anything but 0x00/0x01: a bool
-    converts to 0 or 1, nothing else, so no peer running Core -- or
-    this node's own Version.serialize -- ever reaches this path, only
-    an adversarial or already-broken one does. Refusing it is the
-    policy kept.
+    where Version.parse raises for anything but 0x00/0x01. Core's own
+    encoder (Serialize<bool>, the same serialize.h) can never write
+    anything but 0x00/0x01: a bool converts to 0 or 1, nothing else, so
+    no peer running Core -- or this node's own Version.serialize -- ever
+    reaches this path, only an adversarial or already-broken one does.
+    Refusing it is the policy kept.
     """
     peer = a_peer()
     # relay=None serializes nothing, so appending one raw octet is the
@@ -1967,6 +1961,13 @@ def test_a_feefilter_lands_on_the_connection() -> None:
     """An ordinary `feefilter` sets `peer.feefilter` to the rate it carries."""
     peer = a_peer()
     feefilter(a_handshake_node(), FeeFilter(500).serialize(), peer)
+    assert peer.feefilter == 500
+
+
+def test_a_feefilter_with_octets_past_its_rate_lands_on_the_connection() -> None:
+    """ISS 2097: Core's `FEEFILTER` reads the rate, and nothing after it."""
+    peer = a_peer()
+    feefilter(a_handshake_node(), FeeFilter(500).serialize() + b"\x00", peer)
     assert peer.feefilter == 500
 
 
@@ -2554,15 +2555,8 @@ def test_tokens_refill_at_core_s_rate_up_to_its_ceiling(
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
     """A trailing octet on `addr` or `addrv2` is parsed past, gossip kept.
 
-    issue #149: btclib's own assert_no_trailing raises out of
-    Addr.parse/AddrV2.parse for exactly this, which would throw the
-    whole message's gossip away if the callback let it through. Core
-    reads the entries (net_processing.cpp's ProcessMessage reads what it
-    wants out of vRecv and never checks for anything left), and this
-    node matches that for the two of the three messages issue #149 is
-    about where it can without a second copy of btclib's codec -- Addr
-    and AddrV2 accept a stream, and btclib's own assert_no_trailing
-    docstring calls a stream "the caller's", nothing past it checked.
+    ISS 149: Core reads the entries and nothing after them, as
+    `callbacks._fields` says.
     """
     given = [a_gossiped_address("1.2.3.4")]
     for callback, message in (
@@ -2577,6 +2571,22 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
         assert not peer.stopped
         # ISS 1178: Core's `SetupAddressRelay`, for any addr or addrv2
         assert peer.addr_relay_enabled is True
+
+
+def test_an_octet_past_an_addr_or_addrv2_ignored_raises_nothing() -> None:
+    """ISS 2097: a block-relay-only peer's gossip is parsed, octet included.
+
+    And then ignored, as `_refuses_addr_relay` says.
+    """
+    given = [a_gossiped_address("1.2.3.4")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        callback(node, message.serialize() + b"\x00", a_peer(block_relay=True))
+        assert not peer_db.addresses
 
 
 def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> None:
@@ -2645,6 +2655,18 @@ def test_a_notfound_hands_the_items_to_the_download_manager() -> None:
     ]
     not_found(node, NotFound(items).serialize(), a_peer(id=5))
     assert handed == [(5, [(item.type_code, item.hash) for item in items])]
+
+
+def test_a_notfound_with_octets_past_its_items_hands_them_on() -> None:
+    """ISS 2097: Core's `NOTFOUND` reads the items, and nothing after them."""
+    node = a_handshake_node()
+    handed: list[Any] = []
+    node.download_manager = SimpleNamespace(
+        received_not_found=lambda conn_id, items: handed.append((conn_id, items))
+    )
+    item = Inventory(InventoryType.MSG_WTX, b"\x11" * 32)
+    not_found(node, NotFound([item]).serialize() + b"\x00", a_peer(id=5))
+    assert handed == [(5, (item,))]
 
 
 def a_transaction() -> Tx:
@@ -2780,6 +2802,23 @@ def test_a_transaction_completes_the_senders_announcement_whatever_becomes_of_it
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert node.download_manager.tx_responses == [(3, transaction.id, transaction.hash)]
     assert (3 in node.tx_checks.queued) is (refusal is None and not held)
+
+
+def test_a_transaction_with_octets_past_it_is_queued_without_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2097: Core's `TX` reads the transaction, and nothing after it."""
+    monkeypatch.setattr(
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, 999, []),
+    )
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload + b"\x00", a_peer(id=3))
+    assert node.download_manager.tx_responses == [(3, transaction.id, transaction.hash)]
+    assert 3 in node.tx_checks.queued
 
 
 def test_a_transaction_from_a_block_relay_only_peer_completes_nothing() -> None:
@@ -3996,6 +4035,16 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
     assert answer.locator == (_HELD,)
 
 
+def test_a_block_announced_with_octets_past_the_items_is_answered() -> None:
+    """ISS 2097: Core's `INV` reads the items, and nothing after them."""
+    node = a_data_node(block_index=an_inv_index())
+    peer = a_peer()
+    node.download_manager.headers_sync_timeouts[peer.id] = math.inf
+    inv(node, block_inv(b"\x11" * 32) + b"\x00", peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+
+
 def test_a_block_this_node_has_a_header_for_asks_for_nothing() -> None:
     """An `inv` naming only blocks whose header is held asks for nothing."""
     node = a_data_node(block_index=an_inv_index())
@@ -4224,6 +4273,20 @@ def test_a_transaction_announced_that_we_hold_is_not_wanted(
     peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
     inv(node, Inv([item]).serialize(), peer)
     assert node.download_manager.inv_txs == []
+
+
+def test_a_getdata_with_octets_past_its_items_is_served() -> None:
+    """ISS 2097: Core's `GETDATA` reads the items, and nothing after them."""
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    peer = a_peer(last_inv_sequence=mempool.sequence)
+    item = Inventory(InventoryType.MSG_WTX, transaction.hash)
+    getdata(node, GetData([item]).serialize() + b"\x00", peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, TxMsg)
+    assert answer.tx == transaction
 
 
 def test_a_transaction_this_node_holds_is_served() -> None:
@@ -5012,6 +5075,19 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
 
 
+def test_a_getblocktxn_with_octets_past_its_indexes_is_answered() -> None:
+    """ISS 2097: Core's `GETBLOCKTXN` reads the indexes, and no further."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block = a_block_with_transactions(3)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
+    peer = a_peer()
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, block)
+    getblocktxn(node, GetBlockTxn(wanted, [2]).serialize() + b"\x00", peer)
+    (answer,) = peer.sent
+    assert answer == BlockTxn(wanted, [block.transactions[2]])
+
+
 def a_counting_store(*blocks: Block) -> tuple[Any, list[bytes]]:
     """Build a `block_db` holding each block under its hash, and its reads."""
     held = {
@@ -5638,6 +5714,16 @@ def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> No
     assert node.status == NodeStatus.SyncingHeaders
 
 
+def test_a_batch_with_octets_past_its_headers_is_taken() -> None:
+    """ISS 2097: Core's `HEADERS` reads the headers, and nothing after them."""
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=chain[-1].hash, header_index_tip=chain[-1].hash)
+    node.chainstate.block_index = index
+    headers(node, Headers(chain).serialize() + b"\x00", a_peer())
+    assert index.given == chain
+
+
 def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
     tmp_path: Path,
 ) -> None:
@@ -5794,15 +5880,20 @@ def activated(block_index: BlockIndex, chain: list[BlockHeader]) -> list[bytes]:
 
 
 def answer(
-    block_index: BlockIndex, locator: list[bytes], stop: bytes = _NO_STOP
+    block_index: BlockIndex,
+    locator: list[bytes],
+    stop: bytes = _NO_STOP,
+    tail: bytes = b"",
 ) -> tuple[list[bytes] | None, Any]:
-    """Send `getheaders`, returning the hashes answered and the peer.
+    """Send `getheaders`, `tail` past its fields, returning what is answered.
 
-    `None` where nothing at all is sent back.
+    The hashes answered and the peer, `None` where nothing at all is sent
+    back.
     """
     node = a_data_node(block_index=block_index)
     peer = a_peer()
-    getheaders(node, GetHeaders(PROTOCOL_VERSION, locator, stop).serialize(), peer)
+    payload = GetHeaders(PROTOCOL_VERSION, locator, stop).serialize() + tail
+    getheaders(node, payload, peer)
     if not peer.sent:
         return None, peer
     (sent,) = peer.sent
@@ -5826,6 +5917,15 @@ def test_a_getheaders_is_answered_from_the_active_chain(an_index: BlockIndex) ->
 
     hashes, peer = answer(an_index, [active[0]])
     assert hashes == active[1:]
+
+
+def test_a_getheaders_with_octets_past_its_stop_hash_is_answered(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 2097: Core's `GETHEADERS` reads the stop hash, and no further."""
+    active = activated(an_index, generate_random_header_chain(3, _GENESIS))
+    hashes, _ = answer(an_index, [_GENESIS], tail=b"\x00")
+    assert hashes == active
 
 
 def test_a_locator_above_the_tip_on_its_chain_resolves_to_the_tip(
@@ -6477,6 +6577,23 @@ def test_peerblockfilters_off_disconnects_for_all_three() -> None:
     )
     assert not peer.sent
     assert peer.stopped == [True]
+
+
+def test_a_filter_request_with_octets_past_its_stop_hash_is_answered() -> None:
+    """ISS 2097: Core's `ProcessGetCF*` read the stop hash, and no further."""
+    node = a_filters_node()
+    stop_hash = node.chainstate.block_index.active_chain[5]
+    basic = BlockFilterType.BASIC
+    for callback, request, answered in (
+        (get_cfilters, GetCFilters(basic, 2, stop_hash), CFilter),
+        (get_cfheaders, GetCFHeaders(basic, 2, stop_hash), CFHeaders),
+        (get_cfcheckpt, GetCFCheckpt(basic, stop_hash), CFCheckpt),
+    ):
+        peer = a_peer()
+        callback(node, request.serialize() + b"\x00", peer)
+        assert not peer.stopped
+        assert peer.sent
+        assert all(isinstance(msg, answered) for msg in peer.sent)
 
 
 def test_a_stop_hash_this_node_never_heard_of_is_not_answered() -> None:
@@ -7141,11 +7258,15 @@ def test_a_getheaders_locator_past_the_bound_drops_the_peer(
 
 
 def ask_getblocks(
-    node: Any, locator: list[bytes], stop: bytes = _NO_STOP
+    node: Any, locator: list[bytes], stop: bytes = _NO_STOP, tail: bytes = b""
 ) -> tuple[list[bytes], Any]:
-    """Send `getblocks`, returning the block hashes of the `inv` answered."""
+    """Send `getblocks`, `tail` past its fields, returning the hashes answered.
+
+    The block hashes of the `inv` answered, and the peer.
+    """
     peer = a_peer()
-    getblocks(node, GetBlocks(PROTOCOL_VERSION, locator, stop).serialize(), peer)
+    payload = GetBlocks(PROTOCOL_VERSION, locator, stop).serialize() + tail
+    getblocks(node, payload, peer)
     hashes = []
     for sent in peer.sent:
         assert isinstance(sent, Inv)
@@ -7218,6 +7339,15 @@ def test_a_getblocks_is_answered_with_an_inv_after_the_fork(
     hashes, peer = ask_getblocks(node, [active[-1]])
     assert hashes == []
     assert not peer.sent
+
+
+def test_a_getblocks_with_octets_past_its_stop_hash_is_answered(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 2097: Core's `GETBLOCKS` reads the stop hash, and no further."""
+    active = activated(an_index, generate_random_header_chain(3, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    assert ask_getblocks(node, [_GENESIS], tail=b"\x00")[0] == active
 
 
 def test_a_getblocks_stops_before_its_hash_stop(an_index: BlockIndex) -> None:
