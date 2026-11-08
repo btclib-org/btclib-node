@@ -70,10 +70,12 @@ from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
+    CLIENT_VERSION,
     MIN_BLOCKS_TO_KEEP,
     MIN_PRUNE_TARGET_MIB,
     USER_AGENT,
     P2pConnStatus,
+    numeric_version,
 )
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
@@ -310,6 +312,7 @@ def a_node(
     max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
     local_addresses: dict[bytes, LocalService] | None = None,
     network_active: bool = True,
+    outbound_time_offsets: list[int] | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -326,6 +329,8 @@ def a_node(
     `get_network_info`'s `localservices`/`localservicesnames`.
     `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
     and unset by default -- nothing else here reads either.
+    `outbound_time_offsets` is `get_network_info`'s `timeoffset` samples,
+    none by default.
     """
     known = heights if heights is not None else {}
     flag = [network_active]
@@ -384,6 +389,7 @@ def a_node(
             active_rpc_commands if active_rpc_commands is not None else []
         ),
         log_path=log_path,
+        outbound_time_offsets=outbound_time_offsets or [],
         _accept=accept,
     )
 
@@ -1008,6 +1014,110 @@ def test_get_network_info_counts_connections_by_direction() -> None:
         result["connections_out"],
     ) == (4, 1, 3)
     assert result["connections"] == get_connection_count(node, _CONN, [])
+
+
+def test_get_network_info_answers_core_s_version_and_localrelay() -> None:
+    """ISS 2128: `version` is this node's own in Core's form; `localrelay` true.
+
+    Core's `localrelay` is false only under `-blocksonly`, which this
+    node does not have.
+    """
+    result = get_network_info(a_node(), _CONN, [])
+    assert result["version"] == numeric_version(CLIENT_VERSION)
+    assert result["localrelay"] is True
+
+
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [
+        # Core v32.1.0's own `CLIENT_VERSION`, what its `getnetworkinfo` answers
+        ("32.1.0", 320100),
+        ("2026.12", 20261200),
+        ("2026.11.7", 20261107),
+        ("2026.8.6.1", 20260806),
+        ("2026.8.6.dev701", 20260806),
+        ("2026.12.dev3", 20261200),
+        ("2026", 20260000),
+    ],
+)
+def test_a_version_takes_core_s_numeric_form(text: str, number: int) -> None:
+    """ISS 2128: `10000 * major + 100 * minor + build`, Core's form."""
+    assert numeric_version(text) == number
+
+
+def test_a_version_with_no_leading_number_is_refused() -> None:
+    """ISS 2128: nothing to read a number from is an error, not a 0."""
+    with pytest.raises(ValueError, match="no leading number in version 'dev'"):
+        numeric_version("dev")
+
+
+@pytest.mark.parametrize(
+    ("offsets", "median"),
+    [
+        ([], 0),
+        ([5000, 100, 400, 200], 0),
+        # Core's `TimeOffsets::Median`, measured on bitcoind v32.1.0 with
+        # five peers dialled: four samples answer 0, the fifth the middle
+        ([5000, 100, 400, 200, 300], 300),
+        # an even count answers the upper of the two middle samples
+        ([600, -100, 400, 200, 300, 500], 400),
+        ([-20, -10, -30, -50, -40], -30),
+    ],
+)
+def test_get_network_info_answers_core_s_median_time_offset(
+    offsets: list[int], median: int
+) -> None:
+    """ISS 2128: `timeoffset` is Core's median of the outbound offsets.
+
+    0 under five samples; otherwise the sample at half their count, in
+    sorted order (`src/node/timeoffsets.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    node = a_node(outbound_time_offsets=offsets)
+    assert get_network_info(node, _CONN, [])["timeoffset"] == median
+
+
+def test_get_network_info_answers_the_networks_bitcoind_answers() -> None:
+    """ISS 2128: `networks` is what bitcoind v32.1.0 answers on regtest.
+
+    IPv4 and IPv6 are reachable; Tor, I2P and CJDNS are limited, as
+    bitcoind answers with no proxy, SAM bridge or `-cjdnsreachable`.
+    Neither side has a proxy.
+    """
+
+    def network(name: str, *, reachable: bool) -> dict[str, Any]:
+        return {
+            "name": name,
+            "limited": not reachable,
+            "reachable": reachable,
+            "proxy": "",
+            "proxy_randomize_credentials": False,
+        }
+
+    assert get_network_info(a_node(), _CONN, [])["networks"] == [
+        network("ipv4", reachable=True),
+        network("ipv6", reachable=True),
+        network("onion", reachable=False),
+        network("i2p", reachable=False),
+        network("cjdns", reachable=False),
+    ]
+
+
+def test_get_network_info_answers_the_relay_feerates_getmempoolinfo_does() -> None:
+    """ISS 2128: `relayfee` and `incrementalfee` are the configured rates.
+
+    Core reads both from the mempool's options, the same two
+    `getmempoolinfo` answers as `minrelaytxfee` and `incrementalrelayfee`,
+    in BTC/kvB.
+    """
+    mempool = Mempool(Logger(debug=True), FeeRate(sats_per_kvbyte=3000))
+    node = a_node(mempool=mempool, min_relay_feerate=FeeRate(sats_per_kvbyte=2000))
+    result = get_network_info(node, _CONN, [])
+    assert result["relayfee"].text == "0.00002000"
+    assert result["incrementalfee"].text == "0.00003000"
+    pool = get_mempool_info(node, _CONN, [])
+    assert result["relayfee"].text == pool["minrelaytxfee"].text
+    assert result["incrementalfee"].text == pool["incrementalrelayfee"].text
 
 
 def test_the_mempool_reports_its_size_and_bytes() -> None:
@@ -5091,10 +5201,43 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     (`test_framework.py:568-594`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag);
     `protocolversion` is included beside it as a real, cheaply-answered
     constant rather than as decoration. `NETWORK | WITNESS |
-    NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give.
+    NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give. The keys
+    are those bitcoind v32.1.0 answers on regtest, in its order, less
+    `tx_send_rate` and `inv_buckets`.
     """
     result = get_network_info(a_node(), _CONN, [])
-    assert result == {
+    assert list(result) == [
+        "version",
+        "subversion",
+        "protocolversion",
+        "localservices",
+        "localservicesnames",
+        "localrelay",
+        "timeoffset",
+        "networkactive",
+        "connections",
+        "connections_in",
+        "connections_out",
+        "networks",
+        "relayfee",
+        "incrementalfee",
+        "localaddresses",
+        "warnings",
+    ]
+    reported = {
+        key: value
+        for key, value in result.items()
+        if key
+        not in {
+            "version",
+            "localrelay",
+            "timeoffset",
+            "networks",
+            "relayfee",
+            "incrementalfee",
+        }
+    }
+    assert reported == {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",

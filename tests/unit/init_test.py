@@ -314,6 +314,17 @@ def test_the_mempool_is_built_with_the_configured_expiry(tmp_path: Path) -> None
         assert node.mempool.expiry == 7200
 
 
+def test_the_outbound_time_offsets_keep_core_s_last_fifty(tmp_path: Path) -> None:
+    """ISS 2128: Core's `TimeOffsets` holds the last `MAX_SIZE{50}` samples.
+
+    `src/node/timeoffsets.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        assert not node.outbound_time_offsets
+        node.outbound_time_offsets.extend(range(51))
+        assert list(node.outbound_time_offsets) == list(range(1, 51))
+
+
 def test_pending_getdata_starts_empty(tmp_path: Path) -> None:
     """A fresh node has nothing registered on `pending_getdata`."""
     with unstarted_node_context(tmp_path) as node:

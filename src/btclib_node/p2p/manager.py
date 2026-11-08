@@ -86,6 +86,7 @@ from btclib_node.p2p.banman import (
 from btclib_node.p2p.callbacks import has_all_desirable_services
 from btclib_node.p2p.connection import Connection, local_services
 from btclib_node.p2p.eviction import (
+    NETWORK_OF_ID,
     EvictionCandidate,
     Network,
     get_network,
@@ -120,6 +121,7 @@ __all__ = [
     "PROTECTION_LEVEL_UNRESTRICTED",
     "P2pManager",
     "network_error_string",
+    "reaches",
     "socket_address",
 ]
 
@@ -255,6 +257,12 @@ _SEEDNODE_POLL_INTERVAL = 0.5
 # proxy, SAM bridge or `-cjdnsreachable` is given (`src/init.cpp`, same
 # sha), and `dial` opens a socket for IPv4 and IPv6 alone.
 _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
+
+
+def reaches(network: Network) -> bool:
+    """Whether this node reaches `network`, `g_reachable_nets.Contains`."""
+    return any(NETWORK_OF_ID[reached] == network for reached in _REACHABLE_NETWORKS)
+
 
 # Core's `AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha): the mean wait between two self-announcements to one peer.

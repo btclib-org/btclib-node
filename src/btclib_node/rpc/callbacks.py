@@ -48,7 +48,11 @@ from btclib_node.chainstate.block_index import (
     block_time,
     check_headers_pow,
 )
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
+from btclib_node.constants import (
+    MIN_BLOCKS_TO_KEEP,
+    NUMERIC_CLIENT_VERSION,
+    USER_AGENT,
+)
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import (
@@ -86,6 +90,7 @@ from btclib_node.p2p.banman import (
 )
 from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid
+from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.connection import COIN, RawJSON, btc_amount
 from btclib_node.rpc.errors import (
@@ -1666,17 +1671,28 @@ def set_network_active(node: Node, conn: RpcConnection, params: list[Any]) -> bo
     return state
 
 
+# Core's `TimeOffsets::Median` answers 0 under this many samples
+# (`src/node/timeoffsets.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+_MIN_TIME_OFFSETS = 5
+
+
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getnetworkinfo` with the fields argued below.
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:671-797`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers two dozen fields,
-    most either this node's own configuration it carries no counterpart to
-    -- `-onlynet`, `-proxy`, `-asmap` -- or relay-loop state this node does
-    not keep (`inv_buckets`, `tx_send_rate`). Serving a placeholder for any
-    of those would be the same decoration `get_mempool_info`'s own docstring
-    already argues against, so they are left out rather than answered with a
-    made-up number.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) also answers `inv_buckets`
+    and `tx_send_rate`, relay-loop state this node does not keep. Serving a
+    placeholder for either would be the same decoration
+    `get_mempool_info`'s own docstring already argues against, so they are
+    left out rather than answered with a made-up number. Core answers
+    `asmap_version` only under `-asmap`, which this node does not have.
+
+    `version` is `constants.NUMERIC_CLIENT_VERSION`, this node's own
+    version in the form of Core's `CLIENT_VERSION` (`:744`, same sha). The
+    number is above every Core's (v32.1 answers 320100), so a client that
+    gates a feature on `version >= N` reads this node as newer than any
+    Core. The maintainer chose that over leaving the field out
+    (btclib-org/btclib-node#2128).
 
     `subversion` is what `test_framework.py`'s own `connect_nodes`
     (`:568-594`, same sha) reads off each side before wiring them
@@ -1694,6 +1710,24 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     (btclib-org/btclib-node#1394), `service_names` above turning the same
     bits into the strings `getpeerinfo`'s own `servicesnames` already uses
     for a peer's.
+
+    `localrelay` is true: Core answers `!ignores_incoming_txs` (`:753`,
+    same sha), false only under `-blocksonly`, which this node does not
+    have.
+
+    `timeoffset` is Core's `TimeOffsets::Median` (`src/node/timeoffsets.cpp`,
+    same sha) of `node.outbound_time_offsets`: 0 under five samples, and
+    otherwise the sample at half their count in sorted order.
+
+    `networks` is Core's `GetNetworksInfo` (`:649-669`, same sha): its
+    networks in its order, each `reachable` where `p2p.manager.reaches`
+    says so and `limited` where not. This node has no `-proxy`, so each
+    answers the empty `proxy` and the false `proxy_randomize_credentials`
+    Core answers for a network without one.
+
+    `relayfee` and `incrementalfee` are the feerates `get_mempool_info`
+    answers as `minrelaytxfee` and `incrementalrelayfee`, in BTC/kvB: Core
+    reads both from the mempool's options (`:778-779`, same sha).
 
     `warnings` is `node.warnings.get_messages()`, the same array
     `get_blockchain_info`'s own `warnings` answers -- Core's own
@@ -1726,15 +1760,35 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     manager = node.p2p_manager
     peers = {**manager.pending_connections, **manager.connections}
     connections_in = sum(bool(p2p_conn.inbound) for p2p_conn in peers.values())
+    offsets = sorted(node.outbound_time_offsets)
     return {
+        "version": NUMERIC_CLIENT_VERSION,
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
+        "localrelay": True,
+        "timeoffset": (
+            offsets[len(offsets) // 2] if len(offsets) >= _MIN_TIME_OFFSETS else 0
+        ),
         "networkactive": manager.get_network_active(),
         "connections": len(peers),
         "connections_in": connections_in,
         "connections_out": len(peers) - connections_in,
+        "networks": [
+            {
+                "name": name,
+                "limited": not reaches(network),
+                "reachable": reaches(network),
+                "proxy": "",
+                "proxy_randomize_credentials": False,
+            }
+            for name, network in _NETWORK_NAMES.items()
+        ],
+        "relayfee": btc_amount(node.config.min_relay_feerate.sats_per_kvbyte),
+        "incrementalfee": btc_amount(
+            node.mempool.incremental_relay_feerate.sats_per_kvbyte
+        ),
         "localaddresses": [
             {"address": str(info.address), "port": info.port, "score": info.score}
             for info in local

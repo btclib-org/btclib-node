@@ -13,6 +13,10 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib_node import constants
+from btclib_node.config import (
+    DEFAULT_INCREMENTAL_RELAY_FEERATE,
+    DEFAULT_MIN_RELAY_FEERATE,
+)
 from btclib_node.notify import Warnings
 from btclib_node.p2p import connection
 from btclib_node.rpc.callbacks import get_network_info
@@ -24,8 +28,8 @@ if TYPE_CHECKING:
 def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() -> None:
     """Both read `constants.USER_AGENT`, so the two cannot drift apart.
 
-    `node.config` is `local_services`'s own, not this test's concern:
-    a plain namespace at `Config`'s own defaults is enough.
+    The rest of `node` is what `get_network_info` reads besides, not this
+    test's concern: plain namespaces at `Config`'s own defaults are enough.
     """
     node = cast(
         "Any",
@@ -35,7 +39,12 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
                 peerblockfilters=False,
                 v2transport=False,
                 v1transport=True,
+                min_relay_feerate=DEFAULT_MIN_RELAY_FEERATE,
             ),
+            mempool=SimpleNamespace(
+                incremental_relay_feerate=DEFAULT_INCREMENTAL_RELAY_FEERATE
+            ),
+            outbound_time_offsets=[],
             p2p_manager=SimpleNamespace(
                 local_snapshot=dict,
                 connections={},
