@@ -52,6 +52,7 @@ from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import (
     BlockIndex,
     BlockStatus,
+    block_time,
     calculate_work,
 )
 from btclib_node.constants import (
@@ -870,10 +871,13 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         # Core's `BlockConnected` stamping `m_last_tip_update`
         node.download_manager.last_tip_update = clock.now()
     # `Node.best_height`'s own comment (`__init__.py`) is where reading
-    # this cross-thread, off `active_chain` rather than off a lock, is
+    # these two cross-thread, off `active_chain` rather than off a lock, is
     # argued -- this call is the "tip changed" moment that comment cites.
     # btclib-org/btclib-node#722
     node.best_height = len(block_index.active_chain) - 1
+    node.best_block_time = block_time(
+        block_index.header_dict[block_index.active_chain[-1]].header
+    )
     node.mempool.add_transactions_updated(len(to_remove) + len(to_add))
     if utxo_index.should_flush():
         node.chainstate.flush()

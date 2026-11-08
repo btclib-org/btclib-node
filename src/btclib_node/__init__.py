@@ -33,6 +33,7 @@ from bitcoin_core_rpc import chain_from_network
 
 from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import Config
 from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
 from btclib_node.dirlock import lock_directories
@@ -648,6 +649,14 @@ class Node(threading.Thread):
         # runs, matching genesis already sitting at `active_chain`'s own
         # index 0. btclib-org/btclib-node#722
         self.best_height = len(self.chainstate.block_index.active_chain) - 1
+        # The active tip's block time, read and written as `best_height`
+        # is: Core's `m_best_block_time`, which `SetBestBlock` writes
+        # beside `m_best_height` and `ApproximateBestBlockDepth` reads
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag).
+        block_index = self.chainstate.block_index
+        tip = block_index.header_dict[block_index.active_chain[-1]].header
+        self.best_block_time = block_time(tip)
         self.download_manager = DownloadManager(self, self.logger)
         # Core's own `LoadChainTip` calling `CheckForkWarningConditions`
         # once the chainstate is loaded (`src/validation.cpp`, at

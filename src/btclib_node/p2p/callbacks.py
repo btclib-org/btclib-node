@@ -347,12 +347,38 @@ def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bo
     return True
 
 
+# Core's `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+_NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS = 144
+
+
+def _approximate_best_block_depth(node: Node) -> int:
+    """Core's `ApproximateBestBlockDepth`: the tip's age in target spacings.
+
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag. Core's `/` truncates where `//` floors: they differ only on a
+    tip time ahead of the clock, where both answers are under any
+    allowance.
+    """
+    age = int(clock.now()) - node.best_block_time
+    return age // node.chain.consensus.pow_target_spacing
+
+
 def has_all_desirable_services(node: Node, services: int) -> bool:
-    """Core's `HasAllDesirableServiceFlags`, argued in `version` below."""
+    """Core's `HasAllDesirableServiceFlags` over `GetDesirableServiceFlags`.
+
+    The desirable services are `NODE_NETWORK | NODE_WITNESS`. For a peer
+    offering `NODE_NETWORK_LIMITED` they are `NODE_NETWORK_LIMITED |
+    NODE_WITNESS` while `_approximate_best_block_depth` is under
+    `_NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` (`src/net_processing.cpp`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's sync state
+    plays no part.
+    """
     desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     if (
         services & ServiceFlags.NODE_NETWORK_LIMITED
-        and node.status >= NodeStatus.BlockSynced
+        and _approximate_best_block_depth(node)
+        < _NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS
     ):
         desirable = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
     return not desirable & ~services
@@ -426,45 +452,14 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
         return True
-    # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
-    # so Core requires it of every connection `_expects_services` covers
-    # -- an automatic outbound peer or an addr-fetch one, whatever this
-    # node's own sync state -- and of no other: an inbound peer, a
-    # manual one, or a feeler is kept without it. `DownloadManager` asks
-    # such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
-    # stops its walk over the peer's chain at SegWit's own activation
-    # height (btclib-org/btclib-node#1208).
-    if _expects_services(conn) and not version_msg.services & ServiceFlags.NODE_WITNESS:
-        return True
-    # Core disconnects for missing services only where
-    # `_expects_services` holds -- an automatic outbound connection or an
-    # addr-fetch one, never a feeler, and not a `-connect` or `-addnode`
-    # peer (btclib-org/btclib-node#725, btclib-org/btclib-node#1284).
-    #
-    # `has_all_desirable_services`' own `desirable` (above) is
-    # `GetDesirableServiceFlags`'s shape
-    # (`net_processing.cpp:1861-1869`): `NODE_NETWORK | NODE_WITNESS`
-    # ordinarily, or `NODE_NETWORK_LIMITED | NODE_WITNESS` -- satisfied
-    # by a `NODE_NETWORK_LIMITED`-only peer -- once this node's own
-    # `ApproximateBestBlockDepth()` is under
-    # `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` (144). This tree computes
-    # no block-time depth estimate; `node.status >= NodeStatus.BlockSynced`
-    # stands in for "close to the tip" instead, kept as the gate on the
-    # whole check rather than only on the substitution there, matching
-    # this rule's own pre-#725 scope of tolerating a missing service
-    # until this node actually wants blocks -- a one-way latch
-    # `main.finish_sync` sets once `_ready_fork` finds no candidate left
-    # to beat the active chain (`main.settle_at_no_candidate`'s own
-    # docstring), stricter than Core's own 144-block allowance (true
-    # only once this node is fully caught up, not merely close) but the
-    # only "caught up" signal this tree already carries without
-    # computing a new one. The comparison itself is
-    # `HasAllDesirableServiceFlags`'s own shape (`net_processing.cpp:3850`,
-    # `!(desirable & ~services)`): `NODE_WITNESS` is already required of
-    # every connection the check below covers, so it is never the bit
-    # that trips this once reached, but it is kept in `desirable` for
-    # the same shape Core's own check has rather than a narrower one
-    # this tree invented.
+    # Core's `VERSION` handling drops a peer short of the desirable
+    # services where `ExpectServicesFromConn` holds, whatever this node's
+    # sync state (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag). `NODE_WITNESS` is in every desirable set, so such a
+    # peer without it is dropped too. An inbound, manual or feeler peer is
+    # kept without it: `DownloadManager` asks such a peer for `MSG_BLOCK`
+    # rather than `MSG_WITNESS_BLOCK`, and stops its walk over the peer's
+    # chain at SegWit's own activation height (btclib-org/btclib-node#1208).
     #
     # The same answer is what Core records as `m_has_all_wanted_services`
     # for every connection, inbound included, and reads when choosing an
@@ -472,18 +467,7 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
-    # `ExpectServicesFromConn` also holds for `ADDR_FETCH` (`src/net.h`,
-    # same sha), covered by `_expects_services` along with every
-    # automatic outbound connection: an addr-fetch peer short of
-    # `NODE_NETWORK` is dropped here rather than kept, on top of being
-    # refused above for missing `NODE_WITNESS`, and dropped on its own
-    # short life by `_ADDR_FETCH_TIMEOUT` regardless
-    # (btclib-org/btclib-node#1284, btclib-org/btclib-node#1138).
-    return (
-        _expects_services(conn)
-        and node.status >= NodeStatus.BlockSynced
-        and not conn.has_all_wanted_services
-    )
+    return _expects_services(conn) and not conn.has_all_wanted_services
 
 
 def _over_tx_relay_capacity(node: Node, conn: Connection, version_msg: Version) -> bool:
