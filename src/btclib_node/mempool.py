@@ -142,13 +142,13 @@ def _fee_rate_text(fee: int, vsize: int) -> str:
     """Return Core's `CFeeRate(fee, vsize).ToString()`, in BTC per kvB.
 
     `GetFeePerK` rounds down, and C++'s `/` and `%` then split it toward
-    zero (`src/policy/feerate.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag, which this node follows until ISS 2279).
+    zero (`src/policy/feerate.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag, from bitcoin/bitcoin@4200f8163a).
     """
     per_k = fee * 1000 // vsize
-    sign = -1 if per_k < 0 else 1
+    sign = "-" if per_k < 0 else ""
     whole, fraction = divmod(abs(per_k), _COIN)
-    return f"{sign * whole}.{sign * fraction:08d} BTC/kvB"
+    return f"{sign}{whole}.{fraction:08d} BTC/kvB"
 
 
 def package_hash(wtxids: Iterable[bytes]) -> bytes:
