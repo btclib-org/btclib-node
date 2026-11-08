@@ -645,6 +645,29 @@ def test_smart_estimates_clamp_the_target(tmp_path: Path) -> None:
     assert empty.estimate_smart_fee(6, conservative=False) == (0, 0)
 
 
+def test_smart_fee_logs_under_estimatefee(tmp_path: Path) -> None:
+    """Core v32.1 logs the selected estimate and reason under estimatefee."""
+    estimator, lines = an_estimator(tmp_path)
+    for blocknum in range(20):
+        block = [tx for txs in _fill(estimator, blocknum) for tx in txs[: j_cut(txs)]]
+        estimator.process_block(block, blocknum + 1)
+    lines.messages.clear()
+    fee, target = estimator.estimate_smart_fee(1, conservative=False)
+    assert fee > 0
+    assert target == 2
+    (logged,) = [
+        msg
+        for msg in lines.messages
+        if msg.startswith("estimateSmartFee Selected feerate:")
+    ]
+    assert 'Reason: "Half Target 60% Threshold"' in logged
+    assert "Tgt: 2 (requested 1)" in logged
+
+    lines.messages.clear()
+    assert estimator.estimate_smart_fee(0, conservative=False) == (0, 0)
+    assert not any("estimateSmartFee" in msg for msg in lines.messages)
+
+
 def test_the_longer_horizons_answer_a_far_target(tmp_path: Path) -> None:
     """A target past the short and medium horizons is read from the long one."""
     estimator, _ = an_estimator(tmp_path)
