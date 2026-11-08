@@ -2356,6 +2356,12 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 
     A peer holding `NO_BAN` skips the work check, as in Core.
 
+    A batch with a transaction count other than zero after any of its
+    headers is dropped, and its peer kept. Core's `HEADERS` handler, at
+    the same tag, reads that count and ignores it up to `MAX_SIZE`,
+    taking the batch. The refusal is btclib's `Headers.parse`, and lasts
+    until a btclib release closes btclib-org/btclib#2992.
+
     While the stored blocks connect, the message is dropped unread, its
     count included (`_ignored_while_reindexing`).
     """
