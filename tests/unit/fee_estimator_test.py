@@ -4,9 +4,9 @@
 
 """`btclib_node.fee_estimator`: Core's `CBlockPolicyEstimator`.
 
-`test_block_policy_estimates` is Core's `policyestimator_tests.cpp`
-(at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-until ISS 2277), ported check for check.
+`test_block_policy_estimates` is Core's
+`src/test/blockpolicyestimator_tests.cpp`
+(at bitcoin/bitcoin@f0de87f040, the v32.1 tag), ported check for check.
 
 `bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
@@ -92,7 +92,11 @@ def _fill(estimator: FeeEstimator, blocknum: int) -> list[list[RemovedTx]]:
 
 
 def test_block_policy_estimates(tmp_path: Path) -> None:  # noqa: C901, PLR0912
-    """Core's `BlockPolicyEstimates`, the same transactions and checks."""
+    """Core's `BlockPolicyEstimates` at the v32.1 tag.
+
+    Ported from `src/test/blockpolicyestimator_tests.cpp`
+    (at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
     estimator, _ = an_estimator(tmp_path)
     held: list[list[RemovedTx]] = [[] for _ in range(10)]
     blocknum = 0
@@ -145,13 +149,14 @@ def test_block_policy_estimates(tmp_path: Path) -> None:  # noqa: C901, PLR0912
 
     # mining them all does not bring them below the original
     block = [tx for txs in held for tx in reversed(txs)]
-    estimator.process_block(block, 266)
+    blocknum += 1
+    estimator.process_block(block, blocknum)
     assert estimator.estimate_fee(1) == 0
     for i in range(2, 10):
         fee = estimator.estimate_fee(i)
         assert fee == 0 or fee > original[i - 1] - _DELTA_FEE
 
-    # 400 blocks in which everything is mined bring them below it
+    # 399 blocks in which everything is mined bring them below it
     while blocknum < 665:
         block = [tx for txs in _fill(estimator, blocknum) for tx in txs]
         blocknum += 1
