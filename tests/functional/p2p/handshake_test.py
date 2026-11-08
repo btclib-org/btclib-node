@@ -10,6 +10,7 @@ import pytest
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
+from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.main import update_chain
@@ -115,6 +116,10 @@ def test_simple_connection(tmp_path: Path) -> None:
 def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> None:
     """A node past genesis carries its own real height (closes #722).
 
+    `best_block_time` follows the tip too, from genesis's once loaded,
+    and a restart loads the tip's again, as Core's init `SetBestBlock`
+    does (ISS 2169).
+
     `chain_length` blocks are added and validated through a real
     `update_chain` loop, the same shape
     `tests/functional/p2p/pruning_test.py`'s own fixture builds a synced
@@ -135,6 +140,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
         )
     )
     node1.load()
+    assert node1.best_block_time == block_time(RegTest().genesis)
     block_index = node1.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node1.status = NodeStatus.HeaderSynced
@@ -144,6 +150,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
     for _ in range(len(chain)):
         update_chain(node1)
     assert node1.best_height == chain_length
+    assert node1.best_block_time == block_time(chain[-1].header)
     node1.chainstate.flush()
     node1.start()
     try:
@@ -162,6 +169,9 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
             assert version.start_height == chain_length
     finally:
         node1.stop()
+    with node_context(tmp_path / "node1", allow_p2p=False, allow_rpc=False) as node:
+        assert node.best_height == chain_length
+        assert node.best_block_time == block_time(chain[-1].header)
 
 
 def test_connection_to_ourselves(tmp_path: Path) -> None:

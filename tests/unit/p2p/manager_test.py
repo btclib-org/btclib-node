@@ -10098,6 +10098,30 @@ def test_the_draw_passes_over_a_v1_only_address_without_v1transport(
     assert manager._passed_over(address, 0, time.time(), feeler=feeler) is passed_over
 
 
+@pytest.mark.parametrize("status", [NodeStatus.HeaderSynced, NodeStatus.BlockSynced])
+@pytest.mark.parametrize(("age", "passed_over"), [(0, False), (144 * 600, True)])
+def test_the_draw_takes_a_limited_address_only_while_the_tip_is_recent(
+    a_manager: AManagerFactory,
+    status: NodeStatus,
+    age: int,
+    passed_over: bool,  # noqa: FBT001
+) -> None:
+    """ISS 2169: `has_all_desirable_services`, by the tip's age alone.
+
+    Core's `ThreadOpenConnections` holds a draw to
+    `HasAllDesirableServiceFlags`, which takes a `NODE_NETWORK_LIMITED`
+    address while the tip is under 144 target spacings old, whatever this
+    node's sync state.
+    """
+    now = 1_700_000_000
+    clock_module.set_mock_time(now)
+    manager = a_manager(status=status)
+    manager.node.best_block_time = now - age
+    services = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
+    address = peer_address("1.2.3.4", 18444, services=int(services))
+    assert manager._passed_over(address, 0, now, feeler=False) is passed_over
+
+
 @pytest.mark.parametrize("v1transport", [True, False])
 def test_the_draw_does_not_pass_over_a_seed_or_a_v2_address(
     a_manager: AManagerFactory,

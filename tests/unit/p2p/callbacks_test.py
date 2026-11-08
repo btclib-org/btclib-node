@@ -850,6 +850,7 @@ def a_handshake_node(
     discouraged_hosts: Sequence[str] = (),
     banned: Sequence[str] = (),
     evicts: bool = True,
+    best_block_time: int = 0,
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write.
 
@@ -875,6 +876,8 @@ def a_handshake_node(
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
+        # `Node.best_block_time`, the active tip's block time
+        best_block_time=best_block_time,
         # what a `Connection` frames with, `V1Transport` taking its magic
         chain=RegTest(),
         config=SimpleNamespace(
@@ -1212,12 +1215,12 @@ def test_an_addr_fetch_peer_without_the_witness_service_is_let_go() -> None:
     assert not node.p2p_manager.discouraged  # ISS 1090
 
 
-def test_an_addr_fetch_peer_with_neither_service_is_dropped_once_synced() -> None:
+def test_an_addr_fetch_peer_with_neither_service_is_dropped() -> None:
     """An addr-fetch peer missing every wanted service is refused too.
 
     The `has_all_desirable_services` half of the same gap: `_refuses`'s
-    second services check reaches an addr-fetch connection exactly as
-    the first one above does.
+    services check reaches an addr-fetch connection whichever service it
+    lacks.
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
@@ -1243,78 +1246,132 @@ def test_a_peer_not_drawn_is_kept_without_the_witness_service(*, inbound: bool) 
     assert not peer.has_all_wanted_services
 
 
-def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
-    """A peer missing `NODE_NETWORK` is tolerated until this node needs blocks.
+# a mock time, so that a tip's age in seconds is exact
+_NOW = 1_700_000_000
+# `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` target spacings, in seconds:
+# a tip this old is past the limited peer's allowance
+_ALLOWANCE = (
+    cb._NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS * RegTest().consensus.pow_target_spacing
+)
+_LIMITED = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
 
-    Before `BlockSynced`, a peer that carries `NODE_WITNESS` alone can
-    still serve this node headers, so it is kept; once blocks are
-    wanted, the same peer is refused for lacking the full-history
-    service this node now needs, and not discouraged (ISS 1090).
+
+def a_node_with_a_tip_aged(age: int, status: NodeStatus) -> Any:
+    """Build `a_handshake_node` at `_NOW`, its tip `age` seconds old."""
+    clock.set_mock_time(_NOW)
+    return a_handshake_node(status=status, best_block_time=_NOW - age)
+
+
+@pytest.mark.parametrize(
+    "status", [NodeStatus.HeaderSynced, NodeStatus.BlockSynced], ids=lambda s: s.name
+)
+@pytest.mark.parametrize(
+    "services",
+    [ServiceFlags.NODE_NONE, ServiceFlags.NODE_NETWORK, ServiceFlags.NODE_WITNESS],
+    ids=lambda s: s.name,
+)
+@pytest.mark.parametrize(
+    "kind",
+    [
+        {"automatic": True},
+        {"automatic": True, "block_relay": True},
+        {"addr_fetch": True},
+    ],
+    ids=["outbound-full-relay", "block-relay-only", "addr-fetch"],
+)
+def test_a_typed_peer_short_of_the_desirable_services_is_let_go(
+    kind: dict[str, bool], services: ServiceFlags, status: NodeStatus
+) -> None:
+    """Core drops it where `ExpectServicesFromConn` holds, whatever the sync.
+
+    ISS 2169: `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag. Not discouraged (ISS 1090).
     """
-    pruned = ServiceFlags.NODE_WITNESS
-    node = a_handshake_node(status=NodeStatus.HeaderSynced)
-    peer = a_peer(automatic=True)
-    version(node, a_version(services=pruned), peer)
-    assert not peer.stopped
-    assert not node.p2p_manager.discouraged
-
-    node = a_handshake_node(status=NodeStatus.BlockSynced)
-    peer = a_peer(automatic=True)
-    version(node, a_version(services=pruned), peer)
+    node = a_node_with_a_tip_aged(0, status)
+    peer = a_peer(inbound=False, **kind)
+    version(node, a_version(services=services), peer)
     assert peer.stopped == [True]
     assert not node.p2p_manager.discouraged
 
 
-def test_a_node_network_limited_only_dialled_peer_is_kept_once_synced() -> None:
-    """A `NODE_NETWORK_LIMITED`-only peer this node dialled is not dropped.
+@pytest.mark.parametrize(
+    ("age", "kept"),
+    [
+        # a tip time ahead of the clock
+        (-1, True),
+        (0, True),
+        # the last second of depth 143
+        (_ALLOWANCE - 1, True),
+        # depth 144, the constant itself
+        (_ALLOWANCE, False),
+    ],
+)
+@pytest.mark.parametrize(
+    "status", [NodeStatus.HeaderSynced, NodeStatus.BlockSynced], ids=lambda s: s.name
+)
+def test_a_limited_peer_has_the_desirable_services_only_near_the_tip(
+    status: NodeStatus,
+    age: int,
+    kept: bool,  # noqa: FBT001
+) -> None:
+    """ISS 2169: Core's `GetDesirableServiceFlags`, by the tip's age alone.
 
-    Block-capable by this tree's own `_can_serve_blocks` (download.py)
-    and by Core's own `CanServeBlocks`, and accepted by Core's
-    `GetDesirableServiceFlags` (net_processing.cpp:1861-1869) once close
-    to the tip -- exactly the condition `BlockSynced` stands in for.
-    Closes the gap #725's round 1 review found: this used to test
-    `NODE_NETWORK` alone and refused such a peer.
+    A `NODE_NETWORK_LIMITED | NODE_WITNESS` peer this node dialled is kept
+    while `ApproximateBestBlockDepth` is under
+    `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS`, and dropped from that depth
+    on, whatever this node's sync state.
     """
-    limited = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
-    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    node = a_node_with_a_tip_aged(age, status)
     peer = a_peer(inbound=False, automatic=True)
-    version(node, a_version(services=limited), peer)
-    assert not peer.stopped
-    assert not node.p2p_manager.discouraged
+    version(node, a_version(services=_LIMITED), peer)
+    assert bool(peer.stopped) is not kept
+    assert peer.has_all_wanted_services is kept
 
 
 @pytest.mark.parametrize(
-    ("services", "status", "wanted"),
+    "kind",
     [
-        (
-            ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
-            NodeStatus.Starting,
-            True,
-        ),
-        (ServiceFlags.NODE_WITNESS, NodeStatus.BlockSynced, False),
-        (
-            ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS,
-            NodeStatus.HeaderSynced,
-            False,
-        ),
-        (
-            ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS,
-            NodeStatus.BlockSynced,
-            True,
-        ),
+        {"inbound": True},
+        {"inbound": False, "automatic": False},
+        {"inbound": False, "automatic": True, "feeler": True},
+    ],
+    ids=["inbound", "manual", "feeler"],
+)
+def test_a_peer_not_expected_to_offer_services_is_kept_with_none(
+    kind: dict[str, bool],
+) -> None:
+    """ISS 2169: `ExpectServicesFromConn` is false for these three kinds.
+
+    `NODE_NONE`, before this node is `BlockSynced` and with its tip
+    fresh, where the typed kinds above are dropped.
+    """
+    node = a_node_with_a_tip_aged(0, NodeStatus.HeaderSynced)
+    peer = a_peer(**kind)
+    version(node, a_version(services=ServiceFlags.NODE_NONE), peer)
+    assert not peer.stopped
+    assert not peer.has_all_wanted_services
+
+
+@pytest.mark.parametrize(
+    ("services", "age", "wanted"),
+    [
+        (ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS, _ALLOWANCE, True),
+        (ServiceFlags.NODE_WITNESS, 0, False),
+        (_LIMITED, 0, True),
+        (_LIMITED, _ALLOWANCE, False),
     ],
 )
 def test_an_inbound_peer_records_whether_it_has_every_wanted_service(
     services: ServiceFlags,
-    status: NodeStatus,
+    age: int,
     wanted: bool,  # noqa: FBT001
 ) -> None:
     """ISS 1064: Core's `m_has_all_wanted_services`, read by eviction.
 
     Recorded for an inbound peer too, which is never dropped for it: a
-    limited peer counts once this node is synced, as in the check above.
+    limited peer counts while the tip is recent, as in the check above.
     """
-    node = a_handshake_node(status=status)
+    node = a_node_with_a_tip_aged(age, NodeStatus.BlockSynced)
     peer = a_peer(inbound=True)
     version(node, a_version(services=services), peer)
     assert peer.has_all_wanted_services is wanted
@@ -1337,7 +1394,7 @@ def test_an_inbound_peer_with_neither_service_is_kept() -> None:
     assert not node.p2p_manager.discouraged
 
 
-def test_a_dialled_peer_with_neither_service_is_dropped_once_synced() -> None:
+def test_a_dialled_peer_with_neither_service_is_dropped() -> None:
     """A peer this node drew and dialled, offering neither service, is refused.
 
     The third of the three cases #725's round 1 review asked for, beside
@@ -1351,7 +1408,7 @@ def test_a_dialled_peer_with_neither_service_is_dropped_once_synced() -> None:
     assert not node.p2p_manager.discouraged
 
 
-def test_a_manual_peer_with_neither_service_is_kept_once_synced() -> None:
+def test_a_manual_peer_with_neither_service_is_kept() -> None:
     """A `-connect` or `-addnode` peer is not refused for the wanted services.
 
     Core's `ExpectServicesFromConn` is `false` for a `MANUAL` connection,
@@ -7502,10 +7559,9 @@ def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
 def test_a_feeler_without_the_witness_service_is_kept_through_its_version() -> None:
     """ISS 1138: `ExpectServicesFromConn` is false for `FEELER` too.
 
-    A feeler is `conn.automatic`, so the `NODE_WITNESS` check above the
-    desirable-services one has to exempt it by name, as that one already
-    does, or it drops the feeler before Core's own `VERSION` handler ends
-    it (btclib-org/btclib-node#1138, comment).
+    A feeler is `conn.automatic`, so `_expects_services` has to exempt it
+    by name, or the services check drops the feeler before Core's own
+    `VERSION` handler ends it (btclib-org/btclib-node#1138, comment).
     """
     node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
     peer = a_peer(inbound=False, automatic=True, feeler=True)
