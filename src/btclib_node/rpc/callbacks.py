@@ -31,7 +31,7 @@ from btclib.consensus import MAX_SCRIPT_ELEMENT_SIZE, MAX_SCRIPT_SIZE
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, network_address
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
@@ -1450,9 +1450,7 @@ def _transport_fields(p2p_conn: Connection) -> dict[str, str]:
     }
 
 
-def _peer_entry(
-    node: Node, connection_id: int, p2p_conn: Connection, addr: str, addrbind: str
-) -> dict[str, Any]:
+def _peer_entry(node: Node, connection_id: int, p2p_conn: Connection) -> dict[str, Any]:
     """Build one `getpeerinfo` entry, in the order Core pushes its keys.
 
     A connection whose `version` has not arrived answers what Core's
@@ -1472,7 +1470,10 @@ def _peer_entry(
     )
     services = 0 if version_message is None else version_message.services
 
-    entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
+    entry: dict[str, Any] = {"id": connection_id, "addr": _peer_addr(p2p_conn)}
+    # Core leaves addrbind out where `addrBind` is not valid.
+    if p2p_conn.addr_bind is not None:
+        entry["addrbind"] = p2p_conn.addr_bind
     # `CopyStats` leaves addrlocal empty unless the address the peer
     # named for this node `IsValid`, and `getpeerinfo` then leaves the
     # key out. Core itself sends the unspecified address where the one
@@ -1586,9 +1587,14 @@ def get_peer_info(
     """Answer `getpeerinfo`, one entry per connection, in id order.
 
     A connection still short of `verack` is listed too, as Core lists
-    every node `CConnman::GetNodeStats` returns. Each field matches one
-    `getpeerinfo` pushes (`src/rpc/net.cpp`, at bitcoin/bitcoin@f0de87f040,
-    the v32.1 tag), argued in `_peer_entry` beside where it is built.
+    every node `CConnman::GetNodeStats` returns. So is one whose socket
+    is closed, until `P2pManager.remove_connection` drops it: Core's
+    `CloseSocketDisconnect` leaves its node in `m_nodes` until
+    `DisconnectNodes` runs (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). No field is read off the socket, so this lists the
+    connections `get_network_info` counts. Each field matches one
+    `getpeerinfo` pushes (`src/rpc/net.cpp`, same sha), argued in
+    `_peer_entry` beside where it is built.
     """
     manager = node.p2p_manager
     # The table is built whole, and sorted into a list, before the loop
@@ -1601,53 +1607,33 @@ def get_peer_info(
     # `promote_connection` runs on this same thread, under
     # `handle_p2p_handshake`, so no connection moves between the two
     # dicts while they are read. Only a removal or a new connection can
-    # land between the two reads: a removed peer is answered as it was or
-    # skipped at `getpeername` below, Core's own case of a peer
-    # disconnected between `GetNodeStats` and `GetNodeStateStats`.
+    # land between the two reads. A peer removed after them is still
+    # answered, from the `Connection` the copy holds. Core answers a node
+    # `DisconnectNodes` drops after `GetNodeStateStats` read it, and skips
+    # one dropped between `GetNodeStats` and that read.
     peers = {**manager.pending_connections, **manager.connections}
-    out: list[dict[str, Any]] = []
-    for connection_id, p2p_conn in sorted(peers.items()):
-        addresses = _socket_addresses(p2p_conn)
-        if addresses is None:
-            continue
-        addr, addrbind = addresses
-        out.append(_peer_entry(node, connection_id, p2p_conn, addr, addrbind))
-    return out
+    return [
+        _peer_entry(node, connection_id, p2p_conn)
+        for connection_id, p2p_conn in sorted(peers.items())
+    ]
 
 
-def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
-    """Return `getpeerinfo`'s `addr` and `addrbind`, or `None` for a gone peer.
+def _peer_addr(p2p_conn: Connection) -> str:
+    """Return `getpeerinfo`'s `addr`, Core's `m_addr_name`.
 
-    Core writes addrbind with `CService::ToStringAddrPort`, unconditionally
-    -- `addrBind` is set once at construction and never the destination
-    string. addr is `m_addr_name`, which is `addrNameIn` where the peer was
-    dialled by one and the formatted socket address otherwise
+    `m_addr_name` is `addrNameIn` where the peer was dialled by one, and
+    the formatted peer address otherwise, fixed when the node is built
     (`CNode::CNode`, `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag): `getpeerinfo` pushes `stats.m_addr_name` as `addr`
-    (`src/rpc/net.cpp`, same sha), never recomputing it from the socket.
-    `p2p_conn.addr_name` is this node's own `m_addr_name`, `None` where
-    Core's is the empty `addrNameIn` that falls back to the socket, so
-    addr takes it where set and the formatted `getpeername` otherwise.
-    `disconnectnode` matches its `address` against this same `addr`, as
-    Core's `CConnman::DisconnectNode` matches `m_addr_name`
+    v32.1 tag). `p2p_conn.addr_name` is this node's own `m_addr_name`,
+    `None` where Core's falls back to the address. `disconnectnode`
+    matches its `address` against this same `addr`, as Core's
+    `CConnman::DisconnectNode` matches `m_addr_name`
     (btclib-org/btclib-node#1301).
     """
-    try:
-        addr = p2p_conn.client.getpeername()
-        addrbind = p2p_conn.client.getsockname()
-    # A peer disconnecting mid-lookup is not worth logging a second
-    # time; its own connection state already reports it. Deliberately
-    # blind (BLE001): a disconnect racing this call can surface as more
-    # than one socket error depending on timing and platform, and every
-    # one of them means the same "skip this peer, ask the next".
-    except Exception:  # noqa: BLE001
-        return None
-    return (
-        p2p_conn.addr_name
-        if p2p_conn.addr_name is not None
-        else ip_and_port(addr[0], addr[1]),
-        ip_and_port(addrbind[0], addrbind[1]),
-    )
+    if p2p_conn.addr_name is not None:
+        return p2p_conn.addr_name
+    endpoint = network_address(p2p_conn.address)
+    return ip_and_port(str(endpoint.ip), endpoint.port)
 
 
 def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
@@ -1926,8 +1912,7 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         found = [
             connection_id
             for connection_id, p2p_conn in sorted(peers.items())
-            if (addresses := _socket_addresses(p2p_conn)) is not None
-            and addresses[0] == address
+            if _peer_addr(p2p_conn) == address
         ][:1]
     elif node_id is not None and not address:
         found = [node_id] if node_id in peers else []
