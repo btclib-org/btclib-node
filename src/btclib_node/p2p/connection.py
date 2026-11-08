@@ -426,13 +426,13 @@ class Connection:
     # scheduled, and never changed after; a class default for the same
     # reason as `time_received`.
     addr_name: str | None = None
-    # The IPv6 scope of the address an inbound peer was accepted from,
-    # which `address` has no room for: Core's `m_scope_id` of
-    # `CNode::addr`, read from `sin6_scope_id` (`CService::SetSockAddr`,
-    # `src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
-    # 0 for a dialled connection, whose address comes from a BIP155 record
-    # or a resolved name kept without its scope
-    # (btclib-org/btclib-node#2292). Set and kept as `addr_name` is.
+    # The IPv6 scope of the peer's address, which `address` has no room
+    # for: Core's `m_scope_id` of `CNode::addr`, read from `sin6_scope_id`:
+    # by `CService::SetSockAddr` for an inbound peer, and by
+    # `WrappedGetAddrInfo` for a resolved name (`src/netaddress.cpp`,
+    # `src/netbase.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag;
+    # btclib-org/btclib-node#2292). 0 for a connection dialled from a
+    # BIP155 record, which holds none. Set and kept as `addr_name` is.
     scope_id: int = 0
     # Core's `CNode::addrBind`: this end's own address, read off the
     # socket once, when the connection is built, so that `getpeerinfo`

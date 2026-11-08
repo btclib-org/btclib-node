@@ -1082,8 +1082,9 @@ class P2pManager(threading.Thread):
         `granted` is what the listener the connection reached grants
         (`-whitebind`), which `-whitelist` adds to.
 
-        `scope_id` is the IPv6 scope of the address an inbound peer was
-        accepted from, which `server` below passes.
+        `scope_id` is the IPv6 scope of the peer's address: the one an inbound
+        peer was accepted from, which `server` below passes, or the one
+        `async_connect_host` dialled.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -1806,7 +1807,16 @@ class P2pManager(threading.Thread):
         # deduplicating through a hash set here would let a `str` hash
         # seed decide an order the shuffle below is supposed to be the
         # only source of.
-        ips = list(dict.fromkeys(str(sockaddr[0]) for *_, sockaddr in answers))
+        #
+        # Each answer keeps its IPv6 scope, the fourth element of an
+        # `AF_INET6` sockaddr, which `dial` connects at: `WrappedGetAddrInfo`
+        # (`src/netbase.cpp`, same sha) keeps `sin6_scope_id` too
+        # (btclib-org/btclib-node#2292).
+        found = list(
+            dict.fromkeys(
+                (str(sockaddr[0]), sockaddr_scope(sockaddr)) for *_, sockaddr in answers
+            )
+        )
         # `LookupIntern`'s own collection loop (`src/netbase.cpp:144-168`,
         # same sha): an internal answer is dropped rather than counted,
         # so it never takes one of the `_MAX_RESOLVED_ADDRESSES` slots a
@@ -1816,11 +1826,11 @@ class P2pManager(threading.Thread):
         # answer it refuses still aborts the whole attempt
         # (btclib-org/btclib-node#1284), matching `ConnectNode`'s own
         # `IsValid()` call on an answer `IsInternal` has already passed.
-        ips = [ip for ip in ips if not is_internal(_legacy_ipv6(ip))][
-            :_MAX_RESOLVED_ADDRESSES
-        ]
-        secrets.SystemRandom().shuffle(ips)
-        addresses = [peer_address(ip, port) for ip in ips]
+        found = [
+            answer for answer in found if not is_internal(_legacy_ipv6(answer[0]))
+        ][:_MAX_RESOLVED_ADDRESSES]
+        secrets.SystemRandom().shuffle(found)
+        addresses = [peer_address(ip, port) for ip, _ in found]
         # read after the lookup, as `ConnectNode` asks
         # `AlreadyConnectedToAddressPort` of each answer once resolved,
         # rather than off a snapshot taken before it
@@ -1838,7 +1848,7 @@ class P2pManager(threading.Thread):
         # refuses -- a later, dialable candidate is never reached once
         # an earlier one in this same shuffled order has failed either
         # check.
-        for ip, address in zip(ips, addresses, strict=True):
+        for (ip, _), address in zip(found, addresses, strict=True):
             if not is_valid(_legacy_ipv6(ip)):
                 self.logger.log_debug(
                     "net",
@@ -1856,8 +1866,8 @@ class P2pManager(threading.Thread):
                 return
         # Second pass: every candidate cleared both checks, so this
         # dials each in the same shuffled order until one connects.
-        for address in addresses:
-            sock = await dial(address)
+        for (_, scope), address in zip(found, addresses, strict=True):
+            sock = await dial(address, scope)
             self.peer_db.attempt(address)
             if sock:
                 self.create_connection(
@@ -1869,6 +1879,7 @@ class P2pManager(threading.Thread):
                     feeler=feeler,
                     addr_fetch=addr_fetch,
                     addr_name=dest,
+                    scope_id=scope,
                     use_v2transport=use_v2transport,
                 )
                 return

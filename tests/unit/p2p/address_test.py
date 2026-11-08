@@ -467,6 +467,29 @@ def test_a_v6_peer_that_is_listening_is_connected_to() -> (
         listener.close()
 
 
+def test_a_v6_peer_is_dialled_at_its_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ISS 2292: `dial` connects an IPv6 peer at `scope_id`, 0 by default.
+
+    `CService::GetSockAddr` sets `sin6_scope_id` the same way
+    (`src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    `sock_connect` is replaced, so the test needs no link-local interface.
+    """
+    asked: list[Any] = []
+
+    async def dial_twice() -> None:
+        async def records(sock: socket.socket, peer: Any) -> None:
+            asked.append(peer)
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "sock_connect", records)
+        address = peer_address("fe80::1", 8333)
+        for client in [await dial(address, 5), await dial(address)]:
+            assert client is not None
+            client.close()
+
+    asyncio.run(dial_twice())
+    assert asked == [("fe80::1", 8333, 0, 5), ("fe80::1", 8333, 0, 0)]
+
+
 def test_a_dial_of_a_family_the_socket_layer_refuses_answers_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
