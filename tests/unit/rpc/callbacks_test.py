@@ -4520,12 +4520,17 @@ def test_blockchain_info_s_headers_outruns_blocks_during_header_sync() -> None:
 
 
 def test_blockchain_info_s_warnings_is_node_warnings_get_messages() -> None:
-    """ISS 1522: `warnings` is the array `node.warnings` currently holds."""
+    """ISS 1522: `warnings` is the array `node.warnings` currently holds.
+
+    ISS 2294: in Core's id order, not the order the warnings were set in.
+    """
     node = a_blockchain_info_node()
     assert get_blockchain_info(node, _CONN, [])["warnings"] == []
 
-    node.warnings.set_warning("w", "a warning")
-    assert get_blockchain_info(node, _CONN, [])["warnings"] == ["a warning"]
+    node.warnings.set_warning("clock_out_of_sync", "C")
+    node.warnings.set_warning("large_work_invalid_chain", "L")
+    node.warnings.set_warning("unknown_new_rules_activated", "U")
+    assert get_blockchain_info(node, _CONN, [])["warnings"] == ["U", "L", "C"]
 
 
 def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
@@ -4545,12 +4550,17 @@ def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
 
 
 def test_network_info_s_warnings_is_node_warnings_get_messages() -> None:
-    """ISS 1522: the same array `get_blockchain_info`'s own `warnings` field."""
+    """ISS 1522: the same array `get_blockchain_info`'s own `warnings` field.
+
+    ISS 2294: in Core's id order, not the order the warnings were set in.
+    """
     node = a_node()
     assert get_network_info(node, _CONN, [])["warnings"] == []
 
-    node.warnings.set_warning("w", "a warning")
-    assert get_network_info(node, _CONN, [])["warnings"] == ["a warning"]
+    node.warnings.set_warning("clock_out_of_sync", "C")
+    node.warnings.set_warning("large_work_invalid_chain", "L")
+    node.warnings.set_warning("unknown_new_rules_activated", "U")
+    assert get_network_info(node, _CONN, [])["warnings"] == ["U", "L", "C"]
 
 
 def test_blockchain_info_s_bestblockhash_is_the_active_chain_s_own_tip() -> None:

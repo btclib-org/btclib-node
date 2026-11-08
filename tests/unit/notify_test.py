@@ -4,10 +4,13 @@
 
 """`notify.py`: running a `-*notify` command, and `Warnings`'s own dedup."""
 
+import itertools
 import logging
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, override
+
+import pytest
 
 from btclib_node.log import Logger
 from btclib_node.notify import (
@@ -22,6 +25,7 @@ from btclib_node.notify import (
     run_shutdown_notify,
 )
 from tests import wait_until
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -265,15 +269,55 @@ def test_alert_notify_drops_a_character_outside_cores_safe_set(
 def test_set_warning_answers_whether_it_was_not_already_set() -> None:
     """Core's own `Warnings::Set`'s `bool inserted`."""
     warnings = Warnings()
-    assert warnings.set_warning("w", "message one") is True
-    assert warnings.set_warning("w", "message two") is False
+    assert warnings.set_warning("clock_out_of_sync", "message one") is True
+    assert warnings.set_warning("clock_out_of_sync", "message two") is False
     assert warnings.get_messages() == ["message one"]
 
 
 def test_unset_warning_answers_whether_it_had_been_set() -> None:
     """Core's own `Warnings::Unset`'s `bool success`."""
     warnings = Warnings()
-    assert warnings.unset_warning("w") is False
-    warnings.set_warning("w", "message")
-    assert warnings.unset_warning("w") is True
+    assert warnings.unset_warning("clock_out_of_sync") is False
+    warnings.set_warning("clock_out_of_sync", "message")
+    assert warnings.unset_warning("clock_out_of_sync") is True
+    assert warnings.get_messages() == []
+
+
+# a fixed random value, as `assert_secret_free` asks of a secret it is fed
+_LEAK = "5f1c9a07e3b24d6880af3c5e91d2b74a"
+
+_CORE_ORDER = [
+    "unknown_new_rules_activated",
+    "large_work_invalid_chain",
+    "clock_out_of_sync",
+]
+
+
+@pytest.mark.parametrize("set_order", list(itertools.permutations(_CORE_ORDER)))
+def test_get_messages_answers_in_core_s_order(set_order: tuple[str, ...]) -> None:
+    """ISS 2294: Core's warning id order, whatever order they were set in.
+
+    Each message is its id, so the answer reads as the order of the ids.
+    """
+    warnings = Warnings()
+    for warning_id in set_order:
+        warnings.set_warning(warning_id, warning_id)
+    assert warnings.get_messages() == _CORE_ORDER
+    warnings.unset_warning("large_work_invalid_chain")
+    assert warnings.get_messages() == [_CORE_ORDER[0], _CORE_ORDER[2]]
+
+
+def test_an_unknown_warning_id_raises_without_quoting_it() -> None:
+    """Core's ids are enum members: there is no id outside them.
+
+    The refusal does not quote the id, which may be a secret passed in
+    the wrong place (section 7 of the standard).
+    """
+    warnings = Warnings()
+    with pytest.raises(ValueError, match=r"^unknown warning id$") as refused:
+        warnings.set_warning(_LEAK, "message")
+    assert_secret_free(refused.value, [_LEAK])
+    with pytest.raises(ValueError, match=r"^unknown warning id$") as refused:
+        warnings.unset_warning(_LEAK)
+    assert_secret_free(refused.value, [_LEAK])
     assert warnings.get_messages() == []
