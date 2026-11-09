@@ -19,6 +19,7 @@ them.
 """
 
 import os
+import sys
 
 # A real import and not TYPE_CHECKING-only like Mapping below, despite
 # costing nothing more at runtime than that one would: Config.__init__
@@ -73,6 +74,7 @@ __all__ = [
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
     "DEFAULT_TX_SEND_RATE",
+    "MAX_PEER_CONNECTIONS",
     "BindAddress",
     "Config",
     "WhitebindAddress",
@@ -110,8 +112,10 @@ DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # `DEFAULT_MAX_PEER_CONNECTIONS` and `DEFAULT_FULL_RELAY_INBOUND_PCT`
 # (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
 # automatic connections, and the percentage of the inbound slots
-# transaction-relaying peers may hold.
+# transaction-relaying peers may hold. `MAX_PEER_CONNECTIONS` (same file
+# and sha) is the most automatic connections `-maxconnections` gives.
 DEFAULT_MAX_PEER_CONNECTIONS = 200
+MAX_PEER_CONNECTIONS = 2000
 DEFAULT_FULL_RELAY_INBOUND_PCT = 50
 # Core's own `-txsendrate` default, `DEFAULT_TX_SEND_RATE`
 # (`src/net_processing.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
@@ -363,6 +367,33 @@ def _refuse_bind_without_listen(
     if (bind or whitebind) and not listen:
         err_msg = "Cannot set -bind or -whitebind together with -listen=0"
         raise ValueError(err_msg)
+
+
+def _cap_max_connections(max_connections: int) -> tuple[int, str]:
+    """Cap `max_connections` at `MAX_PEER_CONNECTIONS`, warning where it does.
+
+    `AppInitParameterInteraction` (`src/init.cpp:1063-1071`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) in its order: `GetArg<int>`
+    throws "JSON integer out of range" for a `settings.json` number past
+    a 32-bit `int`, which `cli` passes on unread for this point; then a
+    negative value is refused; then the cap comes with an `InitWarning`,
+    which `noui_ThreadSafeMessageBox` prints after `Warning: ` on stderr
+    and logs. The warning is `""` where nothing is capped.
+    """
+    if not -(2**31) <= max_connections < 2**31:
+        err_msg = "JSON integer out of range"
+        raise ValueError(err_msg)
+    if max_connections < 0:
+        # Core's own wording, fatal there too
+        err_msg = "-maxconnections must be greater or equal than zero"
+        raise ValueError(err_msg)
+    if max_connections <= MAX_PEER_CONNECTIONS:
+        return max_connections, ""
+    warning = (
+        f"Reducing -maxconnections from {max_connections} to {MAX_PEER_CONNECTIONS}."
+    )
+    sys.stderr.write(f"Warning: {warning}\n")
+    return MAX_PEER_CONNECTIONS, warning
 
 
 def _refuse_rpcmaxconnections(rpcmaxconnections: int) -> None:
@@ -667,7 +698,7 @@ class Config:
     # `SetLoggingCategories`'s warnings, one per deprecated category it
     # reads (`cli._resolve_debug`), then one per `-test` value
     # `AppInitParameterInteraction` does not know (`cli._check_test_options`),
-    # logged after `section_warning`
+    # logged after `max_connections_warning`
     debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
@@ -873,8 +904,13 @@ class Config:
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
     # connection outside it too. `P2pManager.__init__` divides it into
-    # inbound and outbound slots.
+    # inbound and outbound slots. `__init__` caps it at
+    # `MAX_PEER_CONNECTIONS`.
     max_connections: int
+    # `AppInitParameterInteraction`'s warning that it capped
+    # `max_connections` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag), logged after `section_warning`; `""` where it did not
+    max_connections_warning: str
     # Core's own `-inboundrelaypercent`: the percentage of the inbound
     # slots that transaction-relaying peers may hold. `cli` clamps it to
     # 0 to 100, as `AppInitMain` does (`src/init.cpp`,
@@ -1016,6 +1052,7 @@ class Config:
         v2transport: bool = True,
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        max_connections_warning: str = "",
         inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         tx_send_rate: int = DEFAULT_TX_SEND_RATE,
         dnsseed: bool | None = None,
@@ -1124,12 +1161,10 @@ class Config:
 
         _refuse_bind_without_listen(self.bind, self.whitebind, listen=self.listen)
 
-        if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`, same
-            # sha), fatal there too
-            err_msg = "-maxconnections must be greater or equal than zero"
-            raise ValueError(err_msg)
-        self.max_connections = max_connections
+        self.max_connections, warning = _cap_max_connections(max_connections)
+        # `max_connections_warning` is the warning of a `Config` built
+        # earlier from the uncapped value, which `cli` carries over
+        self.max_connections_warning = warning or max_connections_warning
         self.inbound_relay_percent = inbound_relay_percent
         self.tx_send_rate = tx_send_rate
         _refuse_rpcmaxconnections(rpcmaxconnections)

@@ -24,6 +24,7 @@ from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
     DEFAULT_TX_SEND_RATE,
+    MAX_PEER_CONNECTIONS,
     BindAddress,
     Config,
     default_onion_bind,
@@ -617,6 +618,29 @@ def test_max_connections_and_the_relay_share_default_to_core_s() -> None:
     assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
     assert config.inbound_relay_percent == DEFAULT_FULL_RELAY_INBOUND_PCT
     assert Config(chain="regtest", inbound_relay_percent=7).inbound_relay_percent == 7
+
+
+def test_max_connections_is_capped_at_core_s_maximum(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 2127: Core's `MAX_PEER_CONNECTIONS`, warned of once on stderr."""
+    assert MAX_PEER_CONNECTIONS == 2000
+    warning = "Reducing -maxconnections from 2001 to 2000."
+    config = Config(chain="regtest", max_connections=2001)
+    assert (config.max_connections, config.max_connections_warning) == (2000, warning)
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    carried = Config(
+        chain="regtest", max_connections=2000, max_connections_warning=warning
+    )
+    assert (carried.max_connections, carried.max_connections_warning) == (2000, warning)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("value", [2**31, -(2**31) - 1])
+def test_max_connections_past_an_int_is_out_of_range(value: int) -> None:
+    """ISS 2127: what `GetArg<int>` throws for a `settings.json` number."""
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        Config(chain="regtest", max_connections=value)
 
 
 def test_the_transaction_send_rate_defaults_to_core_s() -> None:

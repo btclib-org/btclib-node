@@ -2674,6 +2674,40 @@ def test_a_node_logs_the_debug_warnings_after_the_section_warning(
     assert section_at < first_at < second_at < data_dir_at
 
 
+def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 2127: the `-maxconnections` cap warns between the two.
+
+    `AppInitParameterInteraction` warns over the sections, caps
+    `-maxconnections`, then sets the categories (`src/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). bitcoind v32.1.0's
+    `debug.log` holds the cap's warning ahead of "Default data directory".
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            max_connections=2000,
+            max_connections_warning="Reducing -maxconnections from 5000 to 2000.",
+            debug_warnings=["first"],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    cap_at = log_text.index("[warning] Reducing -maxconnections from 5000 to 2000.\n")
+    first_at = log_text.index("[warning] first")
+    data_dir_at = log_text.index("Default data directory")
+    assert section_at < cap_at < first_at < data_dir_at
+
+
 def test_a_node_logs_its_config_args_after_the_section_warning(
     tmp_path: Path,
 ) -> None:
