@@ -394,7 +394,7 @@ and what counters each.
   *Threat model* lists neither `pickle` nor `marshal` nor `shelve`.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Exposure of sensitive information (CWE-209).** The rule is section 7's
-  *A refusal carries no secret* in btclib-org/.github's README.md.
+  *A refusal carries no secret* in the organization's standard.
   `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
   rule's tests call. A configuration line that fails to parse, a refused
   command-line argument, an unknown configuration key, a section name in

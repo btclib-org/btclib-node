@@ -6,7 +6,7 @@ name: slow
 # the tier is and how it stays out of the coverage floor; this file is
 # what runs it, weekly and on demand.
 #
-# `--no-cov` because, in section 10 of btclib-org/.github's README.md,
+# `--no-cov` because, in section 10 of the organization's standard,
 # "a sentinel cell that runs the suite passes `--no-cov`".
 #
 # pytest exits 5 when no test is selected, and that fails the job: a
@@ -17,7 +17,7 @@ name: slow
 
 on:
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar: the
+    # section 10 of the organization's standard is the calendar: the
     # day for the workflow, the minute for the repository. Only the
     # default branch schedules anything
     - cron: "20 3 * * 5"

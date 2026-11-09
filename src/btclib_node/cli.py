@@ -373,8 +373,8 @@ _TITLES = (
 
 # `ParseArgs`'s own prefix on a `ParseParameters` refusal.
 _PARSE_ERROR = "Error parsing command line arguments: "
-# The longest name a refusal quotes: btclib-org/.github's README.md, section 7,
-# *A refusal carries no secret*.
+# The longest name a refusal quotes: section 7 of the organization's
+# standard, *A refusal carries no secret*.
 _MAX_QUOTED_NAME = 16
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).

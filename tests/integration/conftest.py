@@ -8,7 +8,7 @@ Two things have to hold before a test here actually runs: the opt-in
 itself, and a real `bitcoind` to point it at. `bitcoind_path` is where
 both are asked for, an opt-in that failed for a missing binary being a
 defect report that is not one; its skip message names the switch, the
-way section 7 of the organization standard asks for.
+way section 7 of the organization's standard asks for.
 """
 
 import os

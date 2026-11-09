@@ -39,7 +39,7 @@ on:
     # concurrency group, so the landing cancels the run still holding it
     types: [opened, reopened, synchronize, ready_for_review, closed]
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # section 10 of the organization's standard is the calendar, and
     # this line is not the place to restate it. A weekly run is what a
     # push trigger cannot replace: a query pack is updated without
     # anybody touching this repository, so the same tree is a different
@@ -82,7 +82,7 @@ concurrency:
 
 jobs:
   # the matrix, the pins and the analysis itself are btclib-org/.github's,
-  # called at a tagged commit (section 10 of btclib-org/.github's README.md);
+  # called at a tagged commit (section 10 of the organization's standard);
   # what stays here is the trigger, the schedule, the concurrency group and the
   # aggregate job below. No inputs: the callee's defaults, both languages and
   # the `security-extended` query suite, are what this tree runs. Permissions do
@@ -169,11 +169,11 @@ jobs:
       # reachable -- which is a condition rather than a
       # property, and a job added later re-opens it. Letting the
       # allowlist follow the jobs is the alternative section 10 of the
-      # organization standard rejects: the narrowing is sound the day it
-      # is written, and what it costs is an expiry nothing watches. What
-      # reports an allowlist that has stopped matching the run is this
-      # job going red on the first run that legitimately skips, with no
-      # defect under it and nothing in the tree pointing here
+      # organization's standard rejects: the narrowing is sound the day
+      # it is written, and what it costs is an expiry nothing watches.
+      # What reports an allowlist that has stopped matching the run is
+      # this job going red on the first run that legitimately skips,
+      # with no defect under it and nothing in the tree pointing here
       # (btclib-org/.github#990)
       # a skipped required check reads as passing, so the draft flag
       # moves from the job's own `if:` above into this first step: the
@@ -187,7 +187,7 @@ jobs:
       # the script is btclib-org/.github's, served from there at main under a
       # `path:` of its own and sparse on .github/scripts, so no copy of it is
       # kept in this tree: the wait and the verdict are tested where it lives
-      # (section 10 of that repository's README.md)
+      # (section 10 of the organization's standard)
       - name: Check out the check script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

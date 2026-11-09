@@ -12,9 +12,9 @@ ports, for the functional and unit tests that need one.
 Beside the floor is a guard on its reaching the run at all. coverage
 looks for its configuration in the directory the process started in, so
 a run started from `tests/` finds no `fail_under`, no `source` and no
-`branch = true`. Section 8 of the organization standard leaves a tree to
-point such a run at its configuration or to make it say it is ungated,
-and this file is the second of the two: such a run is refused
+`branch = true`. Section 8 of the organization's standard leaves a tree
+to point such a run at its configuration or to make it say it is
+ungated, and this file is the second of the two: such a run is refused
 (btclib-org/.github#443).
 
 A thread that outlives the test that started it is the other guard here.
@@ -337,7 +337,7 @@ def install_thread_exception_origin_hook() -> None:
 
 # The property layer's profiles, registered once here rather than
 # repeated on every `@given`, which is the shape section 7 of
-# btclib-org/.github's README names (btclib-org/btclib-node#742).
+# the organization's standard names (btclib-org/btclib-node#742).
 #
 # `deadline=None` because a per-example time limit is a timing flake on
 # whichever cell of the matrix is slowest -- and this suite runs one on
@@ -415,7 +415,8 @@ def relax_coverage_floor(config: pytest.Config) -> bool:
     what it says.
 
     A subset is what pytest was *asked* for, and section 8 of the
-    organization standard is what names the set `selective` reads below.
+    organization's standard is what names the set `selective` reads
+    below.
 
     Answers whether it wrote the floor down, which is how it is tested:
     the run that measures the suite is the one run this never fires on.
@@ -510,7 +511,7 @@ def configuration_went_unread(
     if cov_config is None:
         return False
     if asked is not None:
-        # section 8 of the organization standard has the hook never
+        # section 8 of the organization's standard has the hook never
         # overruling an explicit `--cov-fail-under`, and a caller who
         # named the floor has not had one taken away in silence
         return False
