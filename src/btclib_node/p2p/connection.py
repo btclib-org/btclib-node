@@ -89,8 +89,8 @@ __all__ = [
 # `sizeof(CSerializedNetMsg)` on a 64-bit libstdc++ build: a
 # `std::vector<unsigned char>` (24 bytes) and a `std::string` (32 bytes:
 # a pointer, a length and the 16-byte buffer behind `src/memusage.h`'s
-# "15 bytes in modern libstdc++"), at the same tag. libc++'s `std::string`
-# is 24 bytes, which makes it 48.
+# "15 bytes in modern libstdc++"), at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag. libc++'s `std::string` is 24 bytes, which makes it 48.
 _SERIALIZED_NET_MSG_BYTES = 56
 
 

@@ -7,6 +7,8 @@
 The shape of Core's own `feature_filelock.py`: the first node runs in
 this process, the second is started as `bitcoind` would be, and what is
 asserted is its exit status and the whole of what it prints.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import subprocess
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 def test_a_second_node_over_the_same_data_directory_exits_with_cores_refusal(
     tmp_path: Path,
 ) -> None:
-    """`bitcoind` v31.1.0's stderr and exit status, named for this node.
+    """`bitcoind`'s stderr and exit status, named for this node.
 
     The same ports as the first: Core locks the directory before it binds
     anything, so the refusal is the lock's and not a bind's.

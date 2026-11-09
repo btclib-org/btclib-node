@@ -6,11 +6,11 @@
 
 Core's own `util::LockDirectory` (`src/util/fs_helpers.cpp`) over its
 `fsbridge::FileLock` (`src/util/fs.cpp`), both at
-bitcoin/bitcoin@9be056a8a7: a `.lock` file in the directory, created
-where it is missing, and an exclusive lock on it that fails at once
-rather than waiting. `fcntl.lockf` is `fcntl(F_SETLK)` with `F_WRLCK`
-over the whole file, the call Core makes, so a `bitcoind` and a
-`btclib-node` over one directory refuse each other too; on Windows
+bitcoin/bitcoin@f0de87f040, the v32.1 tag: a `.lock` file in the
+directory, created where it is missing, and an exclusive lock on it that
+fails at once rather than waiting. `fcntl.lockf` is `fcntl(F_SETLK)`
+with `F_WRLCK` over the whole file, the call Core makes, so a `bitcoind`
+and a `btclib-node` over one directory refuse each other too; on Windows
 `msvcrt.locking` takes the place of Core's `LockFileEx`.
 
 Core keeps what it holds in a table keyed by the lock file's path, and

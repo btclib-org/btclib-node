@@ -5,10 +5,11 @@
 """A TRUC refusal names the held parent bitcoind names.
 
 `SingleTRUCChecks` (`src/policy/truc_policy.cpp`, at
-bitcoin/bitcoin@9be056a8a7) walks the held parents in the order of
-`CTxMemPool::GetParents`, a `std::set<Txid>`, and refuses on the first
-that breaks the version rule: the smallest txid, compared as the bytes
-are stored, the reverse of the displayed hex. btclib-org/btclib-node#1783
+bitcoin/bitcoin@f0de87f040, the v32.1 tag) walks the held parents in the
+order of `CTxMemPool::GetParents`, a `std::set<Txid>`, and refuses on the
+first that breaks the version rule: the smallest txid, compared as the
+bytes are stored, the reverse of the displayed hex.
+btclib-org/btclib-node#1783
 """
 
 from typing import TYPE_CHECKING, Any, cast

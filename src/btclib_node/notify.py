@@ -4,8 +4,8 @@
 
 """Running an operator's `-*notify` command, and the node's warnings.
 
-Core's `runCommand` (`src/common/system.cpp`, at bitcoin/bitcoin@9be056a8a7,
-the v31.1 tag) is `run_command` below: every notify command runs through
+Core's `runCommand` (`src/common/system.cpp`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag) is `run_command` below: every notify command runs through
 the shell, as Core's own `::system()` does, and a nonzero exit is a
 warning in the log and nowhere else. `-blocknotify`, `-startupnotify`
 and `-alertnotify` each fire it from a thread nothing waits for --

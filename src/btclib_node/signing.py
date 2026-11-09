@@ -4,7 +4,7 @@
 
 """Signing a transaction with the keys a caller hands over, as Core does.
 
-Core's `src/script/sign.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+Core's `src/script/sign.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag: `SignTransaction`, `ProduceSignature` with its `SignStep`,
 `DataFromTransaction` and `SignatureData::MergeSignatureData`, for what a
 `FlatSigningProvider` can do. That provider holds private keys and the

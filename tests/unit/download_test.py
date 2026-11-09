@@ -10,6 +10,8 @@ single answer are indistinguishable from the right ones. What is left
 is the arithmetic between peers: who is told about a transaction, who is
 asked for it, which peer a block is fetched from, and when a peer that
 has stopped sending blocks is let go.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import math
@@ -625,7 +627,11 @@ def test_a_feefilter_raised_while_queued_drops_what_it_now_excludes() -> None:
 
 
 def test_equal_scores_go_out_by_ascending_txid_not_arrival() -> None:
-    """Core v31.1's fallback order is the txid, in internal byte order."""
+    """Core's fallback order is the txid, in internal byte order.
+
+    The mempool's `fallback_order` (`src/txmempool.cpp:183-187`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
     other = a_conn(1)
     manager = make_manager([other])
     txs = [paying(manager, fee=1000) for _ in range(50)]
@@ -1024,7 +1030,7 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     """ISS 2309: Core's heartbeat, under `net`, at most every 2 seconds.
 
     The first line comes once a backlog holds 100. The line after the
-    backlogs empty is the last. bitcoind v32.1.0 logged, on regtest at
+    backlogs empty is the last. `bitcoind` logged, on regtest at
     `-txsendrate=1`, `[net] Transaction rate-limiting backlog inbound=100
     itok=-1.0 isz=11994429.6 outbound=100 otok=-1.0 osz=11994955.6`.
     """
@@ -1072,7 +1078,7 @@ def test_the_trickle_refills_the_buckets_only_for_a_connected_peer(
 ) -> None:
     """ISS 2309: Core's `SendMessages` reads the backlogs past the handshake.
 
-    bitcoind v32.1.0 with no peer answered `getnetworkinfo`'s `size_tok`
+    `bitcoind` with no peer answered `getnetworkinfo`'s `size_tok`
     12000000 however long it ran, on regtest.
     """
     clock = 1_700_000_000
@@ -1262,8 +1268,9 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 ) -> None:
     """An outbound peer draws its schedule from the shorter of the two means."""
     # net_processing.cpp's OUTBOUND_INVENTORY_BROADCAST_INTERVAL/
-    # INBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86:
-    # an outbound connection's mean is the shorter of the two
+    # INBOUND_INVENTORY_BROADCAST_INTERVAL,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag: an outbound
+    # connection's mean is the shorter of the two
     means: list[float] = []
 
     def record_mean(lambd: float) -> float:
@@ -1282,13 +1289,14 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 
 def test_two_inbound_ipv4_peers_share_one_schedule_regardless_of_subnet() -> None:
     """Two inbound IPv4 peers, different /16s, share one send-time draw."""
-    # `CNode::m_network_key` (net.h:755, at bitcoin/bitcoin@58a7869f86) is
-    # keyed on the peer's coarse `GetNetClass()` and this node's own bind
-    # address, not on anything of the peer's own subnet -- so two inbound
-    # IPv4 peers share `NextInvToInbounds`'s one draw even from two
-    # different /16s, and a peer opening several inbound connections
-    # cannot average several independent draws down to a receipt time
-    # finer than one connection's own jitter would allow.
+    # `CNode::m_network_key` (net.h:759, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag) is keyed on the peer's coarse `GetNetClass()` and
+    # this node's own bind address, not on anything of the peer's own
+    # subnet -- so two inbound IPv4 peers share `NextInvToInbounds`'s one
+    # draw even from two different /16s, and a peer opening several
+    # inbound connections cannot average several independent draws down
+    # to a receipt time finer than one connection's own jitter would
+    # allow.
     first = a_conn(1, address=peer_address("10.0.1.1", 8333))
     second = a_conn(2, address=peer_address("11.0.1.1", 8333))
     manager = make_manager([first, second])
@@ -2395,7 +2403,7 @@ def test_an_old_best_header_is_asked_of_one_peer_only() -> None:
     """Before the best header is recent, one peer is asked, not every one.
 
     Core's own `nSyncStarted == 0` gate (`SendMessages`,
-    `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    `net_processing.cpp:6148`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     first, second = an_outbound(1), an_outbound(2)
     manager = make_manager([first, second], block_index=HeaderIndex(age=_OLD))

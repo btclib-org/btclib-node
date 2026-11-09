@@ -15,12 +15,12 @@ cover.
 function of octets alone -- `p2p.transport`'s own module docstring is
 where the transport is argued against Core's, and its own docstring
 against `p2p_transport_serialization.cpp`, Core's matching fuzz target
-for its own `V1Transport` (at bitcoin/bitcoin@ca7162cde5): a transport
-object built with no socket, fed raw bytes directly, is the shape a
-framing loop's own fuzz target takes there, and is what `Connection.run`
-itself cannot be reduced to without first owning a socket, a manager and
-a node -- issue #516's own three-way split, and why this harness stops
-at framing rather than reaching `Connection.run`.
+for its own `V1Transport` (at bitcoin/bitcoin@f0de87f040, the v32.1
+tag): a transport object built with no socket, fed raw bytes directly,
+is the shape a framing loop's own fuzz target takes there, and is what
+`Connection.run` itself cannot be reduced to without first owning a
+socket, a manager and a node -- issue #516's own three-way split, and
+why this harness stops at framing rather than reaching `Connection.run`.
 
 `BTClibException` is the whole family `V1Transport` refuses a peer's
 octets with: `IncompleteMessageError` for a message the octets do not
