@@ -351,7 +351,7 @@ def test_testmempoolaccept_own_store_error_reaches_the_log(
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(rpc_callbacks, "verify_mempool_acceptance", corrupted)

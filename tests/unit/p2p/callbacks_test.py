@@ -3183,7 +3183,10 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = (
+            "Coin deserialization failure: not enough data for the output value: "
+            "0 bytes instead of 8"
+        )
         raise ChainstateInconsistencyError(err_msg)
 
     monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", corrupted)

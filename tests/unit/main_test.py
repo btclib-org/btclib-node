@@ -78,7 +78,7 @@ from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool
+from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool, submit_block
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
     LogLines,
@@ -879,25 +879,33 @@ def test_a_bip30_check_on_a_stored_coin_that_wont_parse_stops_the_node(
     Core's `ConnectBlock` asks `view.HaveCoin`, which reads the coin
     through `CCoinsViewErrorCatcher` (`src/validation.cpp`,
     `src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
-    the duplicate is not refused `bad-txns-BIP30`.
+    the duplicate is not refused `bad-txns-BIP30`. The block repeats a
+    confirmed transaction that is not a coinbase, so it passes the
+    contextual checks `submit_block` runs before connecting it.
     """
-    genesis_hash = RegTest().genesis.hash
-    duplicate = generate_coinbase(height=1)
-    first = build_block(genesis_hash, [duplicate], 0)
-    block_index = connect(node, [first])
-    key = b"utxo-" + OutPoint(duplicate.id, 0).serialize(check_validity=False)
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    confirmed = chain[-1].transactions[1]
+    key = b"utxo-" + OutPoint(confirmed.id, 0).serialize(check_validity=False)
     original = node.chainstate.db.get(key)
     assert original is not None
     node.chainstate.db.put(key, original[:1])
     lines = LogLines()
     node.logger.addHandler(lines)
 
-    bad = build_block(first.header.hash, [duplicate], 1)
-    block_index.add_headers([bad.header])
-    block_index.set_downloaded(bad.header.hash)
-    node.block_db.add_block(bad)
-
-    assert node._step_chain() is True
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), confirmed],
+        len(chain),
+    )
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
+        submit_block(
+            node,
+            cast("RpcConnection", None),
+            [bad.serialize(check_validity=False).hex()],
+        )
     assert node.terminate_flag.is_set()
     assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
     assert node.last_rejected_block is None

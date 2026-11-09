@@ -2755,7 +2755,7 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
@@ -5191,7 +5191,7 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
