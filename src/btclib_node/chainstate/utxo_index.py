@@ -138,6 +138,11 @@ class UtxoIndex:
         # not FRESH is in Core's cache: a spend must erase them there
         self._stored_utxos: set[bytes] = set()
         self._undo_log: list[_UndoEntry] = []
+        # what `_parse_stored` calls before it raises, as Core's
+        # `CCoinsViewErrorCatcher` calls its `m_err_callbacks`
+        # (`src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag);
+        # `Node.load` sets it
+        self.read_error_callback: Callable[[], None] | None = None
 
         stored_stats = parent_db.get_meta(_COIN_STATS_META_KEY)
         self.coin_stats = (
@@ -172,8 +177,8 @@ class UtxoIndex:
         """
         if out_point_bytes in self.removed_utxos:
             return False
-        return out_point_bytes in self.updated_utxo_set or bool(
-            self.db.get(b"utxo-" + out_point_bytes)
+        return out_point_bytes in self.updated_utxo_set or (
+            self._stored_prevout(out_point_bytes) is not None
         )
 
     def _check_bip30(self, block: Block) -> None:
@@ -271,31 +276,43 @@ class UtxoIndex:
     def _stored_prevout(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a stored `utxo-` record still resolves to.
 
-        `None` both for no such key and for a key whose bytes
-        `Coin.parse` cannot read: a `utxo-` key is one only this
-        node's own `finalize` ever writes, so a parse failure here is
-        over this node's own stored bytes, never over a caller's
-        content -- but RocksDB's own per-block checksum
-        (btclib-org/btclib-node#641) has already turned a genuinely
-        corrupted record into `StoreCorruptionError` before this call
-        is ever reached, so what a parse failure means here is a
-        checksum-clean record that still does not deserialize:
-        exactly the fault `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`
-        answer absent to (`src/dbwrapper.h`, `src/txdb.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
-        follows until ISS 2275). Matching that answer with `None`
-        rather than raising `ChainstateInconsistencyError` is
-        btclib-org/btclib-node#650's own decision, argued in that
-        class's own docstring; `add_block` and `get_coin`, this
-        method's own two callers, are where it used to be raised.
+        `None` for no such key. A record `Coin.parse` refuses stops the
+        node, as Core's `CCoinsViewDB::GetCoin` does (`src/txdb.cpp:88-108`,
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): it throws
+        `dbwrapper_error` "Coin deserialization failure", and
+        `CCoinsViewErrorCatcher` runs its callbacks, logs "Error reading
+        from database" and aborts (`src/coins.cpp:430-445`), rather than
+        answer the coin absent and reject a valid block that spends it
+        (bitcoin/bitcoin#34931). RocksDB's per-block checksum
+        (btclib-org/btclib-node#641) has already turned a corrupted
+        record into `StoreCorruptionError`, so what reaches `Coin.parse`
+        is a checksum-clean record that does not deserialize.
+
+        Here `read_error_callback` stops the node, and the raise keeps
+        the caller from going on. `_parse_stored` is where both happen.
         """
         prevout_data = self.db.get(b"utxo-" + prevout_bytes)
         if prevout_data is None:
             return None
+        return self._parse_stored(prevout_data)
+
+    def _parse_stored(self, data: bytes) -> Coin:
+        """Return the `Coin` stored as `data`, or stop the node.
+
+        `_stored_prevout`'s docstring says why a record `Coin.parse`
+        refuses stops the node. `apply_rev_block` reads through this too,
+        as Core's `DisconnectBlock` spends a coin through the same view
+        (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag).
+        """
         try:
-            return Coin.parse(prevout_data, check_validity=False)
-        except BTClibValueError:
-            return None
+            return Coin.parse(data, check_validity=False)
+        except BTClibValueError as exc:
+            if self.read_error_callback is not None:
+                self.read_error_callback()
+            err_msg = f"Coin deserialization failure: {exc}"
+            self.logger.error("Error reading from database: %s", err_msg)  # noqa: TRY400
+            raise ChainstateInconsistencyError(err_msg) from exc
 
     def _hash_insert(self, out_point_bytes: bytes, coin: Coin) -> None:
         """`coin_stats.insert(out_point_bytes, coin)`, logged for `rollback`.
@@ -476,10 +493,6 @@ class UtxoIndex:
                     coin = self._spend_staged(prevout_bytes)
                     prev_coins.append(coin)
                 else:
-                    # _stored_prevout's own docstring is where
-                    # answering "prevout not found" for a
-                    # checksum-clean record Coin.parse still cannot
-                    # read is argued (btclib-org/btclib-node#650).
                     resolved = self._stored_prevout(prevout_bytes)
                     if resolved is None:
                         err_msg = "prevout not found"
@@ -577,19 +590,10 @@ class UtxoIndex:
         conjunction rather than the hash/height pair alone.
         `to_remove` parses the stored `Coin` for this alone where the
         rest of this loop only ever needed to know the record existed.
-        A parse failure here raises `ChainstateInconsistencyError`,
-        unlike the identical fault reached through `_stored_prevout`
-        (`add_block`'s own prevout resolution, `get_coin`), which
-        answers `None` instead (btclib-org/btclib-node#650,
-        `_stored_prevout`'s own docstring). The two share only the
-        *attribution* -- that the fault is this node's own corrupted
+        A parse failure here stops the node through `_parse_stored`, as
+        `_stored_prevout`'s does: the fault is this node's own corrupted
         record, never a caller's content (btclib-org/btclib-node#620,
-        btclib-org/btclib-node#631, btclib-org/btclib-node#636) -- not
-        the *outcome*: undoing a block this node already connected has
-        no legitimate "not found" reading the way an ordinary prevout
-        lookup does, this loop's own `"output not found"` raise
-        immediately above already treating absence itself as this
-        node's own bookkeeping fault rather than a candidate's.
+        btclib-org/btclib-node#631, btclib-org/btclib-node#636).
         """
         for out_point, coin in rev_block.to_add:
             out_point_bytes = out_point.serialize(check_validity=False)
@@ -613,11 +617,7 @@ class UtxoIndex:
                 if not coin_data:
                     err_msg = "output not found"
                     raise ChainstateInconsistencyError(err_msg)
-                try:
-                    coin = Coin.parse(coin_data, check_validity=False)
-                except BTClibValueError as exc:
-                    err_msg = "stored utxo- record failed to parse"
-                    raise ChainstateInconsistencyError(err_msg) from exc
+                coin = self._parse_stored(coin_data)
                 self._mark_removed(out_point_bytes)
             if not (
                 coin.is_coinbase and is_bip30_unspendable(coin.height, rev_block.hash)
@@ -640,9 +640,6 @@ class UtxoIndex:
             return self.updated_utxo_set[prevout_bytes]
         if prevout_bytes in self.removed_utxos:
             return None
-        # _stored_prevout's own docstring is where answering `None`
-        # for a checksum-clean record `Coin.parse` still cannot read
-        # is argued (btclib-org/btclib-node#650).
         return self._stored_prevout(prevout_bytes)
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:

@@ -2745,16 +2745,13 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
     """`testmempoolaccept` has no catch of its own for a storage fault.
 
     Neither `MissingPrevoutError` nor `BTClibValueError`, so
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `test_mempool_accept` uncaught, ending the
-    whole batch rather than being folded into this one entry's own
-    `"reject-reason"`. This matches Core's own `testmempoolaccept`
-    (`src/rpc/mempool.cpp:412-463`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), whose per-tx loop has no catch-all of its own either
-    (btclib-org/btclib-node#668).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `test_mempool_accept`
+    uncaught, ending the whole batch rather than being folded into this
+    one entry's own `"reject-reason"`. This matches Core's own
+    `testmempoolaccept` (`src/rpc/mempool.cpp:412-463`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), whose per-tx loop has
+    no catch-all of its own either (btclib-org/btclib-node#668).
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:
@@ -5186,13 +5183,11 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     """`send_raw_transaction` has no catch of its own for a storage fault.
 
     Unlike `MissingPrevoutError` and `BTClibValueError` above,
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `send_raw_transaction` uncaught, for
-    `handle_rpc`'s own generic catch to answer as this node's own fault
-    rather than as a refusal of `tx` (btclib-org/btclib-node#631).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `send_raw_transaction`
+    uncaught, for `handle_rpc`'s own generic catch to answer as this
+    node's own fault rather than as a refusal of `tx`
+    (btclib-org/btclib-node#631).
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
