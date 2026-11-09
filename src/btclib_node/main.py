@@ -2128,10 +2128,11 @@ def missing_prevout_refusal(
     asks only its coins cache ("Optimistically"), where this reads the
     whole UTXO set, so it answers where Core can miss an uncached coin.
     The same read stops the node on a stored record of an output of
-    `tx`'s that does not deserialize (`UtxoIndex._stored_prevout`),
-    where Core's cache check reads no record from disk. A confirmed
-    transaction whose outputs are all spent is `MissingPrevoutError`,
-    orphaned as Core's `TX_MISSING_INPUTS` is. btclib-org/btclib-node#1779
+    `tx`'s that the store reports corrupt or that does not deserialize
+    (`UtxoIndex._stored_prevout`), where Core's cache check reads no
+    record from disk. A confirmed transaction whose outputs are all
+    spent is `MissingPrevoutError`, orphaned as Core's
+    `TX_MISSING_INPUTS` is. btclib-org/btclib-node#1779
     """
     if already_confirmed(node, tx):
         return TxRejectedError("txn-already-known")

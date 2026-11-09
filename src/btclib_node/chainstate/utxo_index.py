@@ -24,7 +24,11 @@ from btclib_node.chainstate.muhash import (
     is_bip30_unspendable,
     is_unspendable,
 )
-from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    InvalidBlockInputError,
+    StoreCorruptionError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -138,8 +142,8 @@ class UtxoIndex:
         # not FRESH is in Core's cache: a spend must erase them there
         self._stored_utxos: set[bytes] = set()
         self._undo_log: list[_UndoEntry] = []
-        # what `_parse_stored` calls before it raises, as Core's
-        # `CCoinsViewErrorCatcher` calls its `m_err_callbacks`
+        # what `_read_failed` calls before a stored coin's read raises, as
+        # Core's `CCoinsViewErrorCatcher` calls its `m_err_callbacks`
         # (`src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag);
         # `Node.load` sets it
         self.read_error_callback: Callable[[], None] | None = None
@@ -276,25 +280,47 @@ class UtxoIndex:
     def _stored_prevout(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a stored `utxo-` record still resolves to.
 
-        `None` for no such key. A record `Coin.parse` refuses stops the
-        node, as Core's `CCoinsViewDB::GetCoin` does (`src/txdb.cpp:88-108`,
-        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): it throws
-        `dbwrapper_error` "Coin deserialization failure", and
-        `CCoinsViewErrorCatcher` runs its callbacks, logs "Error reading
-        from database" and aborts (`src/coins.cpp:430-445`), rather than
-        answer the coin absent and reject a valid block that spends it
-        (bitcoin/bitcoin#34931). RocksDB's per-block checksum
-        (btclib-org/btclib-node#641) has already turned a corrupted
-        record into `StoreCorruptionError`, so what reaches `Coin.parse`
-        is a checksum-clean record that does not deserialize.
+        `None` for no such key. A read the store reports corrupt, or a
+        record `Coin.parse` refuses, stops the node, as Core's
+        `CCoinsViewDB::GetCoin` does (`src/txdb.cpp:88-108`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): it throws
+        `dbwrapper_error` "Coin DB read failure" or "Coin deserialization
+        failure", and `CCoinsViewErrorCatcher` runs its callbacks, logs
+        "Error reading from database" and aborts
+        (`src/coins.cpp:430-445`), rather than answer the coin absent and
+        reject a valid block that spends it (bitcoin/bitcoin#34931).
+        RocksDB's per-block checksum (btclib-org/btclib-node#641) turns a
+        corrupted record into `StoreCorruptionError` at the read, so what
+        reaches `Coin.parse` is a checksum-clean record that does not
+        deserialize.
 
         Here `read_error_callback` stops the node, and the raise keeps
-        the caller from going on. `_parse_stored` is where both happen.
+        the caller from going on. `_read_stored` and `_parse_stored` are
+        where both happen.
         """
-        prevout_data = self.db.get(b"utxo-" + prevout_bytes)
+        prevout_data = self._read_stored(prevout_bytes)
         if prevout_data is None:
             return None
         return self._parse_stored(prevout_data)
+
+    def _read_stored(self, out_point_bytes: bytes) -> bytes | None:
+        """Return the stored `utxo-` record, or stop the node.
+
+        `_stored_prevout`'s docstring says why a read the store reports
+        corrupt stops the node. The `StoreCorruptionError` is raised
+        again.
+        """
+        try:
+            return self.db.get(b"utxo-" + out_point_bytes)
+        except StoreCorruptionError as exc:
+            self._read_failed(f"Coin DB read failure: {exc}")
+            raise
+
+    def _read_failed(self, err_msg: str) -> None:
+        """Run `read_error_callback` and log `err_msg`, as Core's catcher."""
+        if self.read_error_callback is not None:
+            self.read_error_callback()
+        self.logger.error("Error reading from database: %s", err_msg)
 
     def _parse_stored(self, data: bytes) -> Coin:
         """Return the `Coin` stored as `data`, or stop the node.
@@ -308,10 +334,8 @@ class UtxoIndex:
         try:
             return Coin.parse(data, check_validity=False)
         except BTClibValueError as exc:
-            if self.read_error_callback is not None:
-                self.read_error_callback()
             err_msg = f"Coin deserialization failure: {exc}"
-            self.logger.error("Error reading from database: %s", err_msg)  # noqa: TRY400
+            self._read_failed(err_msg)
             raise ChainstateInconsistencyError(err_msg) from exc
 
     def _hash_insert(self, out_point_bytes: bytes, coin: Coin) -> None:
@@ -613,7 +637,7 @@ class UtxoIndex:
             if out_point_bytes in self.updated_utxo_set:
                 coin = self._spend_staged(out_point_bytes)
             else:
-                coin_data = self.db.get(b"utxo-" + out_point_bytes)
+                coin_data = self._read_stored(out_point_bytes)
                 if not coin_data:
                     err_msg = "output not found"
                     raise ChainstateInconsistencyError(err_msg)

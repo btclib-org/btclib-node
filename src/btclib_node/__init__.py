@@ -917,7 +917,7 @@ class Node(threading.Thread):
         return False
 
     def _coins_read_error(self) -> None:
-        """Stop the node on a stored coin that does not deserialize.
+        """Stop the node on a coin a read by outpoint cannot return.
 
         Core's `coins_error_cb` reports "Error reading from database,
         shutting down." and `CCoinsViewErrorCatcher` then aborts the
