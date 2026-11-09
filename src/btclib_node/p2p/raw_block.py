@@ -24,6 +24,7 @@ from btclib.block.limits import MAX_BLOCK_WEIGHT, MIN_SERIALIZABLE_TRANSACTION_W
 from btclib.consensus import MAX_WITNESS_STACK_ITEMS
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.payload import Payload
+from btclib.utils import hex_string
 from btclib.var_int import MAX_SIZE
 
 __all__ = [
@@ -71,11 +72,14 @@ def _wide(raw: bytes, i: int, limit: int) -> tuple[int, int]:
         err_msg = "not enough binary data for var_int"
         raise BTClibValueError(err_msg)
     value = int.from_bytes(raw[i + 1 : end], "little")
+    # the refusals name the width and the limit, not the value: the octets
+    # may be a key passed in their place (section 7 of the btclib-org
+    # standard, *A refusal carries no secret*)
     if value < minimum:
-        err_msg = f"non-canonical var_int: {value}"
+        err_msg = f"non-canonical var_int of {size + 1} bytes"
         raise BTClibValueError(err_msg)
     if value > limit:
-        err_msg = f"var_int too big: {value}"
+        err_msg = f"var_int too big: max is {hex_string(limit)}"
         raise BTClibValueError(err_msg)
     return value, end
 
