@@ -19,21 +19,25 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
+from btclib.tx.out_point import OutPoint
 
 import btclib_node.rpc.callbacks as rpc_callbacks
 from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
+from btclib_node.main import update_chain
 from btclib_node.rpc.callbacks import arg_names, callbacks, named_only
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.main import get_connection, handle_rpc, resume_rpc
-from tests import generate_random_transaction
+from tests import LogLines, generate_random_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
+    from btclib_node import Node
+    from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
 PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
@@ -376,6 +380,56 @@ def test_testmempoolaccept_own_store_error_reaches_the_log(
         if "Exception occurred" in line
     ]
     assert len(lines) == 1
+
+
+def test_gettxout_on_a_stored_coin_that_wont_parse_stops_the_node(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2275: `gettxout` reading a broken `utxo-` record stops the node.
+
+    The record is truncated, so RocksDB's checksum passes and
+    `Coin.parse` refuses it. Core's `gettxout` reads the coin through
+    `CCoinsViewErrorCatcher`, which aborts (`src/coins.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Here the dispatcher
+    answers `INTERNAL_ERROR` and `terminate_flag` stops `Node.run`.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for block in chain:
+        block_index.set_downloaded(block.header.hash)
+        node.block_db.add_block(block)
+        update_chain(node)
+    node.chainstate.flush()
+    coinbase = chain[0].transactions[0]
+    key = b"utxo-" + OutPoint(coinbase.id, 0).serialize(check_validity=False)
+    original = node.chainstate.db.get(key)
+    assert original is not None
+    node.chainstate.db.put(key, original[:1])
+    lines = LogLines()
+    node.logger.addHandler(lines)
+    sent: list[Any] = []
+    node.rpc_manager.connections[0] = cast(
+        "RpcConnection", SimpleNamespace(send=sent.append)
+    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": "a",
+        "method": "gettxout",
+        "params": [coinbase.id.hex(), 0, False],
+    }
+    node.rpc_manager.messages.append((request, 0))
+
+    handle_rpc(node)
+
+    internal = error(RPCErrorCode.INTERNAL_ERROR, "Internal Error")
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "error": internal, "id": "a"})]
+    assert node.terminate_flag.is_set()
+    failure = "Error reading from database: Coin deserialization failure: "
+    assert any(line.startswith(failure) for line in lines.messages)
+    assert "Error reading from database, shutting down." in lines.messages
+    assert "Exception occurred" in lines.messages
 
 
 def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
