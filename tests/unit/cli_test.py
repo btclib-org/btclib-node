@@ -5607,11 +5607,11 @@ def test_build_config_test_and_checkaddrman_are_debug_only(
         "       Run addrman consistency checks every <n> operations. Use 0 to disable.\n"
         "       (default: 0)\n"
     ) in out
-    # Core's, but for the two values this node does not read
+    # Core's, but for the value this node does not read
     assert (
         "  -test=<option>\n"
         "       Pass a test-only option. Options include : addrman (use deterministic\n"
-        "       addrman).\n"
+        "       addrman), bip94 (enforce BIP94 consensus rules).\n"
     ) in out
 
 
@@ -5626,6 +5626,26 @@ def test_build_config_test_addrman_builds_a_deterministic_table(
     assert not _build(
         tmp_path, "-regtest", "-test=addrman", "-notest"
     ).deterministic_addrman
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_test_bip94_enforces_bip94_on_regtest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2327: `ReadRegTestArgs`' `HasTestOption(args, "bip94")`."""
+    assert not _build(tmp_path, "-regtest").chain.consensus.enforce_bip94
+    config = _build(tmp_path, "-regtest", "-test=bip94")
+    assert config.chain.consensus.enforce_bip94
+    assert not config.deterministic_addrman
+    assert config.debug_warnings == ()
+    from_file = _build(tmp_path, conf="regtest=1\n[regtest]\ntest=bip94\n")
+    assert from_file.chain.consensus.enforce_bip94
+    negated = _build(tmp_path, "-regtest", "-test=bip94", "-notest")
+    assert not negated.chain.consensus.enforce_bip94
+    # the heights `-testactivationheight` moves are kept beside it
+    both = _build(tmp_path, "-regtest", "-testactivationheight=csv@7", "-test=bip94")
+    assert both.chain.consensus.enforce_bip94
+    assert both.chain.consensus.csv_height == 7
     assert capsys.readouterr().err == ""
 
 
@@ -5682,13 +5702,16 @@ def test_build_config_a_negated_test_is_no_test(tmp_path: Path) -> None:
     assert not _build(tmp_path, "-signet", "-notest").deterministic_addrman
 
 
-@pytest.mark.parametrize("value", ["bogus", "", "bip94"])
+@pytest.mark.parametrize(
+    "value", ["bogus", "", "reindex_after_failure_noninteractive_yes"]
+)
 def test_build_config_warns_of_a_test_value_it_does_not_know(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
 ) -> None:
     """Measured on bitcoind: `-test=bogus` and a bare `-test` warn and start.
 
-    `bip94` is one Core knows and this node does not read.
+    `reindex_after_failure_noninteractive_yes` is one Core knows and this
+    node does not read.
     """
     warning = f'Unrecognised option "{value}" provided in -test=<option>.'
     argv = ["-regtest", f"-test={value}" if value else "-test", "-test=addrman"]

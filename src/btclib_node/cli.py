@@ -420,10 +420,13 @@ _ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
 
 # The values `-test` knows, each with its help. Core's `TEST_OPTIONS_DOC`
 # (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-# also lists `reindex_after_failure_noninteractive_yes` and `bip94`. This
-# node does neither, so it warns of each as an unknown value rather than
-# take it and do nothing.
-_TEST_OPTIONS = {"addrman": "use deterministic addrman"}
+# also lists `reindex_after_failure_noninteractive_yes`. This node does
+# not do it, so it warns of it as an unknown value rather than take it
+# and do nothing.
+_TEST_OPTIONS = {
+    "addrman": "use deterministic addrman",
+    "bip94": "enforce BIP94 consensus rules",
+}
 # `LoadAddrman`'s clamp of `-checkaddrman` (`src/addrdb.cpp`, same sha)
 _MAX_CHECK_ADDRMAN = 1_000_000
 
@@ -891,7 +894,7 @@ _OPTIONS: dict[str, _Option] = {
     "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
     # Core's registration (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
     # the v32.1 tag), the space before the colon included, but for the
-    # values `_TEST_OPTIONS` leaves out
+    # value `_TEST_OPTIONS` leaves out
     "test": _Option(
         "=<option>",
         "Pass a test-only option. Options include : "
@@ -2500,7 +2503,8 @@ class _BeforeLock:
     settings: _Settings
     base_dir: Path
     chain_name: str
-    # `directories.chain` with `-testactivationheight`'s heights applied
+    # `directories.chain` with `-testactivationheight`'s heights and
+    # `-test=bip94` applied
     chain: Chain
     blocksdir: str | None
     # `-maxconnections` as `GetIntArg` reads it, which the soft-set of
@@ -2696,6 +2700,11 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         err_msg = "The -testactivationheight option may not be used on mainnet."
         raise ValueError(err_msg)
     chain = directories.chain.with_activation_heights(activation_heights)
+    # `ReadRegTestArgs` (`src/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag); `_check_test_options` above has refused `-test` off
+    # regtest
+    if "bip94" in _get_args(settings, "test"):
+        chain = chain.with_bip94()
     # after `-debug`'s categories, where `AppInitParameterInteraction`
     # applies the chainstate manager's options, ahead of the blockmanager's
     # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
