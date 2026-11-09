@@ -1798,9 +1798,9 @@ def update_chain(node: Node) -> bool:
     return success or failed_hash is not None
 
 
-# invalidate_chain, reconsider_chain, precious_chain and callbacks.getblocks
-# call this as Core calls `ActivateBestChain`
-# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# Each caller runs this where Core calls `ActivateBestChain`, whose loop is
+# `Chainstate::ActivateBestChain` (`src/validation.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 # `ActivateBestChain` loops internally until the active tip is the best one
 # `setBlockIndexCandidates` holds; this node's own `update_chain` only
 # ever takes one step -- one candidate, its whole fork -- per call, so a
