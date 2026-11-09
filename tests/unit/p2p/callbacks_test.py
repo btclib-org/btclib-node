@@ -3368,11 +3368,27 @@ def a_block() -> Block:
     return block
 
 
-def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
+@pytest.fixture
+def activations(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record the node of each `activate_best_chain` call, and run none.
+
+    For a test of what a block stores, over a stand-in index or store
+    that `update_chain` cannot read. `cmpctblock_test.py` connects blocks
+    on a real node.
+    """
+    calls: list[object] = []
+    monkeypatch.setattr(cb, "activate_best_chain", calls.append)
+    return calls
+
+
+def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded(
+    activations: list[object],
+) -> None:
     """A block matching a pending download-queue entry is stored and marked.
 
     Stored, it is no longer awaited from anybody: it leaves the queue of
-    every peer it was asked of, which stop stalling.
+    every peer it was asked of, which stop stalling. The best chain is
+    activated once.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=False, index=1)})
@@ -3398,8 +3414,10 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
+    assert activations == [node]
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize("downloaded", [False, True])
 def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
     monkeypatch: pytest.MonkeyPatch,
@@ -3424,10 +3442,13 @@ def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
     assert offered == ([] if downloaded else [block])
 
 
-def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already downloaded is a no-op: not re-added, not re-marked.
+def test_a_block_already_stored_is_not_stored_again(
+    activations: list[object],
+) -> None:
+    """A block already downloaded is not re-added, nor re-marked.
 
-    Only the peer that sent it stops being asked for it.
+    Only the peer that sent it stops being asked for it. The best chain
+    is still activated, as Core's `ProcessNewBlock` activates it.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=True)})
@@ -3450,6 +3471,7 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     assert peer.last_novel_block_time == 0
     assert peer.download_queue == []
     assert other.download_queue == [block.header.hash]
+    assert activations == [node]
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -3494,6 +3516,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     assert index.marked == []
 
 
+@pytest.mark.usefixtures("activations")
 def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -> None:
     """A block this node never separately indexed is not a `KeyError`.
 
@@ -3606,6 +3629,7 @@ def an_unrequested_block_node(tmp_path: Path, active: int) -> Any:
     return node
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_body_its_header_does_not_commit_to_leaves_the_header_valid(
     tmp_path: Path,
 ) -> None:
@@ -3647,6 +3671,7 @@ def test_a_mutated_body_is_refused_before_its_header_is_indexed(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_mutated_body_of_a_downloaded_block_is_refused_all_the_same(
     tmp_path: Path,
 ) -> None:
@@ -3695,6 +3720,7 @@ def test_a_block_whose_header_is_marked_invalid_is_refused_duplicate_invalid(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_stored_block_marked_invalid_since_is_refused_duplicate_invalid(
     tmp_path: Path,
 ) -> None:
@@ -3742,6 +3768,7 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize("signet", [False, True])
 def test_a_body_failing_its_signet_solution_leaves_no_header(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, signet: bool
@@ -3888,6 +3915,7 @@ def test_a_compact_block_failing_a_contextual_consensus_rule_keeps_the_peer(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
     tmp_path: Path,
 ) -> None:
@@ -3913,6 +3941,7 @@ def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("segwit_height", "stored"), [(1, True), (2, False)])
 def test_a_witness_is_read_against_its_commitment_once_segwit_binds(
     tmp_path: Path,
@@ -3995,6 +4024,7 @@ def test_an_unrequested_block_with_less_work_than_the_tip_is_not_stored(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("surplus", "stored"), [(0, True), (1, False)])
 def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
     tmp_path: Path,
@@ -8341,6 +8371,7 @@ def test_a_requested_block_on_a_low_work_chain_is_refused_all_the_same(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("surplus", "indexed"), [(0, True), (1, False)])
 def test_a_block_s_new_header_is_weighed_against_minimumchainwork(
     tmp_path: Path,

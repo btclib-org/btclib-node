@@ -308,7 +308,10 @@ describes.
   `json.loads` ever sees it. `_drain_message_queues`
   (`src/btclib_node/__init__.py`) wraps a pass over the handlers in one
   `try`/`except Exception`, so a handler that raises on input none
-  expected is logged and the next pass runs.
+  expected is logged and the next pass runs. A peer's message whose
+  handler fails activating the best chain is the exception: the handler
+  sets `terminate_flag` first, and the node ends as `_step_chain`'s
+  failure ends it.
 - **Open design.** The code, the fuzz corpus and harnesses, and the
   limitations are published; SECURITY.md states what is known rather
   than leaving it to be found again.
