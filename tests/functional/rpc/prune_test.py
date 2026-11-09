@@ -44,11 +44,9 @@ def test_pruneblockchain_deletes_up_to_the_given_height(tmp_path: Path) -> None:
             prune_target_mib=None,
         )
     )
-    # The chain is connected on this thread before the node's loop
-    # starts. That loop connects this chain one block per pass, and
-    # sleeps `IDLE_SLEEP_SECONDS` after each pass that finds no message
-    # waiting, so a wait for it to reach the tip lasts as long as the
-    # machine's load makes it (btclib-org/btclib-node#2236).
+    # Connected here, before the node starts, so that no wait on the
+    # loop's pace is left (btclib-org/btclib-node#2236). That pace is
+    # btclib-org/btclib-node#2352's.
     node.load()
     regtest = RegTest()
     chain = generate_random_chain(regtest.prune_after_height + 5, regtest.genesis.hash)
