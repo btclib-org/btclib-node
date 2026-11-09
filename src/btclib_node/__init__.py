@@ -564,6 +564,9 @@ class Node(threading.Thread):
             self.data_dir, self.chain, self.logger, wipe=reindex
         )
         self._opened.callback(self.chainstate.close)
+        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        self.chainstate.utxo_index.read_error_callback = self._coins_read_error
         if reindex:
             self.block_db.wipe_undo()
         # where Core's step 7 builds its estimators, once the chainstate
@@ -912,6 +915,19 @@ class Node(threading.Thread):
             self.terminate_flag.set()
             return True
         return False
+
+    def _coins_read_error(self) -> None:
+        """Stop the node on a stored coin that does not deserialize.
+
+        Core's `coins_error_cb` reports "Error reading from database,
+        shutting down." and `CCoinsViewErrorCatcher` then aborts the
+        process (`src/init.cpp`, `src/coins.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Here `terminate_flag`
+        ends `run`'s loop, whichever caller made the read, and `run`
+        closes the stores as on any other stop.
+        """
+        self.logger.error("Error reading from database, shutting down.")
+        self.terminate_flag.set()
 
     def _load_or_abort(self) -> bool:
         """Run `load`, and answer whether it opened every store.

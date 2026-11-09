@@ -644,12 +644,11 @@ Mimicry is of the observed behaviour end to end, not of a local
 different code above it, and that is still matching. `db.py`'s store
 verifies a per-block checksum on every read
 (btclib-org/btclib-node#641), the guarantee LevelDB gives Core's
-`CDBWrapper::Read` before its deserialize `try` runs. `UtxoIndex`'s two
-`Coin.parse` fallbacks answer `None` for a checksum-clean record that
-does not deserialize, as `CDBWrapper::Read` and
-`CCoinsViewDB::GetCoin` answer "absent" rather than raising
-(btclib-org/btclib-node#650); `ChainstateInconsistencyError`'s docstring
-argues that decision.
+`CDBWrapper::Read` before its deserialize `try` runs. A checksum-clean
+`utxo-` record that `UtxoIndex` reads by outpoint and cannot deserialize
+stops the node, as Core's `CCoinsViewDB::GetCoin` does (`src/txdb.cpp`,
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
+`UtxoIndex._stored_prevout`'s docstring says how.
 
 A capability Core has that this tree lacks is a gap to close, not a
 constraint to design around, wherever the reason is a library fact

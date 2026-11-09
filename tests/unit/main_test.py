@@ -78,9 +78,10 @@ from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool
+from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool, submit_block
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
+    LogLines,
     anyone_can_spend,
     anyone_can_spend_redeem_script,
     anyone_can_spend_script_sig,
@@ -868,6 +869,47 @@ def test_reject_block_whose_coinbase_duplicates_an_unspent_txid(node: Node) -> N
     out_point = OutPoint(duplicate.id, 0)
     key = b"utxo-" + out_point.serialize(check_validity=False)
     assert node.chainstate.utxo_index.db.get(key) is not None
+
+
+def test_a_bip30_check_on_a_stored_coin_that_wont_parse_stops_the_node(
+    node: Node,
+) -> None:
+    """ISS 2275: BIP30's read of a broken `utxo-` record stops the node.
+
+    Core's `ConnectBlock` asks `view.HaveCoin`, which reads the coin
+    through `CCoinsViewErrorCatcher` (`src/validation.cpp`,
+    `src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+    the duplicate is not refused `bad-txns-BIP30`. The block repeats a
+    confirmed transaction that is not a coinbase, so it passes the
+    contextual checks `submit_block` runs before connecting it.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    confirmed = chain[-1].transactions[1]
+    key = b"utxo-" + OutPoint(confirmed.id, 0).serialize(check_validity=False)
+    original = node.chainstate.db.get(key)
+    assert original is not None
+    node.chainstate.db.put(key, original[:1])
+    lines = LogLines()
+    node.logger.addHandler(lines)
+
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), confirmed],
+        len(chain),
+    )
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
+        submit_block(
+            node,
+            cast("RpcConnection", None),
+            [bad.serialize(check_validity=False).hex()],
+        )
+    assert node.terminate_flag.is_set()
+    assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
+    assert node.last_rejected_block is None
+    assert "Error reading from database, shutting down." in lines.messages
 
 
 def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
@@ -2465,23 +2507,14 @@ def test_a_confirmed_double_spend_evicts_the_held_spend_and_its_child(
     assert node.mempool.outpoint_spender == {}
 
 
-def test_a_stored_coin_that_wont_parse_looks_missing_to_the_mempool(
+def test_a_stored_coin_that_wont_parse_stops_the_node_from_the_mempool(
     node: Node,
 ) -> None:
-    """A broken `utxo-` record answers absent, the same as no record at all.
+    """ISS 2275: a `utxo-` record `Coin.parse` refuses stops the node.
 
-    The record corrupted here is one only this node's own earlier
-    `connect` (via `UtxoIndex.finalize`) ever wrote -- `tx` below never
-    supplies these bytes, so what this proves is over storage this
-    node owns, not over `tx`'s own content. `UtxoIndex.get_coin` now
-    matches `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`'s own "absent"
-    for a checksum-clean record `Coin.parse` still cannot read, since
-    RocksDB's own checksum (btclib-org/btclib-node#641) is what now
-    catches an actually corrupted record before this call is ever
-    reached: `get_coin` answers `None`, the mempool has never heard of
-    `coinbase.id` either, so `verify_mempool_acceptance` raises the
-    same `MissingPrevoutError` it would over a prevout this node never
-    had at all (btclib-org/btclib-node#631, btclib-org/btclib-node#650).
+    The truncated record is checksum-clean, so the store reads it back,
+    and the mempool's read ends the node as a block's does: Core's
+    mempool view reads through the same `CCoinsViewErrorCatcher`.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -2493,8 +2526,11 @@ def test_a_stored_coin_that_wont_parse_looks_missing_to_the_mempool(
     node.chainstate.db.put(key, original[:1])
 
     tx = generate_random_transaction(coinbase.id)
-    with pytest.raises(MissingPrevoutError):
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
         verify_mempool_acceptance(node, tx)
+    assert node.terminate_flag.is_set()
 
 
 def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
@@ -2900,29 +2936,21 @@ def test_an_io_fault_indexing_the_block_filter_does_not_invalidate_the_block(
     assert node.block_db.pending_rev_blocks == {}
 
 
-def test_a_stored_utxo_record_that_wont_parse_is_treated_as_absent(
+def test_a_stored_utxo_record_that_wont_parse_stops_the_node_not_the_block(
     node: Node,
 ) -> None:
-    """A truncated `utxo-` record now rejects the block, not the node.
+    """ISS 2275: the node stops, and the block spending the record stands.
 
-    No monkeypatch: `node.chainstate.db.put` overwrites the same
-    `utxo-` key `UtxoIndex.finalize` wrote, with a truncated copy of
-    what was already there -- a checksum-clean record RocksDB's own
-    read never flags, exactly the fault `_bip30_violation`'s own
-    `db.get` truthiness check cannot tell from a healthy one. `bad`
-    then spends that same, otherwise unspent, output: `Coin.parse`
-    inside `add_block`'s prevout resolution raises `BTClibValueError`
-    over bytes this node wrote for itself, not over anything `bad`
-    supplied, and `add_block` now answers that the same way it answers
-    a genuinely missing prevout -- `InvalidBlockInputError("prevout
-    not found")` -- matching `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`'s
-    own "absent" rather than raising `ChainstateInconsistencyError`,
-    now that RocksDB's own checksum (btclib-org/btclib-node#641) is
-    what catches an actually corrupted record before this line is
-    ever reached (btclib-org/btclib-node#620, btclib-org/btclib-node#650).
+    `node.chainstate.db.put` overwrites the `utxo-` key
+    `UtxoIndex.finalize` wrote with a truncated copy, a checksum-clean
+    record. `bad` spends that output. Core's own test of the case,
+    `feature_utxo_abort_on_error.py` (bitcoin/bitcoin#34931), asserts
+    the log line, and that the block is not marked invalid.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
+    lines = LogLines()
+    node.logger.addHandler(lines)
 
     funding = chain[0].transactions[0]
     key = b"utxo-" + OutPoint(funding.id, 0, check_validity=False).serialize(
@@ -2940,10 +2968,18 @@ def test_a_stored_utxo_record_that_wont_parse_is_treated_as_absent(
         ],
         len(chain),
     )
-    connect(node, [bad])
+    block_index.add_headers([bad.header])
+    block_index.set_downloaded(bad.header.hash)
+    node.block_db.add_block(bad)
 
+    assert node._step_chain() is True
+    assert node.terminate_flag.is_set()
     assert bad.header.hash not in block_index.active_chain
-    rejected_because(node, bad, "prevout not found")
+    assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
+    assert node.last_rejected_block is None
+    failure = "Error reading from database: Coin deserialization failure: "
+    assert any(line.startswith(failure) for line in lines.messages)
+    assert "Error reading from database, shutting down." in lines.messages
 
 
 def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(

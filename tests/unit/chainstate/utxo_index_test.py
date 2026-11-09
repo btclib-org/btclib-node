@@ -895,15 +895,15 @@ def test_a_corrupted_stored_coin_is_this_nodes_own_fault_in_apply_rev_block(
 
     The record corrupted here is one only this node's own earlier
     `finalize` ever wrote -- `rev_block` below never supplies these
-    bytes, so the raise this proves is over storage this node owns,
-    mirroring `main_test.py`'s own
-    `test_a_corrupted_stored_coin_is_this_nodes_own_fault_not_the_tx_s`
-    for this module's third `Coin.parse` call site
+    bytes, so the raise this proves is over storage this node owns
     (btclib-org/btclib-node#620, btclib-org/btclib-node#631,
-    btclib-org/btclib-node#636).
+    btclib-org/btclib-node#636). ISS 2275: it runs `read_error_callback`
+    first, as `get_coin` does.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
+    called: list[None] = []
+    utxo_index.read_error_callback = lambda: called.append(None)
     funding = coinbase(b"\x23")
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x23" * 32), 1)
     utxo_index.finalize()
@@ -914,8 +914,41 @@ def test_a_corrupted_stored_coin_is_this_nodes_own_fault_in_apply_rev_block(
     assert original is not None
     utxo_index.db.put(key, original[:1])
 
-    with pytest.raises(ChainstateInconsistencyError, match="stored utxo- record"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
         utxo_index.apply_rev_block(rev_block)
+    assert called == [None]
+    chainstate.close()
+
+
+@pytest.mark.parametrize("with_callback", [False, True])
+def test_a_stored_coin_that_does_not_parse_raises_after_the_callback(
+    tmp_path: Path, *, with_callback: bool
+) -> None:
+    """ISS 2275: `get_coin` raises on a record `Coin.parse` refuses.
+
+    `read_error_callback` runs first, where one is set, as Core's
+    `CCoinsViewErrorCatcher` runs its callbacks before it aborts.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    called: list[None] = []
+    if with_callback:
+        utxo_index.read_error_callback = lambda: called.append(None)
+    funding = coinbase(b"\x25")
+    utxo_index.add_block(one_tx_block([funding], b"\x25" * 32), 1)
+    utxo_index.finalize()
+    out_point_bytes = OutPoint(funding.id, 0).serialize(check_validity=False)
+    stored = utxo_index.db.get(b"utxo-" + out_point_bytes)
+    assert stored is not None
+    utxo_index.db.put(b"utxo-" + out_point_bytes, stored[:1])
+
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
+        utxo_index.get_coin(out_point_bytes)
+    assert called == ([None] if with_callback else [])
     chainstate.close()
 
 
