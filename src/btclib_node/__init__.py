@@ -1136,47 +1136,49 @@ class Node(threading.Thread):
         # put `status` back below `HeaderSynced` for good (#398).
         self.status = NodeStatus.SyncingHeaders
         # Core's RPC server starts in warmup and leaves it near the end of
-        # `AppInitMain` (`src/init.cpp:2293`, at bitcoin/bitcoin@9be056a8a7):
-        # a request that arrives while the stores load is answered
-        # `RPC_IN_WARMUP`, not held for the load.
+        # `AppInitMain` (`src/init.cpp:2409`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag): a request that arrives while the stores load is
+        # answered `RPC_IN_WARMUP`, not held for the load.
         self.rpc_manager.start_warmup()
         # The RPC listener first, and waited on: Core's `AppInitMain`
         # starts its HTTP server at step 4a, before step 12 starts
-        # `connman`, and aborts where it cannot (`src/init.cpp:1558-1561`,
-        # at bitcoin/bitcoin@9be056a8a7). A node that asked for RPC and
-        # has none is not started, and its peer-to-peer side never is.
-        # The P2P listener is waited on too, `connman` failing to bind
-        # with `-listen` on ending `AppInitMain` the same way
-        # (`src/init.cpp:2283-2285`, same sha).
+        # `connman`, and aborts where it cannot (`src/init.cpp:1633-1636`,
+        # same sha). A node that asked for RPC and has none is not
+        # started, and its peer-to-peer side never is. The P2P listener
+        # is waited on too, `connman` failing to bind with `-listen` on
+        # ending `AppInitMain` the same way (`src/init.cpp:2399-2401`,
+        # same sha).
         #
         # A stop asked for while the stores load ends start-up there, as
         # Core returns on `ShutdownRequested` after loading its block
-        # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
+        # index and again just before step 12 (`src/init.cpp:1945-1948`
+        # and `2158-2160`, same sha). Core checks for a stop nowhere
+        # after that, so a stop asked for later still leaves warmup and
+        # runs `-startupnotify`: `started` says whether start-up got past
+        # that check without an error, which `terminate_flag`, set by a
+        # stop too, cannot say.
         started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
         started = started and self._read_whitelist()
         if started:
-            # `CConnman::Start`'s message (`src/net.cpp:3528`, same sha)
+            # `CConnman::Start`'s message (`src/net.cpp:3610`, same sha)
             self.rpc_manager.set_warmup_status("Starting network threads…")
         if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own
-            # (`src/net.cpp:3444-3447` and `3497-3503`,
-            # at bitcoin/bitcoin@9be056a8a7); None where `run` ended on
-            # something other than an `OSError`
+            # (`src/net.cpp:3525-3528` and `3578-3584`, same sha); None
+            # where `run` ended on something other than an `OSError`
             bind_error = self.p2p_manager.bind_error
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        if not self.terminate_flag.is_set():
+            started = False
+        if started:
             # Core's `SetRPCWarmupFinished()`, step 13, once both listeners
             # are up; a start that ended before this stays in warmup
             self.rpc_manager.finish_warmup()
-            # Core's own `StartupNotify(args)`, the last line of
-            # `AppInitServers` -- called once both listeners are up and
-            # `SetRPCWarmupFinished()`/`uiInterface.InitMessage("Done
-            # loading")` have already run (`src/init.cpp:2294-2309`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): run once, on a
-            # thread nothing waits for.
+            # Core's `StartupNotify(args)`, the last call of `AppInitMain`
+            # (`src/init.cpp:2403-2425`, same sha): run once, on a thread
+            # nothing waits for.
             run_detached(self.logger, self.config.startup_notify)
             self._start_mempool_load()
         # `config.connect` and `config.addnode` are each dialled by a
