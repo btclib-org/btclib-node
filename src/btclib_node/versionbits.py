@@ -315,7 +315,8 @@ def check_unknown_activations(node: Node, blocks: int) -> None:
 
     `Chainstate::UpdateTip`'s own loop (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-    ISS 2278), run for each block a commit connected, as `ConnectTip` does.
+    ISS 2278), run for each block a commit connected out of initial block
+    download, as `ConnectTip` does.
     A bit that is `ACTIVE` sets the warning, `node.warnings.set_warning`'s
     dedup running `-alertnotify` once, as `KernelNotifications::warningSet`
     does. One that is `LOCKED_IN` goes to the log at info level, where Core

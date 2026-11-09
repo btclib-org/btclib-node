@@ -4204,7 +4204,7 @@ def test_unknown_activations_are_not_checked_during_initial_block_download(
 def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1475: one call, with the number of blocks the commit connected."""
+    """ISS 1475: one call, by the commit that ends initial block download."""
     calls: list[tuple[Node, int]] = []
     monkeypatch.setattr(
         main, "check_unknown_activations", lambda *args: calls.append(args)
@@ -4220,7 +4220,7 @@ def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
 def test_a_reorganisation_checks_each_block_it_connects(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1475: the count is the blocks of the commit, here two."""
+    """ISS 1475: a commit wholly out of IBD checks its blocks, here two."""
     calls: list[tuple[Node, int]] = []
     monkeypatch.setattr(
         main, "check_unknown_activations", lambda *args: calls.append(args)
@@ -4229,6 +4229,41 @@ def test_a_reorganisation_checks_each_block_it_connects(
     connect(node, generate_random_chain(1, genesis, tip_time=datetime.now(UTC)))
     connect(node, generate_random_chain(2, genesis, tip_time=datetime.now(UTC)))
     assert calls == [(node, 1), (node, 2)]
+
+
+@pytest.mark.parametrize(
+    ("recent", "checked"),
+    [
+        pytest.param([False, False, True], 1, id="ends_at_the_tip"),
+        pytest.param([False, True, False], 2, id="ends_before_the_tip"),
+    ],
+)
+def test_a_reorganisation_out_of_ibd_checks_from_the_block_ending_it(
+    node: Node, monkeypatch: pytest.MonkeyPatch, recent: list[bool], checked: int
+) -> None:
+    """ISS 2345: `ConnectTip` runs `UpdateIBDStatus`, then `UpdateTip`.
+
+    The fork replaces a chain of two old blocks in one commit, and only its
+    blocks marked recent are no older than `max_tip_age`. The first recent
+    block ends initial block download, so it and every block after it are
+    checked, and the blocks before it are not.
+    """
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    commits = _commits(monkeypatch)
+    now = datetime.now(UTC)
+    old = now - timedelta(seconds=node.config.max_tip_age + 3600)
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    times = [
+        now + timedelta(seconds=x) if is_recent else old + timedelta(seconds=x)
+        for x, is_recent in enumerate(recent)
+    ]
+    connect(node, _dated_chain(times))
+    assert commits == [1, 1, 3]
+    assert node.is_initial_block_download is False
+    assert calls == [(node, checked)]
 
 
 def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
