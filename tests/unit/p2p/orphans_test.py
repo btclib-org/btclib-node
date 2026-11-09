@@ -135,8 +135,9 @@ def a_pair(
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY + 2 * spare, RegTest().genesis.hash)
-    connect(node, chain)
+    # out of initial block download, where v32.1 signals each block
     node.is_initial_block_download = False
+    connect(node, chain)
     if spare:
         # connecting a block that spends started a real worker pool
         started = cast("Any", node)._worker_pool

@@ -386,24 +386,26 @@ def finish_sync(node: Node) -> None:
     node.status = NodeStatus.BlockSynced
 
 
-def update_ibd_status(node: Node) -> None:
+def update_ibd_status(node: Node, tip_hash: bytes | None = None) -> None:
     """Latch `node.is_initial_block_download` to `False`, and never back.
 
     Core's own `ChainstateManager::UpdateIBDStatus`
     (`src/validation.cpp:3302`, at bitcoin/bitcoin@ca7162cde5): once the
-    active chain's own tip carries at least `node.config`'s own
-    `minimum_chain_work` (`-minimumchainwork`, the chain's own
-    `minimum_chain_work` in `btclib.consensus` where that is not given)
-    and is no older than `node.config.max_tip_age` (`-maxtipage`), this
-    node counts as caught up -- `CChain::IsTipRecent`, `src/chain.h:431`,
-    same commit. A no-op past the first call for the same reason
-    `finish_sync` above is one: Core's function never sets its own
-    cached flag back to `true` either, `UpdateIBDStatus`'s own comment
-    naming that explicitly.
+    tip, `tip_hash` or else the active chain's own, carries at least
+    `node.config`'s own `minimum_chain_work` (`-minimumchainwork`, the
+    chain's own `minimum_chain_work` in `btclib.consensus` where that is
+    not given) and is no older than `node.config.max_tip_age`
+    (`-maxtipage`), this node counts as caught up --
+    `CChain::IsTipRecent`, `src/chain.h:431`, same commit. A no-op past
+    the first call for the same reason `finish_sync` above is one: Core's
+    function never sets its own cached flag back to `true` either,
+    `UpdateIBDStatus`'s own comment naming that explicitly.
 
-    Called by `_after_tip_change` whenever a fork commits, and by
-    `invalidate_chain` once it has disconnected, where Core's `ConnectTip`
-    and `DisconnectTip` call it; by `settle_at_no_candidate`, which
+    Called by `_after_tip_change` with each block a fork connects as
+    `tip_hash`, where Core's `ConnectTip` calls it after each `SetTip`
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag); by `invalidate_chain` once it has disconnected, where Core's
+    `DisconnectTip` calls it; by `settle_at_no_candidate`, which
     reaches a tip no fork has moved yet: the one loaded from disk, where
     Core's `LoadChainTip` calls it (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag); and by `finish_reindex`,
@@ -415,7 +417,8 @@ def update_ibd_status(node: Node) -> None:
     if node.status == NodeStatus.Reindexing:
         return
     block_index = node.chainstate.block_index
-    tip_hash = block_index.active_chain[-1]
+    if tip_hash is None:
+        tip_hash = block_index.active_chain[-1]
     if block_index.chainwork[tip_hash] < node.config.minimum_chain_work:
         return
     tip_header = block_index.header_dict[tip_hash].header
@@ -517,9 +520,13 @@ def _reconcile_mempool_for_reorg(
     to_remove: list[RevBlock],
     to_add: list[Block],
     *,
+    out_of_ibd: list[bool],
     readd_limit: int | None = None,
 ) -> None:
     """Re-add, drop or evict every transaction a disconnect or connect touches.
+
+    `out_of_ibd` says, for each block of `to_add`, whether the node was
+    out of initial block download once that block was the tip.
 
     `readd_limit` is `None` for `_after_tip_change`'s own ordinary-reorg
     call, and `_INVALIDATE_MEMPOOL_READD_LIMIT` for `invalidate_chain`'s
@@ -545,18 +552,19 @@ def _reconcile_mempool_for_reorg(
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the fee estimator
     # counts the blocks before any re-add or removal the re-add makes
     first_height = len(node.chainstate.block_index.active_chain) - len(to_add)
-    for height, block in enumerate(to_add, start=first_height):
+    for height, (block, signalled) in enumerate(
+        zip(to_add, out_of_ibd, strict=True), start=first_height
+    ):
         # `remove_for_block` hashes each transaction to ask, so it does
         # nothing for an empty mempool with no fee delta: a block connected
         # during initial block download would pay for every transaction
         removed = node.mempool.remove_for_block(block.transactions)
-        node.fee_estimator.process_block(removed, height)
-        # v32.1's `ConnectTip` signals the block to the estimators only
-        # outside initial block download (`src/validation.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
-        # estimator is still told during it, as v31.1 told it
-        # (btclib-org/btclib-node#2178).
-        if not node.is_initial_block_download:
+        # v32.1's `ConnectTip` signals the block to both estimators only
+        # where it leaves the node out of initial block download
+        # (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        # tag)
+        if signalled:
+            node.fee_estimator.process_block(removed, height)
             node.mempool_estimator.block_connected(block, removed, height)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
@@ -809,7 +817,10 @@ def _after_tip_change(
     # Core's `ConnectTip` signals `BlockChecked` before the tip moves
     for block in to_add:
         block_checked(node, block.header.hash, valid=True)
-    update_ibd_status(node)
+    out_of_ibd: list[bool] = []
+    for block in to_add:
+        update_ibd_status(node, block.header.hash)
+        out_of_ibd.append(not node.is_initial_block_download)
     download_manager = node.download_manager
     if to_remove:
         # Core's `TxDownloadManagerImpl::BlockDisconnected`
@@ -821,7 +832,7 @@ def _after_tip_change(
         # download, when no transaction is taken from peers
         if not node.is_initial_block_download:
             download_manager.confirm_block(block)
-    _reconcile_mempool_for_reorg(node, to_remove, to_add)
+    _reconcile_mempool_for_reorg(node, to_remove, to_add, out_of_ibd=out_of_ibd)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
         # Core's `PeerManagerImpl::ActiveTipChange`
@@ -1924,7 +1935,11 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
         # where the active chain changed
         node.download_manager.recent_confirmed.reset()
         _reconcile_mempool_for_reorg(
-            node, to_remove, [], readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT
+            node,
+            to_remove,
+            [],
+            out_of_ibd=[],
+            readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT,
         )
         if not node.is_initial_block_download:
             node.mempool.active_tip_change()

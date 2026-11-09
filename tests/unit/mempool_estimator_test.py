@@ -358,7 +358,7 @@ def test_a_node_records_the_blocks_it_connects_out_of_ibd(
     assert node.mempool_estimator.tip_hash == mined.header.hash
     # a block connected during initial block download is not recorded
     node.is_initial_block_download = True
-    monkeypatch.setattr(main, "update_ibd_status", lambda _: None)
+    monkeypatch.setattr(main, "update_ibd_status", lambda *_: None)
     mine(node, 1)
     assert node.mempool_estimator.blocks[-1].height == 108
 
