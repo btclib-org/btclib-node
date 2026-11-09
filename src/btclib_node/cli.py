@@ -234,6 +234,7 @@ from btclib_node.constants import (
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
 )
+from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
@@ -2045,11 +2046,6 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     if not base_dir.is_dir():
         err_msg = f'Specified data directory "{datadir}" does not exist.'
         raise ValueError(err_msg)
-
-
-def _quoted(text: str) -> str:
-    """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
-    return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
 
 
 def _check_ignored_conf(
