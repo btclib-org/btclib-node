@@ -248,8 +248,8 @@ def test_init(tmp_path: Path) -> None:
 def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
     """ISS 1449: Core's own `StartupNotify`, once, after RPC/P2P come up.
 
-    `src/init.cpp:2294-2309`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag -- the last line of `AppInitServers`, run once this node's own
+    `src/init.cpp:2403-2425`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag -- the last call of `AppInitMain`, run once this node's own
     equivalent (`_start_rpc_and_load` and the P2P bind check) has
     succeeded.
     """
@@ -274,9 +274,10 @@ def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
 def test_shutdownnotify_has_finished_by_the_time_stop_returns(tmp_path: Path) -> None:
     """ISS 1519: Core's own `ShutdownNotify`, joined ahead of everything else.
 
-    `src/init.cpp:256-276`, same sha: every configured command is run
-    and joined before `Interrupt` returns, so it has already finished
-    before this node's managers and stores ever close.
+    `src/init.cpp:256-276`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag: every configured command is run and joined before `Interrupt`
+    returns, so it has already finished before this node's managers and
+    stores ever close.
     """
     marker = tmp_path / "marker"
     node = Node(
@@ -2123,6 +2124,62 @@ def test_a_start_that_ends_in_an_error_stays_in_warmup(
     assert rpc_manager.in_warmup
 
 
+@pytest.mark.parametrize(
+    ("stop_during", "warmup", "notified"),
+    [
+        ("load", ["start"], []),
+        (
+            "start_listener",
+            ["start", "Starting network threads…", "finish"],
+            ["startup command"],
+        ),
+    ],
+    ids=["before-the-last-check", "after-it"],
+)
+def test_a_stop_after_start_ups_last_check_still_ends_warmup(
+    a_networked_node: Node,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_during: str,
+    warmup: list[str],
+    notified: list[str],
+) -> None:
+    """ISS 2349: Core checks `ShutdownRequested` last just before step 12.
+
+    A stop asked for after that check, here while the P2P listener
+    starts, still runs `SetRPCWarmupFinished` and `StartupNotify`; one
+    asked for while the stores load runs neither (`src/init.cpp:2158-2160`
+    and `2403-2425`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    commands: list[str] = []
+    monkeypatch.setattr(
+        btclib_node, "run_detached", lambda _logger, command: commands.append(command)
+    )
+    node.config.startup_notify = "startup command"
+    real_load = node.load
+
+    def stopped_while_loading() -> None:
+        node.stop()
+        real_load()
+
+    class StoppedWhileStarting(AManager):
+        @override
+        def start_listener(self) -> bool:
+            node.stop()
+            return super().start_listener()
+
+    if stop_during == "load":
+        monkeypatch.setattr(node, "load", stopped_while_loading)
+    else:
+        node.p2p_manager = StoppedWhileStarting()  # type: ignore[assignment]
+    node.start()
+    wait_until(lambda: not node.is_alive())
+    assert rpc_manager.warmup == warmup
+    assert commands == notified
+    assert not node.init_errors
+
+
 def test_load_sets_the_init_messages_core_shows_for_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2135,14 +2192,18 @@ def test_load_sets_the_init_messages_core_shows_for_it(
     statuses: list[str] = []
     monkeypatch.setattr(node.rpc_manager, "set_warmup_status", statuses.append)
     node.start()
-    node.stop()
+    try:
+        # `Node.start` waits for the stores alone, not for this
+        # (btclib-org/btclib-node#2061)
+        wait_until(lambda: not node.rpc_manager.in_warmup)
+    finally:
+        node.stop()
     assert statuses == [
         "Loading P2P addresses…",
         "Loading banlist…",
         "Loading block index…",
         "Starting network threads…",
     ]
-    assert not node.rpc_manager.in_warmup
 
 
 def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
