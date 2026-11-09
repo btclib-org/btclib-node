@@ -416,7 +416,7 @@ def test_a_block_is_dropped_unread_while_reindexing(
     block_callback(node, payload, peer)
     assert not added
     assert peer.download_queue == [block_hash]
-    assert calls == []
+    assert not calls
     node.status = NodeStatus.BlockSynced
     block_callback(node, payload, peer)
     assert added == [block]
