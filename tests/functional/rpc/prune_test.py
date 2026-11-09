@@ -25,6 +25,7 @@ from tests import (
     generate_random_chain,
     get_random_port,
     rpc_client,
+    wait_until,
     wait_until_listening,
 )
 
@@ -44,26 +45,41 @@ def test_pruneblockchain_deletes_up_to_the_given_height(tmp_path: Path) -> None:
             prune_target_mib=None,
         )
     )
-    # Connected here, before the node starts, so that no wait on the
-    # loop's pace is left (btclib-org/btclib-node#2236). That pace is
+    # All but the tip connected here, before the node starts, so that
+    # the only wait on the loop's pace is for one block
+    # (btclib-org/btclib-node#2236). That pace is
     # btclib-org/btclib-node#2352's.
     node.load()
     regtest = RegTest()
     chain = generate_random_chain(regtest.prune_after_height + 5, regtest.genesis.hash)
+    *held, tip = chain
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node.status = NodeStatus.HeaderSynced
-    for block in chain:
+    for block in held:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
-    for _ in chain:
+    for _ in held:
         update_chain(node)
-    assert len(block_index.active_chain) == len(chain) + 1
+    assert len(block_index.active_chain) == len(chain)
     assert node.block_db.pruned_up_to == -1
 
     node.start()
     try:
         wait_until_listening(node.rpc_manager)
+
+        # The tip is left to the started node's loop, so that what it
+        # runs after connecting a block is checked too. The RPC is
+        # answered in a later pass than the one that connected the tip.
+        node.status = NodeStatus.HeaderSynced
+        node.block_db.add_block(tip)
+        block_index.set_downloaded(tip.header.hash)
+        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
+        _, body = rpc_client(node).call_raw(
+            "getblockcount", [], jsonrpc="1.0", request_timeout=2
+        )
+        assert body["result"] == len(chain)
+        assert node.block_db.pruned_up_to == -1
 
         _, body = rpc_client(node).call_raw(
             "pruneblockchain", [3], jsonrpc="1.0", request_timeout=2
