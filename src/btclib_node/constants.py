@@ -20,6 +20,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 __all__ = [
+    "CLIENT_BUGREPORT",
     "CLIENT_NAME",
     "CLIENT_VERSION",
     "DEFAULT_MAXRECEIVEBUFFER",
@@ -37,6 +38,7 @@ __all__ = [
     "P2pConnStatus",
     "default_data_dir",
     "numeric_version",
+    "quoted",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
@@ -147,6 +149,17 @@ NUMERIC_CLIENT_VERSION = numeric_version(CLIENT_VERSION)
 # own version line, `LogPackageVersion` (`src/init/common.cpp:156`, same
 # sha), is `CLIENT_NAME` and `CLIENT_VERSION` the same way.
 CLIENT_NAME = "btclib-node"
+
+# Core's `CLIENT_BUGREPORT` (`CMakeLists.txt`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag), where its refusals send a reader who believes them a bug:
+# the tracker of the program that refuses, here `pyproject.toml`'s `issues`.
+CLIENT_BUGREPORT = "https://github.com/btclib-org/btclib-node/issues"
+
+
+def quoted(text: str) -> str:
+    """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
+    return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
+
 
 # Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`
 # (`src/httpserver.h`, at bitcoin/bitcoin@9be056a8a7): requests running at

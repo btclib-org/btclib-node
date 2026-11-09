@@ -45,6 +45,7 @@ from btclib.p2p.addrv2 import (
 )
 
 from btclib_node import clock
+from btclib_node.constants import CLIENT_BUGREPORT, quoted
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
 from btclib_node.p2p.eviction import get_network, is_routable, net_class, net_group
@@ -1140,13 +1141,35 @@ class PeerDB:
         `peers.dat` (`_place_stored`). A row with no stored source, as an
         earlier release wrote them, is its own source: the rows of one
         group share its one bucket, and those over its room are dropped.
+
+        The table placed is then checked whatever `consistency_check_ratio`
+        says, as `AddrManImpl::Unserialize` ends with `CheckAddrman`
+        (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        A failure closes the store with nothing written to it, a missing
+        key included, and raises `ValueError` in the words `LoadAddrman`
+        refuses the start with (`src/addrdb.cpp`, same sha), which
+        `Node._load_or_abort` makes its init error. Core's text follows the
+        code with what its C++ library appends to an
+        `std::ios_base::failure`, which differs by library and is left out.
         """
         if self.db is None:
             return
-        self._load_bucket_key(self.db)
+        keyless = self._load_bucket_key(self.db)
         pending = _Pending()
         known, answered, sources, stats = self._read_store(self.db, pending)
         self._place_stored(known, sources, stats, answered, pending)
+        if code := self._consistency():
+            self.db.close()
+            msg = (
+                "Invalid or corrupt peers.dat (Corrupt data. Consistency check "
+                f"failed with code {code}). If you believe this is a bug, please "
+                f"report it to {CLIENT_BUGREPORT}. As a workaround, you can move "
+                f"the file ({quoted(str(self.db.path))}) out of the way (rename, "
+                "move, or delete) to have a new one created on the next start."
+            )
+            raise ValueError(msg)
+        if keyless:
+            self.db.put_meta(_BUCKET_KEY, self._bucket_key)
         for suffix in answered.keys() - self._known_keys:
             pending.delete(_ANSWERED + suffix)
         for orphans, prefix in ((sources, _SOURCE), (stats, _STATS)):
@@ -1187,13 +1210,13 @@ class PeerDB:
                     answered[key[len(_ANSWERED) :]] = address
         return known, answered, sources, stats
 
-    def _load_bucket_key(self, db: KeyValueStore) -> None:
-        """Take the key the store holds, or store the one this table has."""
+    def _load_bucket_key(self, db: KeyValueStore) -> bool:
+        """Take the key the store holds, answering whether it holds none."""
         stored = db.get_meta(_BUCKET_KEY)
         if stored is None:
-            db.put_meta(_BUCKET_KEY, self._bucket_key)
-        else:
-            self._bucket_key = stored
+            return True
+        self._bucket_key = stored
+        return False
 
     # low-code-quality skipped: `AddrManImpl::Unserialize`'s, in its shape
     def _place_stored(  # sourcery skip: low-code-quality

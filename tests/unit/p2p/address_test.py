@@ -16,6 +16,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import secrets
 import socket
 import subprocess
@@ -3305,3 +3306,96 @@ def test_a_table_broken_each_way_answers_core_s_code(code: int) -> None:
     assert peer_db._consistency() == 0
     _BREAKS[code](peer_db, new, tried, key)
     assert peer_db._consistency() == code
+
+
+def _zero_bucket_key(db: KeyValueStore, row: NetworkAddressV2) -> None:
+    """Store an all-zero key, as Core's `feature_addrman.py` writes one."""
+    db.put_meta(b"bucket-key", bytes(32))
+
+
+def _never_answered(db: KeyValueStore, row: NetworkAddressV2) -> None:
+    """Store the answered row as answered at time `0`."""
+    key = b"answered-" + address_module.endpoint_key(row)
+    db.put(key, replace(row, timestamp=0).serialize(check_validity=False))
+
+
+@pytest.mark.parametrize(
+    ("code", "corrupt"), [(-16, _zero_bucket_key), (-1, _never_answered)]
+)
+def test_a_store_that_loads_inconsistent_is_refused_in_core_s_words(
+    tmp_path: Path,
+    code: int,
+    corrupt: Callable[[KeyValueStore, NetworkAddressV2], None],
+) -> None:
+    """ISS 2328: `Unserialize`'s `CheckAddrman`, refused as `LoadAddrman` does.
+
+    The same store loads before it is corrupted. The refused one is closed
+    and left as it was, a row the load would delete included.
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    plant_answered(first, peer_address("5.6.7.8", 8333, timestamp=int(time.time())))
+    first.add_addresses([peer_address("1.2.3.4", 8333)])
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.size == 2
+    assert second._consistency() == 0
+    assert second.db is not None
+    corrupt(second.db, second.active_addresses[0])
+    # a row a load deletes, which the refused load leaves
+    loopback = peer_address("127.0.0.1", 8333)
+    second.db.put(
+        b"known-" + address_module.endpoint_key(loopback),
+        loopback.serialize(check_validity=False),
+    )
+    stored = list(second.db), second.db.get_meta(b"bucket-key")
+    second.close()
+
+    path = tmp_path / "peers"
+    message = (
+        f"Invalid or corrupt peers.dat (Corrupt data. Consistency check failed "
+        f"with code {code}). If you believe this is a bug, please report it to "
+        f"https://github.com/btclib-org/btclib-node/issues. As a workaround, you "
+        f'can move the file ("{path}") out of the way (rename, move, or delete) '
+        "to have a new one created on the next start."
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        a_peer_db(data_dir=tmp_path)
+    db = KeyValueStore(path)
+    assert (list(db), db.get_meta(b"bucket-key")) == stored
+    db.close()
+
+
+@pytest.mark.parametrize(("answered_at", "code"), [(0, -1), (1_700_000_000, 0)])
+def test_a_store_with_no_bucket_key_gets_one_only_where_it_loads(
+    tmp_path: Path, answered_at: int, code: int
+) -> None:
+    """ISS 2328: a refused load writes no key, as `LoadAddrman` writes nothing.
+
+    The store holds a known row and its answered row, and no key, as an
+    earlier release wrote it. Answered at time `0` it is refused with
+    nothing written; answered at a real time it loads and takes the key
+    the table placed it by.
+    """
+    path = tmp_path / "peers"
+    row = peer_address("5.6.7.8", 8333, timestamp=answered_at)
+    suffix = address_module.endpoint_key(row)
+    db = KeyValueStore(path)
+    db.put(b"known-" + suffix, row.serialize(check_validity=False))
+    db.put(b"answered-" + suffix, row.serialize(check_validity=False))
+    stored = list(db)
+    db.close()
+
+    if code:
+        with pytest.raises(ValueError, match=f"failed with code {code}[)]"):
+            a_peer_db(data_dir=tmp_path)
+        db = KeyValueStore(path)
+        assert (list(db), db.get_meta(b"bucket-key")) == (stored, None)
+        db.close()
+        return
+    peer_db = a_peer_db(data_dir=tmp_path)
+    assert [a.address for a in peer_db.active_addresses] == [row.address]
+    key = peer_db._bucket_key
+    peer_db.close()
+    db = KeyValueStore(path)
+    assert db.get_meta(b"bucket-key") == key
+    db.close()

@@ -51,6 +51,7 @@ from btclib_node.constants import (
     RPC_THREADS,
     NodeStatus,
 )
+from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     DirectoryLockError,
@@ -2776,6 +2777,30 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
         assert reopened.loaded
     finally:
         reopened.stop()
+
+
+def test_an_inconsistent_address_table_ends_start_up(tmp_path: Path) -> None:
+    """ISS 2328: `LoadAddrman`'s refusal is the init error, as `InitError`'s.
+
+    The store's key is all zero, `CheckAddrman`'s `-16`.
+    """
+    config = Config(
+        chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+    )
+    node = Node(config=config)
+    store = KeyValueStore(node.data_dir / "peers")
+    store.put_meta(b"bucket-key", bytes(32))
+    store.close()
+    try:
+        node.start()
+        (message,) = node.init_errors
+    finally:
+        node.stop()
+    assert message.startswith(
+        "Invalid or corrupt peers.dat (Corrupt data. Consistency check failed "
+        "with code -16). "
+    )
+    assert not node.loaded
 
 
 def test_a_stop_asked_for_while_the_stores_load_starts_no_p2p_side(
