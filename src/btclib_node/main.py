@@ -808,9 +808,13 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
 # there. `check_fork_warning_conditions` is not gated on IBD, matching
 # Core calling `CheckForkWarningConditions()` unconditionally after
 # every commit (`src/validation.cpp:3318`, same sha).
-# `check_unknown_activations` is, as `UpdateTip` gates it
-# (`src/validation.cpp:2916`, same sha), and runs for each block of `to_add`,
-# as Core runs it for each block it connects.
+# `check_unknown_activations` runs for each block of `to_add` that
+# `update_ibd_status` left out of initial block download, the one ending
+# it included. The latch never goes back, so those are the last blocks of
+# `to_add`. Core's `ConnectTip` runs `UpdateIBDStatus` and then
+# `UpdateTip` for each block it connects, and `UpdateTip` checks the bits
+# only out of initial block download (`src/validation.cpp:3086-3092` and
+# `:2911`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
@@ -837,7 +841,7 @@ def _after_tip_change(
     if not node.is_initial_block_download:
         # Core's `PeerManagerImpl::ActiveTipChange`
         node.mempool.active_tip_change()
-        check_unknown_activations(node, len(to_add))
+        check_unknown_activations(node, sum(out_of_ibd))
         _announce_added_blocks(node, to_add)
         run_detached(
             node.logger,
