@@ -169,6 +169,25 @@ def test_moved_heights_are_the_copy_s_alone() -> None:
     )
 
 
+def test_bip94_is_the_copy_s_alone() -> None:
+    """ISS 2327: `with_bip94` sets `enforce_bip94` on a row of the copy's own.
+
+    The heights `with_activation_heights` moved are kept, before it or
+    after it.
+    """
+    regtest = RegTest()
+    enforced = regtest.with_bip94()
+    assert regtest.consensus is CONSENSUS_PARAMS["regtest"]
+    assert not regtest.consensus.enforce_bip94
+    assert enforced.consensus == replace(regtest.consensus, enforce_bip94=True)
+    assert enforced.consensus is enforced.consensus
+    expected = replace(regtest.consensus, enforce_bip94=True, csv_height=7)
+    assert enforced.with_activation_heights({"csv": 7}).consensus == expected
+    assert regtest.with_activation_heights({"csv": 7}).with_bip94().consensus == (
+        expected
+    )
+
+
 def test_moved_cltv_binds_the_script_flags_from_its_height() -> None:
     """`script_flags_at`, `interpreter.get_flags`'s answer, follows the row."""
     consensus = RegTest().with_activation_heights({"cltv": 10}).consensus

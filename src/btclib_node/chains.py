@@ -16,7 +16,8 @@ the same `name` `magic_from_network` already resolves. `config.py`'s
 `_resolve_chain` is what turns a chain's name, read from the command
 line or a functional test, into one of these.
 
-`Chain.with_activation_heights` is Core's `-testactivationheight`.
+`Chain.with_activation_heights` is Core's `-testactivationheight`, and
+`Chain.with_bip94` its `-test=bip94`.
 """
 
 import copy
@@ -71,13 +72,16 @@ BURIED_DEPLOYMENTS: Mapping[str, str] = MappingProxyType(
 
 @cache
 def _moved_consensus(
-    name: str, activation_heights: tuple[tuple[str, int], ...]
+    name: str, activation_heights: tuple[tuple[str, int], ...], *, bip94: bool
 ) -> ConsensusParams:
     """Return `name`'s row with `activation_heights`' fields replaced.
 
-    Cached, so that reading `Chain.consensus` builds no new row.
+    `bip94` also sets its `enforce_bip94`. Cached, so that reading
+    `Chain.consensus` builds no new row.
     """
     moved: dict[str, Any] = dict(activation_heights)
+    if bip94:
+        moved["enforce_bip94"] = True
     return replace(CONSENSUS_PARAMS[name], **moved)
 
 
@@ -117,6 +121,9 @@ class Chain:
     # the `ConsensusParams` fields `with_activation_heights` moved, with
     # their heights, sorted by field; empty on a chain nothing moved
     activation_heights: tuple[tuple[str, int], ...] = ()
+    # whether `with_bip94` set the row's `enforce_bip94`; `False` leaves
+    # the row's own value
+    bip94: bool = False
 
     @cached_property
     def genesis_block(self) -> Block:
@@ -152,12 +159,12 @@ class Chain:
         height, the subsidy interval, the easiest target, and the
         exceptions this chain's own history forces are read off it
         rather than held here a second time. A chain
-        `with_activation_heights` built answers a row of its own instead,
-        the shared one with those heights replaced.
+        `with_activation_heights` or `with_bip94` built answers a row of
+        its own instead, the shared one with those fields replaced.
         """
-        if not self.activation_heights:
+        if not self.activation_heights and not self.bip94:
             return CONSENSUS_PARAMS[self.name]
-        return _moved_consensus(self.name, self.activation_heights)
+        return _moved_consensus(self.name, self.activation_heights, bip94=self.bip94)
 
     def with_activation_heights(self, heights: Mapping[str, int]) -> Self:
         """Return a copy of this chain whose deployments bind at `heights`.
@@ -178,6 +185,21 @@ class Chain:
         moved |= ((BURIED_DEPLOYMENTS[name], h) for name, h in heights.items())
         chain = copy.copy(self)
         chain.activation_heights = tuple(sorted(moved.items()))
+        return chain
+
+    def with_bip94(self) -> Self:
+        """Return a copy of this chain that enforces BIP94's timewarp bound.
+
+        Core's `-test=bip94`, which `ReadRegTestArgs`
+        (`src/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag) reads into the `enforce_bip94` of `RegTestOptions`, the
+        `enforce_BIP94` of regtest's row. Core's kernel takes it on
+        regtest alone; `cli.py` refuses `-test` on any other chain, as
+        Core's init does. This chain and the shared row are left as they
+        are.
+        """
+        chain = copy.copy(self)
+        chain.bip94 = True
         return chain
 
     @property

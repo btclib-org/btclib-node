@@ -195,7 +195,8 @@ def _minimum_time(
     A period's first block is held to BIP94's timewarp bound and its last
     to BIP54's Murch-Zawy bound, the time of the period's first block.
     Core applies both to templates on every network. Only BIP94's is
-    consensus here, and only on testnet4.
+    consensus here, and only on testnet4 and on regtest under
+    `-test=bip94`.
     """
     interval = node.chain.consensus.difficulty_adjustment_interval
     min_time = tip_mtp + 1
