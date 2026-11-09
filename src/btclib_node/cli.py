@@ -419,11 +419,10 @@ _MIN_CHAIN_WORK_SIGNET = SigNet().consensus.minimum_chain_work
 # is what that pull request fills in.
 _ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
 
-# The values `-test` knows, each with its help. Core's `TEST_OPTIONS_DOC`
+# The values `-test` knows, each with its help: Core's `TEST_OPTIONS_DOC`
 # (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-# also lists `reindex_after_failure_noninteractive_yes`. This node does
-# not do it, so it warns of it as an unknown value rather than take it
-# and do nothing.
+# but for `reindex_after_failure_noninteractive_yes`:
+# `_check_test_options` says why this node does not read it.
 _TEST_OPTIONS = {
     "addrman": "use deterministic addrman",
     "bip94": "enforce BIP94 consensus rules",
@@ -1951,6 +1950,19 @@ def _check_test_options(settings: _Settings, chain_name: str) -> None:
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): a negation sets no value,
     and the warning is an `InitWarning`, printed after `Warning: ` on
     stderr and appended to `settings.debug_warnings` for the log.
+
+    This node warns of `reindex_after_failure_noninteractive_yes`, which
+    Core knows, rather than take it and do nothing. In Core's
+    `AppInitMain` (same file, same sha), a load of the block index and
+    the chainstate that fails with `ChainstateLoadStatus::FAILURE`, on a
+    start without `-reindex`, asks "Do you want to rebuild the databases
+    now?". The value answers yes, and the load runs again as `-reindex`
+    does: the block index and the chainstate are wiped and rebuilt from
+    the stored blocks. This node has no `-reindex`
+    (btclib-org/btclib-node#1415). Its `-reindex-chainstate` keeps the
+    headers (`chainstate/__init__.py`'s docstring), so it cannot recover
+    a block index that fails to load, as one holding a header that fails
+    its proof of work does (`BlockIndex.init_from_db`).
     """
     options = _get_args(settings, "test")
     if options and chain_name != "regtest":

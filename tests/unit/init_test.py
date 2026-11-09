@@ -3059,10 +3059,16 @@ def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
         pruned.stop()
 
 
+@pytest.mark.parametrize("reindex_chainstate", [False, True])
 def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
-    tmp_path: Path,
+    tmp_path: Path, *, reindex_chainstate: bool
 ) -> None:
-    """ISS 1997: Core's start-up ends on "Error loading block database"."""
+    """ISS 1997: Core's start-up ends on "Error loading block database".
+
+    `-reindex-chainstate` does not recover it, which is why
+    `cli._check_test_options` leaves
+    `-test=reindex_after_failure_noninteractive_yes` unread (ISS 2332).
+    """
     with unstarted_node_context(tmp_path) as node:
         header = unmined_header(node.chain.genesis.hash, b"\x03\x00\x00\x01")
         node.chainstate.db.put(
@@ -3070,7 +3076,11 @@ def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
         )
     refused = Node(
         config=Config(
-            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            reindex_chainstate=reindex_chainstate,
         )
     )
     try:
