@@ -1016,7 +1016,7 @@ class _Settings:
 
     The sources hold values as they were read, `-rpcpassword` among them,
     and a section name may hold one too, as may a warning quoting it, so
-    `repr` and `str` leave them out (section 7 of the btclib-org
+    `repr` and `str` leave them out (section 7 of the organization's
     standard, *A refusal carries no secret*).
     """
 
