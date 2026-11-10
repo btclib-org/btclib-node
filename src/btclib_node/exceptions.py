@@ -382,14 +382,11 @@ class StoreCorruptionError(RuntimeError):
     `db.py`'s own module docstring is where the checksum this class
     detects is argued against Core's `verify_checksums = true`
     (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637).
-    Neither of `UtxoIndex`'s two chainstate callers maps this onto
-    `ChainstateInconsistencyError`: `add_block` and `get_coin` both
-    call `self.db.get` unguarded, so a genuine `StoreCorruptionError`
-    there propagates as itself to whatever each caller's own caller
-    does with an exception outside its own -- `update_chain`'s trial
-    loop for `add_block`, `verify_mempool_acceptance`'s own callers
-    for `get_coin`. A record this guard passes as intact and
-    `Coin.parse` still refuses raises `ChainstateInconsistencyError`.
+    `UtxoIndex` does not map this onto `ChainstateInconsistencyError`: a
+    read by outpoint that raises it stops the node and raises it again,
+    as `UtxoIndex._stored_prevout`'s docstring says. A record this guard
+    passes as intact and `Coin.parse` still refuses raises
+    `ChainstateInconsistencyError`.
     """
 
     def __init__(self, message: str) -> None:

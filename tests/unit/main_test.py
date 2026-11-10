@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.block import Block, witness_commitment_output
@@ -62,6 +62,7 @@ from btclib_node.exceptions import (
     MissingPrevoutError,
     NonStandardTxError,
     PackageRefusedError,
+    StoreCorruptionError,
     TxRejectedError,
 )
 from btclib_node.interpreter import check_scripts
@@ -78,7 +79,12 @@ from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool, submit_block
+from btclib_node.rpc.callbacks import (
+    get_mempool_entry,
+    get_raw_mempool,
+    get_tx_out,
+    submit_block,
+)
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
     LogLines,
@@ -910,6 +916,58 @@ def test_a_bip30_check_on_a_stored_coin_that_wont_parse_stops_the_node(
     assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
     assert node.last_rejected_block is None
     assert "Error reading from database, shutting down." in lines.messages
+
+
+@pytest.mark.parametrize("caller", ["mempool", "gettxout"])
+def test_a_coin_read_the_store_reports_corrupt_stops_the_node(
+    node: Node, monkeypatch: pytest.MonkeyPatch, caller: str
+) -> None:
+    """ISS 2357: a read by outpoint the store reports corrupt stops the node.
+
+    Whichever caller made the read, as Core's `CCoinsViewErrorCatcher`
+    aborts on the "Coin DB read failure" `CCoinsViewDB::GetCoin` throws
+    (`src/txdb.cpp`, `src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). The error still reaches the caller.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+
+    def corrupted(key: bytes) -> NoReturn:
+        err_msg = f"chainstate: Corruption: block checksum mismatch at {key.hex()}"
+        raise StoreCorruptionError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index.db, "get", corrupted)
+    lines = LogLines()
+    node.logger.addHandler(lines)
+
+    def read() -> object:
+        if caller == "mempool":
+            spend = generate_random_transaction(
+                funding.id, value=funding.vout[0].value - FEE
+            )
+            return verify_mempool_acceptance(node, spend)
+        return get_tx_out(
+            node, cast("RpcConnection", None), [funding.id.hex(), 0, False]
+        )
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        read()
+    assert node.terminate_flag.is_set()
+    assert "Error reading from database, shutting down." in lines.messages
+    assert any(
+        message.startswith("Error reading from database: Coin DB read failure: ")
+        for message in lines.messages
+    )
+
+
+def test_a_missing_coin_does_not_stop_the_node(node: Node) -> None:
+    """ISS 2357: a prevout the store does not hold is refused, not fatal."""
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+
+    with pytest.raises(MissingPrevoutError):
+        verify_mempool_acceptance(node, generate_random_transaction())
+    assert not node.terminate_flag.is_set()
 
 
 def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
