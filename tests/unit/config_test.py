@@ -643,6 +643,13 @@ def test_max_connections_past_an_int_is_out_of_range(value: int) -> None:
         Config(chain="regtest", max_connections=value)
 
 
+@pytest.mark.parametrize("value", [2**31, -(2**31) - 1, 1.5, 10.0, -0.0])
+def test_rpcmaxconnections_no_int_is_out_of_range(value: float) -> None:
+    """ISS 2347: what `GetArg<int>` throws, ahead of the refusal below one."""
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        Config(chain="regtest", rpcmaxconnections=value)
+
+
 def test_the_transaction_send_rate_defaults_to_core_s() -> None:
     """ISS 2309: Core's `DEFAULT_TX_SEND_RATE`, 14 a second."""
     assert DEFAULT_TX_SEND_RATE == 14

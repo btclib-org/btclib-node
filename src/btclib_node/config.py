@@ -396,19 +396,28 @@ def _cap_max_connections(max_connections: int) -> tuple[int, str]:
     return MAX_PEER_CONNECTIONS, warning
 
 
-def _refuse_rpcmaxconnections(rpcmaxconnections: int) -> None:
-    """Refuse a `-rpcmaxconnections` below one, in Core's words.
+def _refuse_rpcmaxconnections(rpcmaxconnections: float) -> int:
+    """Return `rpcmaxconnections`, refusing it as Core does.
 
-    `AppInitParameterInteraction` refuses it whatever `-server` says
-    (`src/init.cpp:1080-1082`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag).
+    `AppInitParameterInteraction` refuses one below one whatever `-server`
+    says (`src/init.cpp:1080-1082`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `GetArg<int>` throws "JSON integer out of range" first,
+    for a `settings.json` number that is not an integer or is past a
+    32-bit `int`, which `cli` hands over for this point.
     """
+    if (
+        not isinstance(rpcmaxconnections, int)
+        or not -(2**31) <= rpcmaxconnections < 2**31
+    ):
+        err_msg = "JSON integer out of range"
+        raise ValueError(err_msg)
     if rpcmaxconnections < 1:
         err_msg = (
             "-rpcmaxconnections must be greater than zero. "
             "Use -server=0 to disable HTTP."
         )
         raise ValueError(err_msg)
+    return rpcmaxconnections
 
 
 def _refuse_reindex_chainstate_when_pruned(
@@ -1014,7 +1023,7 @@ class Config:
         whitelist_relay: bool = True,
         whitelist_force_relay: bool = False,
         rpcservertimeout: int = int(IDLE_TIMEOUT),
-        rpcmaxconnections: int = DEFAULT_MAX_HTTP_CONNECTIONS,
+        rpcmaxconnections: float = DEFAULT_MAX_HTTP_CONNECTIONS,
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -1167,8 +1176,7 @@ class Config:
         self.max_connections_warning = warning or max_connections_warning
         self.inbound_relay_percent = inbound_relay_percent
         self.tx_send_rate = tx_send_rate
-        _refuse_rpcmaxconnections(rpcmaxconnections)
-        self.rpcmaxconnections = rpcmaxconnections
+        self.rpcmaxconnections = _refuse_rpcmaxconnections(rpcmaxconnections)
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
         self.send_buffer_max_size = send_buffer_max_size
