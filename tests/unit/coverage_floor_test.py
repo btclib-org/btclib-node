@@ -376,7 +376,7 @@ def test_a_run_coverage_read_no_configuration_for_is_refused() -> None:
 
 def test_nothing_measuring_is_not_an_ungated_run() -> None:
     """`--no-cov` is left alone."""
-    # section 10 of the organization standard has a platform sentinel
+    # section 10 of the organization's standard has a platform sentinel
     # pass it, and a run measuring no coverage has no configuration to
     # be missing -- os-macos.yml and os-ubuntu.yml are this tree's own
     assert not configuration_went_unread(

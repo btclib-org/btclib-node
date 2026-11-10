@@ -185,7 +185,7 @@ of them, as ASSURANCE_CASE.md's CWE-209 entry says.
 
 What a refusal may print about a secret is the organization's rule, section 7's
 *A refusal carries no secret* in
-[btclib-org/.github's README.md](https://github.com/btclib-org/.github/blob/main/README.md).
+[the organization's standard](https://github.com/btclib-org/.github/blob/main/README.md).
 
 `-reindex-chainstate` wipes the undo data with the coins
 (btclib-org/btclib-node#1415). Bitcoin Core keeps it:
