@@ -37,6 +37,7 @@ fail (btclib-org/btclib-node#1107).
 import asyncio
 import gc
 import os
+import sys
 import threading
 import weakref
 from collections import deque
@@ -771,6 +772,37 @@ def release_mock_time() -> Iterator[None]:
     clock.set_mock_time(0)
     yield
     clock.set_mock_time(0)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def unlimited_file_descriptors() -> Iterator[None]:
+    """Answer every resource limit as unlimited, and refuse any raise.
+
+    Every `Config` reads the limit and raises it where it is low
+    (`config._raise_file_descriptor_limit`), so the suite would otherwise
+    raise its own process's limit and lower `max_connections` wherever
+    the runner's limit is low. The session's scope puts this in place
+    before a module's fixtures build their nodes. A test that means to
+    read a limit installs its own fake over this one, as `config_test`'s
+    `file_limit` does. A `MonkeyPatch` of its own, as
+    `deterministic_bucket_key` below says why.
+    """
+    if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+        yield
+        return
+    import resource  # noqa: PLC0415 -- POSIX only
+
+    def getrlimit(_which: int) -> tuple[int, int]:
+        return resource.RLIM_INFINITY, resource.RLIM_INFINITY
+
+    def setrlimit(*args: object) -> None:  # pragma: no cover -- a raise
+        err_msg = f"a test raised a resource limit: {args}"
+        raise AssertionError(err_msg)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(resource, "getrlimit", getrlimit)
+        patch.setattr(resource, "setrlimit", setrlimit)
+        yield
 
 
 @pytest.fixture(autouse=True)

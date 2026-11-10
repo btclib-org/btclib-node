@@ -1033,7 +1033,7 @@ class _Settings:
     # version line; `""` where no section is unrecognised
     section_warning: str = field(default="", repr=False)
     # `_resolve_debug`'s and `_check_test_options`'s warnings, logged
-    # after `Config.max_connections_warning`
+    # after `Config.max_connections_warnings`
     debug_warnings: list[str] = field(default_factory=list, repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
@@ -2667,8 +2667,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is off,
     a `settings.json` `-maxconnections` number past an `int`, then a
     negative one, then its cap at `MAX_PEER_CONNECTIONS`, a `settings.json`
-    `-rpcmaxconnections` number that is no `int`, then one below one,
-    `-debug`'s categories, `-test`, `-testactivationheight` on mainnet (at
+    `-rpcmaxconnections` number that is no `int`, then one below one, the
+    file descriptors `-maxconnections` is lowered to, `-debug`'s
+    categories, `-test`, `-testactivationheight` on mainnet (at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag), `-minimumchainwork`,
     `-assumevalid`, `-maxtipage` (the order `node::ApplyArgsManOptions`'s
     own chainstate-manager options are read in,
@@ -2708,6 +2709,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
             settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
         ),
         rpcmaxconnections=_get_rpcmaxconnections(settings),
+        # what the file descriptors `Config.__init__` reserves count
+        rpcbind=_get_args(settings, "rpcbind"),
+        allow_rpc=_get_bool(settings, "server") is not False,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
@@ -2974,9 +2978,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         peerblockfilters=peerblockfilters,
         v2transport=v2transport,
         v1transport=v1transport,
-        # capped already, so this `Config` warns no second time
+        # capped and lowered already, so this `Config` warns no second time
         max_connections=before.directories.max_connections,
-        max_connections_warning=before.directories.max_connections_warning,
+        max_connections_warnings=before.directories.max_connections_warnings,
         inbound_relay_percent=_get_inboundrelaypercent(settings),
         tx_send_rate=_get_txsendrate(settings),
         dnsseed=dnsseed,
@@ -3110,7 +3114,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_file_line=before.settings.config_file_line,
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
-                max_connections_warning=directories.max_connections_warning,
+                max_connections_warnings=directories.max_connections_warnings,
                 debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,

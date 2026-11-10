@@ -2790,12 +2790,13 @@ def test_a_node_logs_the_debug_warnings_after_the_section_warning(
 def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
     tmp_path: Path,
 ) -> None:
-    """ISS 2127: the `-maxconnections` cap warns between the two.
+    """ISS 2127, ISS 2338: the `-maxconnections` warnings come between the two.
 
     `AppInitParameterInteraction` warns over the sections, caps
-    `-maxconnections`, then sets the categories (`src/init.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `bitcoind`'s
-    `debug.log` holds the cap's warning ahead of "Default data directory".
+    `-maxconnections`, lowers it to the file descriptors left, then sets
+    the categories (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `bitcoind`'s `debug.log` holds the cap's warning ahead of
+    "Default data directory".
     """
     node = Node(
         config=Config(
@@ -2805,7 +2806,13 @@ def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
             allow_rpc=False,
             section_warning="a.conf:1 Section [x] is not recognized.\n",
             max_connections=2000,
-            max_connections_warning="Reducing -maxconnections from 5000 to 2000.",
+            max_connections_warnings=[
+                "Reducing -maxconnections from 5000 to 2000.",
+                (
+                    "Reducing -maxconnections from 2000 to 846, "
+                    "because of system limitations."
+                ),
+            ],
             debug_warnings=["first"],
         )
     )
@@ -2816,9 +2823,10 @@ def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
     section_at = log_text.index("Section [x] is not recognized.")
     cap_at = log_text.index("[warning] Reducing -maxconnections from 5000 to 2000.\n")
+    fit_at = log_text.index("[warning] Reducing -maxconnections from 2000 to 846, ")
     first_at = log_text.index("[warning] first")
     data_dir_at = log_text.index("Default data directory")
-    assert section_at < cap_at < first_at < data_dir_at
+    assert section_at < cap_at < fit_at < first_at < data_dir_at
 
 
 def test_a_node_logs_its_config_args_after_the_section_warning(

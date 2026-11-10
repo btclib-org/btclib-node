@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from btclib_node import Node, cli
+from btclib_node import config as config_module
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
@@ -1139,7 +1140,7 @@ def test_help_names_rpcservertimeout_under_debug_alone() -> None:
         ([], "", 16),
         (["-rpcmaxconnections=4"], "", 4),
         ([], "rpcmaxconnections=5\n", 5),
-        (["-rpcmaxconnections=99999999999"], "", 2**31 - 1),
+        (["-rpcmaxconnections=99999999999", "-server=0"], "", 2**31 - 1),
     ],
     ids=["Core's default", "command line", "file", "saturated"],
 )
@@ -1846,7 +1847,7 @@ def test_a_maxconnections_past_2000_is_capped_with_core_s_warning(
     warning = f"Reducing -maxconnections from {read} to 2000."
     assert capsys.readouterr().err == f"Warning: {warning}\n"
     assert config.max_connections == 2000
-    assert config.max_connections_warning == warning
+    assert config.max_connections_warnings == (warning,)
 
 
 def test_a_maxconnections_of_2000_is_not_warned_of(
@@ -1855,7 +1856,78 @@ def test_a_maxconnections_of_2000_is_not_warned_of(
     """ISS 2127: the cap warns only where it lowers the limit."""
     config = _build(tmp_path, "-maxconnections=2000")
     assert capsys.readouterr().err == ""
-    assert config.max_connections_warning == ""
+    assert config.max_connections_warnings == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+def test_maxconnections_is_lowered_to_the_descriptors_left_once(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2338: the cap's warning, then the descriptors', each printed once.
+
+    Measured on `bitcoind` v32.1.0 on macOS, where `FD_SETSIZE` leaves
+    1024: `-maxconnections=2000` prints the second line.
+    """
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 1024)
+    config = _build(tmp_path, "-maxconnections=5000")
+    warnings = (
+        "Reducing -maxconnections from 5000 to 2000.",
+        "Reducing -maxconnections from 2000 to 846, because of system limitations.",
+    )
+    assert capsys.readouterr().err == "".join(f"Warning: {w}\n" for w in warnings)
+    assert config.max_connections == 846
+    assert config.max_connections_warnings == warnings
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+@pytest.mark.parametrize(
+    ("argv", "max_connections"),
+    [
+        ([], 122),
+        (["-server=0"], 140),
+        (["-rpcbind=127.0.0.1:1", "-rpcbind=127.0.0.1:2", "-rpcbind=[::1]:3"], 121),
+    ],
+)
+def test_maxconnections_counts_the_rpc_listener_as_given(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    max_connections: int,
+) -> None:
+    """ISS 2338: `-server` and `-rpcbind` reach the first count, which warns."""
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 300)
+    assert _build(tmp_path, *argv).max_connections == max_connections
+    assert capsys.readouterr().err == (
+        f"Warning: Reducing -maxconnections from 200 to {max_connections}, "
+        "because of system limitations.\n"
+    )
+
+
+def test_rpcmaxconnections_past_an_int_is_refused_under_server(tmp_path: Path) -> None:
+    """ISS 2338: `GetArg<int>` saturates, then Core's count passes an `int`."""
+    with pytest.raises(ValueError, match=r"^Too many file descriptors requested\. "):
+        _build(tmp_path, "-rpcmaxconnections=99999999999")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+def test_the_rpcmaxconnections_refusal_precedes_the_descriptor_count(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2338: `AppInitParameterInteraction` refuses, then counts.
+
+    `src/init.cpp:1081-1083`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag,
+    ahead of the count at 1089: a limit that would lower `-maxconnections`
+    prints nothing before the refusal.
+    """
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 300)
+    with pytest.raises(ValueError, match=r"^-rpcmaxconnections must be"):
+        _build(tmp_path, "-rpcmaxconnections=0")
+    assert "Reducing" not in capsys.readouterr().err
 
 
 def test_the_maxconnections_warning_precedes_the_rpcmaxconnections_refusal(
@@ -4562,12 +4634,16 @@ def test_an_rpcmaxconnections_number_no_int_is_refused_where_core_reads_it(
 def test_an_rpcmaxconnections_number_in_an_int_is_read(
     tmp_path: Path, number: str, limit: int
 ) -> None:
-    """ISS 2347: `getInt<int>` reads an integer within an `int`."""
+    """ISS 2347: `getInt<int>` reads an integer within an `int`.
+
+    `-server=0`, since under `-server` the largest `int` asks for more
+    file descriptors than an `int` counts, which Core refuses (ISS 2338).
+    """
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "settings.json").write_text(
         f'{{"rpcmaxconnections": {number}}}', encoding="utf-8"
     )
-    assert _build(tmp_path, "-regtest").rpcmaxconnections == limit
+    assert _build(tmp_path, "-regtest", "-server=0").rpcmaxconnections == limit
 
 
 @pytest.mark.parametrize("number", ["-0", "-2147483648"])
