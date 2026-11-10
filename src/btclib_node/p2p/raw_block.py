@@ -73,7 +73,7 @@ def _wide(raw: bytes, i: int, limit: int) -> tuple[int, int]:
         raise BTClibValueError(err_msg)
     value = int.from_bytes(raw[i + 1 : end], "little")
     # the refusals name the width and the limit, not the value: the octets
-    # may be a key passed in their place (section 7 of the btclib-org
+    # may be a key passed in their place (section 7 of the organization's
     # standard, *A refusal carries no secret*)
     if value < minimum:
         err_msg = f"non-canonical var_int of {size + 1} bytes"

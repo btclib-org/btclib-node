@@ -5525,7 +5525,7 @@ def test_a_value_of_the_file_is_another_source_of_a_network_only_option() -> Non
     assert cli._unsuitable_section_only_args(_file_settings(file, conf=conf)) == []
 
 
-# ISS 1965: section 7 of the btclib-org standard, *A refusal carries no
+# ISS 1965: section 7 of the organization's standard, *A refusal carries no
 # secret* (*Reprs and logs*), for what a `_Settings` holds
 
 _CREDENTIAL = "Zt9qK2mWp7RtXv4n"

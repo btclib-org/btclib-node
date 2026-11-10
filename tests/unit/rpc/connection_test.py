@@ -3130,7 +3130,7 @@ def test_a_content_length_at_the_cap_is_read() -> None:
     assert parse_request_head(request(at_cap, b"")).length == MAX_BODY_BYTES
 
 
-# issue #1957: section 7 of the btclib-org standard, *A refusal carries no
+# issue #1957: section 7 of the organization's standard, *A refusal carries no
 # secret*, for the Authorization header a head holds
 
 _CREDENTIAL = "Basic YWxpY2U6WnQ5cUsybVdwN1J0"
