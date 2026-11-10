@@ -2781,7 +2781,7 @@ def test_a_reorg_refuses_a_removed_block_whose_record_holds_another(
     assert block_index.active_chain == active_chain
     assert utxo_index.get_coin(coinbase_output) is not None
     assert not utxo_index.removed_utxos
-    assert node._step_chain() is True
+    assert node._step_chain() is False
     assert node.terminate_flag.is_set()
     assert block_index.active_chain == active_chain
 
@@ -3030,7 +3030,7 @@ def test_a_stored_utxo_record_that_wont_parse_stops_the_node_not_the_block(
     block_index.set_downloaded(bad.header.hash)
     node.block_db.add_block(bad)
 
-    assert node._step_chain() is True
+    assert node._step_chain() is False
     assert node.terminate_flag.is_set()
     assert bad.header.hash not in block_index.active_chain
     assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid

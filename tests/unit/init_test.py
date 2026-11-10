@@ -2264,6 +2264,55 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
     wait_until(every_queue_is_empty)
 
 
+def test_the_loop_sleeps_only_where_the_last_step_left_the_chain_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2352: a pass after one that moved the chain does not sleep.
+
+    The queues always read empty, and `update_chain` answers from a
+    script, so the only thing deciding each sleep is the step before it.
+    The last step sets `terminate_flag`, and the loop stops before the
+    fee estimator's flush that would follow it.
+    """
+    node = a_node(tmp_path)
+    events: list[bool | str] = []
+    answers = [True, True, False, False]
+
+    def step(_node: Node) -> bool:
+        answer = answers.pop(0)
+        events.append(answer)
+        if not answers:
+            node.terminate_flag.set()
+        return answer
+
+    monkeypatch.setattr(btclib_node, "update_chain", step)
+    monkeypatch.setattr(node, "_drain_message_queues", lambda: True)
+    monkeypatch.setattr(
+        node.fee_estimator, "flush_if_due", lambda: events.append("flush")
+    )
+    monkeypatch.setattr(
+        btclib_node,
+        "time",
+        SimpleNamespace(
+            monotonic=time.monotonic, sleep=lambda _seconds: events.append("sleep")
+        ),
+    )
+    node.start()
+    node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+    assert events == [
+        "sleep",
+        True,
+        "flush",
+        True,
+        "flush",
+        False,
+        "flush",
+        "sleep",
+        False,
+    ]
+
+
 def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:

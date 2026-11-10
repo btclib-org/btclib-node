@@ -126,10 +126,17 @@ SIGNAL_POLL_SECONDS = 0.5
 STOP_DUMP_DELAY = 15
 
 # How long the loop below sleeps once a pass finds nothing waiting in
-# either queue. The figure it replaces, 0.0001, sat below the
-# platform timer's own granularity, so what set the pace of an idle
-# node was the OS rather than the number, and every one of those passes
-# still ran `download_manager.step()` and `update_chain()` in full
+# either queue. The sleep is skipped after a step that moved the tip or
+# invalidated a block, so a node connecting stored blocks is paced by
+# validation, not by this figure (btclib-org/btclib-node#2352). Core has
+# no such sleep to skip: `ActivateBestChain` connects every stored block
+# in one loop (`src/validation.cpp:3357-3491`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+#
+# The figure it replaces, 0.0001, sat below the platform timer's own
+# granularity, so what set the pace of an idle node was the OS rather
+# than the number, and every one of those passes still ran
+# `download_manager.step()` and `update_chain()` in full
 # (btclib-org/btclib-node#440).
 #
 # Core's own message loop takes this shape as a wait on a condition
@@ -902,19 +909,20 @@ class Node(threading.Thread):
         self.mempool_estimator.flush()
 
     def _step_chain(self) -> bool:
-        """Advance the chain one step, and answer whether `run` should stop.
+        """Advance the chain one step, answering as `update_chain` does.
 
-        A failure sets `terminate_flag`, so that `_drain_rpc_queue` ends
-        each request still waiting rather than serve it for ever.
+        A failure answers `False` and sets `terminate_flag`, so that `run`
+        stops and `_drain_rpc_queue` ends each request still waiting
+        rather than serve it for ever.
         """
         try:
             self.download_manager.step()
-            update_chain(self)
+            moved = update_chain(self)
         except Exception:
             self.logger.exception("Exception occurred")
             self.terminate_flag.set()
-            return True
-        return False
+            return False
+        return moved
 
     def _coins_read_error(self) -> None:
         """Stop the node on a coin a read by outpoint cannot return.
@@ -1125,6 +1133,29 @@ class Node(threading.Thread):
             self.chainstate.close()
             self.block_db.close()
 
+    def _run_loop(self) -> None:
+        """Drain the queues and step the chain, pass by pass, until stopped."""
+        chain_changed = False
+        while not self.terminate_flag.is_set():
+            if self._drain_message_queues() and not chain_changed:
+                time.sleep(IDLE_SLEEP_SECONDS)
+            # `_drain_message_queues` can itself set `terminate_flag`
+            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # inside `handle_rpc`, does exactly that on an exception
+            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
+            # than letting propagate -- and this loop must not run
+            # `_step_chain`'s own `update_chain` once that has happened:
+            # the flag is the store's own word that it is unsafe to touch
+            # again this pass, not only next time the condition above is
+            # read.
+            if self.terminate_flag.is_set():
+                break
+            chain_changed = self._step_chain()
+            if self.terminate_flag.is_set():
+                break
+            if self.fee_estimator.flush_if_due():
+                self.mempool_estimator.flush()
+
     @override
     def run(self) -> None:
         self.logger.info("Starting main loop")
@@ -1185,22 +1216,7 @@ class Node(threading.Thread):
         # loop of `P2pManager`'s own, `_open_connect_peers` and
         # `_open_added_peers`, started from `P2pManager.run` once the
         # listener is bound; no dial happens here.
-        while not self.terminate_flag.is_set():
-            if self._drain_message_queues():
-                time.sleep(IDLE_SLEEP_SECONDS)
-            # `_drain_message_queues` can itself set `terminate_flag`
-            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
-            # inside `handle_rpc`, does exactly that on an exception
-            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
-            # than letting propagate -- and this loop must not run
-            # `_step_chain`'s own `update_chain` once that has happened:
-            # the flag is the store's own word that it is unsafe to touch
-            # again this pass, not only next time the condition above is
-            # read.
-            if self.terminate_flag.is_set() or self._step_chain():
-                break
-            if self.fee_estimator.flush_if_due():
-                self.mempool_estimator.flush()
+        self._run_loop()
         self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race
