@@ -20,11 +20,7 @@ import pytest
 from btclib.p2p.limits import MAX_HEADERS_RESULTS
 
 from tests import wait_until
-from tests.functional.p2p import (
-    Lie,
-    a_node_among_peers,
-    shorten_block_download_timeout,
-)
+from tests.functional.p2p import Lie, a_node_among_peers
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,10 +35,9 @@ _SYNC_TIMEOUT = 240
 
 @pytest.mark.slow
 def test_nine_lying_peers_and_one_honest_one_end_on_the_honest_tip_over_full_batches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """Each liar is dropped in turn, and the node ends on the honest tip."""
-    shorten_block_download_timeout(monkeypatch)
     lies = [*Lie, *list(Lie)[:4]]
     with a_node_among_peers(
         tmp_path, [*lies, None], length=_LENGTH, lies_from=MAX_HEADERS_RESULTS
