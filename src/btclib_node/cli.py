@@ -1708,28 +1708,48 @@ def _get_check_addrman(settings: _Settings) -> int:
     )
 
 
-def _get_int32(
-    settings: _Settings, name: str, default: int, *, refuse: bool = True
-) -> int:
+def _get_int32(settings: _Settings, name: str, default: int) -> int:
     """Return `name` as Core's `GetArg<int>` reads it, `default` where unset.
 
     `SettingTo<int>` (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040)
     reads a JSON number with `UniValue::getInt<int>`, which refuses one
-    past a 32-bit `int` as "JSON integer out of range". Without `refuse`
-    such a number is returned as it is, for the caller to refuse where
-    Core reads it. A string past it saturates, as
-    `LocaleIndependentAtoi<int>` does (`src/util/strencodings.h`, same
-    sha), rather than wrapping as `_to_int` does.
+    past a 32-bit `int` as "JSON integer out of range". Such a number,
+    once `_get_int` has read it as an `int64_t`, is returned as it is, for
+    `Config.__init__` to refuse where Core reads it. A string past it
+    saturates, as `LocaleIndependentAtoi<int>` does
+    (`src/util/strencodings.h`, same sha), rather than wrapping as
+    `_to_int` does.
     """
     value = _get_int(settings, name)
     if value is None:
         return default
     if isinstance(_get_setting(settings, name), Number):
-        if refuse and not _INT_MIN <= value <= _INT_MAX:
-            err_msg = "JSON integer out of range"
-            raise ValueError(err_msg)
         return value
     return min(max(value, _INT_MIN), _INT_MAX)
+
+
+def _get_rpcmaxconnections(settings: _Settings) -> float:
+    """Return `-rpcmaxconnections` as `GetArg<int>` reads it, for `Config`.
+
+    `UniValue::getInt<int>` (`src/univalue/include/univalue.h`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) reads a JSON number's text
+    with `std::from_chars`, which takes an optional `-` and digits, and
+    throws "JSON integer out of range" where the text holds more, as a
+    fraction or an exponent does, or where the value is past an `int`.
+    Core reads the option with `GetArg<int>` only, first at
+    `src/init.cpp:1080`, so such a number is returned for
+    `Config.__init__` to refuse there: an `int` where it is an integer of
+    at most `-2147483648`'s length, a `float` otherwise. A JSON number
+    has no leading zero, so a longer integer is past an `int`, and
+    `float` reads one of any length, where `int` refuses one past
+    CPython's digit limit.
+    """
+    value = _get_setting(settings, "rpcmaxconnections")
+    if isinstance(value, Number):
+        if len(value) <= len(str(_INT_MIN)) and _LEADING_INTEGER.fullmatch(value):
+            return int(value)
+        return float(value)
+    return _get_int32(settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS)
 
 
 def _get_inboundrelaypercent(settings: _Settings) -> int:
@@ -2644,15 +2664,16 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     bitcoin/bitcoin@f0de87f040) in its order: a `NETWORK_ONLY` option set
     only in the default section off `main`, the warning about a section
     naming no chain, a missing blocks directory, `-prune` beside
-    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
-    off, a `settings.json` `-maxconnections` number past an `int`, then a
-    negative one, then its cap at `MAX_PEER_CONNECTIONS`, a
-    `-rpcmaxconnections` below one, `-debug`'s categories, `-test`,
-    `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage` (the
-    order `node::ApplyArgsManOptions`'s own chainstate-manager options are
-    read in, `src/node/chainstatemanager_args.cpp`, at
-    bitcoin/bitcoin@f0de87f040), `-prune`, the mempool's options.
+    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is off,
+    a `settings.json` `-maxconnections` number past an `int`, then a
+    negative one, then its cap at `MAX_PEER_CONNECTIONS`, a `settings.json`
+    `-rpcmaxconnections` number that is no `int`, then one below one,
+    `-debug`'s categories, `-test`, `-testactivationheight` on mainnet (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), `-minimumchainwork`,
+    `-assumevalid`, `-maxtipage` (the order `node::ApplyArgsManOptions`'s
+    own chainstate-manager options are read in,
+    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@f0de87f040),
+    `-prune`, the mempool's options.
     """
     settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
@@ -2683,13 +2704,10 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
-        # `Config.__init__` refuses a number past an `int` where Core does
         max_connections=_get_int32(
-            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS, refuse=False
+            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
         ),
-        rpcmaxconnections=_get_int32(
-            settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS
-        ),
+        rpcmaxconnections=_get_rpcmaxconnections(settings),
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
@@ -2939,9 +2957,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         whitelist_relay=whitelist_relay,
         whitelist_force_relay=bool(_get_bool(settings, "whitelistforcerelay")),
         rpcservertimeout=rpcservertimeout,
-        rpcmaxconnections=_get_int32(
-            settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS
-        ),
+        rpcmaxconnections=before.directories.rpcmaxconnections,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
