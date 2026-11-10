@@ -5,7 +5,7 @@
 """`TxRequestTracker`, which peer is asked for an announced transaction.
 
 Bitcoin Core's `TxRequestTracker` (`src/txrequest.h` and
-`src/txrequest.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose
+`src/txrequest.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), whose
 header comment argues the design. Each `(peer, txhash)` pair a peer
 announced is an announcement in one of five states:
 

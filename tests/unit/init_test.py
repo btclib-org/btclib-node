@@ -11,6 +11,8 @@ the coverage floor went red all the same, on `run`'s own `except
 Exception`. The managers below are stand-ins, so the loop is handed its
 messages directly and what it does with them does not depend on
 scheduling.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import faulthandler
@@ -274,7 +276,7 @@ def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
 def test_shutdownnotify_has_finished_by_the_time_stop_returns(tmp_path: Path) -> None:
     """ISS 1519: Core's own `ShutdownNotify`, joined ahead of everything else.
 
-    `src/init.cpp:256-276`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/init.cpp:275-295`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag: every configured command is run and joined before `Interrupt`
     returns, so it has already finished before this node's managers and
     stores ever close.
@@ -1875,7 +1877,7 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     RPC starts first, as in Core's `AppInitMain`, so the peer-to-peer
     manager is never built; the bind comes before the cookie, so none
     is left in the data directory; and no store is opened, so the chain
-    directory holds what `bitcoind` v31.1.0's holds over a taken RPC
+    directory holds what `bitcoind`'s holds over a taken RPC
     port but its own files: the lock, `blocks/` holding its lock alone,
     and the log (ISS 1279).
     """
@@ -1944,7 +1946,7 @@ def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
 ) -> None:
     """ISS 1268: `InitHTTPAllowList`'s message, then `InitError`'s.
 
-    Measured on bitcoind v31.1.0 given `-rpcallowip=bogus`: both are in
+    Measured on `bitcoind` given `-rpcallowip=bogus`: both are in
     `debug.log`, in that order, and it exits 1.
     """
     node = Node(
@@ -1986,8 +1988,8 @@ def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
 
     `init_errors`, which `cli.main` prints, holds "Unable to start HTTP
     server" alone, and the value's own line is in the log ahead of it,
-    as `bitcoind` v31.1.0 shows them. The cookie `-rpcauth` is refused
-    after is deleted, and the port is free again.
+    as `bitcoind` shows them. The cookie written before `-rpcauth` is
+    refused is deleted, and the port is free again.
     """
     port = get_random_port()
     node = Node(
@@ -2761,7 +2763,7 @@ def test_a_node_logs_the_debug_warnings_after_the_section_warning(
     `AppInitParameterInteraction` warns over the sections, then sets the
     categories, both ahead of `init::StartLogging`'s "Default data
     directory" (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), the order bitcoind v32.1.0's `debug.log` shows.
+    tag), the order `bitcoind`'s `debug.log` shows.
     """
     node = Node(
         config=Config(
@@ -2792,7 +2794,7 @@ def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
 
     `AppInitParameterInteraction` warns over the sections, caps
     `-maxconnections`, then sets the categories (`src/init.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag). bitcoind v32.1.0's
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `bitcoind`'s
     `debug.log` holds the cap's warning ahead of "Default data directory".
     """
     node = Node(
@@ -2825,9 +2827,9 @@ def test_a_node_logs_its_config_args_after_the_section_warning(
     """ISS 1305: `LogArgs`'s lines, last of what `open_history_log` writes.
 
     `ArgsManager::LogArgs` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) runs at the end of `init::StartLogging`
-    (`src/init/common.cpp`), after the version line and the section
-    warning it dumps from its own buffer.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs at the end of
+    `init::StartLogging` (`src/init/common.cpp:145`), after the version
+    line and the section warning it dumps from its own buffer.
     """
     node = Node(
         config=Config(

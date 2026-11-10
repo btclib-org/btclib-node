@@ -2,10 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The snapshot file's pieces, against what `bitcoind` v31.1.0 writes.
+"""The snapshot file's pieces, against what `bitcoind` writes.
 
 `tests/integration/dumptxoutset_test.py` holds a whole file to bitcoind's
 own. The compression is `btclib.compressor`'s, and its tests.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 from btclib.tx.tx_out import TxOut

@@ -18,29 +18,29 @@ harness drives none of it.
 Core carries two fuzz targets over that same layer, one message
 (`process_message.cpp`) and a sequence of them fed to the same
 connection in one call (`process_messages.cpp`, at
-bitcoin/bitcoin@ca7162cde5). This harness takes the first shape: one
-call, one message, matching every other harness in this directory --
-atheris supplies the sequence across many calls instead, on the one
-`Node` `_built_node` reuses, rather than inside a single call the way
-`process_messages.cpp` schedules several `CSerializedNetMsg`s at once.
-What that leaves untested is a defect only a *particular* sequence
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This harness takes the first
+shape: one call, one message, matching every other harness in this
+directory -- atheris supplies the sequence across many calls instead, on
+the one `Node` `_built_node` reuses, rather than inside a single call
+the way `process_messages.cpp` schedules several `CSerializedNetMsg`s at
+once. What that leaves untested is a defect only a *particular* sequence
 within one call triggers, which is `process_messages.cpp`'s own share
 of Core's surface and not this harness's.
 
 Core's own fuzz target for this layer, `process_message.cpp`
-(at bitcoin/bitcoin@ca7162cde5), builds a whole `TestingSetup` once, in
-its own `initialize_process_message`, and reuses most of it across
-passes -- but rebuilds the rest on every single one, not only a dirty
-one: `connman.Reset()`, `node.banman.reset()`, `node.addrman.reset()`
-and `node.peerman.reset()` run unconditionally at the top of every
-call, with `node.addrman` and `node.peerman` built fresh right after,
-labelled "Reset, so that dangling pointers can be detected by
-sanitizers" -- a C++ reason, ASan/MSan catching a stale pointer into an
-object a rebuilt `connman`/`addrman`/`peerman` no longer owns, with no
-Python analogue: nothing here holds a raw pointer into any of `_node`'s
-own attributes across calls for a sanitizer to catch. Only `chainman`
-and `mempool` are reset for a reason a Python harness shares --
-correctness, not memory safety -- and only conditionally, once a pass
+(at bitcoin/bitcoin@f0de87f040, the v32.1 tag), builds a whole
+`TestingSetup` once, in its own `initialize_process_message`, and reuses
+most of it across passes -- but rebuilds the rest on every single one,
+not only a dirty one: `connman.Reset()`, `node.banman.reset()`,
+`node.addrman.reset()` and `node.peerman.reset()` run unconditionally at
+the top of every call, with `node.addrman` and `node.peerman` built
+fresh right after, labelled "Reset, so that dangling pointers can be
+detected by sanitizers" -- a C++ reason, ASan/MSan catching a stale
+pointer into an object a rebuilt `connman`/`addrman`/`peerman` no longer
+owns, with no Python analogue: nothing here holds a raw pointer into any
+of `_node`'s own attributes across calls for a sanitizer to catch. Only
+`chainman` and `mempool` are reset for a reason a Python harness
+shares -- correctness, not memory safety -- and only conditionally, once a pass
 ends with the block index or the mempool's own sequence changed from
 what it started at, via `ResetChainmanAndMempool`
 (`src/test/util/validation.cpp`, same sha). `_node` below takes neither
@@ -95,7 +95,7 @@ work this harness does not schedule.
 
 `p2p.main.handle_p2p_handshake` and `handle_p2p` are Core's
 `PeerManagerImpl::ProcessMessage` (`net_processing.cpp`,
-at bitcoin/bitcoin@ca7162cde5) -- `handle_p2p_handshake` and
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- `handle_p2p_handshake` and
 `handle_p2p` covering between them the same "one message, whichever
 table it dispatches through" Core folds into one function. Neither
 raises what a callback raises: each wraps its own dispatch in

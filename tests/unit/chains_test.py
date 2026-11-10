@@ -228,7 +228,8 @@ def test_each_chain_asks_core_s_dns_seeds() -> None:
     """ISS 1303: Core's `vSeeds` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
 
     Read from `src/kernel/chainparams.cpp` there, in its order and with
-    its trailing dots, for every chain this package defines.
+    its trailing dots, for every chain this package defines. This node
+    follows that tag here until ISS 2368.
     """
     assert {chain.name: chain.addresses for chain in CHAINS} == {
         "mainnet": [

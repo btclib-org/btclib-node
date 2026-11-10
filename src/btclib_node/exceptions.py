@@ -68,7 +68,7 @@ class BlockScriptVerifyError(BTClibValueError):
     amounts and its sigop cost have already passed.
     Composed as Core's own wire format for it,
     `block-script-verify-flag-failed (%s)` (`CheckInputScripts`,
-    `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    `src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     with `ScriptErrorString`, which btclib's `ScriptError.code` carries
     as `description`.
 
@@ -89,7 +89,7 @@ class MisbehavingError(BTClibValueError):
     among them, is logged and the peer kept, as Core's
     `PeerManagerImpl::ProcessMessages` catches an exception out of
     `ProcessMessage` and only logs it (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Raised where Core calls
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Raised where Core calls
     `Misbehaving`, directly or through `MaybePunishNodeForBlock`.
     `BTClibValueError`, so that a caller refusing a header or a block
     for any reason still catches it as one.
@@ -103,7 +103,7 @@ class LowWorkHeaderError(BTClibValueError):
     `AcceptBlockHeader` answers for a header whose caller has not checked
     that its chain clears `GetAntiDoSWorkThreshold`, and which
     `MaybePunishNodeForBlock` does not punish (`src/validation.cpp` and
-    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). Not a `MisbehavingError` for that reason.
     """
 
@@ -125,8 +125,8 @@ class MissingPrevoutError(ValueError):
 
 # The reasons whose Core result is `TX_RECONSIDERABLE`, which `PreChecks`,
 # `CheckFeeRate`, `ReplacementChecks` and the trim after an accepted
-# transaction give (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-# v31.1 tag): a refusal that a package with a child paying for it can undo.
+# transaction give (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag): a refusal that a package with a child paying for it can undo.
 _RECONSIDERABLE_REASONS = frozenset(
     {
         "mempool min fee not met",
@@ -145,7 +145,7 @@ class TxRejectedError(BTClibValueError):
     `reason` is `ValidationState::GetRejectReason` and `details` its debug
     message; `str()` is `ToString`, the two joined by ", ", or the reason
     alone where there is no debug message (`src/consensus/validation.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `rpc.callbacks` answers
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `rpc.callbacks` answers
     `testmempoolaccept`'s `reject-reason` and `reject-details` with them,
     and `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
     `p2p.callbacks.tx` hands it to `DownloadManager.mempool_rejected_tx`,
@@ -211,9 +211,9 @@ class NonStandardTxError(TxRejectedError):
     it defines the same set -- "we do not ban/disconnect nodes that
     forward txs violating the additional (non-mandatory) rules here, to
     improve forwards and backwards compatibility"
-    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@4519933391) --
-    and `p2p.callbacks.tx` is what honours it, catching this and
-    dropping the transaction alone.
+    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) -- and `p2p.callbacks.tx` is what honours it, catching
+    this and dropping the transaction alone.
 
     A `TxRejectedError`, so both RPC paths answer it in Core's words,
     as they answer any other refusal. Not a `MisbehavingError`, so
@@ -490,7 +490,7 @@ class RejectedMessageError(BTClibValueError):
     """A whole message was framed and is dropped, its sender kept.
 
     Core's `reject_message` (`V1Transport::GetReceivedMessage`,
-    `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+    `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
     checksum that does not match the payload, or a command
     `IsMessageTypeValid` refuses. `size` is the message's own octets,
     header included, which the stream has been moved past.
