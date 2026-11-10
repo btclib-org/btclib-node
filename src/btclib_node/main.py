@@ -2177,9 +2177,11 @@ def pre_verify_mempool_acceptance(
     everything else but a coinbase, so a candidate over
     `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" before its inputs are
     read or any script runs; then, after `CheckTxInputs`,
-    `ValidateInputsStandardness` ("bad-txns-nonstandard-inputs") and
-    `IsWitnessStandard` ("bad-witness-nonstandard"). `bypass_limits`
-    skips none of them. `btclib.policy` is that code.
+    `AreInputsStandard` ("bad-txns-nonstandard-inputs") and
+    `IsWitnessStandard` ("bad-witness-nonstandard"), as `PreChecks` asks
+    them at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
+    follows until ISS 2241. `bypass_limits` skips none of them.
+    `btclib.policy` is that code.
 
     Refuses a candidate under `MIN_STANDARD_TX_NONWITNESS_SIZE`
     non-witness bytes "tx-size-small", right after `IsStandardTx`, whether
