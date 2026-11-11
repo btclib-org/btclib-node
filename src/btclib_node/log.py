@@ -407,7 +407,7 @@ def open_history_log(  # noqa: PLR0913
     config_file_line: str = "",
     log_warnings: Sequence[str] = (),
     section_warning: str = "",
-    max_connections_warning: str = "",
+    max_connections_warnings: Sequence[str] = (),
     debug_warnings: Sequence[str] = (),
     config_args: Sequence[str] = (),
     rate_limit: bool = True,
@@ -419,9 +419,9 @@ def open_history_log(  # noqa: PLR0913
     (all at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `log_warnings`,
     buffered while the settings were read, then the version line, then
     `section_warning` -- the one warning about a section naming no
-    chain, empty where there is none -- then `max_connections_warning`
-    -- the warning that `-maxconnections` was capped, empty where it was
-    not -- then `debug_warnings`, then `StartLogging`'s own "Default data
+    chain, empty where there is none -- then `max_connections_warnings`
+    -- the warnings that `-maxconnections` was capped or lowered -- then
+    `debug_warnings`, then `StartLogging`'s own "Default data
     directory" and "Using data directory", then `config_file_line`, then
     `config_args`, `LogArgs`'s own "Config file arg:"/"Command-line arg:"
     lines. Without `rate_limit` it ends with `AppInitMain`'s "Log rate
@@ -444,8 +444,8 @@ def open_history_log(  # noqa: PLR0913
     logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
     if section_warning:
         logger.warning(section_warning)
-    if max_connections_warning:
-        logger.warning(max_connections_warning)
+    for warning in max_connections_warnings:
+        logger.warning(warning)
     for warning in debug_warnings:
         logger.warning(warning)
     logger.info("Default data directory %s", default_data_dir())
