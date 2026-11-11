@@ -308,9 +308,7 @@ def _implicit(block: str) -> set[str]:
     pinned one runs the version it names, which `_named` already reads.
     """
     setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
-    if setup and "python-version" not in setup[0]:
-        return {_pin()}
-    return set()
+    return {_pin()} if setup and "python-version" not in setup[0] else set()
 
 
 def _reached(block: str) -> Iterator[Path]:

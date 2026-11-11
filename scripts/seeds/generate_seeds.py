@@ -63,7 +63,7 @@ def name_to_bip155(addr: str) -> tuple[BIP155Network, bytes]:
         err_msg = f"Invalid onion {onion!r}"
         raise ValueError(err_msg)
     if addr.endswith(".b32.i2p"):
-        i2p = b32decode(addr[:-8] + "====", casefold=True)
+        i2p = b32decode(f"{addr[:-8]}====", casefold=True)
         if len(i2p) == _I2P_LENGTH:
             return BIP155Network.I2P, i2p
         err_msg = f"Invalid I2P {i2p!r}"

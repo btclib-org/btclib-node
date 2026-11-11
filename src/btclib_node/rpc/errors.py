@@ -212,9 +212,7 @@ def bool_mismatch(
     if len(params) <= position or params[position] is None:
         return None
     value = params[position]
-    if isinstance(value, bool):
-        return None
-    return (position + 1, name, value, "bool")
+    return None if isinstance(value, bool) else (position + 1, name, value, "bool")
 
 
 def bool_param(params: list[Any], position: int, *, name: str, default: bool) -> bool:

@@ -299,9 +299,7 @@ class UtxoIndex:
         where both happen.
         """
         prevout_data = self._read_stored(prevout_bytes)
-        if prevout_data is None:
-            return None
-        return self._parse_stored(prevout_data)
+        return None if prevout_data is None else self._parse_stored(prevout_data)
 
     def _read_stored(self, out_point_bytes: bytes) -> bytes | None:
         """Return the stored `utxo-` record, or stop the node.

@@ -88,9 +88,7 @@ def _count(raw: bytes, i: int, limit: int) -> tuple[int, int]:
     """Return the CompactSize at `i`, at most `limit`, and where it ends."""
     first = raw[i]
     # every limit is above the largest single octet
-    if first < _ONE_OCTET_LIMIT:
-        return first, i + 1
-    return _wide(raw, i, limit)
+    return (first, i + 1) if first < _ONE_OCTET_LIMIT else _wide(raw, i, limit)
 
 
 def _skip_inputs(raw: bytes, i: int, inputs: int) -> int:

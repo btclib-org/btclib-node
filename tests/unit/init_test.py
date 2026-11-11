@@ -1930,7 +1930,7 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
             debug=True,
         )
     )
-    (node.data_dir / (COOKIE_FILE + ".tmp")).mkdir()
+    (node.data_dir / f"{COOKIE_FILE}.tmp").mkdir()
     try:
         node.start()
         wait_until(lambda: not node.is_alive())

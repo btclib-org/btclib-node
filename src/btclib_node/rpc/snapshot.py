@@ -286,7 +286,7 @@ def dump_tx_out_set(
     path = node.data_dir / path_arg
     if path.is_fifo():
         return (yield from _dump_to_pipe(node, path, target, options))
-    temp_path = path.with_name(path.name + ".incomplete")
+    temp_path = path.with_name(f"{path.name}.incomplete")
     if path.exists():
         raise _exists(path)
     chain_tx_count, height = yield from _counted(node, target)

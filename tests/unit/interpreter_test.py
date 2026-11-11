@@ -203,7 +203,7 @@ def a_p2pkh_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
     prevouts, tx = _spend_of(ScriptPubKey.p2pkh(_PUB_KEY))
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
     tx.vin[0].script_sig = script.serialize(
-        [signature.serialize().hex() + f"{hash_type:02x}", _PUB.hex()]
+        [f"{signature.serialize().hex()}{hash_type:02x}", _PUB.hex()]
     )
     return prevouts, tx
 
@@ -514,7 +514,7 @@ def a_non_canonical_sighash_byte() -> tuple[list[TxOut], Tx]:
     prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB_KEY).script)
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
     tx.vin[0].script_sig = script.serialize(
-        [signature.serialize().hex() + f"{hash_type:02x}", _PUB.hex()]
+        [f"{signature.serialize().hex()}{hash_type:02x}", _PUB.hex()]
     )
     return prevouts, tx
 
@@ -525,7 +525,7 @@ def a_high_s_signature() -> tuple[list[TxOut], Tx]:
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, 1), _PRV)
     high_s = dsa.Sig(signature.r, signature.ec.n - signature.s)
     tx.vin[0].script_sig = script.serialize(
-        [high_s.serialize().hex() + "01", _PUB.hex()]
+        [f"{high_s.serialize().hex()}01", _PUB.hex()]
     )
     return prevouts, tx
 
@@ -561,7 +561,7 @@ def a_failed_check_with_a_signature_on_it() -> tuple[list[TxOut], Tx]:
     # well-formed and over another message entirely, so the check fails
     # rather than the encoding rules refusing it first
     signature = dsa.sign_(b"\x33" * 32, _PRV)
-    tx.vin[0].script_sig = script.serialize([signature.serialize().hex() + "01"])
+    tx.vin[0].script_sig = script.serialize([f"{signature.serialize().hex()}01"])
     return prevouts, tx
 
 

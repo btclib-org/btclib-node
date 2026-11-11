@@ -788,7 +788,8 @@ class DownloadManager:
             for conn in manager.connections.copy().values()
             if conn.status == P2pConnStatus.Connected
             and conn.automatic
-            and not (conn.block_relay or conn.feeler)
+            and not conn.block_relay
+            and not conn.feeler
         ]
         if len(peers) <= manager.max_outbound_full_relay:
             return

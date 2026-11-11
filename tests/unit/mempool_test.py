@@ -471,7 +471,7 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
     # victim paid nothing, so the rolling minimum lands on the incremental
     # relay fee rate itself -- Core's own DEFAULT_INCREMENTAL_RELAY_FEE
     assert mempool._rolling_min_fee_rate == 100
-    assert mempool._block_since_last_rolling_fee_bump is False
+    assert not mempool._block_since_last_rolling_fee_bump
 
 
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
@@ -508,7 +508,7 @@ def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:
     mempool._block_since_last_rolling_fee_bump = True
     mempool._track_package_removed(1000.0)
     assert mempool._rolling_min_fee_rate == 5000.0
-    assert mempool._block_since_last_rolling_fee_bump is True
+    assert mempool._block_since_last_rolling_fee_bump
 
 
 def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() -> None:
@@ -518,7 +518,7 @@ def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() 
     mempool._block_since_last_rolling_fee_bump = True
     mempool._track_package_removed(5000.0)
     assert mempool._rolling_min_fee_rate == 5000.0
-    assert mempool._block_since_last_rolling_fee_bump is False
+    assert not mempool._block_since_last_rolling_fee_bump
 
 
 def test_note_block_connected_restarts_the_decay_clock() -> None:
@@ -527,7 +527,7 @@ def test_note_block_connected_restarts_the_decay_clock() -> None:
     mempool._block_since_last_rolling_fee_bump = False
     before = time.time()
     mempool.note_block_connected()
-    assert mempool._block_since_last_rolling_fee_bump is True
+    assert mempool._block_since_last_rolling_fee_bump
     assert mempool._last_rolling_fee_update >= before
 
 

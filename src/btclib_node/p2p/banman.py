@@ -109,9 +109,11 @@ def _decode_base32(text: str) -> bytes | None:
         if bits >= 8:  # noqa: PLR2004
             bits -= 8
             decoded.append(accumulator >> bits & 0xFF)
-    if bits >= 5 or accumulator & ((1 << bits) - 1):  # noqa: PLR2004
-        return None
-    return bytes(decoded)
+    return (
+        None
+        if bits >= 5 or accumulator & ((1 << bits) - 1)  # noqa: PLR2004
+        else bytes(decoded)
+    )
 
 
 def _encode_base32(data: bytes) -> str:
@@ -157,7 +159,7 @@ class SpecialAddress:
             return cls(BIP155Network.TORV3, pubkey)
         if len(text) != _I2P_CHARS + len(_I2P) or text[_I2P_CHARS:].lower() != _I2P:
             return None
-        decoded = _decode_base32(text[:_I2P_CHARS] + "====")
+        decoded = _decode_base32(f"{text[:_I2P_CHARS]}====")
         if decoded is None or len(decoded) != _SPECIAL_SIZE:
             return None
         return cls(BIP155Network.I2P, decoded)

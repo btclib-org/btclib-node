@@ -173,7 +173,7 @@ _LARGE_WORK_INVALID_CHAIN_LOG = (
     "This could be due to database corruption or consensus incompatibility "
     "with peers."
 )
-_LARGE_WORK_INVALID_CHAIN_MESSAGE = "Warning: " + _LARGE_WORK_INVALID_CHAIN_LOG
+_LARGE_WORK_INVALID_CHAIN_MESSAGE = f"Warning: {_LARGE_WORK_INVALID_CHAIN_LOG}"
 
 
 def check_fork_warning_conditions(node: Node) -> None:
@@ -360,13 +360,16 @@ def _headers_to_announce(
 
     Empty where the peer has every one of them.
     """
-    for i, header in enumerate(headers):
-        if peer_has_header(block_index, state, header.hash):
-            continue
-        if peer_has_header(block_index, state, header.previous_block_hash):
-            return headers[i:]
-        return None
-    return []
+    return next(
+        (
+            headers[i:]
+            if peer_has_header(block_index, state, header.previous_block_hash)
+            else None
+            for i, header in enumerate(headers)
+            if not peer_has_header(block_index, state, header.hash)
+        ),
+        [],
+    )
 
 
 def finish_sync(node: Node) -> None:

@@ -43,7 +43,7 @@ _CALLS: list[list[Any]] = [
     [_TXID, 0, 5, 7],
     ["", None, 5],
     ["foo", None, 5],
-    ["Z" + _TXID[1:], None, 5],
+    [f"Z{_TXID[1:]}", None, 5],
     [12, None, 5],
     [None, None, 5],
     [_TXID, "foo", 5],

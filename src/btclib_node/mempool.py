@@ -121,9 +121,7 @@ def _weight(tx: Tx, vsize: int | None) -> int:
     four. A sigop weight less than four units above `tx.weight` reads as
     `tx.weight`, so the callers that know the sigop cost pass the weight.
     """
-    if vsize is None or vsize == -(-tx.weight // 4):
-        return tx.weight
-    return 4 * vsize
+    return tx.weight if vsize is None or vsize == -(-tx.weight // 4) else 4 * vsize
 
 
 def format_money(amount: int) -> str:
@@ -383,9 +381,7 @@ class Mempool:
     def get_tx(self, txid: bytes, *, wtxid: bool = False) -> Tx | None:
         """Return the transaction stored under `txid` (or wtxid), or `None`."""
         key = txid if wtxid else self.txid_index.get(txid)
-        if key is None:
-            return None
-        return self.transactions.get(key)
+        return None if key is None else self.transactions.get(key)
 
     def get_tx_for_relay(
         self, txid: bytes, *, wtxid: bool, last_sequence: int
@@ -816,10 +812,10 @@ class Mempool:
             return frozenset()
         suffix = "" if sibling is None else " (including sibling eviction)"
         replaced = self._all_conflicts(
-            tx.id, conflicts, "too many potential replacements" + suffix
+            tx.id, conflicts, f"too many potential replacements{suffix}"
         )
         fee += self.delta(tx.id)
-        self._check_pays_for(tx.id, replaced, fee, vsize, "insufficient fee" + suffix)
+        self._check_pays_for(tx.id, replaced, fee, vsize, f"insufficient fee{suffix}")
         weight = _weight(tx, vsize) if weight is None else weight
         added = [(tx.hash, FeeFrac(fee, weight), tx.id[::-1], self._parents(tx))]
         self._check_diagram(replaced, added, "replacement-failed", _NO_IMPROVEMENT)
@@ -846,22 +842,23 @@ class Mempool:
             return frozenset()
         failed = "package RBF failed: "
         if len(members) != 2:  # noqa: PLR2004 -- Core's "1-parent-1-child"
-            raise TxRejectedError(failed + "package must be 1-parent-1-child")
+            reason = f"{failed}package must be 1-parent-1-child"
+            raise TxRejectedError(reason)
         if any(self._parents(tx) for tx, *_ in members):
-            reason = failed + "new transaction cannot have mempool ancestors"
+            reason = f"{failed}new transaction cannot have mempool ancestors"
             raise TxRejectedError(reason)
         (parent, parent_fee, parent_vsize, parent_weight), child_member = members
         child, child_fee, child_vsize, child_weight = child_member
         replaced = self._all_conflicts(
-            child.id, conflicts, failed + "too many potential replacements"
+            child.id, conflicts, f"{failed}too many potential replacements"
         )
         parent_fee += self.delta(parent.id)
         child_fee += self.delta(child.id)
         fee, vsize = parent_fee + child_fee, parent_vsize + child_vsize
-        reason = failed + "insufficient anti-DoS fees"
+        reason = f"{failed}insufficient anti-DoS fees"
         self._check_pays_for(child.id, replaced, fee, vsize, reason)
         if fee * parent_vsize <= parent_fee * vsize:
-            reason = failed + "package feerate is less than or equal to parent feerate"
+            reason = f"{failed}package feerate is less than or equal to parent feerate"
             details = (
                 f"package feerate {_fee_rate_text(fee, vsize)} <= parent feerate "
                 f"is {_fee_rate_text(parent_fee, parent_vsize)}"

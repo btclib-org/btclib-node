@@ -1063,7 +1063,7 @@ def test_no_rpccookiefile_is_no_cookie() -> None:
 @pytest.mark.parametrize(
     ("value", "tmp"),
     [
-        ("", COOKIE_FILE + ".tmp"),
+        ("", f"{COOKIE_FILE}.tmp"),
         ("sub/", "sub.tmp"),
         ("..", "...tmp"),
         (".", "..tmp"),

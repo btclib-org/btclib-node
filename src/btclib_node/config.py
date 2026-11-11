@@ -177,9 +177,7 @@ else:
                 with suppress(OSError, ValueError):
                     resource.setrlimit(resource.RLIMIT_NOFILE, (raised, hard))
                 soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-        if soft == resource.RLIM_INFINITY or soft >= _INT_MAX:
-            return _INT_MAX
-        return soft
+        return _INT_MAX if soft == resource.RLIM_INFINITY or soft >= _INT_MAX else soft
 
 
 _MIN_CORE_FDS = _MIN_LEVELDB_FDS + _NUM_FDS_MESSAGE_CAPTURE
@@ -630,7 +628,7 @@ def _resolve_cookie_file(
     if value is None:
         return None
     arg = get_path_arg(str(value)) if value else COOKIE_FILE
-    path = Path(arg + ".tmp" if temp else arg)
+    path = Path(f"{arg}.tmp" if temp else arg)
     return path if path.is_absolute() else data_dir / path
 
 

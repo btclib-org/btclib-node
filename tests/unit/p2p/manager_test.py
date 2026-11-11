@@ -1990,9 +1990,9 @@ def test_a_held_answered_peer_does_not_stop_the_dialling(
     class Coins(random.Random):
         @override
         def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
-            if start == 2:
-                return next(coins)
-            return super().randrange(start, *args, **kwargs)
+            return (
+                next(coins) if start == 2 else super().randrange(start, *args, **kwargs)
+            )
 
     held = a_full_node("1.2.3.4", 8333)
     gossiped = a_full_node("5.6.7.8", 8333)
@@ -5318,9 +5318,7 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
         address: NetworkAddressV2, scope_id: int = 0
     ) -> socket.socket | None:
         tried.append(address)
-        if address == survivor:
-            return ours
-        return None
+        return ours if address == survivor else None
 
     monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
     monkeypatch.setattr(

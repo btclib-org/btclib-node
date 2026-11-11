@@ -109,9 +109,7 @@ class Coin(random.Random):
     @override
     def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
         """Return `face` for the coin, a real draw otherwise."""
-        if start == 2:
-            return self.face
-        return super().randrange(start, *args, **kwargs)
+        return self.face if start == 2 else super().randrange(start, *args, **kwargs)
 
 
 def side_rows(side: Any) -> list[NetworkAddressV2]:

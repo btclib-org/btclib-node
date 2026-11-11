@@ -152,7 +152,7 @@ def test_a_subnet_matches_no_address_it_does_not_hold(
         # `CSubNet` takes a prefix or a netmask of an IP address alone
         f"{_ONION}/32",
         f"{_I2P}/0",
-        "1.2.3.4/" + _ONION,
+        f"1.2.3.4/{_ONION}",
         # a checksum `SetTor` refuses, and Core's other refusals of it
         "qg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion",
         "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscsad.onion",

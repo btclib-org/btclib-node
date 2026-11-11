@@ -205,13 +205,12 @@ def _windows_addresses(
         size = ctypes.c_uint32(len(buffer))
         status = get(buffer, ctypes.byref(size))
         if (
-            status == _ERROR_BUFFER_OVERFLOW
-            and len(buffer) < _MAX_ADAPTER_ADDRESSES_SIZE
+            status != _ERROR_BUFFER_OVERFLOW
+            or len(buffer) >= _MAX_ADAPTER_ADDRESSES_SIZE
         ):
-            grown = min(max(size.value, len(buffer)) * 2, _MAX_ADAPTER_ADDRESSES_SIZE)
-            buffer = ctypes.create_string_buffer(grown)
-        else:
             break
+        grown = min(max(size.value, len(buffer)) * 2, _MAX_ADAPTER_ADDRESSES_SIZE)
+        buffer = ctypes.create_string_buffer(grown)
     if status != _NO_ERROR:
         return []
     return _adapter_addresses(ctypes.cast(buffer, ctypes.POINTER(_Adapter)))

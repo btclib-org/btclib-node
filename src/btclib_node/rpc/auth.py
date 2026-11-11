@@ -466,9 +466,7 @@ class RpcAuth:
         except ValueError:
             return None
         user, colon, password = userpass.partition(b":")
-        if not colon or not self._check_user(user, password):
-            return None
-        return user
+        return None if not colon or not self._check_user(user, password) else user
 
     def _check_user(self, user: bytes, password: bytes) -> bool:
         """Core's `CheckUserAuthorized`: user and HMAC in constant time."""

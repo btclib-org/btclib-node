@@ -1293,9 +1293,10 @@ def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
     manager.stop()
 
     assert order_at_first_await
-    assert order_at_first_await[0] == ["cancel_a", "cancel_b"] or order_at_first_await[
-        0
-    ] == ["cancel_b", "cancel_a"]
+    assert order_at_first_await[0] in (
+        ["cancel_a", "cancel_b"],
+        ["cancel_b", "cancel_a"],
+    )
 
 
 def test_stop_closes_a_connection_queued_when_the_drain_begins(
@@ -2427,7 +2428,7 @@ def test_an_rpccookiefile_core_cannot_write_stops_the_listener(
     assert str(logged[0][1]).startswith("Unable to ")
     assert len(manager._server_sockets) == len(LOOPBACKS)
     assert all(sock.fileno() == -1 for sock in manager._server_sockets)
-    assert not data_dir.with_name(data_dir.name + ".tmp").exists()
+    assert not data_dir.with_name(f"{data_dir.name}.tmp").exists()
     manager.stop()
 
 

@@ -47,7 +47,7 @@ def whitelisted(*values: str, default: bool | None = None) -> RpcAuth:
     )
 
 
-PYTEST_ONLY = ("pytest:" + ALLOWED,)
+PYTEST_ONLY = (f"pytest:{ALLOWED}",)
 
 
 def test_parse_whitelist_splits_at_every_comma_and_space() -> None:
@@ -84,7 +84,7 @@ def test_a_user_with_no_whitelist_calls_everything_by_default() -> None:
 
 def test_a_whitelist_for_one_user_refuses_every_other_user_everything() -> None:
     """`-rpcwhitelistdefault` defaults to true once any whitelist is set."""
-    auth = whitelisted("alice:" + ALLOWED)
+    auth = whitelisted(f"alice:{ALLOWED}")
     assert auth.refusal(b"pytest", {"id": 1, "method": ALLOWED}) == Refusal(
         FORBIDDEN, warning=("RPC User %s not allowed to call any methods", "pytest")
     )
@@ -92,7 +92,7 @@ def test_a_whitelist_for_one_user_refuses_every_other_user_everything() -> None:
 
 def test_rpcwhitelistdefault_0_lets_every_other_user_call_everything() -> None:
     """`-rpcwhitelistdefault=0` beside a whitelist for somebody else."""
-    auth = whitelisted("alice:" + ALLOWED, default=False)
+    auth = whitelisted(f"alice:{ALLOWED}", default=False)
     assert auth.refusal(b"pytest", {"id": 1, "method": "stop"}) is None
 
 

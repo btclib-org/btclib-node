@@ -166,9 +166,7 @@ class TxOrphanage:
     def get_tx(self, wtxid: bytes) -> Tx | None:
         """Return the transaction kept under `wtxid`, if any."""
         announcements = self._by_wtxid.get(wtxid)
-        if announcements is None:
-            return None
-        return next(iter(announcements.values())).tx
+        return None if announcements is None else next(iter(announcements.values())).tx
 
     def add_tx(self, tx: Tx, peer: int) -> bool:
         """Keep `tx` as announced by `peer`, and answer whether it is new.

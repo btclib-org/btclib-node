@@ -1039,8 +1039,8 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     manager.logger = cast("Any", SimpleNamespace(log_debug=record))
     inbound = manager._inbound_inv_bucket
     inbound.backlog = [paying(manager, fee=1000).hash for _ in range(100)]
-    inbound.count_bucket.value = -100.0
     now = 1_700_000_000.0
+    inbound.count_bucket.value = -100.0
     manager._process_inv_backlog(now, bumped=True)
     manager._process_inv_backlog(now + 1)
     manager._process_inv_backlog(now + 2)
@@ -1048,13 +1048,17 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     assert lines == [
         (
             "net",
-            prefix + "inbound=100 itok=-100.0 isz=12000000.0 "
-            "outbound=0 otok=420.0 osz=12000000.0",
+            (
+                f"{prefix}inbound=100 itok=-100.0 isz=12000000.0 "
+                "outbound=0 otok=420.0 osz=12000000.0"
+            ),
         ),
         (
             "net",
-            prefix + "inbound=100 itok=-72.0 isz=12040000.0 "
-            "outbound=0 otok=420.0 osz=12100000.0",
+            (
+                f"{prefix}inbound=100 itok=-72.0 isz=12040000.0 "
+                "outbound=0 otok=420.0 osz=12100000.0"
+            ),
         ),
     ]
     # a take with no peer to feed empties the backlog
@@ -1064,7 +1068,7 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     manager._process_inv_backlog(now + 4)
     manager._process_inv_backlog(now + 6)
     assert len(lines) == 3
-    assert lines[2][1].startswith(prefix + "inbound=0 itok=")
+    assert lines[2][1].startswith(f"{prefix}inbound=0 itok=")
     assert " outbound=0 otok=" in lines[2][1]
 
 
@@ -2939,7 +2943,7 @@ def test_extra_block_relay_only_peers_start_once_the_tip_is_close(
         p2p_manager.start_extra_block_relay_peers = False
         manager._next_extra_peer_check = 0
         manager._check_for_stale_tip_and_evict_peers()
-        assert p2p_manager.start_extra_block_relay_peers is False
+        assert not p2p_manager.start_extra_block_relay_peers
 
 
 def test_a_step_runs_the_extra_peer_check(monkeypatch: pytest.MonkeyPatch) -> None:

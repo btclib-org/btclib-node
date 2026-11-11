@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 def basic(userpass: bytes) -> str:
     """Return the `Authorization` value HTTP Basic makes of `userpass`."""
-    return "Basic " + base64.b64encode(userpass).decode()
+    return f"Basic {base64.b64encode(userpass).decode()}"
 
 
 def test_password_hmac_is_what_cores_rpcauth_script_writes() -> None:
@@ -89,7 +89,7 @@ def test_a_password_holding_a_colon_is_split_at_the_first_one() -> None:
         basic(b"pytest:wrong"),
         basic(b"someone:pytest"),
         basic(b"pytest"),
-        "Bearer " + base64.b64encode(b"pytest:pytest").decode(),
+        f"Bearer {base64.b64encode(b'pytest:pytest').decode()}",
         "Basic not*base64",
         "Basic é",
         "Basic \xa0" + base64.b64encode(b"pytest:pytest").decode(),
@@ -173,7 +173,7 @@ def test_generate_cookie_writes_a_cookie_its_password_opens(tmp_path: Path) -> N
     assert auth.cookie_path == path
     cookie = path.read_text(encoding="ascii")
     assert re.fullmatch(COOKIE_USER + ":[0-9a-f]{64}", cookie)
-    assert not (tmp_path / (COOKIE_FILE + ".tmp")).exists()
+    assert not (tmp_path / f"{COOKIE_FILE}.tmp").exists()
     assert auth.authenticated_user(basic(cookie.encode())) == COOKIE_USER.encode()
     password = cookie.partition(":")[2].encode()
     assert all(password not in entry.hmac for entry in auth.entries)
@@ -204,7 +204,7 @@ def test_the_cookie_is_mode_0600_on_posix(tmp_path: Path) -> None:
     Under umask 0, so the mode is the one `generate_cookie` asks for:
     a restrictive umask would mask a wider one down to 0600 as well.
     """
-    leftover = tmp_path / (COOKIE_FILE + ".tmp")
+    leftover = tmp_path / f"{COOKIE_FILE}.tmp"
     leftover.write_text("stale", encoding="ascii")
     leftover.chmod(0o644)
     previous = os.umask(0)
@@ -222,9 +222,9 @@ def test_generate_cookie_raises_where_it_cannot_write(tmp_path: Path) -> None:
     whose directory is missing.
     """
     auth = RpcAuth()
-    tmp = tmp_path / "missing" / (COOKIE_FILE + ".tmp")
+    tmp = tmp_path / "missing" / f"{COOKIE_FILE}.tmp"
     err_msg = f"^Unable to open cookie authentication file {re.escape(str(tmp))} "
-    with pytest.raises(OSError, match=err_msg + "for writing$") as caught:
+    with pytest.raises(OSError, match=f"{err_msg}for writing$") as caught:
         auth.generate_cookie(tmp_path / "missing" / COOKIE_FILE)
     assert isinstance(caught.value.__cause__, FileNotFoundError)
     assert auth.cookie_path is None
@@ -265,7 +265,7 @@ def test_a_cookie_that_cannot_be_renamed_leaves_its_tmp(tmp_path: Path) -> None:
     with pytest.raises(OSError, match=f"^Unable to rename cookie .* {names}$"):
         auth.generate_cookie(tmp_path, tmp=tmp)
     assert tmp.is_file()
-    assert not tmp_path.with_name(tmp_path.name + ".tmp").exists()
+    assert not tmp_path.with_name(f"{tmp_path.name}.tmp").exists()
     assert auth.cookie_path is None
     assert auth.entries == []
 
@@ -305,7 +305,7 @@ def test_delete_cookie_removes_what_generate_cookie_wrote(tmp_path: Path) -> Non
 def test_delete_cookie_leaves_a_cookie_it_did_not_write(tmp_path: Path) -> None:
     """Core's `g_generated_cookie`: only a cookie this wrote is removed."""
     other = tmp_path / COOKIE_FILE
-    other.write_text(COOKIE_USER + ":" + "0" * 64, encoding="ascii")
+    other.write_text(f"{COOKIE_USER}:{'0' * 64}", encoding="ascii")
     RpcAuth().delete_cookie()
     assert other.exists()
 

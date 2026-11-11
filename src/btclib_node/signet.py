@@ -148,9 +148,7 @@ def _fetch_and_clear_signet_section(script: bytes) -> tuple[bytes, bytes | None]
             out += serialize([data])
         else:
             out.append(op_code)
-    if not found:
-        return script, None
-    return bytes(out), solution
+    return (bytes(out), solution) if found else (script, None)
 
 
 def _parse_solution(solution: bytes) -> tuple[bytes, Witness]:

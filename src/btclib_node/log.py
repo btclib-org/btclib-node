@@ -168,9 +168,7 @@ def _prefix(record: logging.LogRecord) -> str:
         return "[error] "
     if levelno >= logging.WARNING:
         return "[warning] "
-    if levelno >= logging.INFO:
-        return ""
-    return "[debug] "
+    return "" if levelno >= logging.INFO else "[debug] "
 
 
 # C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F)

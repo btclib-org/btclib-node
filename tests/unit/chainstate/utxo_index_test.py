@@ -487,7 +487,7 @@ def test_add_blocks_own_creation_loops_keep_the_two_dicts_disjoint(
     assert key in utxo_index.removed_utxos
 
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x1a" * 32), 3)
-    assert not (key in utxo_index.removed_utxos and key in utxo_index.updated_utxo_set)
+    assert key not in utxo_index.removed_utxos or key not in utxo_index.updated_utxo_set
 
     # undoing the recreation does not trip "output already removed" on a
     # coin that is legitimately staged and unspent

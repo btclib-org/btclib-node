@@ -1165,9 +1165,7 @@ def _quoted_line(line: str) -> str:
     given by its length.
     """
     name = _name_of(line)
-    if len(name) <= _MAX_QUOTED_NAME:
-        return name
-    return f"<{len(name)} characters>"
+    return name if len(name) <= _MAX_QUOTED_NAME else f"<{len(name)} characters>"
 
 
 def _config_options(
@@ -1199,7 +1197,7 @@ def _config_options(
         if not line:
             continue
         if line[0] == "[" and line[-1] == "]":
-            prefix = line[1:-1] + "."
+            prefix = f"{line[1:-1]}."
             if sections is not None:
                 sections.append((line[1:-1], filepath, lineno))
             continue
@@ -1773,9 +1771,7 @@ def _get_txsendrate(settings: _Settings) -> int:
     `GetIntArg` reads as 0, is 1.
     """
     value = _get_int(settings, "txsendrate")
-    if value is None:
-        return DEFAULT_TX_SEND_RATE
-    return min(max(value, 1), 1000)
+    return DEFAULT_TX_SEND_RATE if value is None else min(max(value, 1), 1000)
 
 
 def _get_thousands(settings: _Settings, name: str, default: int) -> int:
@@ -1800,7 +1796,7 @@ def _get_port(settings: _Settings, name: str) -> int | None:
     value = _get_arg(settings, name)
     if value is None:
         return None
-    if not (value.isascii() and value.isdigit()) or not 0 < int(value) <= _MAX_PORT:
+    if not value.isascii() or not value.isdigit() or not 0 < int(value) <= _MAX_PORT:
         err_msg = f"Invalid port specified in -{name}: '{value}'"
         raise ValueError(err_msg)
     return int(value)
@@ -1879,9 +1875,7 @@ def _chain_arg(settings: _Settings) -> str:
         return "signet"
     if testnet:
         return "testnet"
-    if testnet4:
-        return "testnet4"
-    return "mainnet"
+    return "testnet4" if testnet4 else "mainnet"
 
 
 def _resolve_chain_name(settings: _Settings) -> str:
@@ -2125,7 +2119,7 @@ def _check_ignored_conf(
     error = (
         f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
         f"because a different configuration file {_quoted(config)} from command "
-        f"line argument {_quoted('-conf=' + conf)} is being used instead. Possible "
+        f"line argument {_quoted(f'-conf={conf}')} is being used instead. Possible "
         "ways to address this would be to:\n"
         f"- Delete or rename the {name} file in data directory {_quoted(base)}.\n"
         "- Change datadir= or conf= options to specify one configuration file, not "

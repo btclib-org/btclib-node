@@ -365,9 +365,7 @@ def _version_fields(msg: bytes) -> bytes:
     to refuse.
     """
     size, pos = _compact_size(msg, _VERSION_HEAD_SIZE)
-    if pos < 0:
-        return msg
-    return msg[: pos + size + _START_HEIGHT_SIZE + _RELAY_SIZE]
+    return msg if pos < 0 else msg[: pos + size + _START_HEIGHT_SIZE + _RELAY_SIZE]
 
 
 def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bool:
@@ -1684,9 +1682,7 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
 
 def _block_refusal(err_msg: str, *, punish: bool) -> BTClibValueError:
     """Return a block's refusal: a `MisbehavingError` where the peer pays."""
-    if punish:
-        return MisbehavingError(err_msg)
-    return BTClibValueError(err_msg)
+    return MisbehavingError(err_msg) if punish else BTClibValueError(err_msg)
 
 
 def _check_block(
@@ -2811,13 +2807,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(Headers([]))
         return
     stop = getheaders.hash_stop
-    if not getheaders.locator:
-        if stop not in block_index.header_dict or not _block_request_allowed(
-            node, stop
-        ):
-            return
-        to_send = [stop]
-    else:
+    if getheaders.locator:
         fork = _find_fork_in_global_index(node, getheaders.locator)
         start = block_index.get_block_info(fork).index + 1
         end = start + MAX_HEADERS_RESULTS
@@ -2825,6 +2815,10 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
         if stop_height is not None and start <= stop_height < end:
             end = stop_height + 1
         to_send = active_chain[start:end]
+    elif stop not in block_index.header_dict or not _block_request_allowed(node, stop):
+        return
+    else:
+        to_send = [stop]
     conn.block_availability.best_header_sent = to_send[-1] if to_send else tip
     conn.send(
         Headers(
