@@ -16,7 +16,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from btclib.block import Block
@@ -30,9 +30,13 @@ from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.muhash import CoinStats
-from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    InvalidBlockInputError,
+    StoreCorruptionError,
+)
 from btclib_node.log import Logger
-from tests import generate_random_chain
+from tests import LogLines, generate_random_chain
 
 # The two mainnet blocks `is_bip30_unspendable` names
 # (`chainstate/muhash.py`'s own `_BIP30_UNSPENDABLE_ORIGINALS`), height
@@ -895,15 +899,15 @@ def test_a_corrupted_stored_coin_is_this_nodes_own_fault_in_apply_rev_block(
 
     The record corrupted here is one only this node's own earlier
     `finalize` ever wrote -- `rev_block` below never supplies these
-    bytes, so the raise this proves is over storage this node owns,
-    mirroring `main_test.py`'s own
-    `test_a_corrupted_stored_coin_is_this_nodes_own_fault_not_the_tx_s`
-    for this module's third `Coin.parse` call site
+    bytes, so the raise this proves is over storage this node owns
     (btclib-org/btclib-node#620, btclib-org/btclib-node#631,
-    btclib-org/btclib-node#636).
+    btclib-org/btclib-node#636). ISS 2275: it runs `read_error_callback`
+    first, as `get_coin` does.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
+    called: list[None] = []
+    utxo_index.read_error_callback = lambda: called.append(None)
     funding = coinbase(b"\x23")
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x23" * 32), 1)
     utxo_index.finalize()
@@ -914,8 +918,113 @@ def test_a_corrupted_stored_coin_is_this_nodes_own_fault_in_apply_rev_block(
     assert original is not None
     utxo_index.db.put(key, original[:1])
 
-    with pytest.raises(ChainstateInconsistencyError, match="stored utxo- record"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
         utxo_index.apply_rev_block(rev_block)
+    assert called == [None]
+    chainstate.close()
+
+
+def test_a_corrupt_read_in_apply_rev_block_runs_the_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2357: `apply_rev_block` stops the node on a read reported corrupt.
+
+    Its `to_remove` reads the store itself rather than through
+    `get_coin`, and runs `read_error_callback` the same way before the
+    `StoreCorruptionError` reaches its caller.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    called: list[None] = []
+    utxo_index.read_error_callback = lambda: called.append(None)
+    funding = coinbase(b"\x26")
+    _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x26" * 32), 1)
+    utxo_index.finalize()
+
+    def corrupted(key: bytes) -> NoReturn:
+        err_msg = f"chainstate: Corruption: block checksum mismatch at {key.hex()}"
+        raise StoreCorruptionError(err_msg)
+
+    monkeypatch.setattr(utxo_index.db, "get", corrupted)
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        utxo_index.apply_rev_block(rev_block)
+    assert called == [None]
+    chainstate.close()
+
+
+@pytest.mark.parametrize("fault", ["corrupt read", "record that does not parse"])
+def test_a_failed_coin_read_runs_the_callback_before_it_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    """ISS 2357: `read_error_callback` runs, then the error is logged.
+
+    The order of Core's `ExecuteBackedWrapper`, which runs its
+    `err_callbacks` before `LogError` (`src/coins.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    lines = LogLines()
+    utxo_index.logger.addHandler(lines)
+    seen_at_callback: list[list[str]] = []
+    utxo_index.read_error_callback = lambda: seen_at_callback.append(
+        list(lines.messages)
+    )
+    funding = coinbase(b"\x27")
+    utxo_index.add_block(one_tx_block([funding], b"\x27" * 32), 1)
+    utxo_index.finalize()
+    out_point_bytes = OutPoint(funding.id, 0).serialize(check_validity=False)
+    key = b"utxo-" + out_point_bytes
+    if fault == "corrupt read":
+
+        def corrupted(key: bytes) -> NoReturn:
+            err_msg = f"chainstate: Corruption: block checksum mismatch at {key.hex()}"
+            raise StoreCorruptionError(err_msg)
+
+        monkeypatch.setattr(utxo_index.db, "get", corrupted)
+    else:
+        stored = utxo_index.db.get(key)
+        assert stored is not None
+        utxo_index.db.put(key, stored[:1])
+
+    with pytest.raises((StoreCorruptionError, ChainstateInconsistencyError)):
+        utxo_index.get_coin(out_point_bytes)
+    failure = "Error reading from database: "
+    assert len(seen_at_callback) == 1
+    assert not [m for m in seen_at_callback[0] if m.startswith(failure)]
+    assert [m for m in lines.messages if m.startswith(failure)]
+    chainstate.close()
+
+
+@pytest.mark.parametrize("with_callback", [False, True])
+def test_a_stored_coin_that_does_not_parse_raises_after_the_callback(
+    tmp_path: Path, *, with_callback: bool
+) -> None:
+    """ISS 2275: `get_coin` raises on a record `Coin.parse` refuses.
+
+    `read_error_callback` runs first, where one is set, as Core's
+    `CCoinsViewErrorCatcher` runs its callbacks before it aborts.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    called: list[None] = []
+    if with_callback:
+        utxo_index.read_error_callback = lambda: called.append(None)
+    funding = coinbase(b"\x25")
+    utxo_index.add_block(one_tx_block([funding], b"\x25" * 32), 1)
+    utxo_index.finalize()
+    out_point_bytes = OutPoint(funding.id, 0).serialize(check_validity=False)
+    stored = utxo_index.db.get(b"utxo-" + out_point_bytes)
+    assert stored is not None
+    utxo_index.db.put(b"utxo-" + out_point_bytes, stored[:1])
+
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Coin deserialization failure: "
+    ):
+        utxo_index.get_coin(out_point_bytes)
+    assert called == ([None] if with_callback else [])
     chainstate.close()
 
 

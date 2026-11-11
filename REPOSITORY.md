@@ -46,7 +46,7 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
 
 A red run on any of them blocks the merge. `strict` is `false`: a pull
 request need not be up to date with `main` to merge (section 11 of the
-organization standard gives the ground). A merge waits for
+organization's standard gives the ground). A merge waits for
 all of these checks, except an administrator's: `enforce_admins` is off
 (*Branch protection*). Each is produced by the workflow
 that answers for it:
@@ -125,11 +125,11 @@ that PATCH stops being required, silently. `checks` and not `contexts`,
 and a JSON body and not `-f`: `contexts` has no field for an app, so a
 PATCH sending it replaces a list bound to the Actions app with the same
 names bound to nothing, and `-f` sends `app_id` as a string, which the
-endpoint refuses (section 11 of the organization standard). This section
-carried the `contexts` form, with `-F strict=true` and one `-f` per
-name, from btclib-org/btclib-node#264 until btclib-org/btclib-node#657;
-btclib-org/btclib-node#453 is where a PATCH was first run here rather
-than only documented.
+endpoint refuses (section 11 of the organization's standard). This
+section carried the `contexts` form, with `-F strict=true` and one `-f`
+per name, from btclib-org/btclib-node#264 until
+btclib-org/btclib-node#657; btclib-org/btclib-node#453 is where a PATCH
+was first run here rather than only documented.
 
 Re-run the first command above to confirm the checks still hold, each
 with its `app_id` — its answer, not this paragraph, is what is true

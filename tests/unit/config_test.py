@@ -10,8 +10,10 @@
 
 import os
 import re
+import sys
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from bitcoin_core_rpc import rpc_port_from_chain
@@ -23,6 +25,8 @@ from btclib_node.config import (
     DEFAULT_FULL_RELAY_INBOUND_PCT,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
+    MAX_PEER_CONNECTIONS,
     BindAddress,
     Config,
     default_onion_bind,
@@ -39,6 +43,10 @@ from btclib_node.config import (
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import ModuleType
 
 
 def test_chain_selection() -> None:
@@ -616,6 +624,326 @@ def test_max_connections_and_the_relay_share_default_to_core_s() -> None:
     assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
     assert config.inbound_relay_percent == DEFAULT_FULL_RELAY_INBOUND_PCT
     assert Config(chain="regtest", inbound_relay_percent=7).inbound_relay_percent == 7
+
+
+def test_max_connections_is_capped_at_core_s_maximum(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 2127: Core's `MAX_PEER_CONNECTIONS`, warned of once on stderr."""
+    assert MAX_PEER_CONNECTIONS == 2000
+    warning = "Reducing -maxconnections from 2001 to 2000."
+    config = Config(chain="regtest", max_connections=2001)
+    assert config.max_connections == 2000
+    assert config.max_connections_warnings == (warning,)
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    carried = Config(
+        chain="regtest", max_connections=2000, max_connections_warnings=[warning]
+    )
+    assert carried.max_connections == 2000
+    assert carried.max_connections_warnings == (warning,)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("value", [2**31, -(2**31) - 1])
+def test_max_connections_past_an_int_is_out_of_range(value: int) -> None:
+    """ISS 2127: what `GetArg<int>` throws for a `settings.json` number."""
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        Config(chain="regtest", max_connections=value)
+
+
+@pytest.mark.parametrize("value", [2**31, -(2**31) - 1, 1.5, 10.0, -0.0])
+def test_rpcmaxconnections_no_int_is_out_of_range(value: float) -> None:
+    """ISS 2347: what `GetArg<int>` throws, ahead of the refusal below one."""
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        Config(chain="regtest", rpcmaxconnections=value)
+
+
+class _FakeFileLimit:
+    """An `RLIMIT_NOFILE` that `resource` answers in place of the process's.
+
+    `None` is `RLIM_INFINITY`. `refusal` is what `setrlimit` raises, and
+    `getrlimit` raises `OSError` where `unreadable` is set.
+    """
+
+    def __init__(
+        self, resource: ModuleType, soft: int | None, hard: int | None
+    ) -> None:
+        self.nofile, self.infinity = resource.RLIMIT_NOFILE, resource.RLIM_INFINITY
+        self.soft = self.infinity if soft is None else soft
+        self.hard = self.infinity if hard is None else hard
+        self.raised: list[tuple[int, int]] = []
+        self.refusal: type[Exception] | None = None
+        self.unreadable = False
+
+    def getrlimit(self, which: int) -> tuple[int, int]:
+        assert which == self.nofile
+        if self.unreadable:
+            raise OSError
+        return self.soft, self.hard
+
+    def setrlimit(self, which: int, limits: tuple[int, int]) -> None:
+        assert which == self.nofile
+        self.raised.append(limits)
+        if self.refusal is not None:
+            raise self.refusal
+        self.soft, self.hard = limits
+
+
+@pytest.fixture
+def file_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[int | None, int | None], _FakeFileLimit]:
+    """Answer `RLIMIT_NOFILE` from a `_FakeFileLimit`, never the real one."""
+    resource = pytest.importorskip("resource")
+
+    def install(soft: int | None, hard: int | None) -> _FakeFileLimit:
+        fake = _FakeFileLimit(resource, soft, hard)
+        monkeypatch.setattr(resource, "getrlimit", fake.getrlimit)
+        monkeypatch.setattr(resource, "setrlimit", fake.setrlimit)
+        return fake
+
+    return install
+
+
+_LOWERED = "Reducing -maxconnections from {} to {}, because of system limitations."
+
+
+def test_max_connections_is_lowered_to_the_descriptors_left(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 2338: Core's `std::min`, warned of once on stderr.
+
+    Core reserves 150 + 1 + 8 + 1 + 2 + 16 = 178 descriptors under its
+    defaults, so a limit of 300 leaves 122 connections.
+    """
+    fake = file_limit(300, 300)
+    config = Config(chain="regtest")
+    warning = _LOWERED.format(200, 122)
+    assert config.max_connections == 122
+    assert config.max_connections_warnings == (warning,)
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    assert fake.raised == []
+
+
+def test_the_cap_and_the_lowering_warn_in_core_s_order(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 2338: the cap at 2000 first, then the descriptors.
+
+    846 is what bitcoind v32.1.0 lowers `-maxconnections=2000` to on
+    macOS, where `FD_SETSIZE`, 1024, bounds it.
+    """
+    file_limit(1024, 1024)
+    config = Config(chain="regtest", max_connections=5000)
+    warnings = (
+        "Reducing -maxconnections from 5000 to 2000.",
+        _LOWERED.format(2000, 846),
+    )
+    assert config.max_connections == 846
+    assert config.max_connections_warnings == warnings
+    assert capsys.readouterr().err == "".join(f"Warning: {w}\n" for w in warnings)
+    carried = Config(
+        chain="regtest", max_connections=846, max_connections_warnings=warnings
+    )
+    assert carried.max_connections == 846
+    assert carried.max_connections_warnings == warnings
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("hard", "raised", "max_connections"),
+    [(300, [(300, 300)], 122), (1000, [(378, 1000)], 200)],
+)
+def test_the_soft_limit_is_raised_no_further_than_the_hard_one(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    hard: int,
+    raised: list[tuple[int, int]],
+    max_connections: int,
+) -> None:
+    """ISS 2338: `RaiseFileDescriptorLimit` asks for 178 + 200 = 378."""
+    fake = file_limit(256, hard)
+    assert Config(chain="regtest").max_connections == max_connections
+    assert fake.raised == raised
+
+
+def test_an_unlimited_hard_limit_raises_the_soft_one_to_what_is_asked(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: no ceiling, so the soft limit becomes the total asked."""
+    fake = file_limit(256, None)
+    assert Config(chain="regtest").max_connections == 200
+    assert fake.raised == [(378, fake.infinity)]
+
+
+@pytest.mark.parametrize("error", [ValueError, OSError])
+def test_a_refused_raise_leaves_the_soft_limit(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    error: type[Exception],
+) -> None:
+    """ISS 2338: Core ignores what `setrlimit` answers, and reads again."""
+    fake = file_limit(256, 1000)
+    fake.refusal = error
+    assert Config(chain="regtest").max_connections == 256 - 178
+    assert fake.raised == [(378, 1000)]
+    assert (fake.soft, fake.hard) == (256, 1000)
+
+
+@pytest.mark.parametrize(
+    ("soft", "available"), [(2**40, 2**31 - 1), (2**31 - 1, 2**31 - 1), (500, 500)]
+)
+def test_the_limit_is_answered_as_an_int(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    soft: int,
+    available: int,
+) -> None:
+    """ISS 2338: Core caps a limit past an `int`, `RLIM_INFINITY` included."""
+    file_limit(soft, soft)
+    assert config_module._raise_file_descriptor_limit(10) == available
+    file_limit(None, 10)
+    assert config_module._raise_file_descriptor_limit(10) == 2**31 - 1
+
+
+def test_rlim_infinity_is_compared_as_a_value(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2338: Core compares with `RLIM_INFINITY` before its size."""
+    resource = pytest.importorskip("resource")
+    monkeypatch.setattr(resource, "RLIM_INFINITY", -1)
+    file_limit(-1, -1)
+    assert config_module._raise_file_descriptor_limit(10) == 2**31 - 1
+    fake = file_limit(256, -1)
+    assert Config(chain="regtest").max_connections == 200
+    assert fake.raised == [(378, -1)]
+
+
+def test_an_unreadable_limit_is_taken_as_enough(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: "getrlimit failed, assume it's fine", in Core's words."""
+    file_limit(1, 1).unreadable = True
+    assert Config(chain="regtest").max_connections == 200
+
+
+def test_too_few_descriptors_are_refused_in_core_s_words(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: below what Core reserves, nothing is left to lower."""
+    file_limit(177, 177)
+    with pytest.raises(
+        ValueError,
+        match=r"^Not enough file descriptors available\. 177 available, 178 required\.$",
+    ):
+        Config(chain="regtest")
+    file_limit(178, 178)
+    assert Config(chain="regtest").max_connections == 0
+
+
+def test_more_rpc_clients_than_the_default_are_refused_short_of_descriptors(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: Core lowers `-maxconnections`, never `-rpcmaxconnections`."""
+    file_limit(300, 300)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Not enough file descriptors available\. Try reducing "
+            r"-rpcmaxconnections or using the default value of 16$"
+        ),
+    ):
+        Config(chain="regtest", rpcmaxconnections=17)
+    assert Config(chain="regtest", rpcmaxconnections=16).max_connections == 122
+    file_limit(179 + 200, 179 + 200)
+    assert Config(chain="regtest", rpcmaxconnections=17).max_connections == 200
+
+
+def test_the_rpc_listener_reserves_descriptors_under_server_alone(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: without `-server`, no RPC socket or client is counted."""
+    file_limit(300, 300)
+    config = Config(chain="regtest", allow_rpc=False, rpcmaxconnections=17)
+    assert config.max_connections == 300 - 160
+
+
+@pytest.mark.parametrize(
+    ("bind", "whitebind", "rpcbind", "max_connections"),
+    [
+        ([], [], ["127.0.0.1"], 122),
+        ([], [], ["127.0.0.1", "::1", "127.0.0.2"], 121),
+        (["127.0.0.1"], [], [], 122),
+        (["127.0.0.1"], ["127.0.0.2", "127.0.0.3"], [], 120),
+    ],
+)
+def test_each_bound_interface_reserves_a_descriptor(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+    bind: list[str],
+    whitebind: list[str],
+    rpcbind: list[str],
+    max_connections: int,
+) -> None:
+    """ISS 2338: one per value, at least two for RPC and one for peers."""
+    file_limit(300, 300)
+    config = Config(chain="regtest", bind=bind, whitebind=whitebind, rpcbind=rpcbind)
+    assert config.max_connections == max_connections
+
+
+def test_too_many_descriptors_asked_for_are_refused(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: Core counts its descriptors in an `int`, before raising any.
+
+    178 - 16 + 200 = 362 are reserved beside the RPC clients.
+    """
+    fake = file_limit(None, None)
+    config = Config(chain="regtest", rpcmaxconnections=2**31 - 1 - 362)
+    assert config.max_connections == 200
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Too many file descriptors requested\. Try lower values for "
+            r"-rpcmaxconnections or -maxconnections, or fewer settings of "
+            r"-rpcbind, -bind and -whitebind$"
+        ),
+    ):
+        Config(chain="regtest", rpcmaxconnections=2**31 - 362)
+    assert fake.raised == []
+
+
+def test_rpc_clients_up_to_an_int_are_not_counted_without_server(
+    file_limit: Callable[[int | None, int | None], _FakeFileLimit],
+) -> None:
+    """ISS 2338: `-server=0` leaves `-rpcmaxconnections` out of the count.
+
+    `AppInitParameterInteraction` zeroes it after refusing one below one,
+    so the largest `int` counts nothing there and is refused under `-server`
+    (`src/init.cpp:1080-1103`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    file_limit(1000, 1000)
+    config = Config(chain="regtest", allow_rpc=False, rpcmaxconnections=2**31 - 1)
+    assert (config.max_connections, config.rpcmaxconnections) == (200, 2**31 - 1)
+    with pytest.raises(ValueError, match=r"^Too many file descriptors requested\. "):
+        Config(chain="regtest", rpcmaxconnections=2**31 - 1)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Core's Windows answer")
+def test_windows_answers_2048_descriptors() -> None:  # pragma: no cover -- windows
+    """ISS 2338: `RaiseFileDescriptorLimit` reads no limit on Windows.
+
+    Core reserves no descriptor for its database there, so 28 are reserved
+    and `MAX_PEER_CONNECTIONS` always fits.
+    """
+    assert config_module._raise_file_descriptor_limit(5) == 2048
+    assert Config(chain="regtest", max_connections=2000).max_connections == 2000
+
+
+def test_the_transaction_send_rate_defaults_to_core_s() -> None:
+    """ISS 2309: Core's `DEFAULT_TX_SEND_RATE`, 14 a second."""
+    assert DEFAULT_TX_SEND_RATE == 14
+    assert Config(chain="regtest").tx_send_rate == DEFAULT_TX_SEND_RATE
+    assert Config(chain="regtest", tx_send_rate=3).tx_send_rate == 3
 
 
 def test_max_connections_given_is_stored_back() -> None:

@@ -16,10 +16,11 @@ drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, steps the RPC requests still waiting, moves the
 script checks of relayed transactions along, loads the next transaction
 of `mempool.dat` while that load lasts, then steps the download manager
-and extends the chain. A message that raises is logged and the
-loop continues; a failure in the download manager's step or in
-`update_chain` is logged and ends the node, the databases below being
-closed on the way out.
+and extends the chain. A message that raises is logged and the loop
+continues. A failure in the download manager's step or in `update_chain`
+is logged and ends the node, the databases below being closed on the way
+out, and so does a failure activating the best chain on a peer's message,
+whose handler sets `terminate_flag` before it raises.
 
 ## The protocol and the RPC surface
 
@@ -140,14 +141,14 @@ block's script checks, and only those, under Core's conditions.
 
 A transaction a peer relays has its scripts checked on `Node.worker_pool`
 too, one candidate at a time (a transaction, or a parent with its child),
-so the loop goes on serving other peers while they run, the sending
-peer's later messages waiting for the verdict and for any orphan it is to
-reconsider (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
-every other check first, and applies the verdict once it is in, after
-running those checks again against the chain and the mempool as they
-are then. The worker reads only the transactions and their prevouts; the
-queue of candidates, the mempool and the chain state stay on `Node`'s
-thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
+so the loop goes on serving other peers while they run
+(`src/btclib_node/p2p/tx_checks.py`), the sending peer's later messages
+waiting as `_hold_message` says. `Node`'s thread runs every other check
+first, and applies the verdict once it is in, after running those checks
+again against the chain and the mempool as they are then. The worker
+reads only the transactions and their prevouts; the queue of candidates,
+the mempool and the chain state stay on `Node`'s thread.
+`sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
 transactions a reorg puts back in the mempool and those `mempool.dat`
 loads are checked on `Node`'s thread, scripts included.
 

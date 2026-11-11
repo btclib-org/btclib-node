@@ -4,8 +4,8 @@
 
 """The node's wall clock, which `setmocktime` can hold at a chosen second.
 
-Core's `NodeClock` (`src/util/time.cpp`, at bitcoin/bitcoin@9be056a8a7,
-the v31.1 tag): the system time, unless a non-zero mock time is set, and
+Core's `NodeClock` (`src/util/time.cpp`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag): the system time, unless a non-zero mock time is set, and
 then that second. Every read of the node's clock in this package goes
 through `now` or `now_utc`, so a mock time moves them all together.
 

@@ -27,6 +27,7 @@ from btclib.p2p.compact_blocks import (
 from btclib.p2p.data import BlockPayload
 from btclib.p2p.inventory import GetData, GetHeaders, InventoryType
 from btclib.p2p.limits import MAX_BLOCK_TX_INDEX
+from btclib.script.script_pub_key import ScriptPubKey
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx import Tx
 
@@ -34,6 +35,7 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
 from btclib_node.main import update_chain, verify_mempool_acceptance
+from btclib_node.mining import create_new_block
 from btclib_node.p2p.block_availability import in_flight_from
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.callbacks import blocktxn, cmpctblock
@@ -44,6 +46,7 @@ from btclib_node.p2p.compact_block import (
 )
 from btclib_node.p2p.main import _dispatch
 from tests import (
+    anyone_can_spend,
     build_block,
     generate_coinbase,
     generate_random_chain,
@@ -802,15 +805,14 @@ def test_a_peer_that_gave_a_new_block_is_asked_for_high_bandwidth(
 ) -> None:
     """Core's `BlockChecked`: the block connected, its peer is chosen.
 
-    Its source is forgotten once the block is checked.
+    Its source is forgotten once the block is checked, which its message
+    does before it returns.
     """
     node, _ = a_node(regtest_node)
     block = next_block(node)
     peer = a_compact_peer(node, inbound=True, bip152_highbandwidth_to=False)
     peer.download_queue.append(block.header.hash)
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
-    assert node.download_manager.block_source == {block.header.hash: (peer.id, False)}
-    update_chain(node)
     assert node.chainstate.block_index.active_chain[-1] == block.header.hash
     assert sendcmpcts(peer) == [True]
     assert peer.bip152_highbandwidth_to
@@ -827,8 +829,9 @@ def test_a_block_that_fails_to_connect_costs_a_peer_that_sent_it_whole(
 ) -> None:
     """Core's `BlockChecked` punishes, except a block that came compact.
 
-    The block spends an output nobody has, which only connecting finds.
-    Its peer is not chosen as high-bandwidth, and its source is forgotten.
+    The block spends an output nobody has, which only connecting finds,
+    before its message returns. Its peer is not chosen as high-bandwidth,
+    and its source is forgotten.
     """
     node, _ = a_node(regtest_node)
     extra = generate_random_transaction()
@@ -842,14 +845,172 @@ def test_a_block_that_fails_to_connect_costs_a_peer_that_sent_it_whole(
         peer.download_queue.append(block.header.hash)
         payload = BlockPayload(block, include_witness=True, check_validity=False)
         block_callback(node, payload.serialize(check_validity=False), peer)
-    assert node.download_manager.block_source == {
-        block.header.hash: (peer.id, via == "block")
-    }
-    update_chain(node)
     assert node.chainstate.block_index.active_chain[-1] != block.header.hash
     assert node.download_manager.block_source == {}
     assert not sent(peer, SendCmpct)
     assert peer.stopped == ([True] if via == "block" else [])
+
+
+@pytest.mark.parametrize("via", ["cmpctblock", "block"])
+def test_a_block_is_the_tip_once_its_message_is_handled(
+    regtest_node: Callable[[], Node], via: str
+) -> None:
+    """Core's `ProcessNewBlock` connects the block before it returns.
+
+    So the next block mined, as `generatetoaddress` builds it, extends it
+    (btclib-org/btclib-node#2172).
+    """
+    node, _ = a_node(regtest_node)
+    block = next_block(node)
+    peer = a_compact_peer(node)
+    if via == "cmpctblock":
+        cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    else:
+        peer.download_queue.append(block.header.hash)
+        payload = BlockPayload(block, include_witness=True, check_validity=False)
+        block_callback(node, payload.serialize(check_validity=False), peer)
+    assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+    template = create_new_block(node, ScriptPubKey(anyone_can_spend(), "regtest"))
+    assert template.block.header.previous_block_hash == block.header.hash
+
+
+def announced_blocks(node: Node, tip: Block, peer: Any) -> list[Block]:
+    """Return three blocks on `tip`, their headers indexed, asked of `peer`."""
+    blocks: list[Block] = []
+    for height in range(2, 5):
+        time = datetime.now(UTC) + timedelta(seconds=height)
+        parent = blocks[-1] if blocks else tip
+        coinbase = generate_coinbase(height=height)
+        blocks.append(build_block(parent.header.hash, [coinbase], height, time))
+    node.chainstate.block_index.add_headers([block.header for block in blocks])
+    peer.download_queue.extend(block.header.hash for block in blocks)
+    return blocks
+
+
+def send_block(node: Node, block: Block, peer: Any) -> None:
+    """Hand `block` to the `block` callback, as `peer` sent it."""
+    payload = BlockPayload(block, include_witness=True, check_validity=False)
+    block_callback(node, payload.serialize(check_validity=False), peer)
+
+
+def test_blocks_whose_headers_came_first_are_the_tip_one_message_at_a_time(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Each block is the tip once its own message is handled.
+
+    The shape of Core's `p2p_sendheaders`, whose peer announces blocks
+    by their headers and sends them, then has the node mine on them.
+    """
+    node, chain = a_node(regtest_node)
+    peer = a_compact_peer(node)
+    for block in announced_blocks(node, chain[-1], peer):
+        send_block(node, block, peer)
+        assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+
+
+def test_a_block_that_fills_a_gap_connects_the_blocks_stored_past_it(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `ActivateBestChain` goes to the most-work chain, not a step on.
+
+    The blocks past the gap wait for it, unconnected.
+    """
+    node, chain = a_node(regtest_node)
+    peer = a_compact_peer(node)
+    first, *rest = announced_blocks(node, chain[-1], peer)
+    for block in rest:
+        send_block(node, block, peer)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == chain[-1].header.hash
+    send_block(node, first, peer)
+    expected = [block.header.hash for block in (first, *rest)]
+    assert block_index.active_chain[-3:] == expected
+
+
+def a_block_on(parent: bytes, height: int, *transactions: Tx) -> Block:
+    """Return a block on `parent` at `height`, `height` seconds from now."""
+    time = datetime.now(UTC) + timedelta(seconds=height)
+    coinbase = generate_coinbase(height=height)
+    return build_block(parent, [coinbase, *transactions], height, time)
+
+
+def test_a_fork_that_fails_to_connect_gives_way_to_the_next_candidate(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `ActivateBestChain` looks for the best chain again on a failure.
+
+    The heavier fork fails at its first block, which spends an output
+    nobody has, and the lighter one connects before the message that let
+    both connect returns.
+    """
+    node, chain = a_node(regtest_node)
+    joint = a_block_on(chain[-1].header.hash, 2)
+    invalid = a_block_on(joint.header.hash, 3, generate_random_transaction())
+    heavier = a_block_on(invalid.header.hash, 4)
+    lighter = a_block_on(joint.header.hash, 3)
+    blocks = (joint, invalid, heavier, lighter)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([joint.header, invalid.header, heavier.header])
+    block_index.add_headers([lighter.header])
+    peer = a_compact_peer(node)
+    peer.download_queue.extend(block.header.hash for block in blocks)
+    for block in (invalid, heavier, lighter, joint):
+        send_block(node, block, peer)
+    assert block_index.active_chain[-1] == lighter.header.hash
+
+
+def store_unconnected(node: Node, block: Block) -> None:
+    """Index, store and mark `block` downloaded, without connecting it."""
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block.header.hash)
+
+
+@pytest.mark.parametrize("case", ["held", "refused"])
+def test_a_block_not_stored_still_activates_the_best_chain(
+    regtest_node: Callable[[], Node], case: str
+) -> None:
+    """Core's `AcceptBlock` answers `true`, and `ActivateBestChain` runs.
+
+    A block already held, and one not asked for with less work than the
+    tip: either connects a block stored and not yet connected.
+    """
+    node, chain = a_node(regtest_node, 2)
+    waiting = a_block_on(chain[-1].header.hash, 3)
+    store_unconnected(node, waiting)
+    peer = a_compact_peer(node)
+    if case == "held":
+        sent_block = waiting
+    else:
+        sent_block = a_block_on(RegTest().genesis.hash, 1)
+        node.chainstate.block_index.add_headers([sent_block.header])
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == chain[-1].header.hash
+    send_block(node, sent_block, peer)
+    assert block_index.active_chain[-1] == waiting.header.hash
+    stored = block_index.get_block_info(sent_block.header.hash).downloaded
+    assert stored is (case == "held")
+
+
+def test_a_block_whose_activation_fails_stops_the_node(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure activating the best chain stops `Node`, as in `getblocks`."""
+
+    def boom(_node: object) -> None:
+        err_msg = "boom"
+        raise OSError(err_msg)
+
+    monkeypatch.setattr("btclib_node.p2p.callbacks.activate_best_chain", boom)
+    node, _ = a_node(regtest_node)
+    block = next_block(node)
+    peer = a_compact_peer(node)
+    peer.download_queue.append(block.header.hash)
+    payload = BlockPayload(block, include_witness=True, check_validity=False)
+    with pytest.raises(OSError, match="boom"):
+        block_callback(node, payload.serialize(check_validity=False), peer)
+    assert node.terminate_flag.is_set()
 
 
 def test_a_peer_gone_pays_nothing_for_a_block_that_fails_to_connect(
@@ -902,14 +1063,19 @@ def test_an_invalid_block_chooses_nobody(regtest_node: Callable[[], Node]) -> No
 def test_a_block_not_new_forgets_its_source(regtest_node: Callable[[], Node]) -> None:
     """Core's `ProcessBlock` erases the source of a block it did not store.
 
-    The first peer to give a block stays its source.
+    The first peer to give a block stays its source. The block rivals the
+    tip with the same work, so it stays unconnected: connecting it would
+    check it, which forgets its source too.
     """
-    node, _ = a_node(regtest_node)
-    block = next_block(node)
+    node, chain = a_node(regtest_node, 2)
+    time = datetime.now(UTC) + timedelta(seconds=1)
+    block = build_block(chain[0].header.hash, [generate_coinbase(height=2)], 2, time)
     first, second = a_compact_peer(node), a_compact_peer(node, 2)
-    payload = compact_block(block, 7).serialize()
-    cmpctblock(node, payload, first)
-    assert node.download_manager.block_source == {block.header.hash: (first.id, False)}
+    first.download_queue.append(block.header.hash)
+    payload = BlockPayload(block, include_witness=True, check_validity=False)
+    block_callback(node, payload.serialize(check_validity=False), first)
+    assert node.chainstate.block_index.active_chain[-1] == chain[-1].header.hash
+    assert node.download_manager.block_source == {block.header.hash: (first.id, True)}
     second.download_queue.append(block.header.hash)
     block_callback(
         node,
