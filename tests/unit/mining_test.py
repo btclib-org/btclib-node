@@ -7,9 +7,11 @@
 Each test builds blocks on a regtest node with `create_new_block` and
 hands them to `accept_block`, the same calls the mining RPCs make, and
 asserts on the block or on the chain it leaves. The reasons
-`check_block_validity` answers are compared with what `bitcoind` v31.1.0
-answers for the same block, run by hand against a regtest node holding the
-same chain.
+`check_block_validity` answers are compared with what `bitcoind` answers
+for the same block, run by hand against a regtest node holding the same
+chain.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import copy
@@ -971,8 +973,8 @@ def spend_of(index: int, **kwargs: int) -> Callable[[list[Tx]], Tx]:
     return lambda cbs: spend([OutPoint(cbs[index].id, 0)], [SUBSIDY - FEE], **kwargs)
 
 
-# every row is a word `bitcoind` v31.1.0 answers for the same block over the
-# same chain, run by hand
+# every row is a word `bitcoind` answers for the same block over the same
+# chain, run by hand
 REASONS: list[tuple[str, Change, str | None]] = [
     ("valid", lambda _block, _cbs: None, None),
     ("merkle", header("merkle_root", bytes(range(32))), "bad-txnmrklroot"),
@@ -1136,7 +1138,7 @@ def test_a_transaction_failing_check_transaction_is_answered_in_cores_word(
 ) -> None:
     """`CheckBlock` answers the word `CheckTransaction` gives the transaction.
 
-    Measured by hand on `bitcoind` v32.1.0, regtest: the proposal and
+    Measured by hand on `bitcoind`, regtest: the proposal and
     `submitblock` both answer this word for a block holding a
     transaction of the same shape.
     """

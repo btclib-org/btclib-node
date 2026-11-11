@@ -21,13 +21,13 @@ name: bootstrap-dns
 # cannot stand in for: whether the seeds this tree ships still answer.
 #
 # Weekly, per the row btclib-org/.github#201 gave this workflow in
-# section 10 of that repository's README.md -- the calendar for every
+# section 10 of the organization's standard -- the calendar for every
 # periodic workflow in the organization, checked against every `cron:`
-# in both directions by `tests/grid_test.py` there.
+# in both directions by btclib-org/.github's `tests/grid_test.py`.
 
 on:
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # section 10 of the organization's standard is the calendar, and
     # this line is not the place to restate it. Only the default branch
     # schedules anything, so on any other branch the dispatch below is
     # the way in

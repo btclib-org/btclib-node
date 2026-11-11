@@ -65,10 +65,10 @@ __all__ = [
 ]
 
 # Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
-# `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
-# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
-# which this node follows until ISS 2250). `sendheaders` and `sendcmpct`
-# are the two of them `callbacks` holds: `wtxidrelay` and `sendaddrv2` are
+# `sendaddrv2`, `feature` and `sendtxrcncl` after `version` and before
+# `verack` (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag). `sendheaders` and `sendcmpct` are the two of them `callbacks`
+# holds: `wtxidrelay`, `sendaddrv2` and `feature` are
 # `handshake_callbacks`', and this node does not handle `sendtxrcncl`.
 _BEFORE_VERACK = frozenset({"sendheaders", "sendcmpct"})
 
@@ -109,10 +109,11 @@ def _hold_message(
 ) -> bool:
     """Hold a message back while the peer has work before it.
 
-    That is a check queued, a message held, an orphan to reconsider, a
-    `getdata` or `getcfilters` answer paused on `node.pending_getdata`
-    or `node.pending_cfilters`, or `conn.pause_send`, Core's
-    `fPauseSend`.
+    That is a check queued, a message held, an orphan to reconsider,
+    another peer its transaction marked an orphan for that has not yet
+    taken one up and settled it (`_settle_marked`), a `getdata` or
+    `getcfilters` answer paused on `node.pending_getdata` or
+    `node.pending_cfilters`, or `conn.pause_send`, Core's `fPauseSend`.
     Answers whether it did. Core handles a peer's messages in the order
     received, decides a `tx` before it reads the next one, and reads
     nothing more from a peer while its `getdata` requests are unserved
@@ -126,6 +127,21 @@ def _hold_message(
     buffer would (`advance_cfilters`, `p2p/callbacks.py`), and keeps a
     second request from replacing the paused one.
 
+    Another peer its transaction marked an orphan for holds the sender
+    too. Core's message handler visits every peer once a pass, in an
+    order shuffled each pass (`CConnman::ThreadMessageHandler`,
+    `src/net.cpp`). `ProcessMessages` has `ProcessOrphanTx` take up a
+    peer's orphans in place of reading its next message: it passes over
+    those still missing an input, and the first accepted or refused,
+    scripts included, ends the call (`src/net_processing.cpp`; both at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). So where the other peer
+    comes after the sender in the pass that accepts the transaction, it
+    settles one orphan before the sender's next message is read, and
+    otherwise the next pass's shuffle decides. This node holds the
+    sender until each such peer has taken an orphan up and settled it,
+    the first of those orders, as its scripts run off `Node`'s thread
+    (btclib-org/btclib-node#2286).
+
     `held` is the command, the payload, its weight and the time it was
     read; it stays weighed against the peer's `queued_recv_bytes`, which
     pauses the connection's reads past `recv_flood_size`, Core's
@@ -134,6 +150,7 @@ def _hold_message(
     if not (
         node.tx_checks.busy(conn_id)
         or node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
+        or conn_id in node.tx_checks.marked
         or conn_id in node.pending_getdata
         or conn_id in node.pending_cfilters
         or conn.pause_send
@@ -146,12 +163,12 @@ def _hold_message(
 def _after_verack(conn: Connection, msg_type: str) -> None:
     """Answer a handshake command from a connection past its `verack`.
 
-    A second `version` or `verack` is ignored, and a `wtxidrelay` or
-    `sendaddrv2` drops the peer undiscouraged, as Core's `ProcessMessage`
-    does (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag).
+    A second `version` or `verack` is ignored, and a `wtxidrelay`,
+    `sendaddrv2` or `feature` drops the peer undiscouraged, as Core's
+    `ProcessMessage` does (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
-    if msg_type in {"wtxidrelay", "sendaddrv2"}:
+    if msg_type in {"wtxidrelay", "sendaddrv2", "feature"}:
         conn.stop()
 
 
@@ -165,8 +182,8 @@ def handle_p2p_handshake(node: Node) -> None:
     btclib-org/btclib-node#1657
 
     Once `verack` has promoted the connection, a second `version` or
-    `verack` is ignored and a `wtxidrelay` or `sendaddrv2` drops the
-    peer undiscouraged, as Core's `ProcessMessage` answers each
+    `verack` is ignored and a `wtxidrelay`, `sendaddrv2` or `feature`
+    drops the peer undiscouraged, as Core's `ProcessMessage` answers each
     (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). A callback that raises is `_drop`'s.
 
@@ -181,8 +198,8 @@ def handle_p2p_handshake(node: Node) -> None:
     )
     manager = node.p2p_manager
     # a connection still finishing its handshake, which is where every
-    # one of these four commands is answered, or one already promoted
-    # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
+    # one of these commands is answered, or one already promoted that a
+    # peer sent a second one of them to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
         if _hold_message(node, conn, conn_id, (msg_type, msg, size, received)):
@@ -305,11 +322,10 @@ def handle_p2p(node: Node) -> None:
     """Pop one queued message and dispatch it, once its handshake is done.
 
     A message ahead of `verack` is ignored, as Core's `ProcessMessage`
-    ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag, which this node follows until ISS 2250), except a
-    `sendheaders` or a `sendcmpct` after `version`, which Core records
-    there. A callback that raises is `_drop`'s, the comment below
-    arguing its split.
+    ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), except a `sendheaders` or a `sendcmpct` after
+    `version`, which Core records there. A callback that raises is
+    `_drop`'s, the comment below arguing its split.
 
     Weighs the item's own weight back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it
@@ -478,7 +494,41 @@ def _take_up_orphans(node: Node) -> bool:
                 conn_id,
                 _verdict(discourage=discourage),
             )
+        check = node.tx_checks.queued.get(conn_id)
+        for waits in node.tx_checks.marked.values():
+            if conn_id in waits and waits[conn_id] is None:
+                if check is None:
+                    del waits[conn_id]
+                else:
+                    waits[conn_id] = check
     return progressed
+
+
+def _settle_marked(node: Node) -> None:
+    """Forget each peer in `node.tx_checks.marked` once it has settled one.
+
+    `_take_up_orphans` records the check an orphan taken up queued, or
+    forgets the peer where it queued none: refused, or every orphan still
+    missing an input. The peer is forgotten once that check is off the
+    queue, settled or dropped at its deadline, once it has no orphan
+    left to reconsider before taking one up, evicted, or once it is gone.
+    A sender gone waits for nothing.
+    """
+    checks = node.tx_checks
+    connections = node.p2p_manager.connections
+    orphanage = node.download_manager.orphanage
+    for conn_id, waits in list(checks.marked.items()):
+        for peer, check in list(waits.items()):
+            conn = connections.get(peer)
+            if (
+                conn is None
+                or conn.status == P2pConnStatus.Closed
+                or (check is None and not orphanage.have_tx_to_reconsider(peer))
+                or (check is not None and checks.queued.get(peer) is not check)
+            ):
+                del waits[peer]
+        if conn_id not in connections or not waits:
+            del checks.marked[conn_id]
 
 
 def _read_held(node: Node) -> bool:
@@ -502,6 +552,7 @@ def _read_held(node: Node) -> bool:
             continue
         if (
             node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
+            or conn_id in checks.marked
             or conn_id in node.pending_getdata
             or conn_id in node.pending_cfilters
             or conn.pause_send
@@ -536,6 +587,8 @@ def resume_tx_checks(node: Node) -> bool:
       up, ahead of its held messages, as Core's `ProcessMessages`
       takes up an orphan before the next message
       (`p2p.callbacks.process_orphan`);
+    - each peer a sender's transactions marked an orphan for is
+      forgotten once it has settled one, as `_settle_marked` says;
     - each peer free to have one read, as `_read_held` says, has its
       oldest held message read, one per peer per pass, as Core's message
       handler reads one message per peer per pass;
@@ -577,6 +630,7 @@ def resume_tx_checks(node: Node) -> bool:
             TX_CHECK_DEADLINE,
         )
     progressed |= _take_up_orphans(node)
+    _settle_marked(node)
     progressed |= _read_held(node)
     while not checks.checking and checks.queued:
         progressed = True

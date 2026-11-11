@@ -6,6 +6,7 @@
 
 import itertools
 import threading
+import time
 from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
@@ -33,9 +34,10 @@ from btclib_node.interpreter import check_package
 from btclib_node.mempool import package_hash
 from btclib_node.p2p.callbacks import process_orphan
 from btclib_node.p2p.main import resume_tx_checks
-from btclib_node.p2p.tx_checks import TxCheck
+from btclib_node.p2p.tx_checks import TX_CHECK_DEADLINE, TxCheck
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
+    anyone_can_spend,
     anyone_can_spend_script_sig,
     build_block,
     generate_coinbase,
@@ -133,8 +135,9 @@ def a_pair(
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY + 2 * spare, RegTest().genesis.hash)
-    connect(node, chain)
+    # out of initial block download, where v32.1 signals each block
     node.is_initial_block_download = False
+    connect(node, chain)
     if spare:
         # connecting a block that spends started a real worker pool
         started = cast("Any", node)._worker_pool
@@ -947,3 +950,305 @@ def test_a_package_queued_for_two_peers_marks_nothing_refused_for_the_second(
     assert node.mempool.contains_tx(pair.child)
     assert not node.mempool.was_recently_rejected(pair.parent.hash)
     assert not node.mempool.was_recently_rejected(pair.child.hash)
+
+
+def a_reading_peer(node: Node, conn_id: int) -> Any:
+    """Connect a peer double whose messages `handle_p2p` can read."""
+    peer = a_connected_peer(node, conn_id)
+    peer.queued_recv_bytes = 0
+    peer.recv_flood_size = 1000 * DEFAULT_MAXRECEIVEBUFFER
+    peer._recv_lock = threading.Lock()
+    peer._recv_resume = SimpleNamespace(set=lambda: None)
+    peer.loop = SimpleNamespace(call_soon_threadsafe=lambda fn: fn())
+    return peer
+
+
+def send(node: Node, peer: Any, kind: str, payload: bytes) -> None:
+    """Queue `payload` as `peer`'s message, and have `handle_p2p` read it."""
+    peer.queued_recv_bytes += len(payload)
+    node.p2p_manager.messages.append((kind, payload, peer.id, len(payload), 0.0))
+    p2p_main.handle_p2p(node)
+
+
+def pings_seen(
+    node: Node, monkeypatch: pytest.MonkeyPatch, tx: Tx
+) -> list[tuple[int, bool]]:
+    """Record each `ping` read: its peer, and whether the mempool holds `tx`."""
+    seen: list[tuple[int, bool]] = []
+
+    def ping(node: Node, msg: bytes, conn: Any) -> None:
+        seen.append((conn.id, node.mempool.contains_tx(tx)))
+
+    monkeypatch.setitem(cb.callbacks, "ping", ping)
+    node.p2p_manager.messages = deque()
+    node.p2p_manager.handshake_messages = deque()
+    return seen
+
+
+def test_a_ping_after_a_parent_waits_for_the_orphan_another_peer_sent(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2286: the `pong` follows the other peer's orphan into the mempool.
+
+    The last step of tf2's
+    `test_a_rejected_parent_is_requested_only_under_another_witness`: the
+    sender relays the parent with a `ping` behind it, and the child is the
+    announcer's orphan.
+    """
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node = pair.node
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen = pings_seen(node, monkeypatch, pair.child)
+    relay(node, announcer, pair.child)
+    assert node.download_manager.orphanage.have_tx(pair.child.hash)
+    send(node, sender, "tx", TxMsg(pair.parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    settle(node)
+    assert node.mempool.contains_tx(pair.parent)
+    assert seen == [(sender.id, True)]
+    assert not node.tx_checks.marked
+
+
+@pytest.mark.parametrize(
+    ("child_fee", "child_script_sig"),
+    [(0, None), (100_000, b"")],
+    ids=["refused when taken up", "refused by its scripts"],
+)
+def test_a_ping_after_a_parent_is_read_once_the_orphan_is_refused(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    child_fee: int,
+    child_script_sig: bytes | None,
+) -> None:
+    """A refusal settles the orphan as an acceptance does."""
+    pair = a_pair(
+        regtest_node,
+        parent_fee=50_000,
+        child_fee=child_fee,
+        child_script_sig=child_script_sig,
+    )
+    node = pair.node
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen = pings_seen(node, monkeypatch, pair.child)
+    relay(node, announcer, pair.child)
+    send(node, sender, "tx", TxMsg(pair.parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    settle(node)
+    assert node.mempool.contains_tx(pair.parent)
+    assert seen == [(sender.id, False)]
+    assert not node.tx_checks.waiting
+    assert not node.tx_checks.marked
+
+
+class HeldPool(InlinePool):
+    """A pool whose checks are answered only once `released` is set."""
+
+    def __init__(self) -> None:
+        """Hold every check."""
+        self.released = False
+
+    @override
+    def apply_async(self, function: Any, args: tuple[Any, ...]) -> Any:
+        """Run the check now, and answer it ready once released."""
+        settled = Settled(function, args)
+        return SimpleNamespace(ready=lambda: self.released, get=settled.get)
+
+
+def held_behind_the_orphan(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> tuple[Chain, HeldPool, Any, Any, list[tuple[int, bool]]]:
+    """Leave the sender's `ping` held behind the announcer's marked orphan.
+
+    The sender's parent is taken in while the announcer has a check in
+    flight, so the loop does not take the orphan up.
+    """
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node = pair.node
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen = pings_seen(node, monkeypatch, pair.child)
+    relay(node, announcer, pair.child)
+    pool = HeldPool()
+    cast("Any", node)._worker_pool = pool
+    check = TxCheck(announcer, pair.parent, [])
+    node.tx_checks.queue(check)
+    node.tx_checks.start(node, check)
+    parent = pair.parent
+    assert node.mempool.add_tx(parent, 50_000, parent.vsize)
+    cb._accepted(node, parent, sender)
+    assert node.tx_checks.marked == {sender.id: {announcer.id: None}}
+    send(node, sender, "ping", b"12345678")
+    for _ in range(3):
+        resume_tx_checks(node)
+    assert seen == []
+    assert node.download_manager.orphanage.have_tx_to_reconsider(announcer.id)
+    return pair, pool, sender, announcer, seen
+
+
+def test_a_ping_waits_while_the_announcer_cannot_take_the_orphan_up(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hold outlasts the announcer's check, and the orphan's after it."""
+    pair, pool, sender, _, seen = held_behind_the_orphan(regtest_node, monkeypatch)
+    pool.released = True
+    settle(pair.node)
+    assert seen == [(sender.id, True)]
+    assert not pair.node.tx_checks.marked
+
+
+@pytest.mark.parametrize("ending", ["evicted", "announcer gone", "sender gone"])
+def test_a_ping_held_behind_an_orphan_is_read_once_its_wait_ends(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """Eviction, the announcer leaving or the sender leaving ends the hold."""
+    pair, _, sender, announcer, seen = held_behind_the_orphan(regtest_node, monkeypatch)
+    node = pair.node
+    if ending == "evicted":
+        assert node.download_manager.orphanage.erase_tx(pair.child.hash)
+    elif ending == "announcer gone":
+        del node.p2p_manager.connections[announcer.id]
+    else:
+        del node.p2p_manager.connections[sender.id]
+    resume_tx_checks(node)
+    assert seen == ([] if ending == "sender gone" else [(sender.id, False)])
+    assert not node.tx_checks.marked
+    assert not node.tx_checks.waiting
+
+
+def test_a_message_is_held_while_a_peer_it_marked_an_orphan_for_is_unsettled(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A message read after the parent settled waits as a held one does."""
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node = pair.node
+    sender = a_connected_peer(node, 3)
+    node.tx_checks.marked[sender.id] = {4: None}
+    held = ("ping", b"", 0, 0.0)
+    assert p2p_main._hold_message(node, sender, sender.id, held)
+    assert list(node.tx_checks.waiting[sender.id]) == [held]
+
+
+def spending(outpoints: list[OutPoint], values: list[int]) -> Tx:
+    """Return a transaction spending `outpoints`, an output per value."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(prev_out=out, script_sig=anyone_can_spend_script_sig(), sequence=0)
+            for out in outpoints
+        ],
+        vout=[TxOut(value, anyone_can_spend()) for value in values],
+    )
+
+
+def a_parent_of(regtest_node: Callable[..., Node], outputs: int) -> tuple[Node, Tx]:
+    """Build a node, and a parent of `outputs` outputs to relay."""
+    pair = a_pair(regtest_node, spare=True)
+    node, funding = pair.node, cast("Tx", pair.spare)
+    node.mempool._rolling_min_fee_rate = 1000.0
+    value = (funding.vout[0].value - 100_000) // outputs
+    return node, spending([OutPoint(funding.id, 0)], [value] * outputs)
+
+
+def test_a_ping_waits_for_one_orphan_of_an_announcer_with_several(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `ProcessOrphanTx` settles one orphan, not every one marked.
+
+    Holding the sender for all of them would let one peer's orphans hold
+    every message of an honest relayer.
+    """
+    node, parent = a_parent_of(regtest_node, 3)
+    children = [
+        spending([OutPoint(parent.id, i)], [parent.vout[i].value - 10_000])
+        for i in range(3)
+    ]
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen: list[int] = []
+
+    def ping(node: Node, msg: bytes, conn: Any) -> None:
+        seen.append(sum(node.mempool.contains_tx(child) for child in children))
+
+    monkeypatch.setitem(cb.callbacks, "ping", ping)
+    node.p2p_manager.messages = deque()
+    for child in children:
+        relay(node, announcer, child)
+    assert node.download_manager.orphanage.unique_count == len(children)
+    send(node, sender, "tx", TxMsg(parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    settle(node)
+    assert seen == [1]
+    assert all(node.mempool.contains_tx(child) for child in children)
+    assert not node.tx_checks.marked
+
+
+def test_a_ping_is_read_once_the_orphan_still_misses_an_input(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orphan taken up and left an orphan settles the take-up."""
+    node, parent = a_parent_of(regtest_node, 1)
+    child = spending(
+        [OutPoint(parent.id, 0), OutPoint(b"\x11" * 32, 0)],
+        [parent.vout[0].value - 10_000],
+    )
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen = pings_seen(node, monkeypatch, child)
+    relay(node, announcer, child)
+    send(node, sender, "tx", TxMsg(parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    settle(node)
+    assert node.mempool.contains_tx(parent)
+    assert seen == [(sender.id, False)]
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    assert not node.tx_checks.marked
+
+
+def test_a_ping_is_read_once_the_orphan_check_is_dropped_at_its_deadline(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check of the orphan that never answers holds the sender until then."""
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node = pair.node
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen = pings_seen(node, monkeypatch, pair.child)
+    relay(node, announcer, pair.child)
+    send(node, sender, "tx", TxMsg(pair.parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    resume_tx_checks(node)
+    cast("Any", node)._worker_pool = UnfinishedPool()
+    for _ in range(3):
+        resume_tx_checks(node)
+    assert node.mempool.contains_tx(pair.parent)
+    check = node.tx_checks.queued[announcer.id]
+    assert check.tx == pair.child
+    assert node.tx_checks.marked == {sender.id: {announcer.id: check}}
+    assert seen == []
+    late = time.monotonic() + TX_CHECK_DEADLINE + 1
+    monkeypatch.setattr("btclib_node.p2p.tx_checks.time.monotonic", lambda: late)
+    resume_tx_checks(node)
+    assert seen == [(sender.id, False)]
+    assert not node.tx_checks.marked
+
+
+def test_a_ping_is_read_once_an_orphan_is_refused_when_taken_up(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal settles the take-up, though the announcer has another."""
+    node, parent = a_parent_of(regtest_node, 2)
+    free = spending([OutPoint(parent.id, 0)], [parent.vout[0].value])
+    paying = spending([OutPoint(parent.id, 1)], [parent.vout[1].value - 10_000])
+    sender, announcer = a_reading_peer(node, 3), a_reading_peer(node, 4)
+    seen: list[tuple[bool, bool]] = []
+
+    def ping(node: Node, msg: bytes, conn: Any) -> None:
+        seen.append((node.mempool.contains_tx(free), node.mempool.contains_tx(paying)))
+
+    monkeypatch.setitem(cb.callbacks, "ping", ping)
+    node.p2p_manager.messages = deque()
+    relay(node, announcer, free)
+    relay(node, announcer, paying)
+    send(node, sender, "tx", TxMsg(parent, include_witness=True).serialize())
+    send(node, sender, "ping", b"12345678")
+    settle(node)
+    assert seen == [(False, False)]
+    assert node.mempool.contains_tx(paying)
+    assert not node.tx_checks.marked

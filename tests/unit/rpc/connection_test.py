@@ -2276,9 +2276,10 @@ def test_a_request_sent_once_a_worker_s_close_arrives_is_answered(
 ) -> None:
     """A request sent as soon as the closing reply is read is answered.
 
-    Core's socket thread receives it within its wait, as
-    `RpcConnection._answer_past_a_close` says, and `bitcoind` answers it
-    (btclib-org/btclib-node#2153). It is written from the loop the
+    Core's socket thread receives it where it arrives before that
+    thread's current wait ends, as `RpcConnection._answer_past_a_close`
+    says, and `bitcoind` then answers it (btclib-org/btclib-node#2153,
+    btclib-org/btclib-node#2304). It is written from the loop the
     connection waits on, so a wait that blocks that loop reads nothing.
     """
     reply, _ = after_the_reply([(0, later)], data, answer)
@@ -3129,7 +3130,7 @@ def test_a_content_length_at_the_cap_is_read() -> None:
     assert parse_request_head(request(at_cap, b"")).length == MAX_BODY_BYTES
 
 
-# issue #1957: section 7 of the btclib-org standard, *A refusal carries no
+# issue #1957: section 7 of the organization's standard, *A refusal carries no
 # secret*, for the Authorization header a head holds
 
 _CREDENTIAL = "Basic YWxpY2U6WnQ5cUsybVdwN1J0"

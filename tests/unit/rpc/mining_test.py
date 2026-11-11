@@ -57,6 +57,7 @@ from tests import (
     generate_coinbase,
     generate_random_transaction,
 )
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -566,6 +567,77 @@ def test_generateblock_refuses_what_core_refuses(
     """The codes and messages are `bitcoind`'s."""
     assert refusal(lambda: generate_block(node, CONN, params)) == (code, message)
     assert height(node) == 0
+
+
+X_ONLY = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+H160 = "ab" * 20
+H256 = "cd" * 32
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "sh(raw(51))",
+        "sh(raw(51))#zkyfvf3f",
+        "sh(raw(51))#aaaaaaaa",
+        "wsh(raw(51))",
+        "sh(wsh(raw(51)))",
+        f"rawpkh({H160})",
+        f"sh(rawpkh({H160}))",
+        f"tr({X_ONLY},raw(51))",
+        f"tr({X_ONLY},rawpkh({H160}))",
+        f"tr({X_ONLY},rawnode({H256}))",
+        f"tr({X_ONLY},rawleaf(51,c0))",
+        f"tr({X_ONLY},{{pk({X_ONLY}),{{rawnode({H256}),raw(51)}}}})",
+        f"tr({TPUB}/0/*,rawleaf(51,c0))",
+        f"tr({TPUB}/<0;1>,rawleaf(51,c0))",
+        "sh(" * 2000 + "raw(51)" + ")" * 2000,
+        "wsh(" * 2000 + "raw(51)" + ")" * 2000,
+    ],
+)
+def test_generateblock_refuses_the_draft_forms_core_does_not_read(
+    node: Node, output: str
+) -> None:
+    """`bitcoind`'s rows: `Parse` refuses each, ranged or multipath included."""
+    assert refusal(lambda: generate_block(node, CONN, [output, []])) == (
+        -5,
+        "Error: Invalid address or descriptor",
+    )
+    assert height(node) == 0
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        f"tr({TPUB}/<0;1>,rawleaf(51,zz))",
+        f"wsh(multi(1,{TPUB}/<0;1>,{TPUB}/<0;1;2>))",
+        f"pkh({TPUB}/<0;0>)",
+    ],
+)
+def test_generateblock_refuses_a_multipath_descriptor_parse_refuses(
+    node: Node, output: str
+) -> None:
+    """`bitcoind`'s rows: `Parse` refuses each, so its -8 is never reached."""
+    assert refusal(lambda: generate_block(node, CONN, [output, []])) == (
+        -5,
+        "Error: Invalid address or descriptor",
+    )
+
+
+def test_generateblock_mines_to_raw_at_top_level_with_its_checksum(
+    node: Node,
+) -> None:
+    """`raw()` at top level is what `Parse` reads."""
+    assert coinbase_script_of(node, "raw(51)#8lvh9jxk") == bytes.fromhex("51")
+
+
+def test_generateblock_refuses_a_draft_form_quoting_no_key(node: Node) -> None:
+    """The refusal holds no part of the descriptor, its key included."""
+    with pytest.raises(RpcError) as caught:
+        generate_block(node, CONN, [f"tr({TPRV},rawleaf(51,c0))", []])
+
+    assert caught.value.message == "Error: Invalid address or descriptor"
+    assert_secret_free(caught.value, [TPRV])
 
 
 def test_generateblock_refuses_a_block_that_does_not_connect(funded: Node) -> None:

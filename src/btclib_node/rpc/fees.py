@@ -30,7 +30,7 @@ from btclib_node.mempool_estimator import (
     FeeRateEstimate,
     fee_per_k,
 )
-from btclib_node.rpc.connection import RawJSON, btc_amount
+from btclib_node.rpc.connection import RawJSON, btc_amount, univalue_float
 from btclib_node.rpc.errors import RpcError, check_object, type_errors
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import get_real
@@ -241,11 +241,6 @@ def estimate_smart_fee(
     return result
 
 
-def _number(value: float) -> RawJSON:
-    """Write `value` as `UniValue::setFloat` does: 16 significant digits."""
-    return RawJSON(format(value, ".16g"))
-
-
 def _round(value: float) -> float:
     """Return C's `round`: the nearest integer, halves away from zero."""
     return float(llround(value))
@@ -253,12 +248,14 @@ def _round(value: float) -> float:
 
 def _bucket(bucket: EstimatorBucket) -> dict[str, RawJSON]:
     return {
-        "startrange": _number(_round(bucket.start)),
-        "endrange": _number(_round(bucket.end)),
-        "withintarget": _number(_round(bucket.within_target * 100.0) / 100.0),
-        "totalconfirmed": _number(_round(bucket.total_confirmed * 100.0) / 100.0),
-        "inmempool": _number(_round(bucket.in_mempool * 100.0) / 100.0),
-        "leftmempool": _number(_round(bucket.left_mempool * 100.0) / 100.0),
+        "startrange": univalue_float(_round(bucket.start)),
+        "endrange": univalue_float(_round(bucket.end)),
+        "withintarget": univalue_float(_round(bucket.within_target * 100.0) / 100.0),
+        "totalconfirmed": univalue_float(
+            _round(bucket.total_confirmed * 100.0) / 100.0
+        ),
+        "inmempool": univalue_float(_round(bucket.in_mempool * 100.0) / 100.0),
+        "leftmempool": univalue_float(_round(bucket.left_mempool * 100.0) / 100.0),
     }
 
 
@@ -283,14 +280,14 @@ def estimate_raw_fee(
         answer: dict[str, Any] = {}
         if fee_per_k:
             answer["feerate"] = btc_amount(fee_per_k)
-            answer["decay"] = _number(buckets.decay)
+            answer["decay"] = univalue_float(buckets.decay)
             answer["scale"] = buckets.scale
             answer["pass"] = _bucket(buckets.pass_bucket)
             # a start of -1 says every bucket passed
             if buckets.fail_bucket.start != -1:
                 answer["fail"] = _bucket(buckets.fail_bucket)
         else:
-            answer["decay"] = _number(buckets.decay)
+            answer["decay"] = univalue_float(buckets.decay)
             answer["scale"] = buckets.scale
             answer["fail"] = _bucket(buckets.fail_bucket)
             answer["errors"] = [

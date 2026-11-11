@@ -12,7 +12,7 @@ name: sdist-rebuild
 #
 # The release lookup, the checkout, the build, the normalizer and the
 # verify are btclib-org/.github's reusable-sdist-rebuild.yml, called at
-# a tagged commit (section 10 of btclib-org/.github's README.md,
+# a tagged commit (section 10 of the organization's standard,
 # btclib-org/.github#35). What stays here is the trigger, the workflow-level
 # permissions, the concurrency group and the calling job's `if:` and
 # `permissions:`, which the callee does not carry and says so in its own
@@ -25,13 +25,13 @@ name: sdist-rebuild
 # `false`: this tree's checkout named no submodules and its build ran no
 # setup-python step.
 #
-# The sdist alone: section 10 of btclib-org/.github's README.md makes
+# The sdist alone: section 10 of the organization's standard makes
 # the row the sdist's. A red run is an issue against this tree. It gates
 # nothing and no branch rule names it
 
 on:
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # section 10 of the organization's standard is the calendar, and
     # this line is not the place to restate it. Only the default branch
     # schedules workflows, so on any other branch this is reachable
     # through the two triggers below

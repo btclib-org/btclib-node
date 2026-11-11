@@ -115,6 +115,10 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         wait_until(lambda: len(node2.p2p_manager.connections))
         connection = node2.p2p_manager.connections[0]
         wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        # and its first trickle: a transaction queued before it is not
+        # announced to this peer, as `DownloadManager._process_inv_backlog`
+        # says, and node1 is node2's only peer
+        wait_until(lambda: connection.next_inv_send_time)
 
         funding = chain[0].transactions[0]
         tx = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
