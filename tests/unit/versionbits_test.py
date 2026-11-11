@@ -17,7 +17,7 @@ import pytest
 from btclib.block import BlockHeader
 
 from btclib_node import versionbits
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.log import Logger
 from btclib_node.notify import Warnings
 from btclib_node.versionbits import UnknownActivations, check_unknown_activations
@@ -137,7 +137,13 @@ def test_a_bit_a_started_deployment_uses_is_not_unknown(
     assert check(versions) == [(_UNKNOWN, False)]
 
 
-@pytest.mark.parametrize("ignored_bit", [5, 27, 28])
+@pytest.mark.parametrize("warned_bit", [0, 4])
+def test_signals_on_bits_zero_to_four_lock_in(warned_bit: int) -> None:
+    """`VERSIONBITS_NUM_BITS`: the lowest and highest bit checked warn."""
+    assert check(periods(0, bit(warned_bit))) == [(warned_bit, False)]
+
+
+@pytest.mark.parametrize("ignored_bit", [5, 27])
 def test_signals_on_bits_five_to_twenty_eight_warn_of_nothing(
     ignored_bit: int,
 ) -> None:
@@ -145,6 +151,18 @@ def test_signals_on_bits_five_to_twenty_eight_warn_of_nothing(
     signalling = [bit(ignored_bit)] * _THRESHOLD + [_TOP] * (_PERIOD - _THRESHOLD)
     versions = periods(0) + signalling + periods(0, 0)
     assert check(versions) == []
+
+
+def test_main_warns_of_nothing_on_bit_28() -> None:
+    """BIP 323: bit 28 is nonce space on main, where no deployment uses it.
+
+    Regtest's `testdummy` uses it, so only a chain without one shows that
+    the bit is not checked.
+    """
+    versions = [_TOP] * 2016 + [bit(_TESTDUMMY)] * 2016 + [_TOP] * 2016
+    active_chain, header_dict = a_chain(versions)
+    chain = cast("Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=0))
+    assert UnknownActivations(chain).check(active_chain, header_dict) == []
 
 
 def test_no_block_below_the_warning_height_counts() -> None:
@@ -160,49 +178,33 @@ def test_no_block_below_the_warning_height_counts() -> None:
     assert check(versions[: 2 * _PERIOD], chain) == []
 
 
-def test_taproot_is_no_longer_a_counted_deployment() -> None:
-    """Core v32.1 dropped taproot from vDeployments, bumping warning heights.
+def test_main_counts_bit_2_as_unknown_from_its_warning_height() -> None:
+    """Main has no deployment, so a period signalling bit 2 is unknown.
 
-    Without a warning height (min_bip9_warning_height=0), signalling bit 2
-    warns on mainnet as an unknown bit. At mainnet's real warning height
-    (711648), it warns of nothing.
+    With no warning height it locks in; at `Main`'s, above every block
+    here, it warns of nothing.
     """
-    start = datetime.fromtimestamp(1619222400 + 100_000, UTC)
-    versions = [_TOP] * 2016 + [bit(2)] * 2016 * 2 + [_TOP] * 2016 * 2
-    active_chain, header_dict = a_chain(versions, start=start)
-    zero_height = cast(
-        "Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=0)
-    )
-    assert UnknownActivations(zero_height).check(
-        active_chain[:4032], header_dict
-    ) == [(2, False)]
-
-    real_height = cast(
-        "Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=711648)
-    )
-    assert (
-        UnknownActivations(real_height).check(active_chain[:4032], header_dict)
-        == []
-    )
+    active_chain, header_dict = a_chain([_TOP] * 2016 + [bit(2)] * 2016)
+    chain = cast("Chain", SimpleNamespace(name="mainnet", min_bip9_warning_height=0))
+    assert UnknownActivations(chain).check(active_chain, header_dict) == [(2, False)]
+    assert UnknownActivations(Main()).check(active_chain, header_dict) == []
 
 
-def test_taproot_is_active_where_core_has_it_always_active() -> None:
-    """`GBTStatus`: main's taproot is not tracked, signet's is always active."""
+def test_status_reports_regtest_s_testdummy_alone() -> None:
+    """`GBTStatus`: `testdummy` is `STARTED` on regtest, and none is active.
+
+    Core's other chains have it `NEVER_ACTIVE`, so they report nothing.
+    """
     active_chain, header_dict = a_chain([_TOP] * 2016)
     found = {}
     for name in ("mainnet", "testnet", "signet", "testnet4", "regtest"):
         chain = cast("Chain", SimpleNamespace(name=name, min_bip9_warning_height=0))
         found[name] = UnknownActivations(chain).status(active_chain, header_dict)
 
-    assert found["mainnet"].active == []
-    assert found["mainnet"].signalling == {}
-    assert found["testnet"].active == []
-    assert found["testnet"].signalling == {}
-    assert found["signet"].active == ["taproot"]
-    assert found["testnet4"].active == ["taproot"]
-    assert found["regtest"].active == ["taproot"]
-    assert found["regtest"].signalling == {"testdummy": 28}
-    assert found["signet"].version == found["testnet4"].version == _TOP
+    assert all(not status.active for status in found.values())
+    assert found.pop("regtest").signalling == {"testdummy": _TESTDUMMY}
+    assert all(not status.signalling for status in found.values())
+    assert all(status.version == _TOP for status in found.values())
 
 
 def test_a_fork_is_answered_from_its_own_blocks_after_the_chain_it_left() -> None:

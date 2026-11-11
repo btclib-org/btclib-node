@@ -6,13 +6,14 @@
 
 `UnknownActivations` is `VersionBitsCache::CheckUnknownActivations` with
 its `WarningBitsConditionChecker` (`src/versionbits.cpp`, at
-bitcoin/bitcoin@f0de87f040, the v32.1 tag, from bitcoin/bitcoin#34779 and
-bitcoin/bitcoin@74f71c5054): a BIP9 state machine per version bit, counting
-over each period the blocks that signal a bit no deployment in `_DEPLOYMENTS`
-uses, a bit being unknown from `Chain.min_bip9_warning_height` on. It
-reaches `LOCKED_IN` and then `ACTIVE` as any deployment does, with the
-same threshold and period. Bits 5 to 28 are reserved nonce space under
-BIP 323, so only bits 0 to 4 are checked.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag, from bitcoin/bitcoin#34779
+and bitcoin/bitcoin@74f71c5054): a BIP9 state machine per version bit,
+counting over each period the blocks that signal a bit no deployment in
+`_DEPLOYMENTS` uses, a bit being unknown from
+`Chain.min_bip9_warning_height` on. It reaches `LOCKED_IN` and then
+`ACTIVE` as any deployment does, with the same threshold and period.
+Bits 5 to 28 are reserved nonce space under BIP 323, so only bits 0 to 4
+are checked.
 
 `check_unknown_activations` is what `main._after_tip_change` calls out
 of initial block download, where `Chainstate::UpdateTip`
@@ -29,8 +30,7 @@ the answer.
 This node enforces no deployment by signalling, each being buried
 (`btclib.consensus`). The deployments below are the ones Core still
 counts signals for, whose bits `ComputeBlockVersion` excludes from the
-warning; Core's others are always active or never, which excludes
-nothing.
+warning; Core's others are never active, which excludes nothing.
 """
 
 import enum
@@ -57,7 +57,11 @@ __all__ = ["DeploymentStatus", "UnknownActivations", "check_unknown_activations"
 _TOP_BITS = 0x20000000
 _TOP_MASK = 0xE0000000
 _NUM_BITS = 5
-_TOTAL_BITS = 29
+
+# `VERSIONBITS_MAX_NUM_BITS` (`src/test/util/versionbits.h`, same sha):
+# the bits below `VERSIONBITS_TOP_MASK`, the bound Core's tests put on a
+# deployment's bit
+_MAX_NUM_BITS = 29
 
 # `std::numeric_limits<int64_t>::max()`, the end time of a deployment
 # that never times out, and of the warning checker
@@ -91,19 +95,13 @@ class _Deployment:
 
 
 # `src/kernel/chainparams.cpp`, same sha, `DEPLOYMENT_TESTDUMMY` on
-# regtest (`:554-558`). Mainnet, testnet, signet and testnet4 carry no
-# deployments in `vDeployments` Core still counts signals for: taproot
-# was dropped at bitcoin/bitcoin@74f71c5054.
+# regtest (`:610-615`), Core's one deployment. It is `NEVER_ACTIVE` on
+# mainnet (`:133`), testnet (`:263`), testnet4 (`:370`) and signet
+# (`:521`), which carry none here.
 _TESTDUMMY_BIT = 28
 _DEPLOYMENTS: Mapping[str, tuple[_Deployment, ...]] = {
     "regtest": (_Deployment("testdummy", _TESTDUMMY_BIT, 0, _NO_TIMEOUT, 0),),
 }
-
-# `DEPLOYMENT_TAPROOT` is `ALWAYS_ACTIVE` on these chains
-# (`src/kernel/chainparams.cpp`, same sha), which `GBTStatus` lists as
-# active; mainnet and testnet are above, and the other `testdummy`s are
-# never active
-_TAPROOT_ALWAYS_ACTIVE = frozenset({"regtest", "signet", "testnet4"})
 
 
 class DeploymentStatus(NamedTuple):
@@ -169,9 +167,6 @@ class UnknownActivations:
         self._threshold = 1815 if chain.name == "mainnet" else self._period * 3 // 4
         self._min_height = chain.min_bip9_warning_height
         self._deployments = _DEPLOYMENTS.get(chain.name, ())
-        self._always_active = (
-            ["taproot"] if chain.name in _TAPROOT_ALWAYS_ACTIVE else []
-        )
         # the genesis block's predecessor, which is `DEFINED` by definition
         self._cache: dict[bytes | None, _Boundary] = {
             None: _Boundary(
@@ -218,7 +213,7 @@ class UnknownActivations:
         version = _TOP_BITS
         signalling: dict[str, int] = {}
         locked_in: dict[str, int] = {}
-        active = list(self._always_active)
+        active: list[str] = []
         for name in sorted(found):
             deployment, state = found[name]
             if state in {_State.STARTED, _State.LOCKED_IN}:
@@ -278,7 +273,7 @@ class UnknownActivations:
             )
             if state in {_State.STARTED, _State.LOCKED_IN}
         }
-        counts = [0] * _TOTAL_BITS
+        counts = [0] * _MAX_NUM_BITS
         warning_counts = [0] * _NUM_BITS
         if end >= self._min_height or known:
             for height in range(previous_end + 1, end + 1):

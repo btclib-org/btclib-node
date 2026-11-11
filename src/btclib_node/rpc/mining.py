@@ -499,9 +499,12 @@ def _template(node: Node, client_rules: set[str]) -> dict[str, Any]:
     status = node.unknown_activations.status(
         block_index.active_chain, block_index.header_dict
     )
+    # Core lists `taproot` with `!segwit`, outside `GBTStatus`
+    # (`src/rpc/mining.cpp:985-989`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag)
     rules = ["csv"]
     if not pre_segwit:
-        rules.append("!segwit")
+        rules.extend(["!segwit", "taproot"])
     if signet:
         rules.append("!signet")
     rules.extend(status.active)
