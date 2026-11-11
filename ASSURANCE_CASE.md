@@ -408,7 +408,7 @@ and what counters each.
   sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
   of `RequestHead` excludes `raw` and `fields`, which hold the
   `Authorization` field, and the repr of `_Settings` excludes the fields
-  that may hold a credential. These behaviors are checked both, in
+  that may hold a credential. `assert_free_of_credential` is used in both
   `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py`.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
