@@ -975,8 +975,7 @@ class P2pManager(threading.Thread):
         Core's `addrConnect.nServices & GetLocalServices() & NODE_P2P_V2`,
         for a dial of an address rather than of a name. Without
         `-v1transport` every dial is v2, whatever the address says: the
-        draw has already left out what only speaks v1 (`_v1_only`), and
-        a seed's recorded services never name `NODE_P2P_V2`.
+        draw has already left out what only speaks v1 (`_v1_only`).
         """
         return self.supports_v2transport() and (
             not self.node.config.v1transport
@@ -987,14 +986,13 @@ class P2pManager(threading.Thread):
         """Return whether, without `-v1transport`, `address` is left undialled.
 
         An address that does not advertise `NODE_P2P_V2` speaks v1 only,
-        except one with exactly `SEEDS_SERVICE_FLAGS`, how a seed and a
-        fixed seed are recorded: a fresh node has nothing else to dial,
-        so it is dialled with v2. An address gossiped or added with exactly
-        those flags is exempt too, and a v1-only one among them is dialled
-        with v2 and dropped: the price of a fresh node finding any peer.
-        Core has no such filter; it is this node's, for refusing v1
-        (btclib-org/btclib-node#1190), argued in SECURITY.md's *Where
-        this node departs from Bitcoin Core*.
+        except one with exactly `SEEDS_SERVICE_FLAGS`, as `addpeeraddress`
+        adds and a peer may gossip: it is dialled with v2, and a v1-only
+        one among them is dropped. A seed or a fixed seed is recorded with
+        `SEEDS_ASSUMED_SERVICE_FLAGS`, which names `NODE_P2P_V2`. Core has
+        no such filter; it is this node's, for refusing v1
+        (btclib-org/btclib-node#1190), argued in SECURITY.md's *Where this
+        node departs from Bitcoin Core*.
         """
         return not (
             self.node.config.v1transport

@@ -59,6 +59,7 @@ from btclib_node.log import Logger
 from btclib_node.p2p import address as address_module
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import (
+    SEEDS_ASSUMED_SERVICE_FLAGS,
     SEEDS_SERVICE_FLAGS,
     PeerDB,
     endpoint_key,
@@ -10861,19 +10862,21 @@ _NOT_V2_BUT_FULL = FULL_NODE | ServiceFlags.NODE_BLOOM
         (True, _NOT_V2_BUT_FULL, False),
         (False, _NOT_V2_BUT_FULL, True),
         (False, FULL_NODE | _P2P_V2, False),
-        # a seed's recorded services are exempt, and nothing else is
+        # a seed's recorded services name `NODE_P2P_V2`
+        (False, SEEDS_ASSUMED_SERVICE_FLAGS, False),
+        # exactly `SEEDS_SERVICE_FLAGS` is exempt, and nothing else is
         (False, SEEDS_SERVICE_FLAGS, False),
         (True, SEEDS_SERVICE_FLAGS, False),
         (False, SEEDS_SERVICE_FLAGS | ServiceFlags.NODE_NETWORK_LIMITED, True),
     ],
 )
-def test_v1_only_is_an_address_without_p2p_v2_unless_it_is_a_seed(
+def test_v1_only_is_an_address_without_p2p_v2_or_the_seeds_flags(
     a_manager: AManagerFactory,
     v1transport: bool,  # noqa: FBT001
     services: ServiceFlags,
     expected: bool,  # noqa: FBT001
 ) -> None:
-    """Without `-v1transport` only `NODE_P2P_V2` or a seed's flags dial."""
+    """Only `NODE_P2P_V2` or exactly `SEEDS_SERVICE_FLAGS` dial without v1."""
     manager = a_manager(v2transport=True, v1transport=v1transport)
     address = peer_address("1.2.3.4", 18444, services=int(services))
     assert manager._v1_only(address) is expected
@@ -10918,13 +10921,13 @@ def test_the_draw_takes_a_limited_address_only_while_the_tip_is_recent(
 
 
 @pytest.mark.parametrize("v1transport", [True, False])
-def test_the_draw_does_not_pass_over_a_seed_or_a_v2_address(
+def test_the_draw_does_not_pass_over_a_seed_or_the_exempt_flags(
     a_manager: AManagerFactory,
     v1transport: bool,  # noqa: FBT001
 ) -> None:
-    """The seed exemption and `NODE_P2P_V2` hold with v1 off."""
+    """A seed and exactly `SEEDS_SERVICE_FLAGS` are not passed over, v1 off."""
     manager = a_manager(v2transport=True, v1transport=v1transport)
-    for services in (SEEDS_SERVICE_FLAGS, FULL_NODE | _P2P_V2):
+    for services in (SEEDS_ASSUMED_SERVICE_FLAGS, SEEDS_SERVICE_FLAGS):
         address = peer_address("1.2.3.4", 18444, services=int(services))
         assert not manager._passed_over(address, 0, time.time(), feeler=False)
 
@@ -10950,7 +10953,7 @@ def test_an_anchor_that_only_speaks_v1_is_passed_over_without_v1transport(
     [
         (True, True, FULL_NODE, False),
         (True, True, FULL_NODE | _P2P_V2, True),
-        # without v1 every dial is v2, a seed's included
+        # without v1 every dial is v2, `SEEDS_SERVICE_FLAGS` included
         (True, False, FULL_NODE, True),
         (True, False, _NOT_V2_BUT_FULL, True),
         (False, True, FULL_NODE | _P2P_V2, False),
@@ -10969,15 +10972,14 @@ def test_every_dial_is_v2_without_v1transport(
     assert manager._use_v2transport_for(address) is expected
 
 
-@pytest.mark.parametrize(("v1transport", "expected"), [(False, True), (True, False)])
-def test_a_drawn_seed_is_dialled_with_v2_without_v1transport(
+@pytest.mark.parametrize("v1transport", [False, True])
+def test_a_drawn_seed_is_dialled_with_v2(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,
     v1transport: bool,  # noqa: FBT001
-    expected: bool,  # noqa: FBT001
 ) -> None:
-    """A fresh node's only addresses carry no `NODE_P2P_V2`, and are dialled."""
-    drawn = peer_address("9.9.9.9", 18444, services=int(SEEDS_SERVICE_FLAGS))
+    """A seed's `NODE_P2P_V2` dials it with v2, `-v1transport` or not."""
+    drawn = peer_address("9.9.9.9", 18444, services=int(SEEDS_ASSUMED_SERVICE_FLAGS))
     manager = a_manager(
         peer_db=a_peer_db_stub(random_address=lambda: drawn),
         v2transport=True,
@@ -10997,7 +10999,7 @@ def test_a_drawn_seed_is_dialled_with_v2_without_v1transport(
             set(), set(), manager_module._Outbound.NETWORK, count_failures=False
         )
     )
-    assert [kw["use_v2transport"] for kw in made] == [expected]
+    assert [kw["use_v2transport"] for kw in made] == [True]
 
 
 def test_a_v2_attempt_is_not_retried_with_v1_without_v1transport(

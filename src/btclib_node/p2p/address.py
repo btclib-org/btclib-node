@@ -203,14 +203,14 @@ def peer_address(
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
-# Core's `SeedsServiceFlags` (`src/protocol.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the services queried of a
-# DNS seed subdomain.
+# Core's `SeedsServiceFlags` (`src/protocol.h:366`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the services queried of
+# a DNS seed subdomain.
 SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
-# Core's `SeedsAssumedServiceFlags` (`src/protocol.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): `SeedsServiceFlags() |
-# NODE_P2P_V2`, the services a fixed seed and a DNS seed's answer are
-# recorded with, assuming BIP324 v2 transport support.
+# Core's `SeedsAssumedServiceFlags` (`src/protocol.h:374`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the services a fixed
+# seed and a DNS seed's answer are recorded with, assuming BIP324 v2
+# transport support.
 SEEDS_ASSUMED_SERVICE_FLAGS = SEEDS_SERVICE_FLAGS | ServiceFlags.NODE_P2P_V2
 # `ThreadDNSAddressSeed`'s `nMaxIPs`: how many answers one seed's `x9.`
 # subdomain may add (`src/net.cpp:2421`, at bitcoin/bitcoin@f0de87f040,
@@ -1684,8 +1684,8 @@ class PeerDB:
         # without asking again. `time_penalty=0`: `AddrMan::Add`'s own
         # default, since `_dns_seed_timestamp` below already backdates
         # the entry the way Core's own caller does before it ever
-        # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp:2425`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp:2426-2430`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         self.add_addresses(
             (
                 peer_address(

@@ -124,8 +124,8 @@ relay sent to a v1-only peer. Core does both. This node does neither,
 and the cost is peers:
 
 - an automatic outbound connection, a feeler included, goes only to an
-  address advertising `NODE_P2P_V2` or carrying exactly
-  `SEEDS_SERVICE_FLAGS`, as every seed does. It chooses from fewer
+  address advertising `NODE_P2P_V2`, which every seed is recorded with,
+  or carrying exactly `SEEDS_SERVICE_FLAGS`. It chooses from fewer
   candidates, which makes it easier to surround with peers of one party,
   and a v1-only seed, or a v1-only peer falsely advertised as
   `NODE_P2P_V2`, is dialled and lost;
