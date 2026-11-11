@@ -209,7 +209,7 @@
   "osps_do_07_01_status": "Met",
   "osps_gv_01_01_justification": "GOVERNANCE.md's Roles names who holds access to sensitive resources. fametrano is the maintainer. Every owner, named there by login, is an administrator of every repository and a reviewer of the publishing environments. https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md#roles",
   "osps_gv_01_01_status": "Met",
-  "osps_gv_01_02_justification": "GOVERNANCE.md's *Roles* describes the maintainer, owners, repository collaborators, contributors, reviewers, the review bot, Dependabot and pre-commit.ci, and what each owes. https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md#roles",
+  "osps_gv_01_02_justification": "btclib-org/.github's GOVERNANCE.md, *Roles*, describes the maintainer, owners, repository collaborators, contributors, reviewers, the review bot, Dependabot and pre-commit.ci, and what each owes. https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md#roles",
   "osps_gv_01_02_status": "Met",
   "osps_gv_02_01_justification": "Proposed changes and usage obstacles are discussed publicly in the repository's GitHub issues (with a question form) and pull requests; cross-repository questions go to btclib-org/.github's tracker. https://github.com/btclib-org/btclib-node/issues",
   "osps_gv_02_01_status": "Met",
