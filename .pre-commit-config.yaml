@@ -562,7 +562,7 @@ repos:
         name: a sourcery skip names rules, and no tag
         language: pygrep
         entry: |-
-          #\W*sourcery\W+skip(?!:)|#\W*sourcery\W+skip:[^#]*(?<![\w-])(?:default|refactoring|suggestion|comment)(?![\w-])
+          #\W*sourcery\W+skip\b(?!:[^#;\w]*\w)|#\W*sourcery\W+skip:[^#]*(?<![\w-])(?:default|refactoring|suggestion|comment)(?![\w-])
         types: [python]
   # a bitcoind pin and a release-pinned Core citation are two places
   # that have to move together, and nothing else here reads either --
