@@ -569,11 +569,11 @@ def test_a_transaction_spends_what_it_is_told_to() -> None:
 def test_the_anyone_can_spend_spend_is_standard() -> None:
     """A spend of `anyone_can_spend` passes every standard flag.
 
-    What `IsStandardTx` and `AreInputsStandard` read (`policy.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): the output is P2SH, the script_sig is
-    pushes only and the redeem script it pushes checks no signature.
-    `STANDARD_FLAGS` carries CLEANSTACK and MINIMALDATA, which the spend
-    has to satisfy as well.
+    What `IsStandardTx` and `ValidateInputsStandardness` read
+    (`policy.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
+    output is P2SH, the script_sig is pushes only and the redeem script
+    it pushes checks no signature. `STANDARD_FLAGS` carries CLEANSTACK
+    and MINIMALDATA, which the spend has to satisfy as well.
     """
     funding = generate_coinbase(height=1)
     spend = generate_random_transaction(funding.id)

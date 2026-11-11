@@ -16,11 +16,12 @@ holding one generated for a branch `update_chain` may still refuse.
 by height rather than by file, because this store's own rotation
 (`__find_block_file`) tracks append order and not a file's own height
 range the way Core's `FlatFilePos`/`nHeightFirst`/`nHeightLast`
-(`node/blockstorage.h`, at bitcoin/bitcoin@ca7162cde5) does. `live` is
-what lets a `.blk`/`.rev` file still be reclaimed once every block it
-ever held has been pruned this way -- `_release`'s own docstring is
-where that is argued end to end, the uncomfortable half (a syncing
-node's own append order tracking height only approximately) included.
+(`flatfile.h`, `node/blockstorage.h`, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag) does. `live` is what lets a `.blk`/`.rev` file still be
+reclaimed once every block it ever held has been pruned this way --
+`_release`'s own docstring is where that is argued end to end, the
+uncomfortable half (a syncing node's own append order tracking height
+only approximately) included.
 """
 
 import threading
@@ -66,10 +67,10 @@ class Coin(_BtclibCoin):
     own decision. `parse` and `serialize` below are that decision: a
     varint packing `(height << 1) | coinbase`, ahead of the output
     itself, matching Core's own `Coin` (`src/coins.h`, at
-    bitcoin/bitcoin@204256c73f) except for one thing -- Core additionally
-    runs the output through `TxOutCompression`, a space optimisation not
-    reproduced here, so the two do not agree byte for byte and are not
-    meant to.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) except for one thing --
+    Core additionally runs the output through `TxOutCompression`, a space
+    optimisation not reproduced here, so the two do not agree byte for
+    byte and are not meant to.
 
     `UtxoIndex.add_block` sets `height` and `is_coinbase` when an output
     is first created; `UtxoIndex.apply_rev_block` restores a `Coin`
@@ -235,10 +236,10 @@ def blocks_directory(data_dir: Path, blocks_dir: Path | None = None) -> Path:
     """Return the directory `BlockDB` keeps its files in: `blocks` under either.
 
     Core's own `GetBlocksDirPath` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), `blocks_dir` being `Config`'s own field
-    of the same name, already chain-suffixed there, and `data_dir` the
-    fallback where it is `None`. `Node.__init__` locks this directory
-    before `BlockDB` opens it.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), `blocks_dir` being
+    `Config`'s own field of the same name, already chain-suffixed there,
+    and `data_dir` the fallback where it is `None`. `Node.__init__`
+    locks this directory before `BlockDB` opens it.
     """
     return (blocks_dir if blocks_dir is not None else data_dir) / "blocks"
 
@@ -288,10 +289,10 @@ class BlockDB:
         `blocks_dir` is `Config`'s own field of the same name -- already
         absolute and chain-suffixed there, `None` unless a caller named
         one -- so this is the one place Core's own "default: <datadir>"
-        (`-blocksdir=<dir>`'s own help text, `src/init.cpp:514`, at
-        bitcoin/bitcoin@ca7162cde5) is actually applied: a `BlockDB`
-        built directly, the way every test here does, still gets it
-        without going through `Config` at all.
+        (`-blocksdir=<dir>`'s own help text, `src/init.cpp:506`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) is actually applied:
+        a `BlockDB` built directly, the way every test here does, still
+        gets it without going through `Config` at all.
         """
         self.logger = logger
         self._lock = threading.RLock()
@@ -630,12 +631,12 @@ class BlockDB:
         """Bytes this store still accounts for, across every `.blk`/`.rev` file.
 
         Core's own `BlockManager::CalculateCurrentUsage`
-        (`node/blockstorage.cpp:811-818`, at bitcoin/bitcoin@ca7162cde5)
-        sums `nSize + nUndoSize` over every block file its own
-        `m_blockfile_info` still tracks; `self.files` is this store's own
-        counterpart, one `FileMetadata` per `.blk` or `.rev` file not yet
-        unlinked by `_release`, so the same sum over its `size` fields
-        answers the same question. `main._prune_chain`'s own
+        (`node/blockstorage.cpp:811-818`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag) sums `nSize + nUndoSize` over every block file its
+        own `m_blockfile_info` still tracks; `self.files` is this store's
+        own counterpart, one `FileMetadata` per `.blk` or `.rev` file not
+        yet unlinked by `_release`, so the same sum over its `size`
+        fields answers the same question. `main._prune_chain`'s own
         automatic-target walk is the one caller.
         """
         with self._lock:
@@ -659,9 +660,9 @@ class BlockDB:
         """Drop one live reference to `filename`, unlinking it once none remain.
 
         Core's own `UnlinkPrunedFiles` (`node/blockstorage.cpp`, at
-        bitcoin/bitcoin@ca7162cde5) reaches the same file once every block
-        `FindFilesToPrune` sees inside it is behind the retained depth,
-        found by the file's own stored height range
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) reaches the same file
+        once every block `FindFilesToPrune` sees inside it is behind the
+        retained depth, found by the file's own stored height range
         (`nHeightFirst`/`nHeightLast`). This store's own rotation
         (`__find_block_file`) tracks append order rather than height, so
         `prune_up_to` above reaches the same file from the other

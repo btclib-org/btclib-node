@@ -42,23 +42,24 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      # Thursday, which is the day btclib-org/.github's README.md section
-      # 10 gives Dependabot across the organization. Actions move rarely,
-      # so a week where none did opens no pull request at all
+      # Thursday, which is the day section 10 of the organization's
+      # standard gives Dependabot across the organization. Actions move
+      # rarely, so a week where none did opens no pull request at all
       day: thursday
     groups:
       actions:
         patterns: ["*"]
     cooldown:
       default-days: 7
-      # the exclude section 11 of btclib-org/.github's README.md gives for
-      # that repository's own tags, which the calls in .github/workflows pin
+      # the exclude section 11 of the organization's standard gives for
+      # btclib-org/.github's own tags, which the calls in .github/workflows
+      # pin
       exclude: ["btclib-org/.github/*"]
 
   # uv.lock is committed and the workflows install from it with --locked, bar
   # the jobs that re-lock without committing or install a published or built
   # package, so this moves it, bar the one exception section 1 of
-  # btclib-org/.github's README names. The uv-lock pre-commit hook re-locks what
+  # the organization's standard names. The uv-lock pre-commit hook re-locks what
   # pyproject.toml changed, it does not upgrade. Unlike the sibling libraries,
   # part of what this moves is runtime rather than tooling -- btclib is the
   # consensus code this node validates blocks with -- which is the other reason

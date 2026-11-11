@@ -126,23 +126,30 @@ SIGNAL_POLL_SECONDS = 0.5
 STOP_DUMP_DELAY = 15
 
 # How long the loop below sleeps once a pass finds nothing waiting in
-# either queue. The figure it replaces, 0.0001, sat below the
-# platform timer's own granularity, so what set the pace of an idle
-# node was the OS rather than the number, and every one of those passes
-# still ran `download_manager.step()` and `update_chain()` in full
+# either queue. The sleep is skipped after a step that moved the tip or
+# invalidated a block, so a node connecting stored blocks is paced by
+# validation, not by this figure (btclib-org/btclib-node#2352). Core has
+# no such sleep to skip: `ActivateBestChain` connects every stored block
+# in one loop (`src/validation.cpp:3357-3491`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+#
+# The figure it replaces, 0.0001, sat below the platform timer's own
+# granularity, so what set the pace of an idle node was the OS rather
+# than the number, and every one of those passes still ran
+# `download_manager.step()` and `update_chain()` in full
 # (btclib-org/btclib-node#440).
 #
 # Core's own message loop takes this shape as a wait on a condition
 # variable that a producer signals, so a node with work is woken at
 # once and one without costs nothing until the wait's own ceiling
 # (`CConnman::ThreadMessageHandler`, `src/net.cpp`, up to 100 ms,
-# at bitcoin/bitcoin@b91d983f66). A plain sleep cannot do that -- nothing
-# wakes it early -- so raising it trades idle CPU for latency on
-# whatever arrives while it is asleep, in a way Core's own wait does
-# not have to. Giving `step()` its own cadence or signalling the loop
-# from the queues would close that gap; neither is done here, so the
-# gap stays and this is a divergence from what is cited above rather
-# than a match to it.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A plain sleep cannot do
+# that -- nothing wakes it early -- so raising it trades idle CPU for
+# latency on whatever arrives while it is asleep, in a way Core's own
+# wait does not have to. Giving `step()` its own cadence or signalling
+# the loop from the queues would close that gap; neither is done here,
+# so the gap stays and this is a divergence from what is cited above
+# rather than a match to it.
 #
 # 5 ms rather than a larger figure in the 5-20 ms range the issue
 # above named: an idle node's own CPU cost falls to about the same
@@ -157,15 +164,15 @@ STOP_DUMP_DELAY = 15
 # and `wait_until_listening`, so nothing in the suite can resolve it.
 IDLE_SLEEP_SECONDS = 0.005
 
-# Core's own `InitError` where `AppInitServers` fails (`src/init.cpp:1560-1561`,
-# at bitcoin/bitcoin@9be056a8a7): what `Node.init_errors` holds when the
-# JSON-RPC listener does not come up.
+# Core's own `InitError` where `AppInitServers` fails (`src/init.cpp:1635-1636`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): what `Node.init_errors` holds
+# when the JSON-RPC listener does not come up.
 RPC_INIT_ERROR = "Unable to start HTTP server. See debug log for details."
 
 # Core's own message where `CConnman::Start` cannot bind with `-listen` on
-# (`src/net.cpp:3497-3503`, at bitcoin/bitcoin@9be056a8a7), which ends
-# `AppInitMain` at step 12: the last of `Node.init_errors` when the P2P
-# listener does not come up, the bind's own reason coming first.
+# (`src/net.cpp:3578-3584`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+# which ends `AppInitMain` at step 12: the last of `Node.init_errors` when
+# the P2P listener does not come up, the bind's own reason coming first.
 P2P_INIT_ERROR = "Failed to listen on any port. Use -listen=0 if you want this."
 
 
@@ -237,9 +244,9 @@ def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
     Core's own `CCheckQueue` always shares one
     `PrecomputedTransactionData` by pointer across its worker threads
     (`validation.h`'s `CScriptCheck::txdata`,
-    at bitcoin/bitcoin@794a753958); a `ThreadPool` is this tree's way of
-    doing the same once the interpreter running it makes a real thread
-    as parallel as one of Core's.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag); a `ThreadPool` is
+    this tree's way of doing the same once the interpreter running it
+    makes a real thread as parallel as one of Core's.
     """
     return Pool if gil_enabled else ThreadPool
 
@@ -340,7 +347,8 @@ class Node(threading.Thread):
         self.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         # Core's own `GetBlocksDirPath` creates the blocks directory where
         # `AppInitParameterInteraction` first asks for it, ahead of the locks
-        # (`src/common/args.cpp`, `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        # (`src/common/args.cpp`, `src/init.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         blocks_dir = blocks_directory(self.data_dir, config.blocks_dir)
         blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
 
@@ -356,14 +364,15 @@ class Node(threading.Thread):
         log_path = self.data_dir / config.log_path if config.log_path else None
         # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
         # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), `""` where there
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), `""` where there
         # is none, as that call's own `.utf8string()` answers for an
         # unset `fs::path` too
         self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
-        # section warning, the debug categories' warnings, then
-        # `LogArgs`'s lines, in that order
+        # section warning, the `-maxconnections` warnings, the warnings
+        # of the debug categories and of `-test`, then `LogArgs`'s lines, in
+        # that order
         self.logger = open_history_log(
             log_path,
             debug=config.debug,
@@ -373,6 +382,7 @@ class Node(threading.Thread):
             config_file_line=config.config_file_line,
             log_warnings=config.log_warnings,
             section_warning=config.section_warning,
+            max_connections_warnings=config.max_connections_warnings,
             debug_warnings=config.debug_warnings,
             config_args=config.config_args,
             rate_limit=config.log_rate_limit,
@@ -431,8 +441,9 @@ class Node(threading.Thread):
         self.init_errors: list[str] = []
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
-        # `m_cached_is_ibd{true}` (`src/validation.h:1054`,
-        # at bitcoin/bitcoin@ca7162cde5) starts true the same way.
+        # `m_cached_is_ibd{true}` (`src/validation.h:1059`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) starts true the
+        # same way.
         self.is_initial_block_download = True
         # this node's own `node::Warnings` (`notify.py`'s own module
         # docstring): `rpc.callbacks.get_blockchain_info` and
@@ -456,8 +467,8 @@ class Node(threading.Thread):
         self.template_transactions_updated = 0
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
-        # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). btclib-org/btclib-node#1315
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag). btclib-org/btclib-node#1315
         self.highest_fast_announce = 0
         # `main.new_pow_valid_block`'s last block and its `cmpctblock`,
         # Core's `m_most_recent_block` and `m_most_recent_compact_block`,
@@ -486,7 +497,7 @@ class Node(threading.Thread):
         # method and `time.monotonic()` start of every RPC call
         # `rpc.main._execute` is currently running, in call order.
         # Core's `RPCServerInfo.active_commands`/`RPCCommandExecution`
-        # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # (`src/rpc/server.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag) guards the same list with a mutex because Core dispatches
         # RPC calls from a worker pool; `_execute` runs only on this
         # thread -- `handle_rpc`'s the same as every store and manager
@@ -509,7 +520,7 @@ class Node(threading.Thread):
 
         Core's `AppInitMain` loads `peers.dat` and `banlist.json` at step
         6 and the chainstate and block index at step 7 (`src/init.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), after step 4a has
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), after step 4a has
         started the RPC server, so a start that fails there has created
         none of them. `run` calls this once the RPC listener is up; a node
         driven without `start` calls it itself. A second call does
@@ -518,12 +529,18 @@ class Node(threading.Thread):
         if self.loaded:
             return
         # Core's init messages, which `RpcManager.warmup_status` answers
-        # a request with while this runs (`src/init.cpp:1396` and `1636`,
-        # `src/banman.cpp:33`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # a request with while this runs (`src/init.cpp:1471` and `1708`,
+        # `src/banman.cpp:33`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag)
         warmup = self.rpc_manager.set_warmup_status
         warmup("Loading P2P addresses…")
-        peer_db = PeerDB(self.chain, self.data_dir)
+        peer_db = PeerDB(
+            self.chain,
+            self.data_dir,
+            deterministic=self.config.deterministic_addrman,
+            consistency_check_ratio=self.config.check_addrman,
+            logger=self.logger,
+        )
         self._opened.callback(peer_db.close)
         warmup("Loading banlist…")
         # Core's `banlist.json`, in the chain's own directory
@@ -537,7 +554,7 @@ class Node(threading.Thread):
         self._opened.callback(self.block_db.close)
         # Core's `CompleteChainstateInitialization` refuses a start without
         # `-prune` on blocks it has pruned (`src/node/chainstate.cpp:57`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in these words,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in these words,
         # before `InitCoinsDB` wipes for `-reindex-chainstate` (`:90-93`):
         # so here before either wipe below. Core names `-reindex`, which
         # this tree does not offer yet (btclib-org/btclib-node#1415 adds
@@ -556,6 +573,9 @@ class Node(threading.Thread):
             self.data_dir, self.chain, self.logger, wipe=reindex
         )
         self._opened.callback(self.chainstate.close)
+        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        self.chainstate.utxo_index.read_error_callback = self._coins_read_error
         if reindex:
             self.block_db.wipe_undo()
         # where Core's step 7 builds its estimators, once the chainstate
@@ -580,8 +600,8 @@ class Node(threading.Thread):
         self._opened.callback(self._flush_estimators)
         # Core holds `LoadingBlocks()` on every start while `ImportBlocks`
         # connects what is stored (`ImportingNow` at
-        # `src/node/blockstorage.cpp:1263`, `ActivateBestChains` at
-        # `:1312`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); here
+        # `src/node/blockstorage.cpp:1278`, `ActivateBestChains` at
+        # `:1327`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag); here
         # only where there is something to connect, `-reindex-chainstate`
         # included: on a start with nothing stored above the tip, Core's
         # window closes in the `ActivateBestChains` call that finds
@@ -589,12 +609,13 @@ class Node(threading.Thread):
         if self.chainstate.block_index.stored_branch_outranks_tip():
             self.status_after_reindex = self.status
             self.status = NodeStatus.Reindexing
-        # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
-        # block to disk at start, so `getblock` and a peer's `getdata` are
-        # answered for it as for any other block. Not once pruning has
-        # reached height 0: Core writes it only where its block index does
-        # not know genesis yet, never back over a prune.
+        # Core's own `ChainstateManager::LoadGenesisBlock`
+        # (`src/validation.cpp:4945`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag) writes the genesis block to disk at start, so
+        # `getblock` and a peer's `getdata` are answered for it as for any
+        # other block. Not once pruning has reached height 0: Core writes
+        # it only where its block index does not know genesis yet, never
+        # back over a prune.
         if self.block_db.pruned_up_to < 0:
             self.block_db.add_block(self.chain.genesis_block)
         # `filter_index.py`'s docstring says why the filters need catching
@@ -634,13 +655,13 @@ class Node(threading.Thread):
         # `p2p.connection.Connection.own_version`, for an outbound
         # connection on `P2pManager`'s own asyncio loop rather than this
         # thread, the same way Core's own
-        # `PushNodeVersion` (`net_processing.cpp:1673`,
-        # at bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
-        # processing thread rather than validation's. Core declares that
-        # field `std::atomic<int>` (`net_processing.cpp:873`) rather than
+        # `PushNodeVersion` (`net_processing.cpp:1671`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) reads `m_best_height`
+        # from the net processing thread rather than validation's. Core declares
+        # that field `std::atomic<int>` (`net_processing.cpp:871`) rather than
         # guarding it with `cs_main`, and writes it from
-        # `PeerManagerImpl::SetBestBlock` (`:610-613`) off
-        # `UpdatedBlockTip` (`:2288`), the validation-interface callback
+        # `PeerManagerImpl::SetBestBlock` (`:608-611`) off
+        # `UpdatedBlockTip` (`:2292`), the validation-interface callback
         # fired once a tip change actually commits -- `main._finalize_fork`
         # writing this attribute is this tree's equivalent moment. A plain `int`
         # attribute is the equivalent here rather than a `threading.Lock`
@@ -805,16 +826,16 @@ class Node(threading.Thread):
         per pass grows only with the log of the whole backlog, so the
         wait is a function of how many peers are busy rather than a
         constant -- where Core's own `ThreadMessageHandler`
-        (`net.cpp:3216-3238`, at bitcoin/bitcoin@b91d983f66) calls
-        `ProcessMessages` once per peer every round and so bounds it by a
-        constant. The wait is still bounded rather than open-ended:
-        `parse_messages` appends in arrival order and each connection's
-        own contribution is capped near that same bound rather than by
-        it -- the weighing happens once per parse pass, after it, so a
-        connection already at the bound still adds whatever that pass
-        completed, up to `MAX_PROTOCOL_MESSAGE_LENGTH` for the single
-        message that crossed it -- so what can sit ahead of a paused
-        connection is the other connections' caps.
+        (`net.cpp:3232-3254`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag) calls `ProcessMessages` once per peer every round and so
+        bounds it by a constant. The wait is still bounded rather than
+        open-ended: `parse_messages` appends in arrival order and each
+        connection's own contribution is capped near that same bound
+        rather than by it -- the weighing happens once per parse pass,
+        after it, so a connection already at the bound still adds
+        whatever that pass completed, up to `MAX_PROTOCOL_MESSAGE_LENGTH`
+        for the single message that crossed it -- so what can sit ahead
+        of a paused connection is the other connections' caps.
         `tests/unit/init_test.py` measures the wait in passes of this
         loop against the number of busy connections.
         btclib-org/btclib-node#490
@@ -850,7 +871,7 @@ class Node(threading.Thread):
         """Begin loading `mempool.dat`, which the loop then steps.
 
         Core loads it on its `initload` thread, once the blocks are
-        imported (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        imported (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag); here the loop adds one transaction per pass, serving peers
         and RPC calls between them. With `-persistmempool=0` nothing is read:
         the load is an empty step, tried at the first pass, as Core's
@@ -891,19 +912,33 @@ class Node(threading.Thread):
         self.mempool_estimator.flush()
 
     def _step_chain(self) -> bool:
-        """Advance the chain one step, and answer whether `run` should stop.
+        """Advance the chain one step, answering as `update_chain` does.
 
-        A failure sets `terminate_flag`, so that `_drain_rpc_queue` ends
-        each request still waiting rather than serve it for ever.
+        A failure answers `False` and sets `terminate_flag`, so that `run`
+        stops and `_drain_rpc_queue` ends each request still waiting
+        rather than serve it for ever.
         """
         try:
             self.download_manager.step()
-            update_chain(self)
+            moved = update_chain(self)
         except Exception:
             self.logger.exception("Exception occurred")
             self.terminate_flag.set()
-            return True
-        return False
+            return False
+        return moved
+
+    def _coins_read_error(self) -> None:
+        """Stop the node on a coin a read by outpoint cannot return.
+
+        Core's `coins_error_cb` reports "Error reading from database,
+        shutting down." and `CCoinsViewErrorCatcher` then aborts the
+        process (`src/init.cpp`, `src/coins.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Here `terminate_flag`
+        ends `run`'s loop, whichever caller made the read, and `run`
+        closes the stores as on any other stop.
+        """
+        self.logger.error("Error reading from database, shutting down.")
+        self.terminate_flag.set()
 
     def _load_or_abort(self) -> bool:
         """Run `load`, and answer whether it opened every store.
@@ -980,7 +1015,7 @@ class Node(threading.Thread):
         """Read `-whitelist` into the P2P manager; answer whether it was valid.
 
         As `AppInitMain` does once the stores are open and before it starts
-        `connman` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `connman` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag): a value it refuses is `Node.init_errors`.
         """
         config = self.config
@@ -1009,7 +1044,7 @@ class Node(threading.Thread):
         `rpc_manager.interrupt()` runs first, in the order Core's
         `Interrupt(node)` -- which calls `InterruptHTTPServer` -- runs
         ahead of `Shutdown(node)`'s own `StopHTTPServer` (`src/init.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Every
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Every
         `RpcConnection.run` reads `rpc_manager.interrupted`, and queues
         a request only while it is unset, holding the
         `rpc_manager.queue_lock` `interrupt` sets it under, answering
@@ -1069,8 +1104,8 @@ class Node(threading.Thread):
         """Stop both managers and close the stores, those `load` opened."""
         # Core's own `Interrupt(node)` calling `ShutdownNotify` ahead of
         # `InterruptHTTPServer`/`InterruptHTTPRPC` and the rest
-        # (`src/init.cpp:256-276`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag): every `-shutdownnotify` command, joined before
+        # (`src/init.cpp:275-295`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag): every `-shutdownnotify` command, joined before
         # anything below runs, so shutdown does not go on until each has
         # finished.
         run_shutdown_notify(self.logger, self.config.shutdown_notify)
@@ -1101,6 +1136,29 @@ class Node(threading.Thread):
             self.chainstate.close()
             self.block_db.close()
 
+    def _run_loop(self) -> None:
+        """Drain the queues and step the chain, pass by pass, until stopped."""
+        chain_changed = False
+        while not self.terminate_flag.is_set():
+            if self._drain_message_queues() and not chain_changed:
+                time.sleep(IDLE_SLEEP_SECONDS)
+            # `_drain_message_queues` can itself set `terminate_flag`
+            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # inside `handle_rpc`, does exactly that on an exception
+            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
+            # than letting propagate -- and this loop must not run
+            # `_step_chain`'s own `update_chain` once that has happened:
+            # the flag is the store's own word that it is unsafe to touch
+            # again this pass, not only next time the condition above is
+            # read.
+            if self.terminate_flag.is_set():
+                break
+            chain_changed = self._step_chain()
+            if self.terminate_flag.is_set():
+                break
+            if self.fee_estimator.flush_if_due():
+                self.mempool_estimator.flush()
+
     @override
     def run(self) -> None:
         self.logger.info("Starting main loop")
@@ -1112,69 +1170,56 @@ class Node(threading.Thread):
         # put `status` back below `HeaderSynced` for good (#398).
         self.status = NodeStatus.SyncingHeaders
         # Core's RPC server starts in warmup and leaves it near the end of
-        # `AppInitMain` (`src/init.cpp:2293`, at bitcoin/bitcoin@9be056a8a7):
-        # a request that arrives while the stores load is answered
-        # `RPC_IN_WARMUP`, not held for the load.
+        # `AppInitMain` (`src/init.cpp:2409`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag): a request that arrives while the stores load is
+        # answered `RPC_IN_WARMUP`, not held for the load.
         self.rpc_manager.start_warmup()
         # The RPC listener first, and waited on: Core's `AppInitMain`
         # starts its HTTP server at step 4a, before step 12 starts
-        # `connman`, and aborts where it cannot (`src/init.cpp:1558-1561`,
-        # at bitcoin/bitcoin@9be056a8a7). A node that asked for RPC and
-        # has none is not started, and its peer-to-peer side never is.
-        # The P2P listener is waited on too, `connman` failing to bind
-        # with `-listen` on ending `AppInitMain` the same way
-        # (`src/init.cpp:2283-2285`, same sha).
+        # `connman`, and aborts where it cannot (`src/init.cpp:1633-1636`,
+        # same sha). A node that asked for RPC and has none is not
+        # started, and its peer-to-peer side never is. The P2P listener
+        # is waited on too, `connman` failing to bind with `-listen` on
+        # ending `AppInitMain` the same way (`src/init.cpp:2399-2401`,
+        # same sha).
         #
         # A stop asked for while the stores load ends start-up there, as
         # Core returns on `ShutdownRequested` after loading its block
-        # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
+        # index and again just before step 12 (`src/init.cpp:1945-1948`
+        # and `2158-2160`, same sha). Core checks for a stop nowhere
+        # after that, so a stop asked for later still leaves warmup and
+        # runs `-startupnotify`: `started` says whether start-up got past
+        # that check without an error, which `terminate_flag`, set by a
+        # stop too, cannot say.
         started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
         started = started and self._read_whitelist()
         if started:
-            # `CConnman::Start`'s message (`src/net.cpp:3528`, same sha)
+            # `CConnman::Start`'s message (`src/net.cpp:3610`, same sha)
             self.rpc_manager.set_warmup_status("Starting network threads…")
         if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own
-            # (`src/net.cpp:3444-3447` and `3497-3503`,
-            # at bitcoin/bitcoin@9be056a8a7); None where `run` ended on
-            # something other than an `OSError`
+            # (`src/net.cpp:3525-3528` and `3578-3584`, same sha); None
+            # where `run` ended on something other than an `OSError`
             bind_error = self.p2p_manager.bind_error
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        if not self.terminate_flag.is_set():
+            started = False
+        if started:
             # Core's `SetRPCWarmupFinished()`, step 13, once both listeners
             # are up; a start that ended before this stays in warmup
             self.rpc_manager.finish_warmup()
-            # Core's own `StartupNotify(args)`, the last line of
-            # `AppInitServers` -- called once both listeners are up and
-            # `SetRPCWarmupFinished()`/`uiInterface.InitMessage("Done
-            # loading")` have already run (`src/init.cpp:2294-2309`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): run once, on a
-            # thread nothing waits for.
+            # Core's `StartupNotify(args)`, the last call of `AppInitMain`
+            # (`src/init.cpp:2403-2425`, same sha): run once, on a thread
+            # nothing waits for.
             run_detached(self.logger, self.config.startup_notify)
             self._start_mempool_load()
         # `config.connect` and `config.addnode` are each dialled by a
         # loop of `P2pManager`'s own, `_open_connect_peers` and
         # `_open_added_peers`, started from `P2pManager.run` once the
         # listener is bound; no dial happens here.
-        while not self.terminate_flag.is_set():
-            if self._drain_message_queues():
-                time.sleep(IDLE_SLEEP_SECONDS)
-            # `_drain_message_queues` can itself set `terminate_flag`
-            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
-            # inside `handle_rpc`, does exactly that on an exception
-            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
-            # than letting propagate -- and this loop must not run
-            # `_step_chain`'s own `update_chain` once that has happened:
-            # the flag is the store's own word that it is unsafe to touch
-            # again this pass, not only next time the condition above is
-            # read.
-            if self.terminate_flag.is_set() or self._step_chain():
-                break
-            if self.fee_estimator.flush_if_due():
-                self.mempool_estimator.flush()
+        self._run_loop()
         self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race
@@ -1251,7 +1296,7 @@ class Node(threading.Thread):
           recording one: the wedge this raises for.
 
         Once the stores begin to close, the wait has no bound, as Core's
-        `Shutdown` (`src/init.cpp`, bitcoin/bitcoin@9be056a8a7, the v31.1
+        `Shutdown` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag) waits for each flush however long it takes. A close took
         seconds on a loaded runner (btclib-org/btclib-node#1870), and
         raising during it would report a wedge where there is none. The
@@ -1330,7 +1375,7 @@ def install_signal_handlers(node: Node) -> None:
     gets here, and `faulthandler.register` would be the way to see that,
     at the price of a dump on every clean stop. A second signal re-arms
     the delay. Bitcoin Core's `Shutdown` writes no stack
-    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
 
     def stop_handler(_signum: int, _frame: FrameType | None) -> None:

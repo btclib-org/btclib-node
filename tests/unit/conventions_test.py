@@ -4,8 +4,8 @@
 
 """The convention-test declaration in tests/README.md is true.
 
-Section 7 of the organization standard lists the conventions a suite can
-turn into a red test, and closes with the clause that makes the list
+Section 7 of the organization's standard lists the conventions a suite
+can turn into a red test, and closes with the clause that makes the list
 usable: a repository needs the ones its own prose states, plus the
 public surface, which a repository publishing an importable package has
 regardless. That clause is right, and its price is that an *absent*

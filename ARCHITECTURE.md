@@ -16,10 +16,11 @@ drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, steps the RPC requests still waiting, moves the
 script checks of relayed transactions along, loads the next transaction
 of `mempool.dat` while that load lasts, then steps the download manager
-and extends the chain. A message that raises is logged and the
-loop continues; a failure in the download manager's step or in
-`update_chain` is logged and ends the node, the databases below being
-closed on the way out.
+and extends the chain. A message that raises is logged and the loop
+continues. A failure in the download manager's step or in `update_chain`
+is logged and ends the node, the databases below being closed on the way
+out, and so does a failure activating the best chain on a peer's message,
+whose handler sets `terminate_flag` before it raises.
 
 ## The protocol and the RPC surface
 

@@ -37,8 +37,8 @@ from btclib.p2p.bip324 import (
     message_from_contents,
 )
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
+from ecc import ellswift
 from ecc.curves import secp256k1
-from ecc.ecc import ellswift
 
 from btclib_node.exceptions import RejectedMessageError
 from btclib_node.p2p.transport import (
