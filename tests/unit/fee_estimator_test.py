@@ -92,10 +92,9 @@ def _fill(estimator: FeeEstimator, blocknum: int) -> list[list[RemovedTx]]:
 
 
 def test_block_policy_estimates(tmp_path: Path) -> None:  # noqa: C901, PLR0912
-    """Core's `BlockPolicyEstimates` at the v32.1 tag.
+    """Core's `BlockPolicyEstimates`, the same transactions and checks.
 
-    Ported from `src/test/blockpolicyestimator_tests.cpp`
-    (at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    It adds a check of its own, and the comment beside it says why.
     """
     estimator, _ = an_estimator(tmp_path)
     held: list[list[RemovedTx]] = [[] for _ in range(10)]
@@ -151,6 +150,8 @@ def test_block_policy_estimates(tmp_path: Path) -> None:  # noqa: C901, PLR0912
     block = [tx for txs in held for tx in reversed(txs)]
     blocknum += 1
     estimator.process_block(block, blocknum)
+    # not Core's: the fee checks below also pass on a block ignored
+    assert not estimator.mempool_txs
     assert estimator.estimate_fee(1) == 0
     for i in range(2, 10):
         fee = estimator.estimate_fee(i)
