@@ -37,8 +37,8 @@ from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.headers_sync import ChainStart, HeadersSyncState, State
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import (
     ScriptPubKey,
@@ -68,7 +68,11 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.cluster_linearize import FeeFrac
-from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import (
+    DEFAULT_MAX_DATACARRIER_BYTES,
+    DEFAULT_MIN_RELAY_FEERATE,
+    DEFAULT_TX_SEND_RATE,
+)
 from btclib_node.constants import (
     CLIENT_VERSION,
     MIN_BLOCKS_TO_KEEP,
@@ -77,6 +81,7 @@ from btclib_node.constants import (
     P2pConnStatus,
     numeric_version,
 )
+from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
@@ -93,7 +98,7 @@ from btclib_node.main import (
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
 from btclib_node.p2p.address import ip_and_port, peer_address
-from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
+from btclib_node.p2p.banman import BanEntry, BanMan, SpecialAddress, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.eviction import Network, net_class
@@ -315,6 +320,7 @@ def a_node(
     local_addresses: dict[bytes, LocalService] | None = None,
     network_active: bool = True,
     outbound_time_offsets: list[int] | None = None,
+    tx_send_rate: int = DEFAULT_TX_SEND_RATE,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -332,12 +338,14 @@ def a_node(
     `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
     and unset by default -- nothing else here reads either.
     `outbound_time_offsets` is `get_network_info`'s `timeoffset` samples,
-    none by default.
+    none by default. `tx_send_rate` is `Config`'s, which a real
+    `DownloadManager`'s buckets, `get_network_info`'s `inv_buckets`, start
+    from.
     """
     known = heights if heights is not None else {}
     flag = [network_active]
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
-    return SimpleNamespace(
+    node = SimpleNamespace(
         # the network `decoderawtransaction` spells its addresses for
         chain=RegTest(),
         chainstate=SimpleNamespace(
@@ -380,6 +388,7 @@ def a_node(
             v1transport=v1transport,
             permit_bare_multisig=permit_bare_multisig,
             max_datacarrier_bytes=max_datacarrier_bytes,
+            tx_send_rate=tx_send_rate,
         ),
         warnings=Warnings(),
         # a file that is not there: an estimator with no history
@@ -394,6 +403,8 @@ def a_node(
         outbound_time_offsets=outbound_time_offsets or [],
         _accept=accept,
     )
+    node.download_manager = DownloadManager(cast("Any", node), Logger(debug=True))
+    return node
 
 
 def test_the_transactions_here_tell_a_txid_from_a_wtxid() -> None:
@@ -2734,20 +2745,17 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
     """`testmempoolaccept` has no catch of its own for a storage fault.
 
     Neither `MissingPrevoutError` nor `BTClibValueError`, so
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `test_mempool_accept` uncaught, ending the
-    whole batch rather than being folded into this one entry's own
-    `"reject-reason"`. This matches Core's own `testmempoolaccept`
-    (`src/rpc/mempool.cpp:412-463`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), whose per-tx loop has no catch-all of its own either
-    (btclib-org/btclib-node#668).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `test_mempool_accept`
+    uncaught, ending the whole batch rather than being folded into this
+    one entry's own `"reject-reason"`. This matches Core's own
+    `testmempoolaccept` (`src/rpc/mempool.cpp:412-463`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), whose per-tx loop has
+    no catch-all of its own either (btclib-org/btclib-node#668).
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
@@ -4508,8 +4516,12 @@ def test_blockchain_info_s_warnings_is_node_warnings_get_messages() -> None:
 
 
 def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
-    """ISS 1647: each with its port and score, IPv4 before IPv6, by octets."""
+    """ISS 1647, ISS 2249: with port and score, by network, then by octets."""
+    onion = SpecialAddress(BIP155Network.TORV3, bytes(32))
+    i2p = SpecialAddress(BIP155Network.I2P, bytes(range(32)))
     held = [
+        LocalService(i2p, 0, 4),
+        LocalService(onion, 8333, 4),
         LocalService(ip_address("2606:4700::1"), 8333, 1),
         LocalService(ip_address("9.9.9.9"), 18444, 5),
         LocalService(ip_address("8.8.8.8"), 8333, 2),
@@ -4519,6 +4531,8 @@ def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
         {"address": "8.8.8.8", "port": 8333, "score": 2},
         {"address": "9.9.9.9", "port": 18444, "score": 5},
         {"address": "2606:4700::1", "port": 8333, "score": 1},
+        {"address": str(onion), "port": 8333, "score": 4},
+        {"address": str(i2p), "port": 0, "score": 4},
     ]
     assert get_network_info(a_node(), _CONN, [])["localaddresses"] == []
 
@@ -5169,17 +5183,15 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     """`send_raw_transaction` has no catch of its own for a storage fault.
 
     Unlike `MissingPrevoutError` and `BTClibValueError` above,
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `send_raw_transaction` uncaught, for
-    `handle_rpc`'s own generic catch to answer as this node's own fault
-    rather than as a refusal of `tx` (btclib-org/btclib-node#631).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `send_raw_transaction`
+    uncaught, for `handle_rpc`'s own generic catch to answer as this
+    node's own fault rather than as a refusal of `tx`
+    (btclib-org/btclib-node#631).
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
@@ -5203,8 +5215,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     `protocolversion` is included beside it as a real, cheaply-answered
     constant rather than as decoration. `NETWORK | WITNESS |
     NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give. The keys
-    are those bitcoind v32.1.0 answers on regtest, in its order, less
-    `tx_send_rate` and `inv_buckets`.
+    are those bitcoind v32.1.0 answers on regtest, in its order.
     """
     result = get_network_info(a_node(), _CONN, [])
     assert list(result) == [
@@ -5215,6 +5226,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "localservicesnames",
         "localrelay",
         "timeoffset",
+        "tx_send_rate",
+        "inv_buckets",
         "networkactive",
         "connections",
         "connections_in",
@@ -5233,6 +5246,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
             "version",
             "localrelay",
             "timeoffset",
+            "tx_send_rate",
+            "inv_buckets",
             "networks",
             "relayfee",
             "incrementalfee",
@@ -5240,7 +5255,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     }
     assert reported == {
         "subversion": USER_AGENT,
-        "protocolversion": PROTOCOL_VERSION,
+        # Core v32.1's
+        "protocolversion": 70017,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
         "networkactive": True,
@@ -5250,6 +5266,64 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "localaddresses": [],
         "warnings": [],
     }
+
+
+def _bucket_text(answer: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return `inv_buckets` with each token count as the wire carries it."""
+    return {
+        direction: {
+            key: value.text if isinstance(value, RawJSON) else value
+            for key, value in bucket.items()
+        }
+        for direction, bucket in answer["inv_buckets"].items()
+    }
+
+
+@pytest.mark.parametrize(
+    ("rate", "count"), [(DEFAULT_TX_SEND_RATE, "420"), (1, "30"), (1000, "30000")]
+)
+def test_get_network_info_answers_the_announcement_buckets_at_rest(
+    rate: int, count: str
+) -> None:
+    """ISS 2309: bitcoind v32.1.0's answer before any transaction arrives.
+
+    Measured on regtest at `-txsendrate` unset, `1` and `5000`, which
+    Core clamps to 1000: `tx_send_rate`, then both buckets full, a whole
+    token count written with no point.
+    """
+    result = get_network_info(a_node(tx_send_rate=rate), _CONN, [])
+    assert result["tx_send_rate"] == rate
+    full = {"backlog": 0, "count_tok": count, "size_tok": "12000000"}
+    assert _bucket_text(result) == {"inbound": full, "outbound": full}
+
+
+def test_get_network_info_answers_the_buckets_as_the_backlog_left_them() -> None:
+    """ISS 2309: each direction's backlog and tokens, unrefilled by the read.
+
+    A fraction is written to 16 significant digits, as bitcoind v32.1.0
+    wrote `-2.286893999999989` and `12305094.12000001` on regtest.
+    """
+    node = a_node()
+    manager = node.download_manager
+    inbound, outbound = manager._inbound_inv_bucket, manager._outbound_inv_bucket
+    inbound.backlog = [b"\x01" * 32, b"\x02" * 32]
+    inbound.count_bucket.value = -2.286893999999989
+    inbound.size_bucket.value = 12305094.12000001
+    outbound.count_bucket.value = 419.0
+    outbound.size_bucket.value = 12009769.4
+    # a refill from then to now would move every value below
+    inbound.increment(1_700_000_000.0)
+    outbound.increment(1_700_000_000.0)
+    first = _bucket_text(get_network_info(node, _CONN, []))
+    assert first == {
+        "inbound": {
+            "backlog": 2,
+            "count_tok": "-2.286893999999989",
+            "size_tok": "12305094.12000001",
+        },
+        "outbound": {"backlog": 0, "count_tok": "419", "size_tok": "12009769.4"},
+    }
+    assert _bucket_text(get_network_info(node, _CONN, [])) == first
 
 
 def test_get_network_info_answers_networkactive_as_setnetworkactive_left_it() -> None:

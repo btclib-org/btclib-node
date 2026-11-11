@@ -25,6 +25,7 @@ each answer ends at the close.
 import base64
 import re
 import socket
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -32,10 +33,11 @@ import pytest
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.rpc.callbacks import arg_names
+from btclib_node.rpc.connection import _SELECT_TIMEOUT
 from tests import cookie_path, get_random_port, wait_until_listening
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from tests.integration.conftest import Bitcoind
@@ -373,11 +375,13 @@ def _request(case: str, credential: bytes) -> bytes:
 
 
 def _answer(
-    port: int, data: bytes, later: bytes = b""
+    port: int, data: bytes, later: bytes = b"", pause: float = 0.0
 ) -> list[tuple[bytes, list[bytes], bytes]]:
     """Return each answer's status line, framing fields and body, to the close.
 
-    `later` is written once the first answer's header section is read.
+    `later` is written `pause` seconds after the first answer's header
+    section is read. A side that closed before `later` arrived may answer
+    it with a reset, which ends the reply like a close.
     `Date` and `Content-Type` are left out: Core writes them and this
     node does not, as `RpcConnection._frame` says. An answer ends where
     the next status line starts, since an answer written with no
@@ -391,9 +395,14 @@ def _answer(
                 chunk = client.recv(65536)
                 assert chunk, f"closed before a header section ended: {reply!r}"
                 reply += chunk
+            time.sleep(pause)
             client.sendall(later)
-        while chunk := client.recv(65536):
-            reply += chunk
+        try:
+            while chunk := client.recv(65536):
+                reply += chunk
+        except ConnectionResetError:
+            if not later:
+                raise
     answers = []
     for answer in re.split(rb"(?=HTTP/-?[0-9]+\.-?[0-9]+ [0-9]{3} )", reply)[1:]:
         head, _, body = answer.partition(b"\r\n\r\n")
@@ -427,42 +436,111 @@ def node(tmp_path: Path) -> Iterator[Node]:
         node.join()
 
 
-@pytest.mark.parametrize("case", [*_CASES, *_RAW])
-def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> None:
-    """This node answers `case` with `bitcoind`'s status, fields and body."""
-    theirs = _answer(
-        bitcoind.rpc_port, _request(case, bitcoind.cookie_path.read_bytes())
-    )
+# How many times `bitcoind` is asked in all where it gave fewer answers
+# than this node, or than the count its case expects. Past a closing
+# reply, Core reads a request only within a window, which a slow runner
+# can make it miss (btclib-org/btclib-node#2304; `src/httpserver.cpp` at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag). Its socket thread waits up
+# to `SELECT_TIMEOUT` (`_SELECT_TIMEOUT` here) in `WaitMany` (:1069), a
+# wait that started before the reply was sent, and receives a request
+# written once the reply is read only before that wait ends. The
+# worker's `HTTPRemoteClient::Send` (:606) sends the reply through
+# `MaybeSendBytesFromBuffer`, which sets `m_disconnect` once a closing
+# reply is sent (:1334), and only then clears `m_req_busy` (:654). A
+# request written with the closing one is read by the thread's pass
+# through `TryReadRequest` (:1085). While `m_req_busy` is set it reads
+# nothing (:1090), and where the worker has set `m_disconnect` by the
+# time that pass reaches `DisconnectClients` (:1150), it disconnects
+# without reading. Core's miss only loses answers. This node is asked
+# once: its own window is pinned by `tests/unit/rpc/connection_test.py`,
+# and a miss of its own is a failure here.
+_TRIES = 10
+# Long past the wait each side gives a request that follows a closing
+# reply: `_SELECT_TIMEOUT` here, `SELECT_TIMEOUT` in Core
+_PAST_THE_WAIT = 10 * _SELECT_TIMEOUT
+# The answers bitcoind gives a case of `test_the_answer_is_bitcoind_s`
+# that depends on that window, where it does not miss it: a request
+# written with a closing one, which Core's socket thread answers itself
+_COUNTS = {"tab-close-kept": 2, "spaces-then-tab-close-kept": 2}
+
+type _Answers = list[tuple[bytes, list[bytes], bytes]]
+
+
+def _compared(
+    bitcoind: Bitcoind,
+    node: Node,
+    data: Callable[[bytes], bytes],
+    *,
+    later: bytes = b"",
+    pause: float = 0.0,
+    count: int | None = None,
+) -> tuple[_Answers, _Answers]:
+    """Return `bitcoind`'s answers and this node's to `data` of each cookie.
+
+    This node is asked once. `bitcoind` is asked again while its answers
+    are fewer than this node's, or than `count` where it is given, up to
+    `_TRIES` times in all.
+    """
     # set by the fixture's own `Config`
     assert node.rpc_port is not None
+    theirs_cookie = bitcoind.cookie_path.read_bytes()
     ours = _answer(
-        node.rpc_port, _request(case, cookie_path(node.config.data_dir).read_bytes())
+        node.rpc_port,
+        data(cookie_path(node.config.data_dir).read_bytes()),
+        later,
+        pause,
+    )
+    want = max(len(ours), count or 0)
+    theirs = _answer(bitcoind.rpc_port, data(theirs_cookie), later, pause)
+    for _ in range(_TRIES - 1):
+        if len(theirs) >= want:
+            break
+        theirs = _answer(bitcoind.rpc_port, data(theirs_cookie), later, pause)
+    return theirs, ours
+
+
+@pytest.mark.parametrize("case", [*_CASES, *_RAW])
+def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> None:
+    """This node answers `case` with `bitcoind`'s status, fields and body.
+
+    `_TRIES` says why `bitcoind` may be asked more than once, and
+    `_COUNTS` how many answers it gives where its case says.
+    """
+    count = _COUNTS.get(case)
+    theirs, ours = _compared(
+        bitcoind, node, lambda cookie: _request(case, cookie), count=count
     )
     assert theirs
+    assert count in {None, len(theirs)}
     assert ours == theirs
 
 
 @pytest.mark.parametrize(
+    ("pause", "count"), [(0.0, 2), (_PAST_THE_WAIT, 1)], ids=["at-once", "past"]
+)
+@pytest.mark.parametrize(
     "later", [b"POST /x HTTP/1.1\r\n\r\n", b"garbage\r\n\r\n"], ids=["404", "400"]
 )
 def test_a_request_sent_once_a_closing_401_arrives_is_answered_as_bitcoind_does(
-    later: bytes, bitcoind: Bitcoind, node: Node
+    later: bytes, pause: float, count: int, bitcoind: Bitcoind, node: Node
 ) -> None:
     """A request written once a closing 401 is read gets `bitcoind`'s answer.
 
     `RpcConnection._answer_past_a_close` says when Core reads it
-    (btclib-org/btclib-node#2153).
+    (btclib-org/btclib-node#2153). Written at once, it normally arrives
+    within each side's wait and is answered, and `bitcoind` is asked
+    again where it missed, as `_TRIES` says. Written `_PAST_THE_WAIT`
+    later, it is not answered.
     """
     data = (
         b"POST / HTTP/1.1\r\nAuthorization: Basic "
         + base64.b64encode(b"__cookie__:wrong")
         + b"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     )
-    theirs = _answer(bitcoind.rpc_port, data, later)
-    # set by the fixture's own `Config`
-    assert node.rpc_port is not None
-    ours = _answer(node.rpc_port, data, later)
-    assert len(theirs) == 2
+    theirs, ours = _compared(
+        bitcoind, node, lambda _: data, later=later, pause=pause, count=count
+    )
+    assert len(theirs) == count
     assert ours == theirs
 
 

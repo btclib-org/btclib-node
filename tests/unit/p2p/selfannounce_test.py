@@ -8,7 +8,9 @@ import secrets
 from ipaddress import IPv4Address, IPv6Address, ip_address
 
 import pytest
+from btclib.p2p.addrv2 import BIP155Network
 
+from btclib_node.p2p.banman import Host, SpecialAddress
 from btclib_node.p2p.selfannounce import (
     LOCAL_BIND,
     LOCAL_MANUAL,
@@ -21,6 +23,8 @@ V4 = IPv4Address("8.8.8.8")
 V6 = IPv6Address("2606:4700::1")
 TEREDO = IPv6Address("2001:0:1::1")
 TUNNEL = IPv6Address("2002:808:808::1")
+ONION = SpecialAddress(BIP155Network.TORV3, bytes(32))
+I2P = SpecialAddress(BIP155Network.I2P, bytes(range(32)))
 
 
 @pytest.mark.parametrize(
@@ -39,16 +43,21 @@ TUNNEL = IPv6Address("2002:808:808::1")
         (V4, IPv4Address("127.0.0.1"), False, 4),
         (V6, IPv4Address("127.0.0.1"), False, 3),
         (TEREDO, IPv6Address("::1"), False, 2),
+        (ONION, IPv4Address("127.0.0.1"), False, 6),
+        (ONION, V4, True, 1),
+        (ONION, V6, True, 1),
+        (I2P, IPv4Address("127.0.0.1"), False, 1),
+        (I2P, V4, True, 1),
     ],
 )
 def test_reachability_ranks_as_getreachabilityfrom(
-    ours: IPv4Address | IPv6Address,
+    ours: Host,
     theirs: IPv4Address | IPv6Address,
     expected: int,
     *,
     routable: bool,
 ) -> None:
-    """ISS 1641: `GetReachabilityFrom` ranks IPv4, IPv6 and Teredo."""
+    """ISS 1641, ISS 2249: `GetReachabilityFrom`, an onion or I2P one too."""
     assert reachability(ours, theirs, routable=routable) == expected
 
 
@@ -62,7 +71,7 @@ def _tell(
     *,
     seen_as: tuple[IPv4Address | IPv6Address, int | None] | None = None,
     inbound_onion: bool = False,
-) -> tuple[IPv4Address | IPv6Address, int] | None:
+) -> tuple[Host, int] | None:
     return address_for_peer(
         held,
         ip_address(peer),
@@ -83,6 +92,22 @@ def test_a_peer_on_an_onion_listener_is_told_none_of_the_held_addresses() -> Non
     held = _held(LocalService(V4, 2, LOCAL_BIND), LocalService(V6, 1, LOCAL_MANUAL))
     assert _tell(held) == (V4, 2)
     assert _tell(held, inbound_onion=True) is None
+
+
+def test_an_onion_address_is_told_only_to_a_peer_on_an_onion_listener() -> None:
+    """ISS 2249: `GetLocal` tells a privacy network's address to its own peers.
+
+    No peer here comes through I2P, so an I2P address is told to nobody.
+    """
+    held = _held(
+        LocalService(V4, 2, LOCAL_BIND),
+        LocalService(ONION, 3, LOCAL_MANUAL),
+        LocalService(I2P, 4, LOCAL_MANUAL),
+    )
+    assert _tell(held) == (V4, 2)
+    assert _tell(held, inbound_onion=True) == (ONION, 3)
+    assert _tell(_held(LocalService(I2P, 4, LOCAL_MANUAL))) is None
+    assert _tell(_held(LocalService(I2P, 4, LOCAL_MANUAL)), inbound_onion=True) is None
 
 
 def test_the_best_reachable_address_then_the_best_score_is_told() -> None:

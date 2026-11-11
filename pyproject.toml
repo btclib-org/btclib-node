@@ -88,24 +88,37 @@ dependencies = [
     # 2026.10.28 is the first release whose `BlockContext.min_version`
     # sets no version floor below the BIP34, BIP66 and BIP65 heights, as
     # Core does: an earlier one refuses a block of version 0 or below
-    # there, which `add_headers` accepts (btclib-org/btclib#2833). The
-    # floor is the maintainer's decision.
-    "btclib[secp256k1,bip324]>=2026.10.28",
+    # there, which `add_headers` accepts (btclib-org/btclib#2833).
+    #
+    # 2026.11.10 is the first release with `btclib.bms`
+    # (btclib-org/btclib#2937), which `rpc/signing.py` imports, with
+    # `policy.validate_inputs_standardness` (btclib-org/btclib#2939),
+    # which `main.py` calls, and with Core v32.1's BIP324 short ids
+    # (btclib-org/btclib#2938), which `p2p/v2transport.py` reads.
+    "btclib[secp256k1,bip324]>=2026.11.10",
     # Descriptors and miniscript, as ARCHITECTURE.md's *What is delegated,
-    # and what is not* says. The floor is 2026.11.2, the first release
-    # whose provider gives a key spelled twice in a fragment Core v32.1's
-    # origin (btclib-org/bip32-descriptors#20). Below it, the later origin
-    # takes the place of the earlier one's fingerprint: `[aaaaaaaa/5]` then
+    # and what is not* says. 2026.11.2 is the first release whose
+    # provider gives a key spelled twice in a fragment Core v32.1's origin
+    # (btclib-org/bip32-descriptors#20). Below it, the later origin takes
+    # the place of the earlier one's fingerprint: `[aaaaaaaa/5]` then
     # `[bbbbbbbb/7]` give `[bbbbbbbb/7/5/0/1]` at `/0/1`.
-    "bip32-descriptors>=2026.11.2",
+    #
+    # The floor is 2026.11.11, the first release that imports on btclib
+    # 2026.11.10 and ecc 2026.11.11: an earlier one imports
+    # `btclib.base58` or `ecc.ecc`, which those releases remove.
+    "bip32-descriptors>=2026.11.11",
     # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
     # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
     # its signatures through the same package.
     #
-    # The floor is 2026.10.28, the release btclib 2026.10.28 asks for.
-    # 2026.10.2 fixed GHSA-r5pw-9wrg-m3mj and GHSA-m38m-987v-j55h.
-    "ecc>=2026.10.28",
+    # 2026.11.8 is the first release with `dsa`, `ssa` and `ellswift` at
+    # the top level, where those files import them (btclib-org/ecc#482).
+    # The floor is 2026.11.11, the first whose refusals print no byte of
+    # a value refused as a signature, which may be a key passed in its
+    # place (btclib-org/ecc#495). 2026.10.2 fixed GHSA-r5pw-9wrg-m3mj and
+    # GHSA-m38m-987v-j55h.
+    "ecc>=2026.11.11",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -324,6 +337,11 @@ harness = [
 # harness, plus what the suite delegates to.
 test = [
     { include-group = "harness" },
+    # tests/unit/rpc/signing_test.py imports it to write the base58check
+    # strings of keys `signmessagewithprivkey` refuses. btclib brings it
+    # too, and it is declared here for the reason bitcoin-core-rpc below
+    # is. The floor is 2026.10.23, the release btclib 2026.11.10 asks for.
+    "base58-bech32>=2026.10.23",
     # tests/functional/rpc and tests/integration/conftest.py both import
     # this at module top, the former against this node's own rpc surface
     # and the latter as the client for a real bitcoind. It arrives
@@ -340,14 +358,14 @@ test = [
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
     # The floor is 0.8.0.10, the release fixing GHSA-8h6f-34jj-7p6c.
-    # `ecc[secp256k1]`, which `btclib[secp256k1]` brings, asks for 0.8.0.12.
+    # `ecc[secp256k1]`, which `btclib[secp256k1]` brings, asks for 0.8.0.14.
     "btclib-secp256k1>=0.8.0.10",
     # For `tests/functional/rpc/chain_test.py` and `tx_test.py`, as
     # ARCHITECTURE.md's *What is delegated, and what is not* says. The
-    # floor is 2026.10.25, the first release that asks for
-    # `btclib>=2026.10.24` and `ecc>=2026.10.23`
-    # (btclib-org/btclib-node#2008).
-    "btclib-wallet>=2026.10.25",
+    # floor is 2026.11.2, the first release whose
+    # `btclib_wallet.fetch.bitcoin_core` imports on btclib 2026.11.10: an
+    # earlier one imports `btclib.exceptions.FetchError`, which it removes.
+    "btclib-wallet>=2026.11.2",
     # tests/docs_conf_test.py executes docs/source/conf.py, which imports
     # it; the floor is `docs`'s, below
     "sphinx>=9.1.0",
@@ -422,7 +440,7 @@ dev = [
 
 [tool.uv]
 # the oldest uv that may read uv.lock, at most the uv a Dependabot run's
-# log names -- section 1 of the organization standard has the argument,
+# log names -- section 1 of the organization's standard has the argument,
 # section 15 the commands that measure it
 required-version = ">=0.13.4"
 
@@ -632,9 +650,8 @@ source-exclude = [
 # above is where what went unasked before it is written down. What that
 # table's source-exclude names is not repeated here, check-sdist reading
 # it for the uv backend, so this holds only what no include pattern adds
-# in the first place: the workspaces of an editor and of an agent, the
-# files git reads, and COPYRIGHT. Patterns are gitignore's, so a
-# directory covers what is under it at any depth.
+# in the first place and nothing installed from the sdist reads. Patterns
+# are gitignore's, so a directory covers what is under it at any depth.
 #
 # Root prose, AGENTS.md included, travels with the archive under `*.md`,
 # and .claude/ does not. Section 13 of btclib-org/.github tracks .claude/
@@ -647,6 +664,7 @@ source-exclude = [
 # that list has no say over what the backend packs, and
 # [tool.uv.build-backend] above is where the omission is decided
 git-only = [
+    ".bestpractices.json",
     ".claude/",
     # the atheris harnesses and the seeds they start from, read by
     # fuzz.yml and by tests/fuzz_corpus_test.py and by nothing a package
@@ -714,7 +732,7 @@ package = ["src/btclib_node"]
 # has not got, so what a contributor without one gets is a skip naming
 # `BTCLIB_NODE_INTEGRATION` -- `tests/integration/conftest.py` is where
 # that is decided -- rather than a directory nothing on the command
-# line mentions. Section 7 of the organization standard asks for that
+# line mentions. Section 7 of the organization's standard asks for that
 # shape: every suite directory collected by a bare run, each test
 # skipping itself where the switch that asks for it is unset, and the
 # directory kept out of the coverage ratchet, which
@@ -952,7 +970,7 @@ precision = 2
 # measures is reached by the suite. A `pragma: no cover` is what takes a
 # line out of that set, and it does not go in without its reason after
 # it on the same line -- a reason too long for the line goes above it as
-# well, the inline half naming the case. Section 8 of the organization
+# well, the inline half naming the case. Section 8 of the organization's
 # standard carries the commands that check that, kept there rather than
 # copied here so that the check and the rule move together.
 # A line that cannot be reached is not covered by lowering this, it is
@@ -980,7 +998,7 @@ explicit-preview-rules = true
 # nobody has looked at yet. `ALL` takes a new family in on the pull
 # request that bumps ruff's own pinned rev instead, which is the day
 # somebody is already looking at what changed. Section 5 of the
-# organization standard states the rule; `ignore` below is where every
+# organization's standard states the rule; `ignore` below is where every
 # declined rule's reason lives -- a rule the formatter conflicts with,
 # cited from ruff's own docs/formatter.md and not argued here since that
 # list is the vendor's; a rule this tree declines on its own merits,
@@ -1033,7 +1051,7 @@ ignore = [
     # following code on its line -- with this rule ignored, nothing here
     # measures one at any width.
     "line-too-long",
-    # flake8-todos (section 5 of the organization standard): FIX
+    # flake8-todos (section 5 of the organization's standard): FIX
     # already refuses a TODO, FIXME, XXX or HACK comment outright, and
     # TD, which disciplines the format of the first three, disagrees
     # with it where the two meet -- TD001 steers a refused FIXME toward
@@ -1192,7 +1210,7 @@ ignore = [
 max-doc-length = 80
 
 [tool.ruff.lint.pydocstyle]
-# section 5 of the organization standard; what settles the pairs ruff
+# section 5 of the organization's standard; what settles the pairs ruff
 # calls incompatible (D203/D211, D212/D213), so `ignore` above does not
 # name the half a convention already disables
 convention = "pep257"
@@ -1283,7 +1301,7 @@ extend-exclude = [
 # that no longer imports is a script nobody runs. This is the list the
 # lint gate runs on and not only the one a bare `mypy` reads: the hook
 # in .pre-commit-config.yaml passes no paths of its own, for the reason
-# given there. Section 6 of btclib-org/.github's README states the scope
+# given there. Section 6 of the organization's standard states the scope
 # as the package, the tests and .github/scripts. fuzz/ is here too, with
 # the exception below covering only the one import that reason ever
 # justified skipping -- the harness itself is this tree's own code and
@@ -1300,16 +1318,16 @@ exclude = '^tests/(.*/)?_data/'
 # `datetime.UTC` does not exist, and it is right about 3.10.
 python_version = "3.14"
 
-# The organization's standard requires this outright (section 6 of
-# btclib-org/.github's README, tracked for every repository as
-# btclib-org/.github#112): not a trajectory toward it, and not the same
-# bundle of flags enumerated one at a time in its place -- that table
-# states which checks the tree passes and leaves what is annotated to
-# be read tree by tree, where `strict = true` states that every
-# function in `files` declares its types. `check_untyped_defs` was the
-# one member of the bundle this table still left off:
-# btclib-org/btclib-node#105 read what it found one at a time, and what
-# is left after #104's annotation pass measures at zero --
+# The organization's standard requires this outright (section 6, tracked
+# for every repository as btclib-org/.github#112): not a trajectory
+# toward it, and not the same bundle of flags enumerated one at a time
+# in its place -- that table states which checks the tree passes and
+# leaves what is annotated to be read tree by tree, where
+# `strict = true` states that every function in `files` declares its
+# types. `check_untyped_defs` was the one member of the bundle this
+# table still left off: btclib-org/btclib-node#105 read what it found
+# one at a time, and what is left after #104's annotation pass measures
+# at zero --
 #
 #   uv run --locked --no-default-groups --group lint --group test \
 #     mypy --check-untyped-defs

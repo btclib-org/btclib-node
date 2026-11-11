@@ -19,8 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
-from btclib import b58
-from btclib.ecc import bms
+from btclib import b58, bms
 from btclib.exceptions import BTClibException
 from btclib.hashes import hash160, sha256
 from btclib.script.script import script_to_asm

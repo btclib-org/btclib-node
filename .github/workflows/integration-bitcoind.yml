@@ -36,7 +36,7 @@ name: integration-bitcoind
 #
 # The checkout, the node install, the test run and the report upload
 # move into btclib-org/.github's reusable-integration-bitcoind.yml,
-# called at a tagged commit (section 10 of btclib-org/.github's README.md).
+# called at a tagged commit (section 10 of the organization's standard).
 # `btclib` calls the same file. What stays here is the trigger, the schedule
 # minute, the concurrency group, and this tree's own pinned release, digest and
 # environment-variable names.
@@ -54,7 +54,7 @@ name: integration-bitcoind
 # about a tree nothing has touched, which is what it takes to notice
 # bitcoincore.org no longer serving the tarball pinned below rather than
 # a pull request discovering that by accident. The organization's own
-# calendar (section 10 of btclib-org/.github's README) names the day and
+# calendar (section 10 of the organization's standard) names the day and
 # the hour, and this repository's own minute with them.
 
 on:

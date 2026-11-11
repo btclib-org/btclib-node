@@ -22,8 +22,8 @@ from btclib.p2p.bip324 import (
     Cipher,
 )
 from btclib.p2p.message import Message
+from ecc import ellswift
 from ecc.curves import secp256k1
-from ecc.ecc import ellswift
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.exceptions import RejectedMessageError
@@ -312,6 +312,37 @@ def test_a_responder_handshakes_and_refuses_a_packet_over_the_limit(
     assert tester.interact() == [message("inv", data_1), message("pong", data_2)]
     tester.send_message(11, rng.randbytes(4_005_000))
     assert tester.interact() is None
+
+
+def test_the_short_ids_past_addrv2_are_read_as_core_reads_them() -> None:
+    """ISS 2302: short id 37 is `feature`, and 29 to 36 a message with no type.
+
+    Core's `V2_MESSAGE_IDS` (`src/net.cpp:925-959`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A `feature` sent under its
+    full name is read too (btclib-org/btclib-node#2250).
+    """
+    rng = random.Random(0)
+    tester = Peer(rng, initiator=True)
+    tester.send_key()
+    tester.send_garbage()
+    assert tester.interact() == []
+    tester.receive_key()
+    tester.send_garbage_term()
+    tester.send_version()
+    assert tester.interact() == []
+    payload = b"\x04BIP9\x00"
+    tester.send_message(37, payload)
+    tester.send_message(29, payload)
+    tester.send_message(33, payload)
+    tester.send_message(36, payload)
+    tester.send_message("feature", payload)
+    assert tester.interact() == [
+        message("feature", payload),
+        message("", payload),
+        message("", payload),
+        message("", payload),
+        message("feature", payload, 1 + 12 + len(payload) + EXPANSION),
+    ]
 
 
 @pytest.mark.parametrize("seed", range(12))

@@ -23,6 +23,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.script.witness import Witness
 from btclib.tx import Tx, TxIn, TxOut
 from btclib.tx.out_point import OutPoint
+from btclib.utils import hex_string
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -32,6 +33,7 @@ from btclib_node.p2p.raw_block import (
     assert_well_formed,
     strip_witnesses,
 )
+from tests.secret_free import assert_secret_free, chained, text_of
 
 _MAX_TRANSACTIONS = MAX_BLOCK_WEIGHT // MIN_SERIALIZABLE_TRANSACTION_WEIGHT
 _DATA = Path(__file__).parents[1] / "chainstate" / "_data"
@@ -272,3 +274,52 @@ def test_a_header_cut_short_is_refused() -> None:
     """Fewer than eighty octets is no header."""
     with pytest.raises(BTClibValueError, match="decoded length"):
         strip_witnesses(bytes(79))
+
+
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("9ed7f12938cd646f2866d454cc247f688b857424cc4ee6bec49c16f1200bd5b9")
+_COUNT_AT = _HEADER.serialize(check_validity=False)
+# one transaction whose input count is the next CompactSize
+_INPUTS_AT = _COUNT_AT + b"\x01" + bytes(4)
+
+
+@pytest.mark.parametrize(
+    ("raw", "err_msg"),
+    [
+        (_COUNT_AT + b"\xfd" + _KEY[:1] + b"\x00", "non-canonical var_int of 3 bytes"),
+        (_COUNT_AT + b"\xfe" + _KEY[:2] + bytes(2), "non-canonical var_int of 5 bytes"),
+        (_COUNT_AT + b"\xff" + _KEY[:4] + bytes(4), "non-canonical var_int of 9 bytes"),
+        (_COUNT_AT + b"\xfe" + _KEY[:4], "var_int too big: max is 0186A0"),
+        (_COUNT_AT + b"\xff" + _KEY[:8], "var_int too big: max is 0186A0"),
+        (_INPUTS_AT + b"\xff" + _KEY[:8], "var_int too big: max is 02000000"),
+    ],
+    ids=[
+        "non-canonical-3",
+        "non-canonical-5",
+        "non-canonical-9",
+        "too-big-5",
+        "too-big-9",
+        "too-big-9-inputs",
+    ],
+)
+def test_a_count_is_refused_without_its_octets(raw: bytes, err_msg: str) -> None:
+    """The refusal names the width or the limit, never the count it read.
+
+    `assert_secret_free` looks for pieces whose length `WINDOW` gives, so
+    the octets fed and the count, in decimal and as `hex_string` writes
+    it, are looked for as secrets of their own. Each byte of the key is
+    looked for as `0x` and its hex, and the text is compared whole.
+    """
+    fed = [_KEY[:n] for n in (1, 2, 4, 8)]
+    counts = [int.from_bytes(octets, "little") for octets in fed]
+    secrets: list[str | bytes] = [_KEY, *fed]
+    secrets += [*map(str, counts), *map(hex_string, counts)]
+    for check in (strip_witnesses, assert_well_formed):
+        with pytest.raises(BTClibValueError) as refusal:
+            check(raw)
+        assert str(refusal.value) == err_msg
+        # a cause or a context would be text the whole comparison does not see
+        assert list(chained(refusal.value)) == [refusal.value]
+        assert_secret_free(refusal.value, secrets)
+        text = text_of(refusal.value)
+        assert all(f"0x{byte:02x}" not in text for byte in _KEY)

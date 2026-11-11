@@ -1066,6 +1066,8 @@ def test_a_submitted_package_is_not_tracked_for_fee_estimates(
     monkeypatch.setattr(
         fee_estimator, "is_current_for_fee_estimation", lambda node: True
     )
+    # out of initial block download, where v32.1 signals each block
+    node.is_initial_block_download = False
     if together:
         parent = a_free_parent(node)
         txs = [parent, child_of(parent)]

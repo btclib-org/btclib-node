@@ -16,7 +16,7 @@ name: test
 #
 # The organization's own design keeps a gate to one image and one
 # interpreter, at the ceiling the plan puts on the organization's
-# concurrent jobs. Section 10 of btclib-org/.github's README carves two
+# concurrent jobs. Section 10 of the organization's standard carves two
 # axes out of that, and the Windows row below is on the second. An extra
 # interpreter cell belongs in the gate rather than in the calendar
 # exactly where it runs in parallel with the cells already in the job,
@@ -74,8 +74,8 @@ name: test
 # already closed is a promise this file cannot keep (issue #747).
 # Until it does install, the cell stays a job of this file, run on
 # every pull request, rather than a weekly sentinel of its own,
-# because what decides that in section 10 of btclib-org/.github's
-# README is the clock and not the trigger: a job that fails at
+# because what decides that in section 10 of the organization's
+# standard is the clock and not the trigger: a job that fails at
 # environment sync is over in seconds, where the ten minutes of
 # exploration `fuzz.yml`'s own header declines to spend on a pull
 # request are the sentinel's own work -- and the day the row installs

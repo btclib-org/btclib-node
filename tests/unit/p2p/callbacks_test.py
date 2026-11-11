@@ -84,7 +84,7 @@ from btclib.p2p.limits import (
     MAX_LOCATOR_SZ,
     PROTOCOL_VERSION,
 )
-from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
+from btclib.p2p.negotiation import Feature, FeeFilter, GetAddr, WtxidRelay
 from btclib.script.witness import Witness
 
 import btclib_node.p2p.address as address_module
@@ -93,7 +93,7 @@ from btclib_node import clock
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, DEFAULT_TX_SEND_RATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
@@ -124,6 +124,7 @@ from btclib_node.p2p.callbacks import (
     addrv2,
     advance_cfilters,
     advance_getdata,
+    feature,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
@@ -165,6 +166,7 @@ from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
+    FEATURE_VERSION,
     MIN_PEER_PROTO_VERSION,
     SHORT_IDS_BLOCKS_VERSION,
     WTXID_RELAY_VERSION,
@@ -888,6 +890,7 @@ def a_handshake_node(
             minimum_chain_work=0,
             block_notify="",
             alert_notify="",
+            tx_send_rate=DEFAULT_TX_SEND_RATE,
         ),
         warnings=Warnings(),
         # `Node.outbound_time_offsets`, which `version` appends to
@@ -2009,6 +2012,71 @@ def test_a_wtxidrelay_below_wtxid_relay_version_is_ignored() -> None:
     assert not peer.wtxidrelay_received
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        Feature(b"BIP999", b"\x01").serialize(),
+        Feature(b"B" * 80, bytes(512)).serialize(),
+        Feature(b"BIP9").serialize(),
+    ],
+    ids=["BIP999", "at the bounds", "empty data"],
+)
+def test_a_feature_at_feature_version_is_ignored(payload: bytes) -> None:
+    """ISS 2250: Core v32.1 ignores a well-formed `feature` it does not know."""
+    peer = a_peer(version_message=a_parsed_version(protocol=FEATURE_VERSION))
+    node = a_handshake_node()
+    feature(node, payload, peer)
+    assert not peer.stopped
+    assert not peer.sent
+    assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b"\x03BIP\x00",
+        b"\x51" + b"B" * 81 + b"\x00",
+        b"\x06BIP999\xfd\x01\x02" + bytes(513),
+        Feature(b"BIP999").serialize() + b"\x00",
+        b"\xfd\x06\x00BIP999\x00",
+        b"\x06BIP999",
+    ],
+    ids=[
+        "empty",
+        "id of 3",
+        "id of 81",
+        "data of 513",
+        "trailing octet",
+        "non-canonical length",
+        "no data",
+    ],
+)
+def test_a_feature_payload_core_refuses_drops_the_peer(payload: bytes) -> None:
+    """ISS 2250: Core v32.1 drops the peer, undiscouraged, as measured."""
+    peer = a_peer(version_message=a_parsed_version(protocol=FEATURE_VERSION))
+    node = a_handshake_node()
+    feature(node, payload, peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_feature_below_feature_version_drops_the_peer() -> None:
+    """ISS 2250: Core v32.1 drops a peer at a common version below 70017."""
+    peer = a_peer(version_message=a_parsed_version(protocol=70016))
+    node = a_handshake_node()
+    feature(node, Feature(b"BIP999").serialize(), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_feature_ahead_of_version_is_ignored() -> None:
+    """Core's `ProcessMessage` ignores any message ahead of `version`."""
+    peer = a_peer()
+    feature(a_handshake_node(), b"", peer)
+    assert not peer.stopped
+
+
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     """A `ping` is answered with a `pong` carrying the same nonce back."""
     peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION + 1))
@@ -3115,7 +3183,10 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = (
+            "Coin deserialization failure: not enough data for the output value: "
+            "0 bytes instead of 8"
+        )
         raise ChainstateInconsistencyError(err_msg)
 
     monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", corrupted)
@@ -3300,11 +3371,27 @@ def a_block() -> Block:
     return block
 
 
-def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
+@pytest.fixture
+def activations(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record the node of each `activate_best_chain` call, and run none.
+
+    For a test of what a block stores, over a stand-in index or store
+    that `update_chain` cannot read. `cmpctblock_test.py` connects blocks
+    on a real node.
+    """
+    calls: list[object] = []
+    monkeypatch.setattr(cb, "activate_best_chain", calls.append)
+    return calls
+
+
+def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded(
+    activations: list[object],
+) -> None:
     """A block matching a pending download-queue entry is stored and marked.
 
     Stored, it is no longer awaited from anybody: it leaves the queue of
-    every peer it was asked of, which stop stalling.
+    every peer it was asked of, which stop stalling. The best chain is
+    activated once.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=False, index=1)})
@@ -3330,8 +3417,10 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
+    assert activations == [node]
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize("downloaded", [False, True])
 def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
     monkeypatch: pytest.MonkeyPatch,
@@ -3356,10 +3445,13 @@ def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
     assert offered == ([] if downloaded else [block])
 
 
-def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already downloaded is a no-op: not re-added, not re-marked.
+def test_a_block_already_stored_is_not_stored_again(
+    activations: list[object],
+) -> None:
+    """A block already downloaded is not re-added, nor re-marked.
 
-    Only the peer that sent it stops being asked for it.
+    Only the peer that sent it stops being asked for it. The best chain
+    is still activated, as Core's `ProcessNewBlock` activates it.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=True)})
@@ -3382,6 +3474,7 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     assert peer.last_novel_block_time == 0
     assert peer.download_queue == []
     assert other.download_queue == [block.header.hash]
+    assert activations == [node]
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -3426,6 +3519,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     assert index.marked == []
 
 
+@pytest.mark.usefixtures("activations")
 def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -> None:
     """A block this node never separately indexed is not a `KeyError`.
 
@@ -3538,6 +3632,7 @@ def an_unrequested_block_node(tmp_path: Path, active: int) -> Any:
     return node
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_body_its_header_does_not_commit_to_leaves_the_header_valid(
     tmp_path: Path,
 ) -> None:
@@ -3579,6 +3674,7 @@ def test_a_mutated_body_is_refused_before_its_header_is_indexed(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_mutated_body_of_a_downloaded_block_is_refused_all_the_same(
     tmp_path: Path,
 ) -> None:
@@ -3627,6 +3723,7 @@ def test_a_block_whose_header_is_marked_invalid_is_refused_duplicate_invalid(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_stored_block_marked_invalid_since_is_refused_duplicate_invalid(
     tmp_path: Path,
 ) -> None:
@@ -3674,6 +3771,7 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize("signet", [False, True])
 def test_a_body_failing_its_signet_solution_leaves_no_header(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, signet: bool
@@ -3820,6 +3918,7 @@ def test_a_compact_block_failing_a_contextual_consensus_rule_keeps_the_peer(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
     tmp_path: Path,
 ) -> None:
@@ -3845,6 +3944,7 @@ def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("segwit_height", "stored"), [(1, True), (2, False)])
 def test_a_witness_is_read_against_its_commitment_once_segwit_binds(
     tmp_path: Path,
@@ -3927,6 +4027,7 @@ def test_an_unrequested_block_with_less_work_than_the_tip_is_not_stored(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("surplus", "stored"), [(0, True), (1, False)])
 def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
     tmp_path: Path,
@@ -4033,6 +4134,8 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
     assert isinstance(answer, GetHeaders)
     assert answer.hash_stop == b"\x00" * 32
     assert answer.locator == (_HELD,)
+    # Core's `CBlockLocator::DUMMY_VERSION`, not its `PROTOCOL_VERSION`
+    assert answer.version == 70016
 
 
 def test_a_block_announced_with_octets_past_the_items_is_answered() -> None:
@@ -4657,7 +4760,7 @@ def test_a_record_missing_its_work_under_another_hash_is_refused_for_its_work() 
     )
     (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
     assert error.startswith(
-        f"Cannot load block from disk (invalid proof-of-work: {stored.hex()} > "
+        "Cannot load block from disk (invalid proof-of-work: hash above the target)"
     )
 
 
@@ -4725,7 +4828,7 @@ def test_a_forged_signet_record_missing_its_work_is_refused_for_its_work() -> No
     )
     node.chain = node.config.chain = SigNet()
     (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
-    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "invalid proof-of-work: hash above the target" in error
     assert "bad-signet-blksig" not in error
 
 
@@ -5391,7 +5494,7 @@ def test_getblocktxn_refuses_a_record_whose_header_misses_its_work() -> None:
         block_db=a_raw_store(raw),
     )
     error = a_refused_getblocktxn(node, wanted)
-    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "invalid proof-of-work: hash above the target" in error
 
 
 def test_getblocktxn_refuses_a_signet_record_with_a_forged_solution() -> None:
@@ -5722,6 +5825,26 @@ def test_a_batch_with_octets_past_its_headers_is_taken() -> None:
     node.chainstate.block_index = index
     headers(node, Headers(chain).serialize() + b"\x00", a_peer())
     assert index.given == chain
+
+
+def test_a_batch_with_a_transaction_count_is_dropped_and_the_peer_kept() -> None:
+    """ISS 2307: Core ignores the count; btclib's parse refuses it.
+
+    The divergence `headers` states, until btclib-org/btclib#2992.
+    """
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=chain[-1].hash, header_index_tip=chain[-1].hash)
+    node.chainstate.block_index = index
+    payload = Headers(chain).serialize()
+    # the count after the first header: one octet for the batch's own
+    # count, then the eighty of the header
+    assert payload[81] == 0
+    payload = payload[:81] + b"\x01" + payload[82:]
+    with pytest.raises(BTClibValueError, match="invalid transaction count") as refusal:
+        headers(node, payload, a_peer())
+    assert not isinstance(refusal.value, MisbehavingError)
+    assert index.given is None
 
 
 def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
@@ -8251,6 +8374,7 @@ def test_a_requested_block_on_a_low_work_chain_is_refused_all_the_same(
     node.chainstate.close()
 
 
+@pytest.mark.usefixtures("activations")
 @pytest.mark.parametrize(("surplus", "indexed"), [(0, True), (1, False)])
 def test_a_block_s_new_header_is_weighed_against_minimumchainwork(
     tmp_path: Path,

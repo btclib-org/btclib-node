@@ -1,6 +1,6 @@
 # btclib-node
 
-<!-- Section 2 of btclib-org/.github's README.md says which badges sit here. -->
+<!-- Section 2 of the organization's standard says which badges sit here. -->
 [![PyPI version](https://img.shields.io/pypi/v/btclib-node.svg?logo=pypi)](https://pypi.python.org/pypi/btclib-node/)
 [![GitHub release](https://img.shields.io/github/v/release/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/releases)
 [![development status](https://img.shields.io/pypi/status/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
@@ -101,7 +101,7 @@ is what a pull request here is answered against.
 
 ## Status
 
-<!-- Section 2 of btclib-org/.github's README.md says which badges sit here. -->
+<!-- Section 2 of the organization's standard says which badges sit here. -->
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/btclib-org/btclib-node/main.svg)](https://results.pre-commit.ci/latest/github/btclib-org/btclib-node/main)
 [![lint workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml?query=branch%3Amain)
 [![test workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml?query=branch%3Amain)
