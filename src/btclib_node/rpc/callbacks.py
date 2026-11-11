@@ -3375,16 +3375,15 @@ def get_tx_spending_prevout(
 ) -> list[dict[str, Any]]:
     """Answer `gettxspendingprevout`: the mempool transaction spending each.
 
-    Core's RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@f0de87f040,
-    the v32.1 tag), without its
-    `-txospenderindex`, which this node does not have: the answer is the
-    mempool's alone, so `blockhash` is never in it. Each answer is the
-    outpoint's own object, as given, with `spendingtxid` added where a
-    mempool transaction spends it, and `spendingtx` too under
-    `return_spending_tx`. Core's `mempool_only` defaults to true where
-    there is no index, and false asks for the index: an outpoint the
-    mempool does not spend is then refused, as Core refuses it with the
-    index unavailable. btclib-org/btclib-node#1501
+    Core's RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), without its `-txospenderindex`, which this node does not
+    have: the answer is the mempool's alone, so `blockhash` is never in
+    it. Each answer is the outpoint's own object, as given, with
+    `spendingtxid` added where a mempool transaction spends it, and
+    `spendingtx` too under `return_spending_tx`. Core's `mempool_only`
+    defaults to true where there is no index, and false asks for the
+    index: an outpoint the mempool does not spend is then refused, as Core
+    refuses it with the index unavailable. btclib-org/btclib-node#1501
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["gettxspendingprevout"])
