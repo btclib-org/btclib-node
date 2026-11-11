@@ -356,7 +356,7 @@ def _file(stats: bytes, buckets: int = 2) -> bytes:
         ),
         (
             _header(309900, 5, 1, 2) + b"\xfd\x01\x00",
-            "non-canonical var_int: 1 encoded in 3 bytes",
+            "non-canonical var_int of 3 bytes",
         ),
     ],
 )

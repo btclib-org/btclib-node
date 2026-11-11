@@ -7,7 +7,7 @@
 `ReadBlock(block, pos, expected_hash)` refuses, in this order, a header
 missing its proof of work, on signet a block whose solution does not
 verify, and a header that hashes to another hash than the one expected
-(`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+(`src/node/blockstorage.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag). Each refusal here is a `BTClibValueError`, except in
 `read_held_block`.
 """

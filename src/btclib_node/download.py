@@ -14,18 +14,19 @@ commit it was read at beside it, per this tree's own convention of
 matching Core's behaviour, always.
 """
 
-import fractions
+import heapq
 import itertools
 import math
 import time
 from bisect import bisect_left
 from collections import deque
 from random import SystemRandom
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
+from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 from btclib_node import clock
@@ -50,7 +51,6 @@ from btclib_node.p2p.protocol_version import (
     common_version,
 )
 from btclib_node.rolling_bloom import RollingBloomFilter
-from btclib_node.txgraph import MiningKey
 from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
@@ -61,54 +61,170 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.log import Logger
+    from btclib_node.mempool import Mempool
     from btclib_node.p2p.connection import Connection
+    from btclib_node.txgraph import MiningKey
 
 __all__ = [
     "MAX_BLOCKS_IN_TRANSIT_PER_PEER",
     "DownloadManager",
+    "InvBucketInfo",
     "block_inventory_type",
 ]
 
 # net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and
-# OUTBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86: the
-# mean of the exponential draw `_send_due_announcements` makes for the
-# next trickle, an outbound peer's own and shorter than an inbound one's
-# for the same reason Core's is -- an outbound peer is one this node
-# chose to open, so there are fewer of them for a spy to multiply an
-# inbound peer's sample count across. An inbound peer's draw is not its
-# own: `_inbound_net_class` and `DownloadManager._next_inbound_inv_time`
-# are why.
+# OUTBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag: the mean of the exponential draw
+# `_send_due_announcements` makes for the next trickle, an outbound
+# peer's own and shorter than an inbound one's for the same reason
+# Core's is -- an outbound peer is one this node chose to open, so there
+# are fewer of them for a spy to multiply an inbound peer's sample count
+# across. An inbound peer's draw is not its own: `_inbound_net_class`
+# and `DownloadManager._next_inbound_inv_time` are why.
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 
-# net_processing.cpp's `INVENTORY_BROADCAST_TARGET` (14 per second over
-# the 5 second inbound interval) and `INVENTORY_BROADCAST_MAX`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the number of transactions one
-# trickle announces to a peer is the target plus 5 for each 1000 queued, at
-# most the maximum. bitcoin/bitcoin#34628 replaces this with global rate
-# limits in v32.1, which this node does not follow yet
-# (btclib-org/btclib-node#2106).
-_INVENTORY_BROADCAST_TARGET = 70
-_INVENTORY_BROADCAST_MAX = 1000
+# The global rate limits on transaction announcements, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag:
+# `OUTBOUND_INVENTORY_BUCKET_MULTIPLIER`, `INVENTORY_BUCKET_CHECK_DELAY`,
+# `INVENTORY_BUCKET_BACKLOG_HEARTBEAT`,
+# `INVENTORY_BUCKET_BACKLOG_HEARTBEAT_MIN` and `InvToSendBucket`'s own
+# constants (`net_processing.cpp`). `Config.tx_send_rate` is the rate.
+# `_InvToSendBucket` says what its constants bound, and
+# `_process_inv_backlog` what the check delay and the heartbeat do.
+_OUTBOUND_INV_BUCKET_MULTIPLIER = (
+    _INBOUND_TX_ANNOUNCE_INTERVAL / _OUTBOUND_TX_ANNOUNCE_INTERVAL
+)
+_INV_BUCKET_CHECK_DELAY = 0.1
+_INV_BACKLOG_HEARTBEAT = 2.0
+_INV_BACKLOG_HEARTBEAT_MIN = 100
+_INV_SIZE_INIT = 12_000_000
+_INV_SIZE_CAP = 50_000_000
+_INV_SIZE_REFILL = 20_000
+_INV_SIZE_FLOOR = -50_000
+_INV_COUNT_SECONDS = 30
 
 
-# Sorts before every key `Mempool.mining_order_keys` returns, for an entry
-# the mempool no longer holds: Core's `CompareMiningScoreWithTopology`
-# (`txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) puts
-# one first, so a trickle pops it before any held entry.
-_GONE_KEY = MiningKey(fractions.Fraction(-(1 << 256)), 0, b"", 0)
+class _TokenBucket:
+    """Core's `util::TokenBucket` (`util/tokenbucket.h`, v32.1 as above).
+
+    Tokens accrue at `rate` a second, up to `cap`, from the second
+    `increment` on: the first only sets the time they accrue from.
+    """
+
+    def __init__(self, rate: float, value: float, cap: float) -> None:
+        """Start with `value` tokens, at most `cap`."""
+        self.rate = rate
+        self.cap = cap
+        self.value = min(value, cap)
+        self._last_updated: float | None = None
+
+    def increment(self, now: float) -> None:
+        """Add the tokens accrued since the last call."""
+        last = self._last_updated
+        if last is not None and now > last and self.value < self.cap:
+            self.value = min(self.cap, self.value + self.rate * (now - last))
+        self._last_updated = now
+
+    def decrement(self, n: float, floor: float) -> bool:
+        """Take `n` tokens; answer whether the balance stays above `floor`."""
+        self.value -= n
+        return self.value > floor
 
 
-def _trickle_cap(queued: int) -> int:
-    """Return how many of `queued` announcements one trickle may send."""
-    return min(
-        _INVENTORY_BROADCAST_MAX,
-        _INVENTORY_BROADCAST_TARGET + (queued // 1000) * 5,
-    )
+class InvBucketInfo(NamedTuple):
+    """Core's `PeerManagerInfo::InvBucketInfo` (`net_processing.h`, v32.1).
+
+    A backlog's length and the tokens each of its two buckets holds. The
+    read refills neither, as Core's `GetInfo` does not.
+    """
+
+    backlog: int
+    count_tokens: float
+    size_tokens: float
+
+
+class _InvToSendBucket:
+    """Core's `InvToSendBucket` (`net_processing.cpp`, v32.1 as above).
+
+    One is shared by every inbound peer and one by every outbound peer.
+    Each accepted transaction joins both backlogs, and a peer's queue is
+    fed from its direction's backlog only while that bucket holds
+    tokens. Each transaction taken spends one token of the count bucket,
+    and one token of the size bucket per byte of its serialization.
+
+    The count bucket refills at `rate` times `mult` a second, up to
+    `_INV_COUNT_SECONDS` of `rate`, where it starts. The size bucket
+    refills at `_INV_SIZE_REFILL` times `mult` a second, from
+    `_INV_SIZE_INIT` up to `_INV_SIZE_CAP`. A take may run either into
+    debt: the count bucket by up to one inbound interval of the rate
+    (`count_floor`), the size bucket to `_INV_SIZE_FLOOR`, which the take
+    passes by at most the last transaction it takes. So each take moves
+    a whole `inv`'s worth, rather than sorting the backlog again for a
+    few transactions.
+    """
+
+    def __init__(self, rate: int, mult: float) -> None:
+        """Build the empty backlog and its two buckets."""
+        self.count_floor = -rate * _INBOUND_TX_ANNOUNCE_INTERVAL
+        self.backlog: list[bytes] = []
+        self.size_bucket = _TokenBucket(
+            _INV_SIZE_REFILL * mult, _INV_SIZE_INIT, _INV_SIZE_CAP
+        )
+        count = rate * _INV_COUNT_SECONDS
+        self.count_bucket = _TokenBucket(rate * mult, count, count)
+
+    def info(self) -> InvBucketInfo:
+        """Return what `getnetworkinfo` reports of this bucket."""
+        return InvBucketInfo(
+            len(self.backlog), self.count_bucket.value, self.size_bucket.value
+        )
+
+    def avail(self) -> bool:
+        """Answer whether there is a backlog and both buckets hold tokens."""
+        return (
+            bool(self.backlog)
+            and self.size_bucket.value > 0
+            and self.count_bucket.value > 0
+        )
+
+    def increment(self, now: float) -> None:
+        """Refill both buckets."""
+        self.size_bucket.increment(now)
+        self.count_bucket.increment(now)
+
+    def take_for_processing(self, mempool: Mempool) -> list[bytes]:
+        """Take from the backlog, best-paying first, what the tokens allow.
+
+        Core's `TakeForProcessing` over `ExtractBestByMiningScoreWithTopology`
+        (`txmempool.cpp`, v32.1 as above). An entry the mempool no longer
+        holds, and a second copy of one, are dropped. The take stops after the
+        transaction that brings either bucket to its floor or past it, and
+        what is left stays in the backlog.
+        """
+        n_to_take = int(max(self.count_bucket.value - self.count_floor, 0))
+        held = list(dict.fromkeys(w for w in self.backlog if w in mempool.transactions))
+        keys = mempool.mining_order_keys(held)
+        best = heapq.nsmallest(n_to_take, held, key=keys.__getitem__)
+        taken = set(best)
+        self.backlog = [w for w in held if w not in taken]
+        result: list[bytes] = []
+        for n, wtxid in enumerate(best):
+            result.append(wtxid)
+            if not self._decrement(mempool.transactions[wtxid].size):
+                self.backlog += best[n + 1 :]
+                break
+        return result
+
+    def _decrement(self, size: int) -> bool:
+        """Spend one transaction of `size` bytes from both buckets."""
+        size_ok = self.size_bucket.decrement(size, _INV_SIZE_FLOOR)
+        count_ok = self.count_bucket.decrement(1, self.count_floor)
+        return size_ok and count_ok
 
 
 # Core's transaction download constants, `node/txdownloadman.h` and
-# `net_processing.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+# `net_processing.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
 # - `MAX_PEER_TX_ANNOUNCEMENTS`, the announcements tracked per peer;
 # - `MAX_GETDATA_SZ`, the items in one `getdata`;
 # - `GETDATA_TX_INTERVAL`, in seconds, how long a request holds before
@@ -160,14 +276,14 @@ _rng = SystemRandom()
 # bounds of how long a peer may hold up the download window, and
 # `BLOCK_DOWNLOAD_TIMEOUT_BASE` and `BLOCK_DOWNLOAD_TIMEOUT_PER_PEER`,
 # the multiples of `_POW_TARGET_SPACING` a block may stay in flight
-# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _BLOCK_STALLING_TIMEOUT_DEFAULT = 2
 _BLOCK_STALLING_TIMEOUT_MAX = 64
 _BLOCK_DOWNLOAD_TIMEOUT_BASE = 1
 _BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 0.5
 
 # Core's `EXTRA_PEER_CHECK_INTERVAL` and `MINIMUM_CONNECT_TIME`
-# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # how often `_check_for_stale_tip_and_evict_peers` runs, and how long
 # the peer it picks must have been connected for it to be dropped.
 _EXTRA_PEER_CHECK_INTERVAL = 45
@@ -175,7 +291,7 @@ _MINIMUM_CONNECT_TIME = 30
 
 # Core's `ReattemptInitialBroadcast` runs 10 minutes after start-up and
 # after each run, plus a random 0 to 5 minutes drawn afresh each time
-# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in
+# (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in
 # seconds.
 _REATTEMPT_BROADCAST_INTERVAL = 600
 _REATTEMPT_BROADCAST_JITTER = 300
@@ -197,7 +313,7 @@ _STALE_TIP_SPACINGS = 3
 
 # `sync_headers`'s own timing, in seconds: `HEADERS_DOWNLOAD_TIMEOUT_BASE`
 # and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the second scaled by the
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the second scaled by the
 # headers expected between the best header and now, one per
 # `_POW_TARGET_SPACING` -- `nPowTargetSpacing`, `10 * 60` on every chain
 # `kernel/chainparams.cpp` defines at the same sha. `_RECENT_BEST_HEADER`
@@ -210,7 +326,7 @@ _POW_TARGET_SPACING = 10 * 60
 _RECENT_BEST_HEADER = 24 * 60 * 60
 
 # Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many blocks one peer is
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): how many blocks one peer is
 # asked for and has not yet sent. Public because the largest answer a
 # well-behaved peer owes this node is that many blocks, which the tests
 # of the receive-side bounds size against.
@@ -221,17 +337,18 @@ def _fee_filter_buckets(min_incremental_fee: int) -> list[float]:
     """Return the sat/kvB boundaries `_round_fee_filter` may round to.
 
     Core's own `MakeFeeSet` (`policy/fees/block_policy_estimator.cpp`,
-    at bitcoin/bitcoin@58a7869f86): zero, then a geometric series from half
-    `min_incremental_fee` (never under 1) up to `_MAX_FILTER_FEERATE`,
-    spaced by `_FEE_FILTER_SPACING`. Kept as `float` and not rounded
-    here: Core's own `std::set<double>` holds the raw boundary too, and
-    only the value `_round_fee_filter` finally selects is ever
-    truncated (`static_cast<CAmount>`) -- rounding a boundary to build
-    this set would select a different sat/kvB than Core does for a
-    boundary that was never an integer to begin with, 137.7 truncating
-    to 137 there against rounding to 138 here. `Download` builds it from
-    `DEFAULT_MIN_RELAY_FEERATE`, as Core builds its rounder from
-    `DEFAULT_MIN_RELAY_TX_FEE` and not from `-minrelaytxfee`
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): zero, then a
+    geometric series from half `min_incremental_fee` (never under 1) up
+    to `_MAX_FILTER_FEERATE`, spaced by `_FEE_FILTER_SPACING`. Kept as
+    `float` and not rounded here: Core's own `std::set<double>` holds
+    the raw boundary too, and only the value `_round_fee_filter` finally
+    selects is ever truncated (`static_cast<CAmount>`) -- rounding a
+    boundary to build this set would select a different sat/kvB than
+    Core does for a boundary that was never an integer to begin with,
+    137.7 truncating to 137 there against rounding to 138 here.
+    `Download` builds it from `DEFAULT_MIN_RELAY_FEERATE`, as Core
+    builds its rounder from `DEFAULT_MIN_RELAY_TX_FEE` and not from
+    `-minrelaytxfee`
     (`m_fee_filter_rounder{CFeeRate{DEFAULT_MIN_RELAY_TX_FEE}, ...}`,
     `net_processing.cpp`).
     """
@@ -267,15 +384,15 @@ def _round_fee_filter(rate: int, buckets: list[float]) -> int:
 def _inbound_net_class(conn: Connection) -> BIP155Network | int:
     """Return the key an inbound peer's schedule is shared across.
 
-    `CNode::m_network_key` (net.h:755) is what `NextInvToInbounds`
-    (net_processing.cpp:6318-6319, calling `PeerManagerImpl::
-    NextInvToInbounds` at :1273-1282) actually keys its per-peer timer
-    on, at bitcoin/bitcoin@58a7869f86. For an inbound connection it is a
-    hash (net.cpp:1853-1857) of the peer's coarse `GetNetClass()`
-    (netaddress.cpp:674) together with *this node's own* listening bind
-    address and port -- not anything of the peer's own beyond which
-    class it falls into. `NetGroupManager::GetGroup` (netgroup.cpp),
-    which does partition by the peer's /16 or /32, feeds
+    `CNode::m_network_key` (net.h:759) is what `NextInvToInbounds`
+    (net_processing.cpp:6333-6334, calling `PeerManagerImpl::
+    NextInvToInbounds` at :1271-1281) actually keys its per-peer timer
+    on, at bitcoin/bitcoin@f0de87f040, the v32.1 tag. For an inbound
+    connection it is a hash (net.cpp:1859-1863) of the peer's coarse
+    `GetNetClass()` (netaddress.cpp:680) together with *this node's own*
+    listening bind address and port -- not anything of the peer's own
+    beyond which class it falls into. `NetGroupManager::GetGroup`
+    (netgroup.cpp), which does partition by the peer's /16 or /32, feeds
     `nKeyedNetGroup` instead: addrman bucketing and inbound-eviction
     diversity, not this timer.
 
@@ -294,7 +411,7 @@ def _can_serve_blocks(conn: Connection) -> bool:
     """Whether `conn` can serve this node blocks at all.
 
     Core's own `CanServeBlocks` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_NETWORK` or
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `NODE_NETWORK` or
     `NODE_NETWORK_LIMITED` advertised, either being enough. `True` for
     a connection with no `version_message`, which `callbacks.verack`
     never promotes, so that this reads the absence in the direction
@@ -313,7 +430,7 @@ def _is_limited_peer(conn: Connection) -> bool:
     """Whether `conn` can only serve blocks near its own tip.
 
     Core's own `IsLimitedPeer` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_NETWORK_LIMITED`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `NODE_NETWORK_LIMITED`
     advertised and `NODE_NETWORK` not. `False` for a connection with no
     `version_message`, which `callbacks.verack` never promotes.
     """
@@ -331,7 +448,7 @@ def _can_serve_witnesses(conn: Connection) -> bool:
     """Whether `conn` can serve this node witness data.
 
     Core's own `CanServeWitnesses` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_WITNESS`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `NODE_WITNESS`
     advertised. `False` for a connection with no `version_message`,
     which `callbacks.verack` never promotes, the same direction
     `_is_limited_peer` reads that absence in.
@@ -355,7 +472,7 @@ def _is_preferred_download(conn: Connection) -> bool:
     """Whether `conn` is a peer headers and blocks are preferably synced from.
 
     Core's own `fPreferredDownload` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an outbound or `NO_BAN`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): an outbound or `NO_BAN`
     peer that is not an addr-fetch one and can serve blocks.
     """
     return (
@@ -369,7 +486,7 @@ def _is_sync_peer(conn: Connection, preferred: int, *, blocks_in_flight: bool) -
     """Whether headers and blocks are synced from `conn`.
 
     Core's `sync_blocks_and_headers_from_peer` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a preferred peer, or any
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a preferred peer, or any
     other that is not an addr-fetch one while there is no preferred peer
     or no block in flight.
     """
@@ -381,8 +498,8 @@ def _is_sync_peer(conn: Connection, preferred: int, *, blocks_in_flight: bool) -
 def _tx_fetch_type(conn: Connection, *, wtxid: bool) -> InventoryType:
     """Return the type a `getdata` asks `conn` for a transaction under.
 
-    Core's `SendMessages` (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `MSG_WTX` for a wtxid, else `MSG_TX` with
+    Core's `SendMessages` (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): `MSG_WTX` for a wtxid, else `MSG_TX` with
     `GetFetchFlags`' witness flag where the peer offers `NODE_WITNESS`.
     """
     if wtxid:
@@ -448,8 +565,8 @@ class DownloadManager:
         self.orphanage = TxOrphanage()
         # Core's `m_lazy_recent_confirmed_transactions`, a
         # `CRollingBloomFilter{48'000, 0.000'001}`
-        # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag): the txids and wtxids of the transactions
+        # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@f0de87f040,
+        # the v32.1 tag): the txids and wtxids of the transactions
         # connected lately, which are not asked for or verified again.
         # Like Core's, it drops a transaction never confirmed up to once
         # in a million queries. `confirm_block` fills it.
@@ -482,6 +599,17 @@ class DownloadManager:
         # Core, so a family's entry outlives the connections that drew
         # it.
         self._next_inv_to_inbounds: dict[BIP155Network | int, float] = {}
+        # Core's `m_inbound_inv_bucket`, `m_outbound_inv_bucket`,
+        # `m_next_inv_bucket_check` and `m_next_inv_bucket_heartbeat`
+        # (v32.1, as `_InvToSendBucket` says), which
+        # `_process_inv_backlog` reads.
+        rate = node.config.tx_send_rate
+        self._inbound_inv_bucket = _InvToSendBucket(rate, 1.0)
+        self._outbound_inv_bucket = _InvToSendBucket(
+            rate, _OUTBOUND_INV_BUCKET_MULTIPLIER
+        )
+        self._next_inv_bucket_check = -math.inf
+        self._next_inv_bucket_heartbeat: float | None = None
 
         # Built once, from this node's own configured floor, rather than
         # per call: Core's own `FeeFilterRounder` is a `PeerManagerImpl`
@@ -505,7 +633,7 @@ class DownloadManager:
         self._max_feefilter = int(self._fee_filter_buckets[-1])
 
         # Core's own `fSyncStarted` and `m_headers_sync_timeout`
-        # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         # tag), kept here rather than on `Connection` as Core keeps them
         # in `net_processing`'s own per-peer state rather than in
         # `CNode`: a connection id is in this dict once `sync_headers`
@@ -559,12 +687,12 @@ class DownloadManager:
         """Announce each unbroadcast transaction to every peer again.
 
         Core's `ReattemptInitialBroadcast` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it queues each held
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): it queues each held
         transaction of `Mempool.unbroadcast` the way
-        `P2pManager.broadcast_raw_transaction` does, so `tx_download`
-        skips a peer that already knows it, as `InitiateTxBroadcastToAll`
-        does. A txid no longer held is dropped from the set. A peer's
-        `getdata` for it is what ends the repeats (`callbacks.getdata`).
+        `P2pManager.broadcast_raw_transaction` does, so the trickle skips
+        a peer that already knows it, as Core's does. A txid no longer
+        held is dropped from the set. A peer's `getdata` for it is what
+        ends the repeats (`callbacks.getdata`).
 
         It runs on `Node`'s thread, which owns the mempool and
         `received_txs`. Core, on its scheduler thread, takes `m_peer_mutex`
@@ -586,7 +714,7 @@ class DownloadManager:
         """Drop an extra outbound peer, and let `P2pManager` dial one more.
 
         Core's `CheckForStaleTipAndEvictPeers` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), every
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), every
         `_EXTRA_PEER_CHECK_INTERVAL`. Every `_STALE_CHECK_INTERVAL` it
         sets `try_new_outbound_peer` where the tip may be stale, under no
         `-connect` and not while the stored blocks connect
@@ -740,7 +868,7 @@ class DownloadManager:
         """Announce what this node received, and request what it still wants.
 
         At any sync state: Core's `SendMessages` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) gates neither, and what
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates neither, and what
         `inv_txs` holds is already gated on IBD by `callbacks.inv`.
         """
         self._queue_announcements_for_received_txs()
@@ -754,8 +882,8 @@ class DownloadManager:
         received = list(dict.fromkeys(wtxid for _, wtxid in self.received_txs))
         if not received:
             return
-        # `received` itself stays a list, the arrival order a
-        # connection's queue keeps; membership below is against the dict
+        # `received` itself stays a list, the arrival order the
+        # backlogs keep; membership below is against the dict
         # `answers` instead, so a peer with many wtxids still outstanding
         # does not turn one `inv_txs` pass into a full scan of `received`
         # per entry. btclib-org/btclib-node#444
@@ -770,23 +898,11 @@ class DownloadManager:
             held = self.node.mempool.transactions.get(wtxid)
             if held is not None:
                 answers.setdefault(held.id, wtxid)
-        # a peer that announced a transaction we now hold, or sent it
-        # to us, already has it: it is the others that are told. A
-        # locally originated transaction's conn_id is `None`, which
-        # matches no real connection, so nobody is excluded on its
-        # account -- the same as Core's own `RelayTransaction` has
-        # nobody to exclude for a transaction it did not receive from
-        # a peer.
-        has_it: dict[int | None, set[bytes]] = {}
-        for conn_id, wtxid in self.received_txs:
-            has_it.setdefault(conn_id, set()).add(wtxid)
-        still_wanted: list[tuple[int, bytes, bool]] = []
-        for conn_id, announced, txid in self.inv_txs:
-            if announced in answers:
-                has_it.setdefault(conn_id, set()).add(answers[announced])
-            else:
-                still_wanted.append((conn_id, announced, txid))
-        self.inv_txs = still_wanted
+        self.inv_txs = [
+            (conn_id, announced, txid)
+            for conn_id, announced, txid in self.inv_txs
+            if announced not in answers
+        ]
 
         # the tx is in the mempool now: nobody is still to be asked for
         # it, by whichever hash it was announced under, and nobody is
@@ -794,42 +910,16 @@ class DownloadManager:
         for announced_hash in answers:
             self.tx_requests.forget_tx_hash(announced_hash)
 
-        for conn in self.node.p2p_manager.connections.copy().values():
-            # what the peer's version asked for. An answer nothing
-            # consults is the same peer told the same thing whatever
-            # it said, which is what #76 is about, so every send
-            # that announces a transaction reads this --
-            # `P2pManager.broadcast_raw_transaction` no longer reads
-            # it itself, going through this same queue instead.
-            # BIP37 is that a peer which sent fRelay false is sent
-            # no transaction inventory at all, so it is skipped
-            # whole rather than sent a shorter list.
-            if not conn.relay_tx:
-                continue
-            known = has_it.get(conn.id, ())
-            # BIP133: the peer's own floor (`conn.feefilter`) is applied
-            # when the trickle is sent, as Core does
-            # (`InitiateTxBroadcastToAll` queues whatever the peer does not
-            # know), so a floor that changes while a transaction waits
-            # applies to it. btclib-org/btclib-node#260
-            #
-            # Membership of the mempool is checked here: eviction
-            # (`Mempool._evict_to_limit`) can remove a wtxid this
-            # same batch already recorded in `received` before this
-            # loop reaches it, another transaction in the same batch
-            # having evicted it moments earlier; queuing an
-            # announcement for it regardless would be exactly
-            # #277/#293's own defect, reached through eviction rather
-            # than a full mempool's outright refusal.
-            # btclib-org/btclib-node#294
-            new_for_conn = [
-                wtxid
-                for wtxid in received
-                if wtxid not in known
-                and wtxid in self.node.mempool.transactions
-                and self._tx_inventory(conn, wtxid).hash not in conn.known_tx_inventory
-            ]
-            _extend_tx_announce_queue(conn, new_for_conn)
+        # Core's `InitiateTxBroadcastToAll` (v32.1, as `_InvToSendBucket`
+        # says): each transaction joins both backlogs, which are read
+        # at once. A peer that sent or announced it is queued it too:
+        # the trickle skips it there, `known_tx_inventory` holding the
+        # hash, as it skips one evicted meanwhile. btclib-org/btclib-node#294
+        now = clock.now()
+        for wtxid in received:
+            self._inbound_inv_bucket.backlog.append(wtxid)
+            self._outbound_inv_bucket.backlog.append(wtxid)
+            self._process_inv_backlog(now, bumped=True)
 
     def _request_wanted_txs(self) -> None:
         """Track what peers announced, and ask each peer for what is its turn.
@@ -837,7 +927,7 @@ class DownloadManager:
         Core's `AddTxAnnouncement` for every announcement in `inv_txs`,
         then `GetRequestsToSend` and the `getdata` of `SendMessages` for
         every peer (`node/txdownloadman_impl.cpp` and
-        `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag). A transaction is asked for of one announcer at a time, and
         of the next only after the request expires or is answered with a
         `notfound`.
@@ -873,7 +963,7 @@ class DownloadManager:
         """Track `announced` by `conn`, to be asked for after Core's delays.
 
         Core's `AddTxAnnouncement` (`node/txdownloadman_impl.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the wtxid of an orphan
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the wtxid of an orphan
         makes `conn` a peer to resolve it with. Otherwise a transaction already
         had, a reconsiderable refusal included, is dropped, and so is an
         announcement of a peer with `MAX_PEER_TX_ANNOUNCEMENTS` tracked,
@@ -920,7 +1010,7 @@ class DownloadManager:
         """Send `conn` the `getdata`s for the transactions it is to be asked.
 
         Core's `GetRequestsToSend` (`node/txdownloadman_impl.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a transaction already
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): a transaction already
         had is forgotten instead; the others are
         requested until `GETDATA_TX_INTERVAL` has passed. They go in
         `getdata`s of at most `MAX_GETDATA_SZ` items. A parent of an orphan
@@ -959,8 +1049,8 @@ class DownloadManager:
         """Answer whether `txhash` is not to be asked for, as `AlreadyHaveTx`.
 
         `txhash` is a wtxid where `wtxid` holds and a txid otherwise
-        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag). The orphanage is asked by wtxid whatever `txhash` is, as
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag). The orphanage is asked by wtxid whatever `txhash` is, as
         Core does: a txid is then a wtxid only for a transaction without a
         witness, and cannot be a false positive for one with. A refusal
         `mark_rejected_reconsiderable` holds counts only with
@@ -995,8 +1085,8 @@ class DownloadManager:
         from the orphanage or a package. Answers the parent and child to
         validate as a package, where `tx` was refused for a reason a
         package can undo and `conn_id` sent a child that spends it.
-        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag.)
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag.)
 
         A transaction missing inputs is kept as an orphan on its first
         refusal, unless a parent was refused already (`_keep_orphan`). It is
@@ -1081,7 +1171,7 @@ class DownloadManager:
             # whatever the witness, it is refused: both hashes are recorded.
             # No parent is recorded as known: Core clears `unique_parents`
             # here (`MempoolRejectedTx`, `src/node/txdownloadman_impl.cpp`
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
             mempool.mark_rejected(txid)
             mempool.mark_rejected(wtxid)
             kept_already = False
@@ -1158,7 +1248,7 @@ class DownloadManager:
         """Ask `peer` for the `parents` of an orphan, and say whether it was.
 
         Core's `MaybeAddOrphanResolutionCandidate`
-        (`node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag): not a peer that is gone or announced `wtxid` already, nor one
         without `RELAY` that would then have more than
         `MAX_PEER_TX_ANNOUNCEMENTS` tracked. Each parent is announced by txid,
@@ -1196,7 +1286,7 @@ class DownloadManager:
         """Find a child of `parent` from `conn_id` to try with it as a package.
 
         Core's `Find1P1CPackage` (`node/txdownloadman_impl.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), asked of a parent refused
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), asked of a parent refused
         as `mark_rejected_reconsiderable` records. Only the children of
         `conn_id` count, newest first, so that a flood of fake children does
         not crowd out the real one a peer sent. A child is tried once with
@@ -1211,22 +1301,24 @@ class DownloadManager:
                 return parent, child
         return None
 
-    def mempool_accepted_tx(self, tx: Tx) -> None:
+    def mempool_accepted_tx(self, tx: Tx) -> list[tuple[bytes, int]]:
         """Take in that `tx` was accepted, Core's `MempoolAcceptedTx`.
 
         Nobody is asked for it any longer, the orphans that spend it are to be
-        reconsidered, and it is no orphan itself.
+        reconsidered, and it is no orphan itself. Answers the orphans marked,
+        as `TxOrphanage.add_children_to_work_set` does.
         """
         self.tx_requests.forget_tx_hash(tx.id)
         self.tx_requests.forget_tx_hash(tx.hash)
-        self.orphanage.add_children_to_work_set(tx)
+        marked = self.orphanage.add_children_to_work_set(tx)
         self.orphanage.erase_tx(tx.hash)
+        return marked
 
     def received_tx_response(self, conn_id: int, txid: bytes, wtxid: bytes) -> None:
         """Complete `conn_id`'s announcement of a transaction it sent.
 
         Core's `ReceivedTx` (`node/txdownloadman_impl.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whether or not the
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), whether or not the
         transaction is then accepted: the peer answered, so it is not
         waited for, and another announcer may be asked.
         """
@@ -1239,7 +1331,7 @@ class DownloadManager:
         Core's `ReceivedNotFound` (`node/txdownloadman_impl.cpp`), which
         `net_processing.cpp` calls with nothing where the message has more
         than `MAX_PEER_TX_ANNOUNCEMENTS` and `MAX_BLOCKS_IN_TRANSIT_PER_PEER`
-        items together (both at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        items together (both at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         Block items are left alone, as Core's `IsGenTxMsg` leaves them.
         """
         if len(items) > _MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER:
@@ -1250,14 +1342,21 @@ class DownloadManager:
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
-        # (net_processing.cpp, at bitcoin/bitcoin@58a7869f86): each
-        # connection is told what is waiting for it only once its own
-        # timer comes due, rather than the instant something is queued,
-        # so the gap between a `tx` this node receives and the `inv` it
-        # sends on carries no information about when that arrival was.
+        # (net_processing.cpp, at bitcoin/bitcoin@f0de87f040, the v32.1
+        # tag): each connection is told what is waiting for it only once
+        # its own timer comes due, rather than the instant something is
+        # queued, so the gap between a `tx` this node receives and the
+        # `inv` it sends on carries no information about when that
+        # arrival was. Core's `SendMessages` reads the backlogs first (as
+        # `_process_inv_backlog` says), and only for a peer past its
+        # handshake, so with none the buckets are not refilled and
+        # `getnetworkinfo` answers them as they were.
         now = clock.now()
+        conns = self.node.p2p_manager.connections.copy().values()
+        if any(conn.status == P2pConnStatus.Connected for conn in conns):
+            self._process_inv_backlog(now)
         due_conns = []
-        for conn in self.node.p2p_manager.connections.copy().values():
+        for conn in conns:
             if not conn.relay_tx:
                 continue
             due = now >= conn.next_inv_send_time
@@ -1274,17 +1373,10 @@ class DownloadManager:
             if conn.tx_announce_queue:
                 conn.last_inv_sequence = self.node.mempool.sequence
             due_conns.append((conn, due))
-        ranked = self._rank_queued([conn for conn, _ in due_conns])
-        rank = {wtxid: n for n, wtxid in enumerate(ranked)}
+        keys = self._mining_order_keys([conn for conn, _ in due_conns])
         for conn, due in due_conns:
             if conn.tx_announce_queue:
-                # The cap is Core's, from the queue's size before anything
-                # is popped (`m_tx_inventory_to_send.size()`).
-                cap = _trickle_cap(len(conn.tx_announce_queue))
-                if batch := self._pop_trickle(conn, cap, ranked, rank):
-                    # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
-                    # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
-                    self._send_trickle(conn, batch)
+                self._send_trickle(conn, keys)
             # Core redraws the schedule when the timer is due, not for a
             # `NO_BAN` peer announced to ahead of it.
             if due:
@@ -1295,78 +1387,137 @@ class DownloadManager:
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
                     )
 
-    def _rank_queued(self, conns: list[Connection]) -> list[bytes]:
-        """Return every wtxid queued for `conns`, in the order a trickle pops.
+    def _process_inv_backlog(self, now: float, *, bumped: bool = False) -> None:
+        """Feed the peers' queues from the two backlogs, as the tokens allow.
 
-        An entry the mempool no longer holds comes first (`_GONE_KEY`); the
-        rest go best-paying first. The mempool cannot change within a call,
-        so the entries of every due connection are keyed once. A queued
-        entry can be evicted while it waits (`Mempool._evict_to_limit`).
+        Core's `ProcessInvBacklog` (`net_processing.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), at most once every
+        `_INV_BUCKET_CHECK_DELAY` unless a transaction just joined the
+        backlogs. What a bucket takes goes to every peer of its direction
+        that relays transactions and has had its first trickle. Where a
+        take finds no such peer, the rest of that backlog is dropped, so
+        that it does not spend the bucket before the next peer connects.
+        `_log_inv_backlog` runs after the refill, before the take.
+        """
+        if not bumped and now <= self._next_inv_bucket_check:
+            return
+        self._next_inv_bucket_check = now + _INV_BUCKET_CHECK_DELAY
+        inbound, outbound = self._inbound_inv_bucket, self._outbound_inv_bucket
+        inbound.increment(now)
+        outbound.increment(now)
+        self._log_inv_backlog(now)
+        mempool = self.node.mempool
+        for_inbound = inbound.take_for_processing(mempool) if inbound.avail() else []
+        for_outbound = outbound.take_for_processing(mempool) if outbound.avail() else []
+        if not for_inbound and not for_outbound:
+            return
+        any_inbound = any_outbound = False
+        for conn in self.node.p2p_manager.connections.copy().values():
+            # Core has no `TxRelay` for a peer that asked for no
+            # transactions (BIP37), and skips one whose
+            # `m_next_inv_send_time` is still 0, so that a spy cannot tell
+            # what arrived during the handshake.
+            if not conn.relay_tx or not conn.next_inv_send_time:
+                continue
+            if conn.inbound:
+                any_inbound = True
+                _extend_tx_announce_queue(conn, for_inbound)
+            else:
+                any_outbound = True
+                _extend_tx_announce_queue(conn, for_outbound)
+        if not any_inbound:
+            inbound.backlog.clear()
+        if not any_outbound:
+            outbound.backlog.clear()
+
+    def _log_inv_backlog(self, now: float) -> None:
+        """Log both backlogs under `net`, a line at most every period.
+
+        Core's heartbeat in `ProcessInvBacklog` (v32.1, as that method
+        says): a line once either backlog holds
+        `_INV_BACKLOG_HEARTBEAT_MIN`, then one at the first pass
+        `_INV_BACKLOG_HEARTBEAT` after the last, until a line finds both
+        backlogs empty.
+        """
+        inbound, outbound = self._inbound_inv_bucket, self._outbound_inv_bucket
+        if self._next_inv_bucket_heartbeat is None and (
+            max(len(inbound.backlog), len(outbound.backlog))
+            >= _INV_BACKLOG_HEARTBEAT_MIN
+        ):
+            self._next_inv_bucket_heartbeat = now
+        if (
+            self._next_inv_bucket_heartbeat is None
+            or now < self._next_inv_bucket_heartbeat
+        ):
+            return
+        self.logger.log_debug(
+            "net",
+            "Transaction rate-limiting backlog inbound=%d itok=%.1f isz=%.1f "
+            "outbound=%d otok=%.1f osz=%.1f",
+            len(inbound.backlog),
+            inbound.count_bucket.value,
+            inbound.size_bucket.value,
+            len(outbound.backlog),
+            outbound.count_bucket.value,
+            outbound.size_bucket.value,
+        )
+        if inbound.backlog or outbound.backlog:
+            self._next_inv_bucket_heartbeat = now + _INV_BACKLOG_HEARTBEAT
+        else:
+            self._next_inv_bucket_heartbeat = None
+
+    def inv_bucket_info(self) -> dict[str, InvBucketInfo]:
+        """Return the inbound and the outbound bucket, as Core's `GetInfo`.
+
+        `getnetworkinfo` reads them on `Node`'s thread, which `step`
+        changes them on, so no lock is taken where Core takes
+        `m_inv_to_send_mutex`.
+        """
+        return {
+            "inbound": self._inbound_inv_bucket.info(),
+            "outbound": self._outbound_inv_bucket.info(),
+        }
+
+    def _mining_order_keys(self, conns: list[Connection]) -> dict[bytes, MiningKey]:
+        """Return the sort key of each held wtxid queued for `conns`.
+
+        The mempool cannot change within a call, so the entries of every
+        due connection are keyed once. A queued entry can be evicted while
+        it waits (`Mempool._evict_to_limit`), and has no key.
         btclib-org/btclib-node#294
         """
         queued: dict[bytes, None] = {}
         for conn in conns:
             queued |= conn.tx_announce_queue
-        keys = dict.fromkeys(queued, _GONE_KEY)
         mempool = self.node.mempool
-        keys.update(
-            mempool.mining_order_keys(w for w in queued if w in mempool.transactions)
-        )
-        return sorted(queued, key=keys.__getitem__)
+        return mempool.mining_order_keys(w for w in queued if w in mempool.transactions)
 
-    def _send_trickle(self, conn: Connection, batch: list[bytes]) -> None:
-        """Send `batch` in one `Inv` and record it as known to the peer."""
-        inventory = [self._tx_inventory(conn, w) for w in batch]
-        conn.send(Inv(inventory))
+    def _send_trickle(self, conn: Connection, keys: dict[bytes, MiningKey]) -> None:
+        """Announce `conn`'s whole queue, best-paying first, and empty it.
+
+        Core's trickle (`SendMessages`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag) drops an entry the mempool no longer holds, one below the
+        peer's feefilter and one the peer already has, each read when
+        sending, so a change while the entry waited applies. What is left
+        goes in `Inv` messages of at most `MAX_INV_SZ` items, each recorded
+        as known to the peer.
+        """
+        queue = sorted(
+            (w for w in conn.tx_announce_queue if w in keys), key=keys.__getitem__
+        )
+        conn.tx_announce_queue.clear()
+        mempool = self.node.mempool
+        inventory = []
+        for wtxid in queue:
+            item = self._tx_inventory(conn, wtxid)
+            if item.hash not in conn.known_tx_inventory and mempool.meets_fee_rate(
+                wtxid, conn.feefilter
+            ):
+                inventory.append(item)
+        for batch in itertools.batched(inventory, MAX_INV_SZ, strict=False):
+            conn.send(Inv(list(batch)))
         for item in inventory:
             conn.known_tx_inventory.add(item.hash)
-
-    def _pop_trickle(
-        self,
-        conn: Connection,
-        cap: int,
-        ranked: list[bytes],
-        rank: dict[bytes, int],
-    ) -> list[bytes]:
-        """Pop what one trickle sends from `conn`'s queue, best-paying first.
-
-        Core erases only what it pops, and pops best-paying first
-        (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag). It drops an entry the mempool no longer holds, one the peer
-        already has, and one below its feefilter, without counting it toward
-        the cap. Each is read when sending, so a change while the entry
-        waited applies. What is not popped stays queued.
-
-        `ranked` holds every due connection's entries and `rank` their
-        positions in it. A long queue is read by walking `ranked` to the
-        cap; a short one is sorted by `rank`, as walking would pass mostly
-        entries it does not hold.
-        """
-        queue = conn.tx_announce_queue
-        batch: list[bytes] = []
-        if len(queue) ** 2 >= cap * len(ranked):
-            order = ranked
-        else:
-            order = sorted(queue, key=rank.__getitem__)
-        for wtxid in order:
-            if len(batch) == cap or not queue:
-                break
-            if wtxid in queue:
-                del queue[wtxid]
-                self._offer(conn, wtxid, batch)
-        return batch
-
-    def _offer(self, conn: Connection, wtxid: bytes, batch: list[bytes]) -> None:
-        """Add `wtxid` to `batch` if the trickle sends it.
-
-        That is: held, unknown to the peer, and not below its feefilter.
-        """
-        mempool = self.node.mempool
-        if wtxid not in mempool.transactions:
-            return
-        known = self._tx_inventory(conn, wtxid).hash in conn.known_tx_inventory
-        if not known and mempool.meets_fee_rate(wtxid, conn.feefilter):
-            batch.append(wtxid)
 
     def _tx_inventory(self, conn: Connection, wtxid: bytes) -> Inventory:
         """Name a held transaction the way `conn` relays: wtxid, else txid.
@@ -1393,7 +1544,7 @@ class DownloadManager:
         """Ask a peer, once, for new blocks as headers (BIP130).
 
         Core's `MaybeSendSendHeaders` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), reached from its
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), reached from its
         per-peer message loop: not before the common version reaches
         `SENDHEADERS_VERSION`, and not before the best block the peer is
         known to have carries more than the minimum chain work, so that
@@ -1419,14 +1570,15 @@ class DownloadManager:
         """Tell every connected peer this node's own current relay floor.
 
         Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
-        at bitcoin/bitcoin@58a7869f86), reached from its per-peer message
-        loop for every peer regardless of what else that pass sent --
-        `_send_due_announcements`'s own `conn.relay_tx` gate does not
-        apply here, since BIP133's `feefilter` says what this node will
-        not send *to* a peer, independent of whether that peer asked to
-        be sent transactions at all. `Connection.status` stands in for
-        Core's `fSuccessfullyConnected`: a connection still mid-handshake
-        has no peer at the other end of `Connection.send` yet.
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), reached from its
+        per-peer message loop for every peer regardless of what else that
+        pass sent -- `_send_due_announcements`'s own `conn.relay_tx` gate
+        does not apply here, since BIP133's `feefilter` says what this
+        node will not send *to* a peer, independent of whether that peer
+        asked to be sent transactions at all. `Connection.status` stands
+        in for Core's `fSuccessfullyConnected`: a connection still
+        mid-handshake has no peer at the other end of `Connection.send`
+        yet.
 
         A block-relay-only connection is sent none, as Core returns for
         `IsBlockOnlyConn()`: it never announces a transaction to this
@@ -1439,8 +1591,8 @@ class DownloadManager:
         """
         now = clock.now()
         # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
-        # at bitcoin/bitcoin@ca7162cde5) gates this same decision on
-        # `m_chainman.IsInitialBlockDownload()`, which `main.
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
+        # decision on `m_chainman.IsInitialBlockDownload()`, which `main.
         # update_ibd_status`'s own `node.is_initial_block_download`
         # answers faithfully (btclib-org/btclib-node#575). An earlier
         # version of this branch read `NodeStatus.BlockSynced` instead,
@@ -1546,7 +1698,7 @@ class DownloadManager:
 
         Core's own "Start block sync" and "Check for headers sync
         timeouts" in `SendMessages` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). While the best
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). While the best
         header is older than `_RECENT_BEST_HEADER`, one peer at a time
         is asked: the first one reached, though one not
         `_is_preferred_download` waits while a preferred peer exists and
@@ -1652,7 +1804,7 @@ class DownloadManager:
         """Bring the stalling timeout back towards its default, a block on.
 
         Core's `BlockConnected` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 85% of it, in whole
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): 85% of it, in whole
         seconds, and never under `_BLOCK_STALLING_TIMEOUT_DEFAULT`.
         """
         self.block_stalling_timeout = max(
@@ -1687,7 +1839,7 @@ class DownloadManager:
 
         Core's "Detect whether we're stalling", its block download
         timeout and its "Message: getdata (blocks)" in `SendMessages`
-        (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        (`net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag), peer by peer. A peer is dropped where it has held up the
         download window for longer than `block_stalling_timeout`, which
         then doubles up to `_BLOCK_STALLING_TIMEOUT_MAX`; or where the
@@ -1754,7 +1906,7 @@ class DownloadManager:
         """Ask `conn` at once for the blocks up to a header it just sent.
 
         Core's `HeadersDirectFetchBlocks` (`net_processing.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which its `headers`
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), which its `headers`
         handler calls for a batch that connected: only where the active
         tip is less than twenty block intervals old (`CanDirectFetch`),
         and `last_header` is not invalid and has at least the tip's work.

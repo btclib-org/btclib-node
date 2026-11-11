@@ -1518,6 +1518,25 @@ def test_parse_messages_counts_each_message_under_core_s_key() -> None:
     }
 
 
+def test_parse_messages_counts_a_feature_under_its_own_key() -> None:
+    """ISS 2250: `feature` is in Core v32.1's `ALL_NET_MESSAGE_TYPES`."""
+    connection, _ = a_connection()
+    with connection.client:
+        wire = Message(RegTest().magic, "feature", b"\x04BIP9\x00").serialize()
+        connection.parse_messages(wire)
+    assert connection.stats.bytes_recv_per_msg == {"feature": len(wire)}
+
+
+def test_own_version_announces_core_v32_1_s_protocol_version() -> None:
+    """ISS 2250: 70017, Core v32.1's `PROTOCOL_VERSION`."""
+    connection, _ = a_connection()
+    manager = cast("Any", connection.manager)
+    manager.add_pending_outbound_nonce = lambda nonce: None
+    manager.port = 18444
+    with connection.client:
+        assert connection.own_version().version == 70017
+
+
 def test_run_counts_every_octet_it_reads() -> None:
     """`bytes_recv` is what `sock_recv` answered, whole messages or not."""
 

@@ -143,11 +143,11 @@ start.
 
 This node does not make a `wallets` directory (btclib-org/btclib-node#1523).
 Bitcoin Core's `InitConfig` makes `<datadir>/wallets` and
-`<datadir>/<chain>/wallets` with each data directory it creates, at
-bitcoin/bitcoin@9be056a8a7 (v31.1), so that a wallet enabled later does not
-mix with the other files. This node has no wallet. A data directory it made
-is opened by Core with its wallets in the top-level directory, since Core
-uses `wallets` only where it exists.
+`<datadir>/<chain>/wallets` with each data directory it creates
+(`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so
+that a wallet enabled later does not mix with the other files. This node has
+no wallet. A data directory it made is opened by Core with its wallets in
+the top-level directory, since Core uses `wallets` only where it exists.
 
 The `scantxoutset` refusal "Cannot derive script without private keys" does
 not quote the descriptor, which may hold a private key. A config line that
@@ -158,12 +158,12 @@ section name, in the unrecognized-section warning and in the log of the
 configuration, and a `settings.json` name, in the unknown-name warning, in
 the duplicate-key refusal and in the log of the settings. A `settings.json`
 that is not an object is refused by its value's type. Bitcoin Core quotes
-each of these whole, at bitcoin/bitcoin@db0bde16b9: the descriptor at
-`rpc/util.cpp:1370`, the line in `GetConfigOptions`
+each of these whole, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: the
+descriptor at `rpc/util.cpp:1376`, the line in `GetConfigOptions`
 (`src/common/config.cpp`), the argument in `ParseParameters`
 (`src/common/args.cpp:234`), the key in `ReadConfigStream`
 (`src/common/config.cpp:110`), the section in `AppInitParameterInteraction`
-(`src/init.cpp:992`) and `logArgsPrefix` (`src/common/args.cpp:988`), the
+(`src/init.cpp:991`) and `logArgsPrefix` (`src/common/args.cpp:988`), the
 `settings.json` name in `ReadSettingsFile`'s warning
 (`src/common/args.cpp:479`), in `ReadSettings`'s refusal
 (`src/common/settings.cpp:110`) and in `LogArgs`
@@ -180,22 +180,22 @@ tag). This node's refusal quotes none of its arguments, as in
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
-`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7). This node masks some
-of them, as ASSURANCE_CASE.md's CWE-209 entry says.
+`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This
+node masks some of them, as ASSURANCE_CASE.md's CWE-209 entry says.
 
 What a refusal may print about a secret is the organization's rule, section 7's
 *A refusal carries no secret* in
-[btclib-org/.github's README.md](https://github.com/btclib-org/.github/blob/main/README.md).
+[the organization's standard](https://github.com/btclib-org/.github/blob/main/README.md).
 
 `-reindex-chainstate` wipes the undo data with the coins
 (btclib-org/btclib-node#1415). Bitcoin Core keeps it:
 `BlockManager::WriteBlockUndo` writes no undo data for a block that has
-some (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, v31.1).
-This node writes it again as it connects each block, and wipes it because
-`BlockDB.add_rev_block` skips a block that already has a patch, so without
-the wipe a corrupt record would survive the rebuild. A stop between the
-chainstate wipe and the undo wipe keeps the old patches until a start with
-the option wipes them.
+some (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag). This node writes it again as it connects each block, and wipes
+it because `BlockDB.add_rev_block` skips a block that already has a patch,
+so without the wipe a corrupt record would survive the rebuild. A stop
+between the chainstate wipe and the undo wipe keeps the old patches until
+a start with the option wipes them.
 
 The log escapes C1 controls, U+0080 to U+009F, as `\x` and two hex digits,
 beside the C0 controls and DEL that Bitcoin Core escapes too

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from btclib_node import Node, cli
+from btclib_node import config as config_module
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
@@ -992,17 +993,53 @@ def test_build_config_reads_the_relay_share_as_core_clamps_it(
 
 
 def test_help_names_the_relay_share() -> None:
-    """ISS 1769: in `bitcoind`'s words.
-
-    `-maxconnections` names no maximum (ISS 2127).
-    """
+    """ISS 1769, ISS 2127: in `bitcoind`'s words, the cap included."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert (
         "-inboundrelaypercent=<n> Permit a maximum percent of inbound "
         "connections to relay transactions, to limit memory utilization "
         "(0 to 100, default: 50)."
     ) in message
-    assert "connections to peers (default: 200)" in message
+    assert "connections to peers (default: 200, maximum: 2000)" in message
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "rate"),
+    [
+        ([], "", 14),
+        (["-txsendrate=3"], "", 3),
+        ([], "txsendrate=7\n", 7),
+        (["-txsendrate=5000"], "", 1000),
+        (["-txsendrate=0"], "", 1),
+        (["-txsendrate=-1"], "", 1),
+        (["-notxsendrate"], "", 1),
+    ],
+    ids=["Core's default", "command line", "file", "over", "zero", "under", "negated"],
+)
+def test_build_config_reads_the_send_rate_as_core_clamps_it(
+    tmp_path: Path, argv: list[str], conf: str, rate: int
+) -> None:
+    """ISS 2309: `-txsendrate`, clamped to 1 to 1000 as in Core.
+
+    bitcoind v32.1.0 answered `getnetworkinfo`'s `tx_send_rate` 1000 to
+    `-txsendrate=5000` and 1 to `-notxsendrate`, on regtest.
+    """
+    assert _build(tmp_path, *argv, conf=conf).tx_send_rate == rate
+
+
+def test_build_config_txsendrate_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2309: `-txsendrate` is `DEBUG_ONLY`, in bitcoind v32.1.0's words."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-txsendrate" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    assert (
+        "  -txsendrate=<n>\n       Set the maximum ongoing rate for sending "
+        "transactions to (inbound) peers\n       (default: 14 tx/s)\n"
+    ) in capsys.readouterr().out
 
 
 def test_help_names_bantime() -> None:
@@ -1103,7 +1140,7 @@ def test_help_names_rpcservertimeout_under_debug_alone() -> None:
         ([], "", 16),
         (["-rpcmaxconnections=4"], "", 4),
         ([], "rpcmaxconnections=5\n", 5),
-        (["-rpcmaxconnections=99999999999"], "", 2**31 - 1),
+        (["-rpcmaxconnections=99999999999", "-server=0"], "", 2**31 - 1),
     ],
     ids=["Core's default", "command line", "file", "saturated"],
 )
@@ -1719,10 +1756,11 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
     assert cli._atoi64(value) == read
 
 
-# measured on `bitcoind` v31.1.0, which this node follows until ISS 2127,
-# with `-regtest -listen=0`: the limit its "Using at most <n> automatic
-# connections" line gives, `None` where it refuses "-maxconnections must
-# be greater or equal than zero"
+# measured on `bitcoind` v32.1.0 with `-regtest -listen=0`: the limit its
+# "Using at most <n> automatic connections" line gives, 2000 for a value
+# it reads as 2000 or more, warning past 2000 with "Reducing
+# -maxconnections from <n> to 2000.", and `None` where it refuses
+# "-maxconnections must be greater or equal than zero"
 @pytest.mark.parametrize(
     ("value", "limit"),
     [
@@ -1734,23 +1772,25 @@ def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> 
         ("x", 0),
         ("", 0),
         ("0x10", 0),
-        ("99999999999999999999", None),
-        ("-99999999999999999999", 0),
-        ("4294967296", 0),
-        ("4294967297", 1),
-        ("-4294967295", 1),
-        ("2147483648", None),
+        ("2000", 2000),
+        ("2001", 2000),
+        ("99999999999999999999", 2000),
+        ("-99999999999999999999", None),
+        ("4294967296", 2000),
+        ("4294967297", 2000),
+        ("-4294967295", None),
+        ("2147483648", 2000),
+        ("-2147483648", None),
         ("-7x", None),
     ],
 )
 def test_maxconnections_is_the_int_bitcoind_reads(
     tmp_path: Path, value: str, limit: int | None
 ) -> None:
-    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`.
+    """ISS 1313, ISS 2127: `GetArg<int>`, saturated, then capped at 2000.
 
-    That is `AppInitParameterInteraction`'s reading (`src/init.cpp:1033`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-    until ISS 2127).
+    That is `AppInitParameterInteraction`'s reading (`src/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if limit is None:
         with pytest.raises(
@@ -1763,34 +1803,155 @@ def test_maxconnections_is_the_int_bitcoind_reads(
 
 @pytest.mark.parametrize(
     ("value", "listen"),
-    [("4294967296", True), ("-4294967295", False)],
+    [("4294967296", True), ("abc", False)],
 )
-def test_the_listen_soft_set_reads_maxconnections_before_the_int(
+def test_the_listen_soft_set_reads_maxconnections(
     tmp_path: Path, value: str, *, listen: bool
 ) -> None:
     """ISS 1324: `InitParameterInteraction` compares the `int64_t` with zero.
 
-    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
-    `-maxconnections=4294967296` logs no "setting -listen=0" though its
-    limit is 0, and `-4294967295` logs it though its limit is 1.
+    Measured on `bitcoind` v32.1.0: `-maxconnections=4294967296` logs no
+    "setting -listen=0", and `-maxconnections=abc` logs it.
     """
     assert _build(tmp_path, f"-maxconnections={value}").listen is listen
 
 
 @pytest.mark.parametrize(
     ("value", "dnsseed"),
-    [("4294967296", True), ("-4294967295", False)],
+    [("4294967296", True), ("abc", False)],
 )
-def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
+def test_the_dnsseed_soft_set_reads_maxconnections(
     tmp_path: Path, value: str, *, dnsseed: bool
 ) -> None:
     """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
 
-    Measured on `bitcoind` v31.1.0, which this node follows until ISS 2127:
-    `-maxconnections=4294967296` logs "dnsseed thread start", and
-    `-4294967295` logs "setting -dnsseed=0".
+    Measured on `bitcoind` v32.1.0: `-maxconnections=4294967296` logs
+    "dnsseed thread start", and `-maxconnections=abc` logs "setting
+    -dnsseed=0".
     """
     assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
+
+
+@pytest.mark.parametrize(
+    ("value", "read"),
+    [("5000", 5000), ("2001", 2001), ("4294967297", 2**31 - 1)],
+)
+def test_a_maxconnections_past_2000_is_capped_with_core_s_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, read: int
+) -> None:
+    """ISS 2127: one warning on stderr, naming the value `GetArg<int>` read.
+
+    Measured on `bitcoind` v32.1.0, which prints the same line.
+    """
+    config = _build(tmp_path, f"-maxconnections={value}")
+    warning = f"Reducing -maxconnections from {read} to 2000."
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    assert config.max_connections == 2000
+    assert config.max_connections_warnings == (warning,)
+
+
+def test_a_maxconnections_of_2000_is_not_warned_of(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: the cap warns only where it lowers the limit."""
+    config = _build(tmp_path, "-maxconnections=2000")
+    assert capsys.readouterr().err == ""
+    assert config.max_connections_warnings == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+def test_maxconnections_is_lowered_to_the_descriptors_left_once(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2338: the cap's warning, then the descriptors', each printed once.
+
+    Measured on `bitcoind` v32.1.0 on macOS, where `FD_SETSIZE` leaves
+    1024: `-maxconnections=2000` prints the second line.
+    """
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 1024)
+    config = _build(tmp_path, "-maxconnections=5000")
+    warnings = (
+        "Reducing -maxconnections from 5000 to 2000.",
+        "Reducing -maxconnections from 2000 to 846, because of system limitations.",
+    )
+    assert capsys.readouterr().err == "".join(f"Warning: {w}\n" for w in warnings)
+    assert config.max_connections == 846
+    assert config.max_connections_warnings == warnings
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+@pytest.mark.parametrize(
+    ("argv", "max_connections"),
+    [
+        ([], 122),
+        (["-server=0"], 140),
+        (["-rpcbind=127.0.0.1:1", "-rpcbind=127.0.0.1:2", "-rpcbind=[::1]:3"], 121),
+    ],
+)
+def test_maxconnections_counts_the_rpc_listener_as_given(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    max_connections: int,
+) -> None:
+    """ISS 2338: `-server` and `-rpcbind` reach the first count, which warns."""
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 300)
+    assert _build(tmp_path, *argv).max_connections == max_connections
+    assert capsys.readouterr().err == (
+        f"Warning: Reducing -maxconnections from 200 to {max_connections}, "
+        "because of system limitations.\n"
+    )
+
+
+def test_rpcmaxconnections_past_an_int_is_refused_under_server(tmp_path: Path) -> None:
+    """ISS 2338: `GetArg<int>` saturates, then Core's count passes an `int`."""
+    with pytest.raises(ValueError, match=r"^Too many file descriptors requested\. "):
+        _build(tmp_path, "-rpcmaxconnections=99999999999")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Core reserves 150 off Windows")
+def test_the_rpcmaxconnections_refusal_precedes_the_descriptor_count(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2338: `AppInitParameterInteraction` refuses, then counts.
+
+    `src/init.cpp:1081-1083`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag,
+    ahead of the count at 1089: a limit that would lower `-maxconnections`
+    prints nothing before the refusal.
+    """
+    monkeypatch.setattr(config_module, "_raise_file_descriptor_limit", lambda _: 300)
+    with pytest.raises(ValueError, match=r"^-rpcmaxconnections must be"):
+        _build(tmp_path, "-rpcmaxconnections=0")
+    assert "Reducing" not in capsys.readouterr().err
+
+
+def test_the_maxconnections_warning_precedes_the_rpcmaxconnections_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: `AppInitParameterInteraction` caps, then refuses.
+
+    Measured on `bitcoind` v32.1.0: `-maxconnections=5000
+    -rpcmaxconnections=0` prints the warning, then the error.
+    """
+    with pytest.raises(ValueError, match=r"^-rpcmaxconnections must be"):
+        _build(tmp_path, "-maxconnections=5000", "-rpcmaxconnections=0")
+    assert capsys.readouterr().err == (
+        "Warning: Reducing -maxconnections from 5000 to 2000.\n"
+    )
+
+
+def test_the_forcednsseed_refusal_precedes_the_maxconnections_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: measured on `bitcoind` v32.1.0, which prints the error only."""
+    with pytest.raises(ValueError, match=r"^Cannot set -forcednsseed"):
+        _build(tmp_path, "-maxconnections=5000", "-forcednsseed", "-nodnsseed")
+    assert capsys.readouterr().err == ""
 
 
 def test_forcednsseed_defaults_to_false(tmp_path: Path) -> None:
@@ -4356,6 +4517,195 @@ def test_main_a_refusal_after_the_lock_reaches_history_log(
     assert "[error] Invalid port specified in -port: 'abc'" in log_text
 
 
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["-blocksdir={tmp}/nosuch"],
+            'Specified blocks directory "{tmp}/nosuch" does not exist.',
+        ),
+        (
+            ["-prune=550", "-reindex-chainstate"],
+            (
+                "Prune mode is incompatible with -reindex-chainstate. "
+                "Use full -reindex instead."
+            ),
+        ),
+        (
+            ["-forcednsseed", "-nodnsseed"],
+            "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+        ),
+        (
+            ["-bind=127.0.0.1:38428", "-listen=0"],
+            "Cannot set -bind or -whitebind together with -listen=0",
+        ),
+        (["-rpcmaxconnections=0"], "JSON integer out of range"),
+        ([], "JSON integer out of range"),
+    ],
+    ids=["blocksdir", "prune", "forcednsseed", "bind", "rpcmaxconnections", "alone"],
+)
+def test_a_maxconnections_number_past_an_int_is_refused_where_core_reads_it(
+    tmp_path: Path, argv: list[str], message: str
+) -> None:
+    """ISS 2127: `GetArg<int>` throws after the refusals ahead of it.
+
+    Measured on `bitcoind` v32.1.0 with `{"maxconnections": 2147483648}`
+    in `regtest/settings.json`: each of the first four prints its own
+    error, and the number's "JSON integer out of range" comes ahead of
+    the `-rpcmaxconnections` refusal.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": 2147483648}', encoding="utf-8"
+    )
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError, match=f"^{re.escape(message.format(tmp=tmp_path))}$"
+    ):
+        _build(tmp_path, "-regtest", *args)
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["-blocksdir={tmp}/nosuch"],
+            'Specified blocks directory "{tmp}/nosuch" does not exist.',
+        ),
+        (
+            ["-prune=550", "-reindex-chainstate"],
+            (
+                "Prune mode is incompatible with -reindex-chainstate. "
+                "Use full -reindex instead."
+            ),
+        ),
+        (
+            ["-forcednsseed", "-nodnsseed"],
+            "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+        ),
+        (
+            ["-bind=127.0.0.1:38428", "-listen=0"],
+            "Cannot set -bind or -whitebind together with -listen=0",
+        ),
+        (
+            ["-maxconnections=-1"],
+            "-maxconnections must be greater or equal than zero",
+        ),
+        ([], "JSON integer out of range"),
+    ],
+    ids=["blocksdir", "prune", "forcednsseed", "bind", "maxconnections", "alone"],
+)
+@pytest.mark.parametrize(
+    "number",
+    [
+        "2147483648",
+        "-2147483649",
+        "9223372036854775808",
+        "1.5",
+        "1e1",
+        "9" * 5000,
+        "-" + "9" * 5000,
+    ],
+    ids=["int", "-int", "int64", "fraction", "exponent", "digits", "-digits"],
+)
+def test_an_rpcmaxconnections_number_no_int_is_refused_where_core_reads_it(
+    tmp_path: Path, argv: list[str], message: str, number: str
+) -> None:
+    """ISS 2347: `GetArg<int>` throws after the refusals ahead of it.
+
+    `AppInitParameterInteraction` reads `-rpcmaxconnections` at
+    `src/init.cpp:1080`, after the refusals at lines 999, 1037, 1043,
+    1049 and 1065 (at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
+    `UniValue::getInt<int>` refuses a number past an `int`, or one with a
+    fraction or an exponent.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"rpcmaxconnections": {number}}}', encoding="utf-8"
+    )
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError, match=f"^{re.escape(message.format(tmp=tmp_path))}$"
+    ):
+        _build(tmp_path, "-regtest", *args)
+
+
+@pytest.mark.parametrize(("number", "limit"), [("7", 7), ("2147483647", 2**31 - 1)])
+def test_an_rpcmaxconnections_number_in_an_int_is_read(
+    tmp_path: Path, number: str, limit: int
+) -> None:
+    """ISS 2347: `getInt<int>` reads an integer within an `int`.
+
+    `-server=0`, since under `-server` the largest `int` asks for more
+    file descriptors than an `int` counts, which Core refuses (ISS 2338).
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"rpcmaxconnections": {number}}}', encoding="utf-8"
+    )
+    assert _build(tmp_path, "-regtest", "-server=0").rpcmaxconnections == limit
+
+
+@pytest.mark.parametrize("number", ["-0", "-2147483648"])
+def test_an_rpcmaxconnections_int_number_below_one_is_refused(
+    tmp_path: Path, number: str
+) -> None:
+    """ISS 2347: `getInt<int>` reads each, which Core refuses as below one."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"rpcmaxconnections": {number}}}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"^-rpcmaxconnections must be greater"):
+        _build(tmp_path, "-regtest")
+
+
+def test_the_maxconnections_warning_precedes_an_rpcmaxconnections_number_past_an_int(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2347: the cap's `InitWarning` (`src/init.cpp:1069`) comes first."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcmaxconnections": 2147483648}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        _build(tmp_path, "-regtest", "-maxconnections=5000")
+    assert capsys.readouterr().err == (
+        "Warning: Reducing -maxconnections from 5000 to 2000.\n"
+    )
+
+
+@pytest.mark.parametrize("content", ["2147483648", "3000000000", "-2147483649"])
+@pytest.mark.parametrize("name", ["rpcmaxconnections", "maxconnections"])
+def test_an_int_option_number_past_an_int_is_left_for_the_caller(
+    name: str, content: str
+) -> None:
+    """ISS 2127, ISS 2347: `_get_int32` returns the number as it is."""
+    settings = _file_settings(f'{{"{name}":{content}}}')
+    assert cli._get_int32(settings, name, 0) == int(content)
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_refusal_after_the_lock_logs_the_maxconnections_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2127: the cap's warning reaches the log a later refusal opens.
+
+    Measured on `bitcoind` v32.1.0 with `-maxconnections=5000
+    -onlynet=bogus`, a refusal after `init::StartLogging` too: it prints
+    the warning, then the error, and its `debug.log` holds both in that
+    order.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-maxconnections=5000", "-port=abc"])
+    assert excinfo.value.code == 1
+    warning = "Reducing -maxconnections from 5000 to 2000."
+    assert capsys.readouterr().err == (
+        f"Warning: {warning}\nError: Invalid port specified in -port: 'abc'\n"
+    )
+    log_text = (tmp_path / "mainnet" / "history.log").read_text(encoding="utf-8")
+    assert log_text.index(f"[warning] {warning}") < log_text.index("[error]")
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5319,18 +5669,31 @@ def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
     ("content", "expected"),
     [("2147483647", 2**31 - 1), ('"3000000000"', 2**31 - 1), ("5", 5)],
 )
-def test_rpcmaxconnections_in_the_file_is_an_int(content: str, expected: int) -> None:
-    """ISS 1953: a 32-bit `int` as a number, a string saturated to one."""
-    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
-    assert cli._get_rpcmaxconnections(settings) == expected
+@pytest.mark.parametrize("name", ["rpcmaxconnections", "maxconnections"])
+def test_an_int_option_in_the_file_is_an_int(
+    name: str, content: str, expected: int
+) -> None:
+    """ISS 1953, ISS 2127: a 32-bit `int` as a number, a string saturated."""
+    settings = _file_settings(f'{{"{name}":{content}}}')
+    assert cli._get_int32(settings, name, 0) == expected
 
 
 @pytest.mark.parametrize("content", ["2147483648", "3000000000", "-2147483649"])
-def test_an_rpcmaxconnections_number_past_an_int_is_out_of_range(content: str) -> None:
-    """ISS 1953: Core's `UniValue::getInt<int>` refuses it, ending the start."""
-    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
+@pytest.mark.parametrize("name", ["rpcmaxconnections", "maxconnections"])
+def test_an_int_option_number_past_an_int_is_out_of_range(
+    tmp_path: Path, name: str, content: str
+) -> None:
+    """ISS 1953, ISS 2127: Core's `UniValue::getInt<int>` refuses it.
+
+    Measured on `bitcoind` v32.1.0 for `{"maxconnections": 2147483648}` in
+    `settings.json`: "JSON integer out of range", ending the start.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"{name}":{content}}}', encoding="utf-8"
+    )
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
-        cli._get_rpcmaxconnections(settings)
+        _build(tmp_path, "-regtest")
 
 
 def test_a_number_is_a_string_option_in_its_own_text() -> None:
@@ -5348,7 +5711,7 @@ def test_a_value_of_the_file_is_another_source_of_a_network_only_option() -> Non
     assert cli._unsuitable_section_only_args(_file_settings(file, conf=conf)) == []
 
 
-# ISS 1965: section 7 of the btclib-org standard, *A refusal carries no
+# ISS 1965: section 7 of the organization's standard, *A refusal carries no
 # secret* (*Reprs and logs*), for what a `_Settings` holds
 
 _CREDENTIAL = "Zt9qK2mWp7RtXv4n"
@@ -5410,3 +5773,135 @@ def test_settings_print_no_credential_from_the_section_warning() -> None:
 def test_settings_still_print_what_holds_no_secret(tmp_path: Path) -> None:
     """The network stays in the repr, so a repr says which settings it is."""
     assert "network='regtest'" in repr(_read(tmp_path))
+
+
+def test_build_config_test_and_checkaddrman_are_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both are `DEBUG_ONLY`: listed under `-help-debug` alone."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    out = capsys.readouterr().out
+    assert "-checkaddrman" not in out
+    assert "-test=" not in out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    out = capsys.readouterr().out
+    # bitcoind v32.1.0's own `-help-debug`
+    assert (
+        "  -checkaddrman=<n>\n"
+        "       Run addrman consistency checks every <n> operations. Use 0 to disable.\n"
+        "       (default: 0)\n"
+    ) in out
+    # Core's, but for the value this node does not read
+    assert (
+        "  -test=<option>\n"
+        "       Pass a test-only option. Options include : addrman (use deterministic\n"
+        "       addrman), bip94 (enforce BIP94 consensus rules).\n"
+    ) in out
+
+
+def test_build_config_test_addrman_builds_a_deterministic_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`HasTestOption(args, "addrman")`, from the command line or the file."""
+    assert not _build(tmp_path, "-regtest").deterministic_addrman
+    assert _build(tmp_path, "-regtest", "-test=addrman").deterministic_addrman
+    from_file = _build(tmp_path, conf="regtest=1\n[regtest]\ntest=addrman\n")
+    assert from_file.deterministic_addrman
+    assert not _build(
+        tmp_path, "-regtest", "-test=addrman", "-notest"
+    ).deterministic_addrman
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_test_bip94_enforces_bip94_on_regtest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2327: `ReadRegTestArgs`' `HasTestOption(args, "bip94")`."""
+    assert not _build(tmp_path, "-regtest").chain.consensus.enforce_bip94
+    config = _build(tmp_path, "-regtest", "-test=bip94")
+    assert config.chain.consensus.enforce_bip94
+    assert not config.deterministic_addrman
+    assert config.debug_warnings == ()
+    from_file = _build(tmp_path, conf="regtest=1\n[regtest]\ntest=bip94\n")
+    assert from_file.chain.consensus.enforce_bip94
+    negated = _build(tmp_path, "-regtest", "-test=bip94", "-notest")
+    assert not negated.chain.consensus.enforce_bip94
+    # the heights `-testactivationheight` moves are kept beside it
+    both = _build(tmp_path, "-regtest", "-testactivationheight=csv@7", "-test=bip94")
+    assert both.chain.consensus.enforce_bip94
+    assert both.chain.consensus.csv_height == 7
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "ratio"),
+    [
+        ("1", 1),
+        ("-1", 0),
+        ("abc", 0),
+        ("2000000", 1_000_000),
+        # the `int64_t` taken as a 32-bit `int` before the clamp
+        ("4294967297", 1),
+        ("2147483648", 0),
+    ],
+)
+def test_build_config_checkaddrman_is_clamped_as_core_clamps_it(
+    tmp_path: Path, value: str, ratio: int
+) -> None:
+    """`LoadAddrman`'s `std::clamp<int32_t>` of `GetIntArg`, `0` by default."""
+    assert _build(tmp_path, "-regtest").check_addrman == 0
+    assert _build(tmp_path, "-regtest", "-nocheckaddrman").check_addrman == 0
+    config = _build(tmp_path, "-regtest", f"-checkaddrman={value}")
+    assert config.check_addrman == ratio
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-signet", "-test=addrman"),
+        ("-signet", "-test=bogus"),
+        ("-signet", "-test"),
+        ("-chain=main", "-test=addrman", "-testactivationheight=csv@1"),
+    ],
+)
+def test_build_config_test_is_refused_off_regtest(
+    tmp_path: Path, argv: Sequence[str]
+) -> None:
+    """Measured on bitcoind: exit 1, ahead of `-testactivationheight`'s."""
+    expected = re.escape("-test=<option> can only be used with regtest")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, *argv)
+
+
+def test_build_config_test_is_read_after_the_debug_categories(tmp_path: Path) -> None:
+    """`AppInitParameterInteraction` reads the categories, then `-test`."""
+    with pytest.raises(
+        ValueError, match=r"^Unsupported logging category -debug=bogus\.$"
+    ):
+        _build(tmp_path, "-signet", "-test=addrman", "-debug=bogus")
+
+
+def test_build_config_a_negated_test_is_no_test(tmp_path: Path) -> None:
+    """`-notest` sets no value, so a signet start goes on, as bitcoind's."""
+    assert not _build(tmp_path, "-signet", "-notest").deterministic_addrman
+
+
+@pytest.mark.parametrize(
+    "value", ["bogus", "", "reindex_after_failure_noninteractive_yes"]
+)
+def test_build_config_warns_of_a_test_value_it_does_not_know(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    """Measured on bitcoind: `-test=bogus` and a bare `-test` warn and start.
+
+    `reindex_after_failure_noninteractive_yes` is one Core knows and this
+    node does not read.
+    """
+    warning = f'Unrecognised option "{value}" provided in -test=<option>.'
+    argv = ["-regtest", f"-test={value}" if value else "-test", "-test=addrman"]
+    config = _build(tmp_path, *argv)
+    assert capsys.readouterr().err == f"Warning: {warning}\n"
+    assert config.debug_warnings == (warning,)
+    assert config.deterministic_addrman

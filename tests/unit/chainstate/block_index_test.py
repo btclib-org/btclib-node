@@ -43,8 +43,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from btclib.consensus import ConsensusParams
-
     from btclib_node.chainstate.block_index import BlockIndex
 
 
@@ -280,8 +278,9 @@ def test_a_refused_header_keeps_its_detail_in_the_log_line(
 ) -> None:
     """ISS 1600: the refusal is Core's word alone; the log has what follows it.
 
-    The two targets are the detail Core's `bad-diffbits` leaves out, and
-    the refusal's `__cause__` carries them.
+    The required target is the detail Core's `bad-diffbits` leaves out,
+    and the refusal's `__cause__` carries it in btclib's words, which
+    name no value the header holds (btclib-org/btclib#3005).
     """
     block_index = a_chainstate(None).block_index
     genesis = RegTest().genesis
@@ -298,7 +297,7 @@ def test_a_refused_header_keeps_its_detail_in_the_log_line(
 
     with pytest.raises(MisbehavingError) as refusal:
         block_index.add_headers([header])
-    detail = "proof-of-work target not the required one: 207ffffe instead of 207fffff"
+    detail = "proof-of-work target not the required one: 207fffff expected"
     assert str(refusal.value.__cause__) == detail
     assert f"bad-diffbits ({detail})" in capsys.readouterr().err
 
@@ -333,32 +332,6 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     assert len(block_index.header_dict) == 1
 
 
-class _RegTestWithBip94(RegTest):
-    """`RegTest`'s own genesis and limit, with BIP94 forced on.
-
-    No chain this package defines carries both `enforce_bip94=True` and
-    a difficulty period short enough to reach in a unit test --
-    `testnet4`'s own is real proof-of-work-limit work, 2016 blocks
-    apart -- so this overrides the one property `next_bits_required`
-    reads `enforce_bip94` off, `chain.consensus`, rather than building a
-    fifth chain no `__all__` names. A one-block period
-    (`pow_target_spacing == pow_target_timespan`) is what makes every
-    header a period boundary, so the bound in `_assert_valid_in_context`
-    is reached by the first header past genesis rather than the
-    2016th.
-    """
-
-    @property
-    @override
-    def consensus(self) -> ConsensusParams:
-        return replace(
-            super().consensus,
-            enforce_bip94=True,
-            pow_target_spacing=1,
-            pow_target_timespan=1,
-        )
-
-
 def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
@@ -373,17 +346,17 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     exception, not btclib's. Before this, `_assert_valid_in_context` let
     that bare exception through unconverted, which
     `p2p.main.handle_p2p`'s own `isinstance(e, MisbehavingError)` check
-    would not have discouraged the peer for, never exercised until a
-    chain with `enforce_bip94=True` existed to call it with. Only
-    `testnet4` sets that flag among the chains this package defines, and
-    its real difficulty period is 2016 blocks, too slow to mine in a
-    unit test -- `_RegTestWithBip94` above is a synthetic chain built to
-    reach the same branch without it.
+    would not have discouraged the peer for.
+
+    ISS 2327: regtest under `-test=bip94` is the chain it runs on. Its
+    difficulty period is short enough to mine here, and the period's
+    first header is the one the bound binds; plain regtest takes it.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
-    block_index.chain = _RegTestWithBip94()
+    block_index.chain = RegTest().with_bip94()
     genesis = block_index.chain.genesis
+    period = block_index.chain.consensus.difficulty_adjustment_interval
 
     def mined(parent: BlockHeader, seconds: int) -> BlockHeader:
         header = BlockHeader(
@@ -397,12 +370,13 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
         )
         return _mine_in_place(header, REGTEST_POW_LIMIT_BITS)
 
-    # ten headers a second apart and a parent far later: the median time
-    # past is one of the early ones, so the header below is after it and
-    # breaks the timewarp bound alone
+    # a period's headers a second apart but for its last, far later: the
+    # median time past is far before the last one's time, so the period's
+    # first header below is after it and breaks the timewarp bound alone
     chain = [genesis]
-    for seconds in (*range(1, 11), 5000):
+    for seconds in (*range(1, period - 1), 5000):
         chain.append(mined(chain[-1], seconds))
+    assert len(chain) == period
     assert block_index.add_headers(chain[1:]) == chain[-1].hash
     header = mined(chain[-1], 5000 - MAX_TIMEWARP - 1)
     median = median_time_past(
@@ -438,6 +412,10 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     _mine_in_place(harder, harder.bits)
     with pytest.raises(MisbehavingError, match=r"^bad-diffbits$"):
         block_index.add_headers([harder])
+
+    # without `-test=bip94` regtest enforces no timewarp bound
+    block_index.chain = RegTest()
+    assert block_index.add_headers([header]) == header.hash
 
 
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
