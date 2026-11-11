@@ -262,8 +262,7 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
         header, parent, parent_height, parent_of, chain.consensus
     )
     if header.bits != required:
-        detail = f"proof-of-work target not the required one: {header.bits.hex()}"
-        detail += f" instead of {required.hex()}"
+        detail = f"proof-of-work target not the required one: {required.hex()} expected"
         err_msg = "bad-diffbits"
         raise MisbehavingError(err_msg) from BTClibValueError(detail)
 

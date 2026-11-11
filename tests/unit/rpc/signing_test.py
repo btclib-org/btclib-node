@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import pytest
-from btclib import base58
+from base58_bech32 import base58
 from btclib.b58 import p2pkh, wif_from_prv_key
 from btclib.exceptions import ScriptError, ScriptErrorCode
 from btclib.hashes import hash160, sha256
@@ -413,7 +413,7 @@ def wrong_type(position: int, name: str, kind: str, expected: str) -> str:
 
 def a_wif(payload: bytes) -> str:
     """Return the base58check string of a regtest secret key `payload`."""
-    return base58.encode(b"\xef" + payload).decode()
+    return base58.b58encode_check(b"\xef" + payload).decode()
 
 
 def entry(**changes: Any) -> dict[str, Any]:
@@ -443,7 +443,7 @@ REFUSALS: list[tuple[str, list[Any], int, str]] = [
     ("signmessagewithprivkey", ["x", MESSAGE], -5, "Invalid private key"),
     (
         "signmessagewithprivkey",
-        [base58.encode(b"\x80" + b"\x01".rjust(32, b"\0")).decode(), MESSAGE],
+        [base58.b58encode_check(b"\x80" + b"\x01".rjust(32, b"\0")).decode(), MESSAGE],
         -5,
         "Invalid private key",
     ),

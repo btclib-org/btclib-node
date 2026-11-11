@@ -37,8 +37,8 @@ from btclib.script.script import serialize
 from btclib.script.solver import solver
 from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
+from ecc import dsa, ssa
 from ecc.curves import bytes_from_prv_key_int
-from ecc.ecc import dsa, ssa
 
 from btclib_node.interpreter import STANDARD_FLAGS
 
