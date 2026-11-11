@@ -406,9 +406,10 @@ and what counters each.
   as `quote` for a key named twice. The settings log writes a
   `settings.json` value only where its name is a known option that is not
   sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
-  of `RequestHead` excludes its `raw` and `fields` fields. The repr
-  of `_Settings` excludes fields that may hold a credential. These behaviors
-  are checked in `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py`.
+  of `RequestHead` excludes `raw` and `fields`, which hold the
+  `Authorization` field, and the repr of `_Settings` excludes the fields
+  that may hold a credential. These behaviors are checked both, in
+  `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py`.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
