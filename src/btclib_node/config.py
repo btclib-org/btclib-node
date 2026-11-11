@@ -127,8 +127,8 @@ DEFAULT_TX_SEND_RATE = 14
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most RPC clients connected at once.
 DEFAULT_MAX_HTTP_CONNECTIONS = 16
-# Core's own `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most `-addnode` peers
+# Core's own `MAX_ADDNODE_CONNECTIONS` (`src/net.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most `-addnode` peers
 # connected at once, outside `-maxconnections`.
 MAX_ADDNODE_CONNECTIONS = 8
 # The descriptors Core reserves ahead of any connection: `MIN_CORE_FDS`
@@ -1060,8 +1060,8 @@ class Config:
     # Core's own `-txsendrate`: the transactions a second this node
     # announces to its inbound peers, which `DownloadManager`'s
     # announcement buckets refill by. `cli` clamps it to 1 to 1000, as
-    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     tx_send_rate: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)

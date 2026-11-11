@@ -573,8 +573,8 @@ class Node(threading.Thread):
             self.data_dir, self.chain, self.logger, wipe=reindex
         )
         self._opened.callback(self.chainstate.close)
-        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         self.chainstate.utxo_index.read_error_callback = self._coins_read_error
         if reindex:
             self.block_db.wipe_undo()
