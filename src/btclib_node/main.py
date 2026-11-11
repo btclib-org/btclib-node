@@ -32,10 +32,10 @@ from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.policy import (
     MIN_STANDARD_TX_NONWITNESS_SIZE,
-    are_inputs_standard,
     assert_standard_tx,
     dust_outputs,
     is_witness_standard,
+    validate_inputs_standardness,
 )
 from btclib.script.engine import sig_op_cost
 from btclib.tx.limits import COINBASE_MATURITY
@@ -155,7 +155,7 @@ def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
 
 
 # Core's own `GetBlockProof(*m_chain.Tip()) * 6`
-# (`src/validation.cpp:1957`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# (`src/validation.cpp:1952`, at bitcoin/bitcoin@f0de87f040, the v32.1
 # tag): six blocks' worth of work at the tip's own difficulty.
 _LARGE_WORK_INVALID_CHAIN_PERIODS = 6
 
@@ -166,7 +166,7 @@ _LARGE_WORK_INVALID_CHAIN = "large_work_invalid_chain"
 
 # Core's own two strings, cited apart because one reaches the log alone
 # and the other reaches `-alertnotify` and the `warnings` RPC field
-# (`src/validation.cpp:1957-1960`, same sha): the log line carries no
+# (`src/validation.cpp:1952-1955`, same sha): the log line carries no
 # "Warning: " prefix, the notified one does.
 _LARGE_WORK_INVALID_CHAIN_LOG = (
     "Found invalid chain more than 6 blocks longer than our best chain. "
@@ -180,7 +180,7 @@ def check_fork_warning_conditions(node: Node) -> None:
     """Raise or clear the large-work-invalid-chain warning: Core's own check.
 
     `Chainstate::CheckForkWarningConditions` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), for
     btclib-org/btclib-node#1522: once `node.chainstate.block_index`'s
     own `best_invalid` carries more chainwork than the active tip plus
     six blocks' worth of work at the tip's own difficulty, this node logs
@@ -201,7 +201,7 @@ def check_fork_warning_conditions(node: Node) -> None:
     `invalidate_chain`, `mark_contextual_failure`, `p2p.callbacks` and
     `rpc.callbacks`), or commits a fork (`_after_tip_change`), and once at
     `Node.load`, matching Core's own three call sites
-    (`src/validation.cpp`, same sha): `InvalidChainFound` itself (`:1987`)
+    (`src/validation.cpp`, same sha): `InvalidChainFound` itself (`:1982`)
     -- reached both from `InvalidateBlock`'s own direct call and, for a
     block that fails validation, from `InvalidBlockFound` calling
     `InvalidChainFound` in turn, the same way each `invalidate` call site
@@ -235,8 +235,8 @@ def check_fork_warning_conditions(node: Node) -> None:
         node.warnings.unset_warning(_LARGE_WORK_INVALID_CHAIN)
 
 
-# Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:155`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _MAX_BLOCKS_TO_ANNOUNCE = 8
 
 # Core's own `MAX_PACKAGE_WEIGHT` (`src/policy/packages.h:24`, at
@@ -301,7 +301,7 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
     Core's `AcceptBlock` calls `NewPoWValidBlock` for a new block that
     passed `CheckBlock` and `ContextualCheckBlock`, out of initial block
     download and where the block extends the active tip
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     `NewPoWValidBlock` (`src/net_processing.cpp`, same tag) goes no lower
     than the highest block it already announced this way, nor below
     segwit's height. It sends the block's `cmpctblock` to every fully
@@ -386,27 +386,29 @@ def finish_sync(node: Node) -> None:
     node.status = NodeStatus.BlockSynced
 
 
-def update_ibd_status(node: Node) -> None:
+def update_ibd_status(node: Node, tip_hash: bytes | None = None) -> None:
     """Latch `node.is_initial_block_download` to `False`, and never back.
 
     Core's own `ChainstateManager::UpdateIBDStatus`
-    (`src/validation.cpp:3302`, at bitcoin/bitcoin@ca7162cde5): once the
-    active chain's own tip carries at least `node.config`'s own
-    `minimum_chain_work` (`-minimumchainwork`, the chain's own
-    `minimum_chain_work` in `btclib.consensus` where that is not given)
-    and is no older than `node.config.max_tip_age` (`-maxtipage`), this
-    node counts as caught up -- `CChain::IsTipRecent`, `src/chain.h:431`,
-    same commit. A no-op past the first call for the same reason
-    `finish_sync` above is one: Core's function never sets its own
-    cached flag back to `true` either, `UpdateIBDStatus`'s own comment
-    naming that explicitly.
+    (`src/validation.cpp:3291`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag): once the tip, `tip_hash` or else the active chain's own,
+    carries at least `node.config`'s own `minimum_chain_work`
+    (`-minimumchainwork`, the chain's own `minimum_chain_work` in
+    `btclib.consensus` where that is not given) and is no older than
+    `node.config.max_tip_age` (`-maxtipage`), this node counts as caught
+    up -- `CChain::IsTipRecent`, `src/chain.h:431`, same commit. A no-op
+    past the first call for the same reason `finish_sync` above is one:
+    Core's function never sets its own cached flag back to `true` either,
+    `UpdateIBDStatus`'s own comment naming that explicitly.
 
-    Called by `_after_tip_change` whenever a fork commits, and by
-    `invalidate_chain` once it has disconnected, where Core's `ConnectTip`
-    and `DisconnectTip` call it; by `settle_at_no_candidate`, which
+    Called by `_after_tip_change` with each block a fork connects as
+    `tip_hash`, where Core's `ConnectTip` calls it after each `SetTip`
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag); by `invalidate_chain` once it has disconnected, where Core's
+    `DisconnectTip` calls it; by `settle_at_no_candidate`, which
     reaches a tip no fork has moved yet: the one loaded from disk, where
     Core's `LoadChainTip` calls it (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); and by `finish_reindex`,
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); and by `finish_reindex`,
     where Core's `initload` calls it after `ImportBlocks`.
     """
     if not node.is_initial_block_download:
@@ -415,7 +417,8 @@ def update_ibd_status(node: Node) -> None:
     if node.status == NodeStatus.Reindexing:
         return
     block_index = node.chainstate.block_index
-    tip_hash = block_index.active_chain[-1]
+    if tip_hash is None:
+        tip_hash = block_index.active_chain[-1]
     if block_index.chainwork[tip_hash] < node.config.minimum_chain_work:
         return
     tip_header = block_index.header_dict[tip_hash].header
@@ -430,8 +433,8 @@ def finish_reindex(node: Node) -> None:
     `status` goes back to the stage `Node.load` found it at, and
     `update_ibd_status` runs. Core ends `m_importing` once `ImportBlocks`
     has run `ActivateBestChains` (`src/node/blockstorage.cpp`), then calls
-    `UpdateIBDStatus` (`src/init.cpp`), both at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag. A no-op where the node is not reindexing.
+    `UpdateIBDStatus` (`src/init.cpp`), both at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag. A no-op where the node is not reindexing.
     """
     if node.status == NodeStatus.Reindexing:
         node.status = node.status_after_reindex
@@ -500,8 +503,8 @@ def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBl
 
 # Core's own literal, `Chainstate::InvalidateBlock`'s own per-block
 # counter (`int disconnected = 0; ... (++disconnected <= 10) && ret`,
-# `src/validation.cpp:3611` and `:3637`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag), named here since `_reconcile_mempool_for_reorg` below
+# `src/validation.cpp:3571` and `:3597`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag), named here since `_reconcile_mempool_for_reorg` below
 # takes it as a parameter rather than as a literal a reader would have
 # to trace back to this same citation a second time.
 _INVALIDATE_MEMPOOL_READD_LIMIT = 10
@@ -517,9 +520,13 @@ def _reconcile_mempool_for_reorg(
     to_remove: list[RevBlock],
     to_add: list[Block],
     *,
+    out_of_ibd: list[bool],
     readd_limit: int | None = None,
 ) -> None:
     """Re-add, drop or evict every transaction a disconnect or connect touches.
+
+    `out_of_ibd` says, for each block of `to_add`, whether the node was
+    out of initial block download once that block was the tip.
 
     `readd_limit` is `None` for `_after_tip_change`'s own ordinary-reorg
     call, and `_INVALIDATE_MEMPOOL_READD_LIMIT` for `invalidate_chain`'s
@@ -528,7 +535,7 @@ def _reconcile_mempool_for_reorg(
     `Chainstate::InvalidateBlock`'s own per-block disconnect loop and
     not `ActivateBestChainStep`'s ordinary one, which always passes
     `true` for its own single end-of-reorg call
-    (`src/validation.cpp:3314`, same tag). `to_remove` already carries
+    (`src/validation.cpp:3275`, same tag). `to_remove` already carries
     Core's own disconnectpool order, tip-first -- the one
     `_rev_blocks_to_remove` builds and `invalidate_chain` passes
     straight through -- so `readd_ok` below counts against that order
@@ -545,26 +552,27 @@ def _reconcile_mempool_for_reorg(
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the fee estimator
     # counts the blocks before any re-add or removal the re-add makes
     first_height = len(node.chainstate.block_index.active_chain) - len(to_add)
-    for height, block in enumerate(to_add, start=first_height):
+    for height, (block, signalled) in enumerate(
+        zip(to_add, out_of_ibd, strict=True), start=first_height
+    ):
         # `remove_for_block` hashes each transaction to ask, so it does
         # nothing for an empty mempool with no fee delta: a block connected
         # during initial block download would pay for every transaction
         removed = node.mempool.remove_for_block(block.transactions)
-        node.fee_estimator.process_block(removed, height)
-        # v32.1's `ConnectTip` signals the block to the estimators only
-        # outside initial block download (`src/validation.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
-        # estimator is still told during it, as v31.1 told it
-        # (btclib-org/btclib-node#2178).
-        if not node.is_initial_block_download:
+        # v32.1's `ConnectTip` signals the block to both estimators only
+        # where it leaves the node out of initial block download
+        # (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        # tag)
+        if signalled:
+            node.fee_estimator.process_block(removed, height)
             node.mempool_estimator.block_connected(block, removed, height)
-        # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
-        # at bitcoin/bitcoin@58a7869f86): once per block connected,
-        # whether or not it held anything this mempool was also
-        # holding, restarting `Mempool.get_min_fee_rate`'s own decay
-        # clock -- kept outside `remove_for_block`, which returns early
-        # for an empty mempool with no fee delta, where this still runs.
-        # btclib-org/btclib-node#294
+        # Core's own `removeForBlock` (`src/txmempool.cpp:405-429`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): once per block
+        # connected, whether or not it held anything this mempool was
+        # also holding, restarting `Mempool.get_min_fee_rate`'s own
+        # decay clock -- kept outside `remove_for_block`, which returns
+        # early for an empty mempool with no fee delta, where this still
+        # runs. btclib-org/btclib-node#294
         node.mempool.note_block_connected()
     # Core's `disconnectpool.removeForBlock` after each `removeForBlock`
     # (`ConnectTip`, same citation): what a new block confirms again is
@@ -617,7 +625,7 @@ def _reconcile_mempool_for_reorg(
             try:
                 # Core's own `bypass_limits=true` for this re-add
                 # (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
-                # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+                # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
                 # transaction a block already carried is not held to the
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
                 #
@@ -684,8 +692,8 @@ def _still_final_and_mature(node: Node, tx: Tx) -> bool:
 
     Core's own `filter_final_and_mature`, the predicate
     `MaybeUpdateMempoolForReorg`'s own `removeForReorg` call filters the
-    whole mempool by, every time it runs (`src/validation.cpp:348-392`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): finality
+    whole mempool by, every time it runs (`src/validation.cpp:350-394`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): finality
     (`CheckFinalTxAtTip`), BIP68 sequence locks
     (`CheckSequenceLocksAtTip`) and, for a coinbase-spending input,
     `COINBASE_MATURITY` -- all three re-checked against the chain's own
@@ -783,33 +791,40 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
 # `ActivateBestChainStep`'s `MaybeUpdateMempoolForReorg`;
 # `PeerManagerImpl::UpdatedBlockTip` then reads that latch: "Don't relay
 # inventory during initial block download." (`src/validation.cpp`,
-# `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 # tag). `PeerManagerImpl::BlockConnected`, once per block connected,
 # decays the block stalling timeout. btclib-org/btclib-node#1144,
 # btclib-org/btclib-node#1148, btclib-org/btclib-node#1179
 #
 # `-blocknotify` fires here too, once per call rather than once per
 # block in `to_add`: Core's own `NotifyBlockTip` fires once per
-# `ActivateBestChainStep` call (`src/validation.cpp:3465-3482`, same
+# `ActivateBestChainStep` call (`src/validation.cpp:3427-3445`, same
 # sha), and this function is `update_chain`'s own once-per-fork-trial
 # commit step, the same granularity. Gated on IBD the way
 # `_announce_added_blocks` below already is, matching Core's own
-# `NotifyBlockTip_connect` callback refusing everything but
-# `SynchronizationState::POST_INIT` (`src/init.cpp:2011-2019`, same
+# `NotifyBlockTip.connect` callback refusing everything but
+# `SynchronizationState::POST_INIT` (`src/init.cpp:2087-2095`, same
 # sha); `to_add[-1]` is the new tip, Core's own `block.GetBlockHash()`
 # there. `check_fork_warning_conditions` is not gated on IBD, matching
 # Core calling `CheckForkWarningConditions()` unconditionally after
-# every commit (`src/validation.cpp:3318`, same sha).
-# `check_unknown_activations` is, as `UpdateTip` gates it
-# (`src/validation.cpp:2916`, same sha), and runs for each block of `to_add`,
-# as Core runs it for each block it connects.
+# every commit (`src/validation.cpp:3279`, same sha).
+# `check_unknown_activations` runs for each block of `to_add` that
+# `update_ibd_status` left out of initial block download, the one ending
+# it included. The latch never goes back, so those are the last blocks of
+# `to_add`. Core's `ConnectTip` runs `UpdateIBDStatus` and then
+# `UpdateTip` for each block it connects, and `UpdateTip` checks the bits
+# only out of initial block download (`src/validation.cpp:3086-3092` and
+# `:2911`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
     # Core's `ConnectTip` signals `BlockChecked` before the tip moves
     for block in to_add:
         block_checked(node, block.header.hash, valid=True)
-    update_ibd_status(node)
+    out_of_ibd: list[bool] = []
+    for block in to_add:
+        update_ibd_status(node, block.header.hash)
+        out_of_ibd.append(not node.is_initial_block_download)
     download_manager = node.download_manager
     if to_remove:
         # Core's `TxDownloadManagerImpl::BlockDisconnected`
@@ -821,12 +836,12 @@ def _after_tip_change(
         # download, when no transaction is taken from peers
         if not node.is_initial_block_download:
             download_manager.confirm_block(block)
-    _reconcile_mempool_for_reorg(node, to_remove, to_add)
+    _reconcile_mempool_for_reorg(node, to_remove, to_add, out_of_ibd=out_of_ibd)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
         # Core's `PeerManagerImpl::ActiveTipChange`
         node.mempool.active_tip_change()
-        check_unknown_activations(node, len(to_add))
+        check_unknown_activations(node, sum(out_of_ibd))
         _announce_added_blocks(node, to_add)
         run_detached(
             node.logger,
@@ -891,20 +906,21 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     the same pairing, in the same order.
 
     Core's own `BlockManager::PruneOneBlockFile`
-    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5) clears
-    `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex` entry it
-    prunes, "any block we prune would have to be downloaded again in
-    order to consider its chain" -- matched here by clearing
-    `BlockInfo.downloaded` for the same range `block_db.prune_up_to`
-    below is about to delete, over `block_db.pruned_up_to` the same way
-    that call's own idempotency check is, before the data itself is
-    gone. `p2p.callbacks.block`'s own no-op-if-downloaded guard is the
-    reader this matters to: without this, a block re-offered after its
-    data was pruned would be silently discarded rather than re-stored.
+    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the
+    `CBlockIndex` entry it prunes, "any block we prune would have to be
+    downloaded again in order to consider its chain" -- matched here by
+    clearing `BlockInfo.downloaded` for the same range
+    `block_db.prune_up_to` below is about to delete, over
+    `block_db.pruned_up_to` the same way that call's own idempotency
+    check is, before the data itself is gone. `p2p.callbacks.block`'s
+    own no-op-if-downloaded guard is the reader this matters to: without
+    this, a block re-offered after its data was pruned would be silently
+    discarded rather than re-stored.
 
     Height 0 included: genesis is in `block_db` like any other block
     (`Node.load`), and Core's own `GetPruneRange`
-    (`src/validation.cpp:6382`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/validation.cpp:6365`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag) starts the prunable range at height 0 on a chain not built from
     a snapshot.
 
@@ -914,9 +930,9 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     `UtxoIndex.should_flush`, and a restart from that older tip would need
     blocks this call deleted (btclib-org/btclib-node#1248). Core's
     `Chainstate::FlushStateToDisk` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) unlinks the pruned files after it writes
-    the block index and before it flushes the coins; this tree flushes
-    first, at the cost of one flush per call.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) unlinks the pruned files
+    after it writes the block index and before it flushes the coins; this
+    tree flushes first, at the cost of one flush per call.
     """
     node.chainstate.flush()
     block_index = node.chainstate.block_index
@@ -928,16 +944,16 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
 
 # update_chain's own finalize-branch step, run right after _finalize_fork:
 # Core's own prune step inside Chainstate::FlushStateToDisk
-# (src/validation.cpp, at bitcoin/bitcoin@ca7162cde5) -- a no-op unless
-# fPruneMode/Config.pruned says this node prunes at all, and never
-# reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the same
-# depth Core's own FindFilesToPrune is bounded by. A fork replacing the
-# last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk, the
-# same guarantee that retained depth gives Core's own pruned node against
-# an ordinary reorg; a reorg deeper than that finds its own missing
-# blocks and fails on this node exactly as it does on Core's -- pruning
-# trades away that depth of reorg safety by its own nature, on both, and
-# nothing here is a new gap this call opens.
+# (src/validation.cpp, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- a
+# no-op unless fPruneMode/Config.pruned says this node prunes at all, and
+# never reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the
+# same depth Core's own FindFilesToPrune is bounded by. A fork replacing
+# the last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk,
+# the same guarantee that retained depth gives Core's own pruned node
+# against an ordinary reorg; a reorg deeper than that finds its own
+# missing blocks and fails on this node exactly as it does on Core's --
+# pruning trades away that depth of reorg safety by its own nature, on
+# both, and nothing here is a new gap this call opens.
 def _prune_chain(node: Node) -> None:
     """Delete block and undo data, never `MIN_BLOCKS_TO_KEEP` behind the tip.
 
@@ -964,12 +980,12 @@ def _prune_to_target(node: Node, max_height: int, prune_target_mib: int) -> None
     """Delete oldest-first until `current_usage` is under the MiB target.
 
     Core's own `BlockManager::FindFilesToPrune`
-    (`node/blockstorage.cpp:332-386`, at bitcoin/bitcoin@ca7162cde5) walks
-    its block files oldest first, pruning whole files -- and stopping,
-    file by file, the moment `nCurrentUsage` (`CalculateCurrentUsage`,
-    same file:811-818) is back under `target` -- never past
-    `last_block_can_prune` (`Chainstate::GetPruneRange`,
-    `validation.cpp:6376-6395`, same sha), the same `MIN_BLOCKS_TO_KEEP`
+    (`node/blockstorage.cpp:332-411`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) walks its block files oldest first, pruning whole files --
+    and stopping, file by file, the moment `nCurrentUsage`
+    (`CalculateCurrentUsage`, same file:811-818) is back under
+    `target` -- never past `last_block_can_prune` (`Chainstate::GetPruneRange`,
+    `validation.cpp:6365-6391`, same sha), the same `MIN_BLOCKS_TO_KEEP`
     depth `max_height` above already is here. This store's own files
     rotate by append order rather than by height
     (`block_db`'s own module docstring), so there is no file-by-file walk
@@ -1045,8 +1061,8 @@ def _rollback_trial(node: Node, utxo_mark: int, filter_mark: int) -> None:
 # "nothing left to ever do until a new header arrives".
 #
 # Not gated on `node.status`: Core's `ProcessNewBlock` hands every block
-# it accepts to `ActivateBestChain` (`src/validation.cpp:4481`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) whether or not header sync
+# it accepts to `ActivateBestChain` (`src/validation.cpp:4448`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag) whether or not header sync
 # has finished and whether or not any peer is connected, which is what
 # lets `submitblock` on a node with no peer connect its own block
 # (btclib-org/btclib-node#1071).
@@ -1110,7 +1126,8 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
 
 # the non-witness size of a transaction that could pass for an inner merkle
 # node, and the size of the witness reserved value, in `IsBlockMutated` and
-# `CheckWitnessMalleation` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+# `CheckWitnessMalleation` (`src/validation.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _INNER_NODE_SIZE = 64
 _WITNESS_NONCE_SIZE = 32
 
@@ -1119,7 +1136,7 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     """Whether `block`'s body is not the one its header commits to.
 
     Core's `IsBlockMutated` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a merkle root that is not
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a merkle root that is not
     the transactions', or CVE-2012-2459's duplicate; a block without a
     coinbase holding a 64-byte transaction; a witness commitment the
     coinbase witness does not match, read only where `check_witness_root`
@@ -1159,7 +1176,7 @@ def passes_check_block(block: Block, chain: Chain) -> bool:
     the merkle root, `bad-blk-length`, `bad-cb-missing`,
     `bad-cb-multiple`, each transaction's `CheckTransaction` and
     `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The header is checked
     elsewhere: by `add_headers` if it is new, or when it was first
     indexed.
     """
@@ -1189,7 +1206,7 @@ def assert_valid_block(block: Block, chain: Chain) -> None:
     `signet.assert_valid_solution` run between the second and the third, on
     a signet chain only: Core's own `CheckBlock` asks it there too, gated on
     `consensusParams.signet_blocks` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), right after the header's
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), right after the header's
     proof of work and before the merkle root. btclib carries no signet
     concept to splice this into `Block.assert_valid` itself, hence the
     decomposition here instead of a fourth argument to it -- the same three
@@ -1215,7 +1232,7 @@ def is_block_failed(block: Block, chain: Chain, *, check_witness_root: bool) -> 
     """Whether `block`, failing `Block.assert_valid`, is marked failed.
 
     Core's `ProcessNewBlock` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) never marks a block failing
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) never marks a block failing
     `CheckBlock`, "protective against consensus failure if there are any
     unknown forms of block malleability", and `AcceptBlock` marks one
     failing `ContextualCheckBlock` unless the failure is `BLOCK_MUTATED`.
@@ -1236,7 +1253,7 @@ def is_cached_invalid(block_index: BlockIndex, block: Block, chain: Chain) -> bo
     Its header indexed and marked invalid already, and its body passing
     `CheckBlock`, which Core's `ProcessNewBlock` asks before
     `AcceptBlock` reaches `AcceptBlockHeader` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a body failing it is
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): a body failing it is
     refused for that reason instead.
     """
     known = block_index.header_dict.get(block.header.hash)
@@ -1259,7 +1276,7 @@ def script_check_reason(  # noqa: PLR0911
     """Return why `block_hash` at `index` is verified, `None` where it is not.
 
     The `script_check_reason` of Core's `ConnectBlock` (`src/validation.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), condition for condition,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), condition for condition,
     in Core's order and with Core's words. Scripts are skipped only where
     `-assumevalid` names a block this node has the header of, `block_hash`
     is an ancestor of it and of the best header, the best header carries
@@ -1330,7 +1347,7 @@ def _log_script_check_reason(
 
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: Core's `ConnectBlock`
-# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
 # one loop over the transactions, each asked in turn
 # `_check_tx_inputs` (maturity, then amounts), the accumulated fee range,
 # its BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks
@@ -1430,7 +1447,7 @@ def _contextual_reason(message: str) -> str:
 
 # The reasons of `ContextualCheckBlock` that Core gives as `BLOCK_CONSENSUS`,
 # for which `InvalidBlockFound` marks the block failed (`src/validation.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its witness reasons are
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Its witness reasons are
 # `BLOCK_MUTATED`, which it leaves unmarked. The header's rules, which
 # `contextual_check_block` asks again, Core does not ask of a header it holds.
 _FAILED_CONTEXTUAL_REASONS = frozenset(
@@ -1457,7 +1474,7 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
 
     `Block.assert_valid_contextual` asks the rules, in Core's order
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
     `time-too-old`, `time-too-new` and `bad-version` of the header, then
     `bad-txns-nonfinal`, `bad-cb-height` wherever BIP34 binds, the witness
     rules at `index` and `bad-blk-weight`. The header rules are Core's
@@ -1522,23 +1539,20 @@ def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> Non
 # StoreClosedError and StoreCorruptionError, whatever RocksDB or the
 # filesystem raises out of a KeyValueStore read or write, and
 # ChainstateInconsistencyError -- classification is by exception type,
-# not by call site, which utxo_index.add_block's own self.db.get()
-# still shows even though what it illustrates changed
-# (btclib-org/btclib-node#650): that one read can raise
-# StoreCorruptionError (storage, not a verdict) or feed a
-# checksum-clean record Coin.parse still cannot parse into
-# InvalidBlockInputError (one of the three above, matching
-# CDBWrapper::Read/CCoinsViewDB::GetCoin's own "absent" rather than
-# raising ChainstateInconsistencyError the way it used to before the
-# store carried its own checksum). update_chain's own except below is
-# what tells the two apart, by type rather than by call site, and
-# never invalidates a block for the second kind. Core keeps the same
-# distinction at the equivalent point of ConnectBlock (src/validation.cpp,
-# at bitcoin/bitcoin@b91d983f66): every ordinary CheckBlock failure
-# returns false and the block is rejected, but a BLOCK_MUTATED result --
-# "we don't write down blocks to disk if they may have been corrupted, so
-# this should be impossible unless we're having hardware problems" -- is
-# FatalError instead. btclib-org/btclib-node#620
+# not by call site, which utxo_index.add_block's own prevout read shows:
+# a missing prevout is InvalidBlockInputError, one of the three above,
+# while a stored record the store or Coin.parse refuses is
+# StoreCorruptionError or ChainstateInconsistencyError, and stops the
+# node (UtxoIndex._stored_prevout's docstring). update_chain's own
+# except below is what tells the two apart, by type rather than by
+# call site, and never invalidates a block for the second kind. Core
+# keeps the same distinction at the equivalent point of ConnectBlock
+# (src/validation.cpp,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): every ordinary
+# CheckBlock failure returns false and the block is rejected, but a
+# BLOCK_MUTATED result -- "we don't write down blocks to disk if they may
+# have been corrupted, so this should be impossible unless we're having
+# hardware problems" -- is FatalError instead. btclib-org/btclib-node#620
 _CONTENT_FAILURE = (BTClibValueError, InvalidBlockInputError, PrevoutCountMismatchError)
 
 
@@ -1566,8 +1580,8 @@ def _resolve_trial_exception(
     recorded a rejection for it, but the raise itself no longer stops
     there either. Core's own equivalent -- `DisconnectTip` returning
     false is fatal one level up, in `ActivateBestChainStep`
-    (`src/validation.cpp`, at bitcoin/bitcoin@b91d983f66) -- stops
-    rather than keeps trying on top of storage it just proved
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) --
+    stops rather than keeps trying on top of storage it just proved
     inconsistent, the same conclusion already drawn above
     `to_add`/`to_remove` themselves for a read failure at the same
     citation. `raise exc` and not a bare `raise`: this is not itself an
@@ -1613,16 +1627,16 @@ def _invalidate_failed_block(
 
     A function of its own and not inline in `update_chain`'s own tail --
     ruff's own `too-many-statements` already counts `update_chain` at its
-    ceiling. Core, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, names
+    ceiling. Core, at bitcoin/bitcoin@f0de87f040, the v32.1 tag, names
     three blocks as `m_best_invalid` in turn (`src/validation.cpp`):
 
-    - `ConnectTip` calls `InvalidBlockFound` on the failed block (`:3090`),
+    - `ConnectTip` calls `InvalidBlockFound` on the failed block (`:3050`),
       which is `update_header_index` here;
     - `ActivateBestChainStep` calls `InvalidChainFound` on the top of the
-      batch it was connecting towards its most-work candidate (`:3287`),
-      and checks the warning (`:1987`);
+      batch it was connecting towards its most-work candidate (`:3248`),
+      and checks the warning (`:1982`);
     - the next `FindMostWorkChain` meets that candidate, finds its failed
-      ancestor, and names the candidate itself (`:3190-3191`).
+      ancestor, and names the candidate itself (`:3154-3155`).
 
     The candidate here is the heaviest block built on `failed_hash` whose
     branch is downloaded; it is weighed before the one check, and carries
@@ -1644,7 +1658,7 @@ def _invalidate_failed_block(
     block_checked(node, failed_hash, valid=False)
 
 
-def update_chain(node: Node) -> None:
+def update_chain(node: Node) -> bool:
     """Try the best ready fork block by block, and commit or roll it back.
 
     Called once per pass of `Node`'s own loop. `_ready_fork` answers
@@ -1657,10 +1671,13 @@ def update_chain(node: Node) -> None:
     run, is `_CONTENT_FAILURE`'s own distinction above. Once a trial
     succeeds, `_finalize_fork` commits it and `_after_tip_change` runs
     what Core runs as the tip moves.
+
+    Answers whether the call moved the tip or invalidated a block, either
+    of which leaves the next call a different fork to try.
     """
     fork = _ready_fork(node)
     if fork is None:
-        return
+        return False
     to_add_hash, to_remove_hash = fork
 
     block_index = node.chainstate.block_index
@@ -1685,11 +1702,11 @@ def update_chain(node: Node) -> None:
     # by stopping the node.
     #
     # Bitcoin Core's own split (src/validation.cpp,
-    # read at bitcoin/bitcoin@b91d983f66) is not symmetric between the two
-    # directions this function tries a block in, and is cited as it
-    # actually reads rather than tidied into one: ConnectTip answers a
-    # failed read immediately, with FatalError. DisconnectTip answers
-    # the same failure by returning plainly from inside itself --
+    # read at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is not symmetric
+    # between the two directions this function tries a block in, and is
+    # cited as it actually reads rather than tidied into one: ConnectTip
+    # answers a failed read immediately, with FatalError. DisconnectTip
+    # answers the same failure by returning plainly from inside itself --
     # FatalError for a disconnect lives one level up, in
     # ActivateBestChainStep, and covers a failed read, a failed
     # DisconnectBlock and a failed FlushStateToDisk alike, one fatal
@@ -1781,39 +1798,40 @@ def update_chain(node: Node) -> None:
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)
+    return success or failed_hash is not None
 
 
-# invalidate_chain, reconsider_chain, precious_chain and callbacks.getblocks
-# call this as Core calls `ActivateBestChain`
-# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# Each caller runs this where Core calls `ActivateBestChain`, whose loop is
+# `Chainstate::ActivateBestChain` (`src/validation.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 # `ActivateBestChain` loops internally until the active tip is the best one
 # `setBlockIndexCandidates` holds; this node's own `update_chain` only
 # ever takes one step -- one candidate, its whole fork -- per call, so a
 # caller that means to settle the chain fully loops it here
 # rather than leaving a still-available better candidate for `Node`'s own
-# next pass to pick up. Bounded by the tip actually moving rather than by
-# a call count: each successful step moves the tip to a block that
-# outranks it (`BlockIndex._outranks`, which `get_first_candidate`
-# offers by), so there is no cycle to loop forever on, and
-# a step that finds nothing ready -- `_ready_fork` answering `None`, a
-# candidate not fully downloaded among them -- leaves the tip exactly
-# where it was, which is what ends the loop.
+# next pass to pick up. A step whose fork fails invalidates a block and
+# leaves the tip where it was, and the loop goes on to the next candidate:
+# Core's `ActivateBestChain` drops `pindexMostWork` on `fInvalidFound` and
+# asks `FindMostWorkChain` again, until the tip is the most-work candidate
+# (`src/validation.cpp:3400-3403` and `:3491`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag). Bounded rather than counted: each successful step moves
+# the tip to a block that outranks it (`BlockIndex._outranks`, which
+# `get_first_candidate` offers by), each failed one marks one more block
+# invalid, and a step that finds nothing ready -- `_ready_fork` answering
+# `None`, a candidate not fully downloaded among them -- or that a stop
+# ends, does neither, which is what ends the loop.
 def activate_best_chain(node: Node) -> None:
-    """Run `update_chain` until the active tip stops moving."""
-    block_index = node.chainstate.block_index
-    while True:
-        tip = block_index.active_chain[-1]
-        update_chain(node)
-        if block_index.active_chain[-1] == tip:
-            return
+    """Run `update_chain` until a step neither moves the tip nor invalidates."""
+    while update_chain(node):
+        pass
 
 
 def invalidate_chain(node: Node, block_hash: bytes) -> None:
     """Mark `block_hash` invalid, forcing the chain off it, then retry.
 
     Core's own `InvalidateBlock`, the free RPC-layer function
-    (`src/rpc/blockchain.cpp:1695-1714`) calling `Chainstate::InvalidateBlock`
-    (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/rpc/blockchain.cpp:1753-1772`) calling `Chainstate::InvalidateBlock`
+    (`src/validation.cpp`), both at bitcoin/bitcoin@f0de87f040, the v32.1
     tag. Its caller is `rpc.callbacks.invalidate_block`, which has
     already refused a `block_hash` this index does not know (Core's own
     `RPC_INVALID_ADDRESS_OR_KEY`). Core's own silent no-op for the
@@ -1851,14 +1869,14 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
 
     Core does not treat every failure on this path as fatal the way
     this does. `Chainstate::DisconnectTip`'s own `ReadBlock` or
-    `DisconnectBlock` failure (`src/validation.cpp:2952-2955` and
-    `:2961-2964`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
+    `DisconnectBlock` failure (`src/validation.cpp:2947-2950` and
+    `:2956-2959`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) returns
     `false` without touching `state` at all, so the free
     `InvalidateBlock` above still finds `state.IsValid()` true, still
     runs `ActivateBestChain`, and the RPC answers `null` -- the node
     keeps running and serving the next call. Only a `FlushStateToDisk`
-    failure on the same path (`:2981-2983`) is fatal: it reaches
-    `FatalError` (`:2140-2144`, same tag), which is what marks `state`
+    failure on the same path (`:2976-2978`) is fatal: it reaches
+    `FatalError` (`:2135-2139`, same tag), which is what marks `state`
     invalid, `state.Error(...)` in its own body -- `AbortNode`
     (`node/abort.cpp`, same tag) is a different function, reached only
     through `notifications.fatalError`'s own callback, and only
@@ -1901,10 +1919,11 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     block_info = block_index.get_block_info(block_hash)
     if block_info.index == 0:
         # Core's own `InvalidateBlock`, `assert(pindex); if
-        # (pindex->nHeight == 0) return false;` -- genesis can never be
-        # invalidated, and BlockValidationState is never marked invalid
+        # (pindex->nHeight == 0) return false;` (`src/validation.cpp:3535-3536`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- genesis can never
+        # be invalidated, and BlockValidationState is never marked invalid
         # on this path either, so the RPC answers null rather than an
-        # error (measured against a real v31.1.0 regtest node)
+        # error (measured on regtest against bitcoind v32.1.0 and v31.1.0)
         return
 
     if block_info.status == BlockStatus.in_active_chain:
@@ -1924,15 +1943,19 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
         # where the active chain changed
         node.download_manager.recent_confirmed.reset()
         _reconcile_mempool_for_reorg(
-            node, to_remove, [], readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT
+            node,
+            to_remove,
+            [],
+            out_of_ibd=[],
+            readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT,
         )
         if not node.is_initial_block_download:
             node.mempool.active_tip_change()
     else:
         block_index.invalidate(block_hash)
     # Core's own `InvalidChainFound(to_mark_failed)`, which ends in
-    # `CheckForkWarningConditions()` (`src/validation.cpp:3721` and
-    # `:1987`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), run once
+    # `CheckForkWarningConditions()` (`src/validation.cpp:3681` and
+    # `:1982`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), run once
     # the disconnect is done and before `ActivateBestChain`
     check_fork_warning_conditions(node)
 
@@ -1943,7 +1966,7 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     """Undo `invalidate_chain`'s own mark on `block_hash`'s lineage, then retry.
 
     Core's own `ReconsiderBlock`, the free RPC-layer function
-    (`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    (`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag): `BlockIndex.reconsider` is this tree's own
     `ResetBlockFailureFlags` plus the recompute
     `ChainstateManager::RecalculateBestHeader` runs separately there --
@@ -1958,7 +1981,7 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     behaves the same: `ActivateBestChain` reaches
     `CheckForkWarningConditions` only through `ActivateBestChainStep`,
     which runs only where a better chain is found
-    (`src/validation.cpp:3423-3424` and `:3318`, same sha).
+    (`src/validation.cpp:3384-3385` and `:3279`, same sha).
 
     Its caller is `rpc.callbacks.reconsider_block`, which has already
     refused a `block_hash` this index does not know
@@ -1994,7 +2017,7 @@ def precious_chain(node: Node, block_hash: bytes) -> None:
     """Prefer `block_hash` among the tips of its work, then retry the chain.
 
     Core's own `Chainstate::PreciousBlock` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex.precious`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `BlockIndex.precious`
     renumbers the block, and `activate_best_chain` is the
     `ActivateBestChain` it ends with, skipped as in Core for a block with
     less work than the tip. `rpc.callbacks.precious_block` is the only
@@ -2005,7 +2028,7 @@ def precious_chain(node: Node, block_hash: bytes) -> None:
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`
-# (`src/policy/policy.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# (`src/policy/policy.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most sigop cost a standard transaction may carry, and the bytes each
 # unit of it weighs in the vsize. btclib-org/btclib-node#1357
 _MAX_STANDARD_TX_SIGOPS_COST = MAX_BLOCK_SIGOPS_COST // 5
@@ -2079,7 +2102,7 @@ def already_confirmed(node: Node, tx: Tx) -> bool:
     """Whether an unspent output of `tx`'s own is already in the UTXO set.
 
     Core's own `BroadcastTransaction` (`node/transaction.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) walks `tx->vout` against
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) walks `tx->vout` against
     the coins tip before anything else: "If the transaction is already
     confirmed in the chain, don't do anything and return early." An
     output the active chain spent again since is gone from the UTXO set
@@ -2101,15 +2124,18 @@ def missing_prevout_refusal(
 ) -> MissingPrevoutError | TxRejectedError:
     """Answer for a transaction with a prevout the UTXO set lacks.
 
-    Core's `PreChecks` (`src/validation.cpp:864-873`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) tells a transaction the
+    Core's `PreChecks` (`src/validation.cpp:854-863`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) tells a transaction the
     chain already confirmed from an orphan: its inputs are spent, but an
     output of its own is unspent, and that is `txn-already-known`. Core
     asks only its coins cache ("Optimistically"), where this reads the
     whole UTXO set, so it answers where Core can miss an uncached coin.
-    A confirmed transaction whose outputs are all spent is
-    `MissingPrevoutError`, orphaned as Core's `TX_MISSING_INPUTS` is.
-    btclib-org/btclib-node#1779
+    The same read stops the node on a stored record of an output of
+    `tx`'s that the store reports corrupt or that does not deserialize
+    (`UtxoIndex._stored_prevout`), where Core's cache check reads no
+    record from disk. A confirmed transaction whose outputs are all
+    spent is `MissingPrevoutError`, orphaned as Core's
+    `TX_MISSING_INPUTS` is. btclib-org/btclib-node#1779
     """
     if already_confirmed(node, tx):
         return TxRejectedError("txn-already-known")
@@ -2132,16 +2158,17 @@ def pre_verify_mempool_acceptance(
     Checks finality and BIP68 against the tip Core's own mempool policy
     does (`CheckFinalTxAtTip`/`STANDARD_LOCKTIME_VERIFY_FLAGS`,
     `src/validation.cpp:156-175` and `policy/policy.h:137`,
-    at bitcoin/bitcoin@204256c73f), both unconditionally rather than
-    gated on any activation height, unlike `main._validate_block`'s own
-    block-connect path: a mempool never holds a transaction from before
-    a soft fork it has already activated, so Core's own mempool code
-    does not ask either. `interpreter.check_transaction` reads the
-    scripts the same way, against a flag set that consults no height.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), both unconditionally
+    rather than gated on any activation height, unlike
+    `main._validate_block`'s own block-connect path: a mempool never
+    holds a transaction from before a soft fork it has already
+    activated, so Core's own mempool code does not ask either.
+    `interpreter.check_transaction` reads the scripts the same way,
+    against a flag set that consults no height.
 
     Each refusal is a `TxRejectedError` in Core's words, in the order
     Core's `MemPoolAccept` makes them (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), but for a missing input,
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), but for a missing input,
     `MissingPrevoutError`, which each caller answers for itself, unless an
     output of the transaction is unspent: `txn-already-known`.
     btclib-org/btclib-node#1328
@@ -2151,9 +2178,10 @@ def pre_verify_mempool_acceptance(
     everything else but a coinbase, so a candidate over
     `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" before its inputs are
     read or any script runs; then, after `CheckTxInputs`,
-    `AreInputsStandard` ("bad-txns-nonstandard-inputs") and
-    `IsWitnessStandard` ("bad-witness-nonstandard"). `bypass_limits`
-    skips none of them. `btclib.policy` is that code.
+    `ValidateInputsStandardness` ("bad-txns-nonstandard-inputs") and
+    `IsWitnessStandard` ("bad-witness-nonstandard"), as `PreChecks` asks
+    them. `bypass_limits` skips none of them. `btclib.policy` is that
+    code.
 
     Refuses a candidate under `MIN_STANDARD_TX_NONWITNESS_SIZE`
     non-witness bytes "tx-size-small", right after `IsStandardTx`, whether
@@ -2205,7 +2233,7 @@ def pre_verify_mempool_acceptance(
     # defers its own script checks the same way, to spend no signature
     # verification on a candidate a comparison of two integers already
     # refuses (`PolicyScriptChecks`, `src/validation.cpp:1378`,
-    # at bitcoin/bitcoin@4519933391).
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     return _check_replacement_cluster_and_spends(
         node,
         tx,
@@ -2236,9 +2264,10 @@ def _pre_checks(
     # tx.vin one for one -- what assert_sequence_locks below needs.
     # A mempool parent's own height is not yet real, so it is stood in
     # for with spend_height itself: Core's own MEMPOOL_HEIGHT convention
-    # (CalculatePrevHeights, src/validation.cpp:203-206, same commit) --
-    # "assume all mempool transaction confirm in the next block" -- and
-    # spend_height below is exactly that next block's own height.
+    # (CalculatePrevHeights, src/validation.cpp:198-200,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- "assume all mempool
+    # transaction confirm in the next block" -- and spend_height below
+    # is exactly that next block's own height.
     prevout_coins: list[Coin] = []
 
     block_index = node.chainstate.block_index
@@ -2264,8 +2293,8 @@ def _pre_checks(
         raise TxRejectedError(reason)
 
     # Core's own `PreChecks` order, after finality and ahead of its
-    # conflict checks (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag): the held copy of this very transaction, same witness
+    # conflict checks (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag): the held copy of this very transaction, same witness
     # or not, is no conflict of it. btclib-org/btclib-node#1244
     if mempool.contains_tx(tx):
         reason = "txn-already-in-mempool"
@@ -2283,14 +2312,8 @@ def _pre_checks(
         # blocks' own worth of staging created or already spent is real
         # before UtxoIndex.finalize ever writes it out, staying staged
         # across more than one block being what btclib-org/btclib-node#586
-        # is about. A stored utxo- record this reads back that fails
-        # to parse answers None here too, the same as a genuinely
-        # missing one: get_coin's own store fallback matches
-        # CDBWrapper::Read/CCoinsViewDB::GetCoin's own "absent" rather
-        # than raising, RocksDB's own checksum (#641) being what now
-        # catches a genuinely corrupted record before this call is
-        # ever reached (btclib-org/btclib-node#620,
-        # btclib-org/btclib-node#631, btclib-org/btclib-node#650).
+        # is about. A stored utxo- record that fails to parse stops the
+        # node rather than answer None (UtxoIndex._stored_prevout).
         coin = utxo_index.get_coin(prevout_bytes)
         if coin:
             prev_outputs.append(coin.tx_out)
@@ -2299,8 +2322,8 @@ def _pre_checks(
             previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
             # an output the parent does not have is a missing input, as
             # Core's own `CCoinsViewMemPool::GetCoin` answers it
-            # (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-            # v31.1 tag), not an index error. btclib-org/btclib-node#1252
+            # (`src/txmempool.cpp`, at bitcoin/bitcoin@f0de87f040, the
+            # v32.1 tag), not an index error. btclib-org/btclib-node#1252
             if previous_tx and tx_in.prev_out.vout < len(previous_tx.vout):
                 tx_out = previous_tx.vout[tx_in.prev_out.vout]
                 prev_outputs.append(tx_out)
@@ -2334,7 +2357,7 @@ def package_refusal(txs: Sequence[Tx]) -> str | None:
     """Return why `txs` is no package, in Core's words, or `None`.
 
     Core's `IsWellFormedPackage` (`src/policy/packages.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order but for the
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order but for the
     count, which each caller bounds: a weight over `MAX_PACKAGE_WEIGHT` for
     more than one transaction, a txid twice, a transaction spending the
     txid of one after it, and an outpoint spent twice. Core's last check
@@ -2365,7 +2388,7 @@ def check_max_feerate(
 
     The `m_client_maxfeerate` of Core's `AcceptSingleTransactionInternal`
     and `AcceptMultipleTransactionsInternal` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the fee `tx` pays and its
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the fee `tx` pays and its
     delta (`prioritisetransaction`), compared with the limit as `CFeeRate`s
     are, as fractions. A `max_feerate` of zero is no limit.
     """
@@ -2378,14 +2401,14 @@ def pre_verify_package(node: Node, parent: Tx, child: Tx) -> PackageCandidate:
     """Verify a parent and its child as one package, all but their scripts.
 
     Core's `AcceptPackage` for a child with one parent, `Find1P1CPackage`'s
-    shape (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag). A package `package_refusal` refuses has an answer for neither
-    transaction, so the child stays an orphan. The parent is tried alone
-    first, and a package follows only if it is refused for a fee floor
-    (`TxRejectedError.reconsiderable`): any other refusal, or a missing
-    input, ends it. `pre_verify_subpackage` then takes both. A parent that
-    passes alone is accepted alone, as Core accepts it before it considers
-    the child.
+    shape (`src/validation.cpp` and `src/node/txdownloadman_impl.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A package `package_refusal`
+    refuses has an answer for neither transaction, so the child stays an
+    orphan. The parent is tried alone first, and a package follows only if
+    it is refused for a fee floor (`TxRejectedError.reconsiderable`): any
+    other refusal, or a missing input, ends it. `pre_verify_subpackage`
+    then takes both. A parent that passes alone is accepted alone, as Core
+    accepts it before it considers the child.
 
     A refusal is a `PackageRefusedError`, with the answer each
     transaction has in `ProcessPackageResult`: the parent that failed
@@ -2440,7 +2463,7 @@ def pre_verify_subpackage(
 
     What Core's `AcceptMultipleTransactionsInternal` does with the
     transactions of a package that did not pass alone (`src/validation.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order:
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order:
 
     1. `_pre_checks` of each, without the fee floors, then the TRUC rules
        against the parents the mempool holds (`Mempool.check_truc`), then
@@ -2595,8 +2618,8 @@ def _pre_check_member(
 def _check_standard_tx(node: Node, tx: Tx) -> None:
     """Refuse a coinbase, what `IsStandardTx` refuses, and `tx-size-small`.
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) refuses a coinbase "coinbase", then asks `IsStandardTx`
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) refuses a coinbase "coinbase", then asks `IsStandardTx`
     with the mempool's `-datacarriersize`, `-permitbaremultisig` and
     `-dustrelayfee`, unless `-acceptnonstdtxn`.
     `btclib.policy.assert_standard_tx` raises Core's reason as its
@@ -2624,8 +2647,8 @@ def _check_standard_tx(node: Node, tx: Tx) -> None:
 def _check_tx_size(tx: Tx) -> None:
     """Refuse a transaction under 65 non-witness bytes, "tx-size-small".
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) asks it right after `IsStandardTx`, `-acceptnonstdtxn` or
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) asks it right after `IsStandardTx`, `-acceptnonstdtxn` or
     not, "to mitigate CVE-2017-12842". btclib has no public non-witness
     size: a weight is three times it plus the whole size.
     btclib-org/btclib-node#1687
@@ -2642,14 +2665,13 @@ def _check_ephemeral_dust(node: Node, tx: Tx, fee: int) -> None:
 
     Core's `PreCheckEphemeralTx` (`src/policy/ephemeral_policy.cpp`), which
     `PreChecks` (`src/validation.cpp`) asks of every candidate unless
-    `-acceptnonstdtxn`, `bypass_limits` or not, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag, and at bitcoin/bitcoin@66776840be, master: a dust output
-    is held only by a transaction that pays nothing, which no miner has a
-    reason to mine alone. `IsStandardTx` has already allowed one. Core
-    tests the base and the modified fee, so a delta
-    (`prioritisetransaction`) that makes up a zero fee is refused too, as
-    is one that cancels a fee. btclib-org/btclib-node#1594,
-    btclib-org/btclib-node#1502
+    `-acceptnonstdtxn`, `bypass_limits` or not, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag: a dust output is held only by
+    a transaction that pays nothing, which no miner has a reason to mine
+    alone. `IsStandardTx` has already allowed one. Core tests the base and
+    the modified fee, so a delta (`prioritisetransaction`) that makes up a
+    zero fee is refused too, as is one that cancels a fee.
+    btclib-org/btclib-node#1594, btclib-org/btclib-node#1502
     """
     config = node.config
     modified_fee = fee + node.mempool.delta(tx.id)
@@ -2663,18 +2685,25 @@ def _check_ephemeral_dust(node: Node, tx: Tx, fee: int) -> None:
 
 
 def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> None:
-    """Refuse inputs Core's `AreInputsStandard` or `IsWitnessStandard` refuses.
+    """Refuse what `ValidateInputsStandardness` or `IsWitnessStandard` refuses.
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) asks the first after `CheckTxInputs`, and the second only
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) asks the first after `CheckTxInputs`, and the second only
     of a transaction with a witness, unless `-acceptnonstdtxn`.
     btclib-org/btclib-node#1382
+
+    The first refuses with "bad-txns-nonstandard-inputs" and Core's words
+    for the rule broken as its debug message, which btclib's
+    `validate_inputs_standardness` raises joined to the reason by ", ".
     """
     if not node.config.require_standard:
         return
-    if not are_inputs_standard(prev_outputs, tx):
+    try:
+        validate_inputs_standardness(prev_outputs, tx)
+    except BTClibValueError as error:
         reason = "bad-txns-nonstandard-inputs"
-        raise TxRejectedError(reason)
+        details = str(error).removeprefix(f"{reason}, ")
+        raise TxRejectedError(reason, details) from error
     if tx.is_segwit and not is_witness_standard(prev_outputs, tx):
         reason = "bad-witness-nonstandard"
         raise TxRejectedError(reason)
@@ -2683,8 +2712,8 @@ def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> Non
 def _sigop_adjusted_weight(tx: Tx, prev_outputs: list[TxOut]) -> int:
     """Return Core's sigop-adjusted weight of `tx`, refusing too many sigops.
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
     standard flags, the weight `GetSigOpsAdjustedWeight` adjusts by it,
     and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
     `btclib.script.engine.sig_op_cost` is that function, term by term:
@@ -2754,7 +2783,7 @@ def _check_ephemeral_spends(node: Node, tx: Tx) -> None:
     """Refuse a candidate that leaves a held parent's dust output unspent.
 
     Core's `CheckEphemeralSpends` (`src/policy/ephemeral_policy.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `PreChecks`' caller
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), which `PreChecks`' caller
     asks of a candidate, or of every transaction of a package, where the
     mempool requires standard transactions: the dust a parent may carry
     because it pays no fee is spent by its child, never left in the
@@ -2792,7 +2821,7 @@ def _check_replacement_cluster_and_spends(  # noqa: PLR0913
     """Return `candidate` with what it replaces, or refuse it.
 
     Core's `AcceptSingleTransactionInternal` (`src/validation.cpp`
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order:
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order:
     `ReplacementChecks` (`Mempool.check_replacement`, with the `sibling`
     TRUC offers to evict), `CheckMemPoolPolicyLimits`,
     `EntriesAndTxidsDisjoint`, `check_max_feerate`, then
@@ -2819,7 +2848,7 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     """Refuse a fee below either floor, Core's own `CheckFeeRate`.
 
     `MemPoolAccept::CheckFeeRate` (`src/validation.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the mempool's own
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the mempool's own
     rolling minimum first, then the relay floor, each rounded up for
     `vsize` as `CFeeRate::GetFee` rounds it and each refused with Core's
     own reason and "<fee> < <floor>". The rolling minimum refuses only
@@ -2843,7 +2872,7 @@ def try_connect_block(node: Node, block: Block, index: int) -> None:
     """Raise what connecting `block` at `index` would, then undo the connection.
 
     The `ConnectBlock(..., fJustCheck=true)` of Core's `TestBlockValidity`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
     the same `add_block` and `_validate_block` pair `update_chain` runs
     per block, over the staged UTXO set, and the staging is undone
     whether they raise or not. The block index, the block store and the

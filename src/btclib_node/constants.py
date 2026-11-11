@@ -8,8 +8,8 @@
 `NodeStatus` for what stage of startup, sync or shutdown the node as a
 whole is in, and `MAX_TIP_AGE`. `COINBASE_MATURITY` is
 `btclib.tx.limits`'s own, a function of a `Coin`'s own arguments rather
-than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
-`btclib.p2p.limits`'s own the same way (btclib-org/btclib#1582).
+than a node's knob (btclib-org/btclib#1580). `PROTOCOL_VERSION` is
+`p2p.protocol_version`'s.
 """
 
 import enum
@@ -20,6 +20,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 __all__ = [
+    "CLIENT_BUGREPORT",
     "CLIENT_NAME",
     "CLIENT_VERSION",
     "DEFAULT_MAXRECEIVEBUFFER",
@@ -37,16 +38,17 @@ __all__ = [
     "P2pConnStatus",
     "default_data_dir",
     "numeric_version",
+    "quoted",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
-# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in the
+# (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in the
 # thousands of bytes `-maxreceivebuffer` and `-maxsendbuffer` take.
 DEFAULT_MAXRECEIVEBUFFER = 5 * 1000
 DEFAULT_MAXSENDBUFFER = 1 * 1000
 
 # Core's `DEFAULT_MEMPOOL_EXPIRY_HOURS` (`src/kernel/mempool_options.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the default of
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the default of
 # `-mempoolexpiry`, in hours.
 DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
 
@@ -56,46 +58,49 @@ DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
 DIR_MODE = 0o777 if sys.platform == "win32" else 0o700
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
-# :24, at bitcoin/bitcoin@ca7162cde5): `config.Config.max_tip_age`'s own
-# default, in seconds, unless `-maxtipage` overrides it -- how old the
-# active chain's own tip may be and still count as recent, half of what
-# `main.update_ibd_status` reads to decide `IsInitialBlockDownload` --
-# the other half is `config.Config.minimum_chain_work`, the chain's own
+# :24, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# `config.Config.max_tip_age`'s own default, in seconds, unless
+# `-maxtipage` overrides it -- how old the active chain's own tip may be
+# and still count as recent, half of what `main.update_ibd_status` reads
+# to decide `IsInitialBlockDownload` -- the other half is
+# `config.Config.minimum_chain_work`, the chain's own
 # `minimum_chain_work` (`btclib.consensus`) unless `-minimumchainwork`
 # overrides it.
 MAX_TIP_AGE = timedelta(hours=24)
 
 # Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`,
-# at bitcoin/bitcoin@ca7162cde5): block files within this many blocks of the
-# tip are never pruned. `NODE_NETWORK_LIMITED_MIN_BLOCKS`
-# (`src/net_processing.cpp:157`, same commit) is the separate constant
-# Core checks before answering a peer's `getdata` for an old block once
-# this node's own services say `NODE_NETWORK_LIMITED` rather than
-# `NODE_NETWORK` -- both 288 (two days of ten-minute blocks) at this
-# sha, so `block_db.BlockDB.prune_up_to` and `p2p.callbacks`'s own
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): block files within this
+# many blocks of the tip are never pruned.
+# `NODE_NETWORK_LIMITED_MIN_BLOCKS` (`src/net_processing.cpp:157`, same
+# commit) is the separate constant Core checks before answering a peer's
+# `getdata` for an old block once this node's own services say
+# `NODE_NETWORK_LIMITED` rather than `NODE_NETWORK` -- both 288 (two
+# days of ten-minute blocks) at this sha, so
+# `block_db.BlockDB.prune_up_to` and `p2p.callbacks`'s own
 # below-threshold disconnect share this one name rather than carrying
 # two constants that only happen to agree today.
 MIN_BLOCKS_TO_KEEP = 288
 
 # Core's own `MIN_DISK_SPACE_FOR_BLOCK_FILES` (`src/validation.h:87`,
-# at bitcoin/bitcoin@ca7162cde5): the smallest `-prune=<n>` MiB target Core
-# accepts for automatic pruning -- `node::ApplyArgsManOptions`
-# (`node/blockmanager_args.cpp:28-34`, same sha) treats `<n>` between 2
-# and this value minus one as too small to run a node on and refuses to
-# start, in Core's own words, rather than rounding it up; `<n>` of
-# exactly 1 is manual pruning instead of a MiB target at all, the same
-# special case `cli.py`'s own `-prune` parsing carries.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the smallest
+# `-prune=<n>` MiB target Core accepts for automatic pruning --
+# `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:28-34`, same
+# sha) treats `<n>` between 2 and this value minus one as too small to
+# run a node on and refuses to start, in Core's own words, rather than
+# rounding it up; `<n>` of exactly 1 is manual pruning instead of a MiB
+# target at all, the same special case `cli.py`'s own `-prune` parsing
+# carries.
 MIN_PRUNE_TARGET_MIB = 550
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
-# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
-# as `/Satoshi:29.0.0/` -- the one thing this node says about itself to
-# every peer it meets, and what a crawler reporting the composition of
-# the network parses. `p2p.connection`'s own `_USER_AGENT` (the wire
-# bytes of a `version` message) and `rpc.callbacks.get_network_info`'s
-# `subversion` answer both read this one string rather than each
-# computing it, so the two can never drift the way they once did
-# (btclib-org/btclib-node#1009).
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the v32.1
+# tag) and sends as `/Satoshi:<version>/` -- the one thing this node says
+# about itself to every peer it meets, and what a crawler reporting the
+# composition of the network parses. `p2p.connection`'s own `_USER_AGENT`
+# (the wire bytes of a `version` message) and
+# `rpc.callbacks.get_network_info`'s `subversion` answer both read this
+# one string rather than each computing it, so the two can never drift the
+# way they once did (btclib-org/btclib-node#1009).
 #
 # The version is read from the installed distribution rather than
 # written here. `RELEASING.md`'s *Which version string is which*
@@ -141,21 +146,33 @@ NUMERIC_CLIENT_VERSION = numeric_version(CLIENT_VERSION)
 
 # Core's own `CLIENT_NAME`, what its refusals name as probably already
 # running where a port or a data directory is taken
-# (`CConnman::BindListenPort`, `src/net.cpp:3356`, and `LockDirectory`,
-# `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7): the program this runs
-# as, the command `pyproject.toml`'s `[project.scripts]` installs. Its
-# own version line, `LogPackageVersion` (`src/init/common.cpp:156`, same
-# sha), is `CLIENT_NAME` and `CLIENT_VERSION` the same way.
+# (`CConnman::BindListenPort`, `src/net.cpp:3436`, and `LockDirectory`,
+# `src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
+# program this runs as, the command `pyproject.toml`'s
+# `[project.scripts]` installs. Its own version line,
+# `LogPackageVersion` (`src/init/common.cpp:158`, same sha), is
+# `CLIENT_NAME` and `CLIENT_VERSION` the same way.
 CLIENT_NAME = "btclib-node"
 
+# Core's `CLIENT_BUGREPORT` (`CMakeLists.txt`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag), where its refusals send a reader who believes them a bug:
+# the tracker of the program that refuses, here `pyproject.toml`'s `issues`.
+CLIENT_BUGREPORT = "https://github.com/btclib-org/btclib-node/issues"
+
+
+def quoted(text: str) -> str:
+    """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
+    return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
+
+
 # Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`
-# (`src/httpserver.h`, at bitcoin/bitcoin@9be056a8a7): requests running at
-# once, and requests waiting for a thread, past which a new one is refused
-# 503. Here the requests running are `Node.pending_rpc`, those that wait or
-# search, which `Node`'s loop steps in turn; the requests waiting are
-# `RpcManager.messages`, which the loop starts only while `RPC_THREADS` are
-# running. The depth is checked as Core checks it, where a request arrives,
-# in `rpc.connection.RpcConnection.run`.
+# (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# requests running at once, and requests waiting for a thread, past which a
+# new one is refused 503. Here the requests running are `Node.pending_rpc`,
+# those that wait or search, which `Node`'s loop steps in turn; the
+# requests waiting are `RpcManager.messages`, which the loop starts only
+# while `RPC_THREADS` are running. The depth is checked as Core checks it,
+# where a request arrives, in `rpc.connection.RpcConnection.run`.
 #
 # `-rpcthreads` and `-rpcworkqueue` are not read: only the defaults are
 # taken, since nothing here runs on a thread per request to size.
@@ -171,7 +188,7 @@ def default_data_dir() -> Path:
     """Return the data directory this node uses where none is named.
 
     Core's `GetDefaultDataDir` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is `~/.bitcoin` on Linux:
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) is `~/.bitcoin` on Linux:
     this node's is `~/.btclib`.
     """
     return Path.home() / ".btclib"
@@ -207,15 +224,15 @@ class NodeStatus(enum.IntEnum):
     blocks not yet connected. It holds the gates of Core's
     `LoadingBlocks()`, which `ImportBlocks` holds on every start while
     it connects what is stored. No header sync starts
-    (`src/net_processing.cpp:5797`), and a block `inv` asks for no
-    headers (`:4158`). A `getheaders` is not answered (`:4405`), and a
+    (`src/net_processing.cpp:6146`), and a block `inv` asks for no
+    headers (`:4382`). A `getheaders` is not answered (`:4640`), and a
     `cmpctblock`, `blocktxn`, `headers` or `block` is dropped unread
-    (`:4557`, `:4805`, `:4819`, `:4860`). A stale tip asks for no extra
-    outbound peer (`:5471`). Initial block download does not end
-    (`src/validation.cpp:3334`), and `mempool.dat` is not loaded
-    (`src/init.cpp:2047`, after `ImportBlocks` at `:2029`). All are at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Core's gate on
-    `getblockfrompeer` (`src/net_processing.cpp:1964`) has nothing to
+    (`:4787`, `:5052`, `:5066`, `:5107`). A stale tip asks for no extra
+    outbound peer (`:5681`). Initial block download does not end
+    (`src/validation.cpp:3295`), and `mempool.dat` is not loaded
+    (`src/init.cpp:2130`, after `ImportBlocks` at `:2106`). All are at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag. Core's gate on
+    `getblockfrompeer` (`src/net_processing.cpp:2088`) has nothing to
     gate here: this node has no such call.
 
     `Node.load` sets it and `main.finish_reindex` puts back the stage it

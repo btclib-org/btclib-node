@@ -43,7 +43,7 @@ name: os-ubuntu
 
 on:
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # section 10 of the organization's standard is the calendar, and
     # this line is not the place to restate it: one grid, in one file,
     # naming the day for the workflow and the minute for the repository.
     # Only the default branch schedules anything, so on any other branch
@@ -88,7 +88,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     # the checkout, the interpreter setup and the suite run over each
     # cell are btclib-org/.github's: reusable-os-suite.yml, called at
-    # a tagged commit (section 10 of btclib-org/.github's README.md). What stays
+    # a tagged commit (section 10 of the organization's standard). What stays
     # here is the trigger, the concurrency group and this job's own id, and the
     # two lists below, which are this tree's own claim about the images and the
     # interpreter it sweeps rather than a value the called workflow could

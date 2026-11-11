@@ -20,7 +20,7 @@ name: vendored-vectors
 
 on:
   schedule:
-    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # section 10 of the organization's standard is the calendar, and
     # this line is not the place to restate it: one grid, in one file,
     # naming the day and the hour for the workflow and the minute for
     # the repository. Only the default branch schedules anything, so on

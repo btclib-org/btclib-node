@@ -4,10 +4,10 @@
 
 """A transaction's JSON, this node's answer against a real bitcoind's.
 
-`TxToUniv` (`src/core_io.cpp`, at bitcoin/bitcoin@9be056a8a7) is what
-`decoderawtransaction`, `getrawtransaction` and `getblock` render a
-transaction with, so each of them is held to bitcoind's own answer for
-the same bytes, key for key.
+`TxToUniv` (`src/core_io.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag) is what `decoderawtransaction`, `getrawtransaction` and `getblock`
+render a transaction with, so each of them is held to bitcoind's own
+answer for the same bytes, key for key.
 
 `asm` is left out of every comparison. This node renders it with
 btclib's `script_to_dict`, which is not `ScriptToAsmStr`

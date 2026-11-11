@@ -16,6 +16,7 @@ import asyncio
 import errno
 import json
 import math
+import random
 import re
 import secrets
 import socket
@@ -1985,10 +1986,18 @@ def test_a_held_answered_peer_does_not_stop_the_dialling(
 
     monkeypatch.setattr(manager_module, "dial", records)
     coins = iter([1, 0])
-    monkeypatch.setattr(secrets, "randbelow", lambda n: next(coins))
+
+    class Coins(random.Random):
+        @override
+        def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
+            if start == 2:
+                return next(coins)
+            return super().randrange(start, *args, **kwargs)
+
     held = a_full_node("1.2.3.4", 8333)
     gossiped = a_full_node("5.6.7.8", 8333)
     peer_db = PeerDB(cast("Any", None), None)
+    peer_db._rng = Coins()
     peer_db.add_addresses([held, gossiped])
     peer_db.add_active_address(held)
     manager = a_manager([a_conn(1, automatic=True, address=held)], peer_db=peer_db)

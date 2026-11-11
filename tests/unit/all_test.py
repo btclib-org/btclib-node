@@ -5,7 +5,7 @@
 """Tests for what this package exports.
 
 `py.typed` says the types are supported, and which names are public is
-the other half of that sentence -- section 7 of the organization
+the other half of that sentence -- section 7 of the organization's
 standard reserves this bullet from the escape clause that excuses the
 rest of the convention tests, for exactly that reason.
 
