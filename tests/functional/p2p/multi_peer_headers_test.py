@@ -34,11 +34,7 @@ import pytest
 
 from btclib_node.p2p import callbacks as cb
 from tests import wait_until
-from tests.functional.p2p import (
-    Lie,
-    a_node_among_peers,
-    shorten_block_download_timeout,
-)
+from tests.functional.p2p import Lie, a_node_among_peers
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,15 +46,14 @@ _LIES_FROM = _BATCH
 
 
 @pytest.fixture(autouse=True)
-def short_batches_and_waits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make a short chain several batches, and a block never sent a short wait.
+def short_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make a short chain several batches.
 
     `MAX_HEADERS_RESULTS` is lowered for the node, in this one process,
     as `low_work_headers_test.py` lowers it, and the peers batch by the
     same number.
     """
     monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", _BATCH)
-    shorten_block_download_timeout(monkeypatch)
 
 
 @pytest.mark.parametrize("lie", list(Lie), ids=[lie.name for lie in Lie])

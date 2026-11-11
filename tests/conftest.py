@@ -12,12 +12,18 @@ ports, for the functional and unit tests that need one.
 Beside the floor is a guard on its reaching the run at all. coverage
 looks for its configuration in the directory the process started in, so
 a run started from `tests/` finds no `fail_under`, no `source` and no
-`branch = true`. Section 8 of the organization standard leaves a tree to
-point such a run at its configuration or to make it say it is ungated,
-and this file is the second of the two: such a run is refused
+`branch = true`. Section 8 of the organization's standard leaves a tree
+to point such a run at its configuration or to make it say it is
+ungated, and this file is the second of the two: such a run is refused
 (btclib-org/.github#443).
 
-A thread that outlives the test that started it is the other guard here.
+A guard on the file set sits beside it. Pointed at its configuration
+with `--cov-config`, a run from `tests/` still reads the directories
+`source` names against `tests/`, and `.github/scripts` is not one there,
+so such a run is refused as well. So is a run from another checkout,
+whose `.github/scripts` coverage would measure in place of this tree's.
+
+A thread that outlives the test that started it is another guard here.
 `_pytest.threadexception` drains `threading.excepthook` at the boundary
 of each test's own setup, call and teardown, so an exception raised on a
 thread nobody joined lands on whichever test is at one of those
@@ -28,7 +34,7 @@ report pytest already prints, which test actually started the thread,
 so a reader is not sent to look for a defect in the one the exception
 merely surfaced against (btclib-org/btclib-node#1002).
 
-A task left pending on an event loop is the third: found as its loop
+A task left pending on an event loop is one more: found as its loop
 closes or as the collector frees it, it fails the test running then, at
 that test's own teardown, and the whole run where no test is left to
 fail (btclib-org/btclib-node#1107).
@@ -37,6 +43,7 @@ fail (btclib-org/btclib-node#1107).
 import asyncio
 import gc
 import os
+import sys
 import threading
 import weakref
 from collections import deque
@@ -337,7 +344,7 @@ def install_thread_exception_origin_hook() -> None:
 
 # The property layer's profiles, registered once here rather than
 # repeated on every `@given`, which is the shape section 7 of
-# btclib-org/.github's README names (btclib-org/btclib-node#742).
+# the organization's standard names (btclib-org/btclib-node#742).
 #
 # `deadline=None` because a per-example time limit is a timing flake on
 # whichever cell of the matrix is slowest -- and this suite runs one on
@@ -356,6 +363,12 @@ def install_thread_exception_origin_hook() -> None:
 settings.register_profile("default", deadline=None, max_examples=500)
 settings.register_profile("thorough", deadline=None, max_examples=2_000)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
+
+# the tree that holds this file, which is where a refused run is sent and
+# where a `source` directory is looked for: no pytest or coverage flag
+# moves it, where `--rootdir` and `-c` move the rootdir and `--cov-config`
+# moves the file coverage reads
+TREE = Path(__file__).parents[1]
 
 
 def asks_for_everything(
@@ -415,7 +428,8 @@ def relax_coverage_floor(config: pytest.Config) -> bool:
     what it says.
 
     A subset is what pytest was *asked* for, and section 8 of the
-    organization standard is what names the set `selective` reads below.
+    organization's standard is what names the set `selective` reads
+    below.
 
     Answers whether it wrote the floor down, which is how it is tested:
     the run that measures the suite is the one run this never fires on.
@@ -458,9 +472,13 @@ class CoverageConfiguration(Protocol):
     one, so the attribute is the run's own answer to whether the
     configuration reached it, rather than an inference from a value
     that reached it.
+
+    `source` is the list `[tool.coverage.run]` names, each entry as
+    written there, and `None` where nothing names one.
     """
 
     config_file: str | None
+    source: list[str] | None
 
 
 def coverage_configuration(config: pytest.Config) -> CoverageConfiguration | None:
@@ -480,6 +498,33 @@ def coverage_configuration(config: pytest.Config) -> CoverageConfiguration | Non
     # return of that is what mypy's strict mode refuses here
     measuring: CoverageConfiguration = controller.cov.config
     return measuring
+
+
+def held_to_a_floor(
+    asked: float | None, *, asked_for_help: bool, collect_only: bool
+) -> bool:
+    """Return whether a measuring run is one the guards below ask about.
+
+    The arguments, here and in the guards below, are read off a
+    `pytest.Config` by the caller rather than taken as one, for the
+    reason `asks_for_everything` above gives.
+    """
+    if asked is not None:
+        # section 8 of the organization's standard has the hook never
+        # overruling an explicit `--cov-fail-under`, and a caller who
+        # named the floor has not had one taken away in silence
+        return False
+    # neither `--help` nor `--collect-only` is held to a floor to begin
+    # with: `--help` exits before a session, and `collectonly` is the one
+    # invocation shape pytest-cov itself exempts, its `pytest_runtestloop`
+    # returning on `cov_fail_under is None or self.options.collectonly`
+    # whatever its report prints. The pair is an enumeration rather than
+    # every run pytest-cov leaves ungated -- `--markers` and `--fixtures`
+    # exit before that loop as well, and are refused knowingly. Widening
+    # it is the rejected alternative, and `--setup-plan` is what says so:
+    # pytest-cov gates one, so a run of it started from `tests/` is held
+    # to a floor it cannot see and is refused rather than exempted
+    return not (asked_for_help or collect_only)
 
 
 def configuration_went_unread(
@@ -503,34 +548,59 @@ def configuration_went_unread(
     pytest read one -- the asymmetry the defect leaves behind, pytest
     walking up from where it was invoked to find its configuration and
     coverage looking only where the process started.
-
-    The arguments are read off a `pytest.Config` by the caller rather
-    than taken as one, for the reason `asks_for_everything` above gives.
     """
-    if cov_config is None:
-        return False
-    if asked is not None:
-        # section 8 of the organization standard has the hook never
-        # overruling an explicit `--cov-fail-under`, and a caller who
-        # named the floor has not had one taken away in silence
-        return False
-    if asked_for_help or collect_only:
-        # neither run is held to a floor to begin with: `--help`
-        # exits before a session, and `collectonly` is the one
-        # invocation shape pytest-cov itself exempts, its
-        # `pytest_runtestloop` returning on `cov_fail_under is None or
-        # self.options.collectonly` whatever its report prints. The
-        # pair is an enumeration rather than every run pytest-cov
-        # leaves ungated -- `--markers` and `--fixtures` exit before
-        # that loop as well, and are refused knowingly. Widening it is
-        # the rejected alternative, and `--setup-plan` is what says so:
-        # pytest-cov gates one, so a run of it started from `tests/` is
-        # held to a floor it cannot see and is refused rather than
-        # exempted
+    if cov_config is None or not held_to_a_floor(
+        asked, asked_for_help=asked_for_help, collect_only=collect_only
+    ):
         return False
     # `inipath` is what the message has to name, so a run pytest read no
     # configuration for is one this cannot tell anybody anything about
     return cov_config.config_file is None and inipath is not None
+
+
+def sources_out_of_reach(
+    cov_config: CoverageConfiguration | None,
+    tree: Path,
+    asked: float | None,
+    *,
+    asked_for_help: bool,
+    collect_only: bool,
+) -> list[str]:
+    """Return each `source` entry this run would leave unmeasured.
+
+    coverage takes an entry for a directory where it is one from the
+    directory the run started in, and for a module name otherwise. An
+    entry that is a directory under `tree` can be left unmeasured two
+    ways.
+
+    Where the entry is a directory from here, coverage measures that
+    directory, which is the one under `tree` only where both are the
+    same: from another checkout, `.github/scripts` and `tests` are that
+    checkout's, and the floor passes where they hold no Python file.
+    `samefile` asks it of the directories and not of their paths, which
+    differ where a symlink or a `..` spells one of them.
+
+    Where the entry is none from here and cannot be a module name, it is
+    measured by neither reading, and the report leaves it out with no
+    error: from `tests/`, `.github/scripts` is that entry. An entry that
+    is a module name, `tests` from `tests/` among them, is measured as
+    one. In an sdist, which ships no `.github`, `.github/scripts` is no
+    directory under `tree`, so a run there is not refused.
+    """
+    if cov_config is None or not held_to_a_floor(
+        asked, asked_for_help=asked_for_help, collect_only=collect_only
+    ):
+        return []
+    return [
+        entry
+        for entry in cov_config.source or []
+        if (tree / entry).is_dir()
+        and (
+            not Path(entry).samefile(tree / entry)
+            if Path(entry).is_dir()
+            else not all(part.isidentifier() for part in entry.split("."))
+        )
+    ]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -565,7 +635,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """Refuse a run that cannot see its floor; relax one that cannot clear it.
 
     A run coverage's configuration never reached is refused rather than
-    gated, `pytest.UsageError` being what pytest prints without a
+    gated, and so is a run that would leave a `source` directory
+    unmeasured, `pytest.UsageError` being what pytest prints without a
     traceback and exits `4` for -- an exit of its own, so the code says
     the run measured nothing rather than that something in the tree
     failed.
@@ -583,13 +654,24 @@ def pytest_configure(config: pytest.Config) -> None:
         collect_only=config.option.collectonly,
     ):
         refusal = (
-            "coverage read no configuration, so this run is held to no floor"
-            " and measures a different set of files: coverage looks only in"
-            f" the directory the run started in, {Path.cwd()}, and pytest"
-            f" read {config.inipath}. Run from {config.rootpath};"
-            " --cov-config restores the floor and not the file set, a"
-            " relative omit pattern being resolved against the directory"
-            " the run started in."
+            "coverage read no configuration, so this run is held to no"
+            " floor and measures a different set of files: coverage looks"
+            f" only in the directory the run started in, {Path.cwd()}, and"
+            f" pytest read {config.inipath}. Run from {TREE}."
+        )
+        raise pytest.UsageError(refusal)
+    if unmeasured := sources_out_of_reach(
+        coverage_configuration(config),
+        TREE,
+        config.option.cov_fail_under,
+        asked_for_help=config.option.help,
+        collect_only=config.option.collectonly,
+    ):
+        refusal = (
+            f"coverage would not measure {', '.join(unmeasured)}: it reads"
+            " a source directory against the directory the run started in,"
+            f" {Path.cwd()}, and from there that name is not this tree's"
+            f" directory. Run from {TREE}."
         )
         raise pytest.UsageError(refusal)
     relax_coverage_floor(config)
@@ -770,6 +852,37 @@ def release_mock_time() -> Iterator[None]:
     clock.set_mock_time(0)
     yield
     clock.set_mock_time(0)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def unlimited_file_descriptors() -> Iterator[None]:
+    """Answer every resource limit as unlimited, and refuse any raise.
+
+    Every `Config` reads the limit and raises it where it is low
+    (`config._raise_file_descriptor_limit`), so the suite would otherwise
+    raise its own process's limit and lower `max_connections` wherever
+    the runner's limit is low. The session's scope puts this in place
+    before a module's fixtures build their nodes. A test that means to
+    read a limit installs its own fake over this one, as `config_test`'s
+    `file_limit` does. A `MonkeyPatch` of its own, as
+    `deterministic_bucket_key` below says why.
+    """
+    if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+        yield
+        return
+    import resource  # noqa: PLC0415 -- POSIX only
+
+    def getrlimit(_which: int) -> tuple[int, int]:
+        return resource.RLIM_INFINITY, resource.RLIM_INFINITY
+
+    def setrlimit(*args: object) -> None:  # pragma: no cover -- a raise
+        err_msg = f"a test raised a resource limit: {args}"
+        raise AssertionError(err_msg)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(resource, "getrlimit", getrlimit)
+        patch.setattr(resource, "setrlimit", setrlimit)
+        yield
 
 
 @pytest.fixture(autouse=True)

@@ -373,8 +373,8 @@ _TITLES = (
 
 # `ParseArgs`'s own prefix on a `ParseParameters` refusal.
 _PARSE_ERROR = "Error parsing command line arguments: "
-# The longest name a refusal quotes: btclib-org/.github's README.md, section 7,
-# *A refusal carries no secret*.
+# The longest name a refusal quotes: section 7 of the organization's
+# standard, *A refusal carries no secret*.
 _MAX_QUOTED_NAME = 16
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).
@@ -419,11 +419,10 @@ _MIN_CHAIN_WORK_SIGNET = SigNet().consensus.minimum_chain_work
 # is what that pull request fills in.
 _ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
 
-# The values `-test` knows, each with its help. Core's `TEST_OPTIONS_DOC`
+# The values `-test` knows, each with its help: Core's `TEST_OPTIONS_DOC`
 # (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-# also lists `reindex_after_failure_noninteractive_yes`. This node does
-# not do it, so it warns of it as an unknown value rather than take it
-# and do nothing.
+# but for `reindex_after_failure_noninteractive_yes`:
+# `_check_test_options` says why this node does not read it.
 _TEST_OPTIONS = {
     "addrman": "use deterministic addrman",
     "bip94": "enforce BIP94 consensus rules",
@@ -1017,7 +1016,7 @@ class _Settings:
 
     The sources hold values as they were read, `-rpcpassword` among them,
     and a section name may hold one too, as may a warning quoting it, so
-    `repr` and `str` leave them out (section 7 of the btclib-org
+    `repr` and `str` leave them out (section 7 of the organization's
     standard, *A refusal carries no secret*).
     """
 
@@ -1034,7 +1033,7 @@ class _Settings:
     # version line; `""` where no section is unrecognised
     section_warning: str = field(default="", repr=False)
     # `_resolve_debug`'s and `_check_test_options`'s warnings, logged
-    # after `Config.max_connections_warning`
+    # after `Config.max_connections_warnings`
     debug_warnings: list[str] = field(default_factory=list, repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
@@ -1709,28 +1708,48 @@ def _get_check_addrman(settings: _Settings) -> int:
     )
 
 
-def _get_int32(
-    settings: _Settings, name: str, default: int, *, refuse: bool = True
-) -> int:
+def _get_int32(settings: _Settings, name: str, default: int) -> int:
     """Return `name` as Core's `GetArg<int>` reads it, `default` where unset.
 
     `SettingTo<int>` (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040)
     reads a JSON number with `UniValue::getInt<int>`, which refuses one
-    past a 32-bit `int` as "JSON integer out of range". Without `refuse`
-    such a number is returned as it is, for the caller to refuse where
-    Core reads it. A string past it saturates, as
-    `LocaleIndependentAtoi<int>` does (`src/util/strencodings.h`, same
-    sha), rather than wrapping as `_to_int` does.
+    past a 32-bit `int` as "JSON integer out of range". Such a number,
+    once `_get_int` has read it as an `int64_t`, is returned as it is, for
+    `Config.__init__` to refuse where Core reads it. A string past it
+    saturates, as `LocaleIndependentAtoi<int>` does
+    (`src/util/strencodings.h`, same sha), rather than wrapping as
+    `_to_int` does.
     """
     value = _get_int(settings, name)
     if value is None:
         return default
     if isinstance(_get_setting(settings, name), Number):
-        if refuse and not _INT_MIN <= value <= _INT_MAX:
-            err_msg = "JSON integer out of range"
-            raise ValueError(err_msg)
         return value
     return min(max(value, _INT_MIN), _INT_MAX)
+
+
+def _get_rpcmaxconnections(settings: _Settings) -> float:
+    """Return `-rpcmaxconnections` as `GetArg<int>` reads it, for `Config`.
+
+    `UniValue::getInt<int>` (`src/univalue/include/univalue.h`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) reads a JSON number's text
+    with `std::from_chars`, which takes an optional `-` and digits, and
+    throws "JSON integer out of range" where the text holds more, as a
+    fraction or an exponent does, or where the value is past an `int`.
+    Core reads the option with `GetArg<int>` only, first at
+    `src/init.cpp:1080`, so such a number is returned for
+    `Config.__init__` to refuse there: an `int` where it is an integer of
+    at most `-2147483648`'s length, a `float` otherwise. A JSON number
+    has no leading zero, so a longer integer is past an `int`, and
+    `float` reads one of any length, where `int` refuses one past
+    CPython's digit limit.
+    """
+    value = _get_setting(settings, "rpcmaxconnections")
+    if isinstance(value, Number):
+        if len(value) <= len(str(_INT_MIN)) and _LEADING_INTEGER.fullmatch(value):
+            return int(value)
+        return float(value)
+    return _get_int32(settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS)
 
 
 def _get_inboundrelaypercent(settings: _Settings) -> int:
@@ -1951,6 +1970,19 @@ def _check_test_options(settings: _Settings, chain_name: str) -> None:
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): a negation sets no value,
     and the warning is an `InitWarning`, printed after `Warning: ` on
     stderr and appended to `settings.debug_warnings` for the log.
+
+    This node warns of `reindex_after_failure_noninteractive_yes`, which
+    Core knows, rather than take it and do nothing. In Core's
+    `AppInitMain` (same file, same sha), a load of the block index and
+    the chainstate that fails with `ChainstateLoadStatus::FAILURE`, on a
+    start without `-reindex`, asks "Do you want to rebuild the databases
+    now?". The value answers yes, and the load runs again as `-reindex`
+    does: the block index and the chainstate are wiped and rebuilt from
+    the stored blocks. This node has no `-reindex`
+    (btclib-org/btclib-node#1415). Its `-reindex-chainstate` keeps the
+    headers (`chainstate/__init__.py`'s docstring), so it cannot recover
+    a block index that fails to load, as one holding a header that fails
+    its proof of work does (`BlockIndex.init_from_db`).
     """
     options = _get_args(settings, "test")
     if options and chain_name != "regtest":
@@ -2632,15 +2664,17 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     bitcoin/bitcoin@f0de87f040) in its order: a `NETWORK_ONLY` option set
     only in the default section off `main`, the warning about a section
     naming no chain, a missing blocks directory, `-prune` beside
-    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
-    off, a `settings.json` `-maxconnections` number past an `int`, then a
-    negative one, then its cap at `MAX_PEER_CONNECTIONS`, a
-    `-rpcmaxconnections` below one, `-debug`'s categories, `-test`,
-    `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage` (the
-    order `node::ApplyArgsManOptions`'s own chainstate-manager options are
-    read in, `src/node/chainstatemanager_args.cpp`, at
-    bitcoin/bitcoin@f0de87f040), `-prune`, the mempool's options.
+    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is off,
+    a `settings.json` `-maxconnections` number past an `int`, then a
+    negative one, then its cap at `MAX_PEER_CONNECTIONS`, a `settings.json`
+    `-rpcmaxconnections` number that is no `int`, then one below one, the
+    file descriptors `-maxconnections` is lowered to, `-debug`'s
+    categories, `-test`, `-testactivationheight` on mainnet (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), `-minimumchainwork`,
+    `-assumevalid`, `-maxtipage` (the order `node::ApplyArgsManOptions`'s
+    own chainstate-manager options are read in,
+    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@f0de87f040),
+    `-prune`, the mempool's options.
     """
     settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
@@ -2671,13 +2705,13 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
-        # `Config.__init__` refuses a number past an `int` where Core does
         max_connections=_get_int32(
-            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS, refuse=False
+            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
         ),
-        rpcmaxconnections=_get_int32(
-            settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS
-        ),
+        rpcmaxconnections=_get_rpcmaxconnections(settings),
+        # what the file descriptors `Config.__init__` reserves count
+        rpcbind=_get_args(settings, "rpcbind"),
+        allow_rpc=_get_bool(settings, "server") is not False,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
@@ -2927,9 +2961,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         whitelist_relay=whitelist_relay,
         whitelist_force_relay=bool(_get_bool(settings, "whitelistforcerelay")),
         rpcservertimeout=rpcservertimeout,
-        rpcmaxconnections=_get_int32(
-            settings, "rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS
-        ),
+        rpcmaxconnections=before.directories.rpcmaxconnections,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
@@ -2946,9 +2978,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         peerblockfilters=peerblockfilters,
         v2transport=v2transport,
         v1transport=v1transport,
-        # capped already, so this `Config` warns no second time
+        # capped and lowered already, so this `Config` warns no second time
         max_connections=before.directories.max_connections,
-        max_connections_warning=before.directories.max_connections_warning,
+        max_connections_warnings=before.directories.max_connections_warnings,
         inbound_relay_percent=_get_inboundrelaypercent(settings),
         tx_send_rate=_get_txsendrate(settings),
         dnsseed=dnsseed,
@@ -3082,7 +3114,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_file_line=before.settings.config_file_line,
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
-                max_connections_warning=directories.max_connections_warning,
+                max_connections_warnings=directories.max_connections_warnings,
                 debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,

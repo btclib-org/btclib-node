@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
+"""`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import os
 import secrets
@@ -16,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.block import Block, witness_commitment_output
@@ -62,6 +65,7 @@ from btclib_node.exceptions import (
     MissingPrevoutError,
     NonStandardTxError,
     PackageRefusedError,
+    StoreCorruptionError,
     TxRejectedError,
 )
 from btclib_node.interpreter import check_scripts
@@ -78,7 +82,12 @@ from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool, submit_block
+from btclib_node.rpc.callbacks import (
+    get_mempool_entry,
+    get_raw_mempool,
+    get_tx_out,
+    submit_block,
+)
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
     LogLines,
@@ -458,7 +467,7 @@ def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts(
     block's total before it checks the next one's inputs, so a block
     whose first spend passes `MAX_BLOCK_SIGOPS_COST` and whose second
     prints money is `bad-blk-sigops` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Without the first
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Without the first
     spend's excess the same block is refused for the second's amounts.
     """
     block_index, build = _sigop_blocks(node)
@@ -497,7 +506,7 @@ def test_a_block_is_refused_for_the_first_rule_in_transaction_order(
     the next, so a block with an immature spend first and an unmet
     relative lock second is `bad-txns-premature-spend-of-coinbase`, and
     with the two the other way round `bad-txns-nonfinal`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
@@ -532,7 +541,7 @@ def test_a_coinbase_paying_too_much_is_refused_before_a_failing_script(
     over the transactions and collects the script results last, so a
     block whose spend fails its script and whose coinbase pays one
     satoshi too much is `bad-cb-amount` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
@@ -566,7 +575,7 @@ def test_the_fees_a_block_accumulates_are_bounded_by_max_money(
     brought down to the fees this block's two spends pay together: at it
     the block connects, one satoshi under it, with each spend's own fee
     well inside, is `bad-txns-accumulated-fee-outofrange`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     Each spends a coin worth its fee alone, because `_check_tx_inputs`
     bounds an input by the same `MAX_MONEY` first.
     """
@@ -669,7 +678,7 @@ def test_reject_block_whose_coinbase_height_and_a_transaction_are_both_bad(
     A wrong-height coinbase (BIP34) and a non-final transaction fail in
     the same block; `bad-txns-nonfinal` is the answer, Core's own order
     (`ContextualCheckBlock`, `src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). ISS 1335.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). ISS 1335.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
@@ -778,10 +787,11 @@ def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
     """`verify_mempool_acceptance` refuses the same premature spend.
 
     Core enforces `COINBASE_MATURITY` at both call sites -- `ConnectBlock`
-    and mempool acceptance's own `AcceptToMemoryPoolWorker`
-    (`src/validation.cpp:897` and `:2544`, at bitcoin/bitcoin@204256c73f)
-    -- so a mempool that only enforced it on the block-connection path
-    would relay a spend no peer accepting it into a block ever will.
+    and mempool acceptance's own `PreChecks`
+    (`src/validation.cpp:2533` and `:889`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) -- so a mempool that only enforced it on the
+    block-connection path would relay a spend no peer accepting it into a
+    block ever will.
     """
     chain = generate_random_chain(COINBASE_MATURITY - 1, RegTest().genesis.hash)
     connect(node, chain)
@@ -790,7 +800,7 @@ def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
     premature = generate_random_transaction(funding.id, value=funding.vout[0].value)
     with pytest.raises(TxRejectedError) as refused:
         verify_mempool_acceptance(node, premature)
-    # `bitcoind` v31.1 on regtest: "bad-txns-premature-spend-of-coinbase,
+    # `bitcoind` on regtest: "bad-txns-premature-spend-of-coinbase,
     # tried to spend coinbase at depth 1" for a coinbase one block deep.
     # This one is at height 1 and the spend at the next block's height,
     # one short of maturity (btclib-org/btclib-node#1328).
@@ -910,6 +920,58 @@ def test_a_bip30_check_on_a_stored_coin_that_wont_parse_stops_the_node(
     assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
     assert node.last_rejected_block is None
     assert "Error reading from database, shutting down." in lines.messages
+
+
+@pytest.mark.parametrize("caller", ["mempool", "gettxout"])
+def test_a_coin_read_the_store_reports_corrupt_stops_the_node(
+    node: Node, monkeypatch: pytest.MonkeyPatch, caller: str
+) -> None:
+    """ISS 2357: a read by outpoint the store reports corrupt stops the node.
+
+    Whichever caller made the read, as Core's `CCoinsViewErrorCatcher`
+    aborts on the "Coin DB read failure" `CCoinsViewDB::GetCoin` throws
+    (`src/txdb.cpp`, `src/coins.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). The error still reaches the caller.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+
+    def corrupted(key: bytes) -> NoReturn:
+        err_msg = f"chainstate: Corruption: block checksum mismatch at {key.hex()}"
+        raise StoreCorruptionError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index.db, "get", corrupted)
+    lines = LogLines()
+    node.logger.addHandler(lines)
+
+    def read() -> object:
+        if caller == "mempool":
+            spend = generate_random_transaction(
+                funding.id, value=funding.vout[0].value - FEE
+            )
+            return verify_mempool_acceptance(node, spend)
+        return get_tx_out(
+            node, cast("RpcConnection", None), [funding.id.hex(), 0, False]
+        )
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        read()
+    assert node.terminate_flag.is_set()
+    assert "Error reading from database, shutting down." in lines.messages
+    assert any(
+        message.startswith("Error reading from database: Coin DB read failure: ")
+        for message in lines.messages
+    )
+
+
+def test_a_missing_coin_does_not_stop_the_node(node: Node) -> None:
+    """ISS 2357: a prevout the store does not hold is refused, not fatal."""
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+
+    with pytest.raises(MissingPrevoutError):
+        verify_mempool_acceptance(node, generate_random_transaction())
+    assert not node.terminate_flag.is_set()
 
 
 def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
@@ -1392,7 +1454,7 @@ def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
     """An index past a mempool parent's outputs is a missing input.
 
     It raised `IndexError`, which the `tx` callback drops the peer for
-    and the RPC answers `-32603` with; `bitcoind` v31.1 answers
+    and the RPC answers `-32603` with; `bitcoind` answers
     `missing-inputs` (btclib-org/btclib-node#1252). `1` is the first
     index the one-output parent lacks.
     """
@@ -1456,7 +1518,7 @@ def a_funded_spend(node: Node, fee: int) -> Tx:
 def test_a_fee_under_the_relay_floor_is_refused_in_core_s_words(node: Node) -> None:
     """A fee under `min_relay_feerate` for the vsize is refused, as by Core.
 
-    `bitcoind` v31.1 on regtest answers a zero-fee spend "min relay fee
+    `bitcoind` on regtest answers a zero-fee spend "min relay fee
     not met, 0 < 11", 11 being its own 110-vbyte size at 100 sat/kvB
     rounded up; this answers the same shape for its own size. One
     satoshi under the floor is refused and the floor itself accepted
@@ -1539,8 +1601,8 @@ def a_sigop_dense_spend(node: Node, *repeats: int) -> Callable[[int], Tx]:
 def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
     """The vsize is Core's `GetVirtualTransactionSize(weight, cost, 20)`.
 
-    `bitcoind` v31.1 on regtest, a P2WSH spend of 100 repeats, weight
-    735: `testmempoolaccept` answers vsize 10000 (2000 sigops at 20 bytes,
+    `bitcoind` on regtest, a P2WSH spend of 100 repeats, weight
+    739: `testmempoolaccept` answers vsize 10000 (2000 sigops at 20 bytes,
     over four), accepts a fee of 1000 and refuses 999 "min relay fee not
     met, 999 < 1000", where the weight alone would price the floor at 19
     (btclib-org/btclib-node#1357).
@@ -1586,7 +1648,7 @@ def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
 def test_a_sigop_dense_conflict_pays_relay_for_its_sigop_cost(node: Node) -> None:
     """Rule 4 prices the candidate at its sigop-adjusted vsize.
 
-    `bitcoind` v31.1 on regtest, the 100-repeat spend held at 1000: a
+    `bitcoind` on regtest, the 100-repeat spend held at 1000: a
     conflict paying 1500 is "insufficient fee, rejecting replacement
     <txid>, not enough additional fees to relay; 0.000005 < 0.00001",
     where the weight alone would ask 19 satoshi (btclib-org/btclib-node#1357).
@@ -1606,7 +1668,7 @@ def test_a_sigop_dense_conflict_pays_relay_for_its_sigop_cost(node: Node) -> Non
 def test_a_spend_over_the_standard_sigop_cost_is_refused(node: Node) -> None:
     """Core's "bad-txns-too-many-sigops", reorg re-add or not.
 
-    `bitcoind` v31.1 on regtest answers a P2WSH spend of 801 repeats,
+    `bitcoind` on regtest answers a P2WSH spend of 801 repeats,
     16020 sigops, "bad-txns-too-many-sigops, 16020": the ceiling,
     `MAX_STANDARD_TX_SIGOPS_COST`, is 16000 and is checked whatever
     `bypass_limits` says. Four inputs of 200 repeats cost 16000 exactly
@@ -1637,7 +1699,7 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
     """Outputs over inputs is refused as such, ahead of the feerate floor.
 
     Core's `CheckTxInputs` runs before `CheckFeeRate`; the negative fee
-    would otherwise read as one under the floor. `bitcoind` v31.1 on
+    would otherwise read as one under the floor. `bitcoind` on
     regtest answers a 50-BTC input paying out 51 "bad-txns-in-belowout,
     value in (50.00) < value out (51.00)" (btclib-org/btclib-node#1328).
     """
@@ -1743,9 +1805,11 @@ def test_standardness_is_judged_before_any_script_runs(
 ) -> None:
     """A transaction over `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" first.
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) asks `IsStandardTx` before it reads the inputs and runs
-    the scripts last, in `PolicyScriptChecks`. Each function here that
+    `PreChecks` asks `IsStandardTx` before it reads the inputs, and
+    `AcceptSingleTransactionInternal` runs the scripts after its other
+    checks, in `PolicyScriptChecks` then `ConsensusScriptChecks`
+    (`src/validation.cpp:805`, `:1378` and `:1380`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Each function here that
     evaluates a script records its call. With `require_standard` off the
     same candidate reaches them, which says the recorders are in its
     path (btclib-org/btclib-node#1382).
@@ -2116,7 +2180,7 @@ def test_a_transaction_under_65_nonwitness_bytes_is_refused_tx_size_small(
     """`PreChecks` refuses 64 bytes and takes 65, `-acceptnonstdtxn` or not.
 
     The 64-byte one is also non-final, so the refusal comes ahead of the
-    finality check. The reason is `bitcoind` v31.1's
+    finality check. The reason is `bitcoind`'s
     (btclib-org/btclib-node#1687).
     """
     parent = an_op_1_parent(node)
@@ -2138,7 +2202,7 @@ def test_a_version_3_transaction_over_10000_vbytes_is_refused(node: Node) -> Non
 
     The same size at version 2 is accepted, which says the version is
     what refuses it; a disconnected block's transaction is not held to
-    it (`bypass_limits`). The words are `bitcoind` v31.1's
+    it (`bypass_limits`). The words are `bitcoind`'s
     (btclib-org/btclib-node#1399).
     """
     spend = funded_spends(node, 1)[0]
@@ -2418,8 +2482,10 @@ def test_truc_cluster_and_size_refusals_precede_every_script(
 ) -> None:
     """None of the three refusals evaluates a script, which a clean one does.
 
-    `PolicyScriptChecks` runs last in `AcceptSingleTransactionInternal`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `AcceptSingleTransactionInternal` runs the scripts after its other
+    checks, in `PolicyScriptChecks` then `ConsensusScriptChecks`
+    (`src/validation.cpp:1378` and `:1380`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     parent = an_op_1_parent(node)
     small = a_tx_of_nonwitness_size(parent, 64)
@@ -2450,7 +2516,7 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
 ) -> None:
     """The issue's double spend: each candidate answered in Core's words.
 
-    `bitcoind` v31.1 on regtest, a spend paying 10000 held: a fee-free
+    `bitcoind` on regtest, a spend paying 10000 held: a fee-free
     conflict "min relay fee not met", a 5000-sat one "insufficient fee
     ... less fees than conflicting txs; 0.00005 < 0.0001". One paying for
     the held spend and its own relay replaces it (btclib-org/btclib-node#1244).
@@ -2481,7 +2547,7 @@ def test_a_confirmed_double_spend_evicts_the_held_spend_and_its_child(
 ) -> None:
     """A block spending a held spend's coin evicts it and what spends it.
 
-    `bitcoind` v31.1 on regtest: `generateblock` with a conflicting spend
+    `bitcoind` on regtest: `generateblock` with a conflicting spend
     leaves the held one out of `getrawmempool`. Core's `removeForBlock`
     calls `removeConflicts` for every transaction of the block.
     """
@@ -2723,7 +2789,7 @@ def test_a_reorg_refuses_a_removed_block_whose_record_holds_another(
     assert block_index.active_chain == active_chain
     assert utxo_index.get_coin(coinbase_output) is not None
     assert not utxo_index.removed_utxos
-    assert node._step_chain() is True
+    assert node._step_chain() is False
     assert node.terminate_flag.is_set()
     assert block_index.active_chain == active_chain
 
@@ -2822,13 +2888,14 @@ def test_a_reorg_whose_own_undo_raises_propagates_and_names_no_new_block(
     storage proving itself inconsistent, not a new candidate's content,
     the same distinction `_CONTENT_FAILURE`'s own comment and Core's
     `ActivateBestChainStep` (`src/validation.cpp`, at
-    bitcoin/bitcoin@b91d983f66) draw for a failed `DisconnectTip`. The
-    rollback still runs first -- `active_chain_before` is unchanged --
-    and `_resolve_trial_exception` never reaches `_record_rejection`
-    here, so `Node.last_rejected_block` stays unset the same as
-    `failed_hash` -- still `None` at this point in the trial, exactly
-    as `update_header_index`'s own guard reads it, so none of the
-    fork's own candidate blocks is invalidated either.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) draw for a failed
+    `DisconnectTip`. The rollback still runs first --
+    `active_chain_before` is unchanged -- and `_resolve_trial_exception`
+    never reaches `_record_rejection` here, so
+    `Node.last_rejected_block` stays unset the same as `failed_hash` --
+    still `None` at this point in the trial, exactly as
+    `update_header_index`'s own guard reads it, so none of the fork's
+    own candidate blocks is invalidated either.
     """
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
@@ -2972,7 +3039,7 @@ def test_a_stored_utxo_record_that_wont_parse_stops_the_node_not_the_block(
     block_index.set_downloaded(bad.header.hash)
     node.block_db.add_block(bad)
 
-    assert node._step_chain() is True
+    assert node._step_chain() is False
     assert node.terminate_flag.is_set()
     assert bad.header.hash not in block_index.active_chain
     assert block_index.get_block_info(bad.header.hash).status != BlockStatus.invalid
@@ -3151,9 +3218,9 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     """Connecting a block restarts the mempool's rolling-minimum decay clock."""
     # note_block_connected runs once per block update_chain connects to the
     # active chain, restarting Mempool.get_min_fee_rate's own decay clock --
-    # Core's own removeForBlock (src/txmempool.cpp:405-427,
-    # at bitcoin/bitcoin@58a7869f86) does this for every block regardless of
-    # what it held. btclib-org/btclib-node#294
+    # Core's own removeForBlock (src/txmempool.cpp:405-429,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) does this for every
+    # block regardless of what it held. btclib-org/btclib-node#294
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
@@ -3762,8 +3829,8 @@ def test_a_high_bandwidth_peer_is_sent_a_lone_new_block_as_a_cmpctblock(
     for headers (btclib-org/btclib-node#1223). Every peer gets the same
     one here, as in Core where `NewPoWValidBlock` left the block in
     `m_most_recent_compact_block`; where it did not, Core builds one per
-    peer under a fresh nonce (`src/net_processing.cpp:5899-5913`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    peer under a fresh nonce (`src/net_processing.cpp:6248-6262`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
     connect(node, chain[:1])
@@ -4042,13 +4109,14 @@ def test_the_block_ending_initial_block_download_is_announced_before_sync(
 def test_blocknotify_does_not_fire_during_initial_block_download(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1519: Core's own `NotifyBlockTip_connect` gate.
+    """ISS 1519: Core's own `NotifyBlockTip.connect` gate.
 
-    `if (sync_state != POST_INIT) return;` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `generate_random_chain`
-    dates every block too far back for the tip to end initial block
-    download, the same premise `test_a_reorg_during_initial_block_
-    download_announces_nothing` above rests on.
+    `if (sync_state != SynchronizationState::POST_INIT) return;`
+    (`src/init.cpp:2088`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+    `generate_random_chain` dates every block too far back for the tip
+    to end initial block download, the same premise
+    `test_a_reorg_during_initial_block_download_announces_nothing`
+    above rests on.
 
     A separate test from the one below, on purpose: mypy's own
     narrowing of `node.is_initial_block_download` from an `is True`
@@ -4308,7 +4376,7 @@ def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
     """ISS 1522: more than six blocks' worth of work past the tip, once.
 
     Core's own `CheckForkWarningConditions` (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `alert_notify` fires only
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `alert_notify` fires only
     the first time the condition becomes true -- `Warnings::Set`'s own
     dedup -- and the warning clears, silently, once the active tip's own
     chainwork catches back up.
@@ -4357,8 +4425,8 @@ def test_a_long_branch_on_a_failed_block_raises_the_fork_warning(
 
     Core's own `ActivateBestChainStep` hands `InvalidChainFound` the top of
     the batch it was connecting, and `FindMostWorkChain` the candidate
-    itself (`src/validation.cpp:3287` and `:3190-3191`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): here `branch[-1]`, twelve
+    itself (`src/validation.cpp:3248` and `:3154-3155`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): here `branch[-1]`, twelve
     blocks' worth of work against a two-block tip.
     """
     calls: list[str] = []
@@ -4974,9 +5042,9 @@ def test_a_pruned_node_with_no_mib_target_never_calls_prune_up_to(
     Nothing is deleted on its own here; only `rpc.callbacks.prune_blockchain`
     does, matching `node::ApplyArgsManOptions`'s own
     `PRUNE_TARGET_MANUAL` (`node/blockmanager_args.cpp:28-29`, at
-    bitcoin/bitcoin@ca7162cde5): `FindFilesToPrune` is never called for a
-    manually-pruned chainstate, only `FindFilesToPruneManual` is, and
-    only from the RPC.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `FindFilesToPrune` is never
+    called for a manually-pruned chainstate, only `FindFilesToPruneManual`
+    is, and only from the RPC.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
     calls: list[int] = []
@@ -5052,14 +5120,14 @@ def test_a_pruned_node_stops_once_under_target(
     """`_prune_to_target` stops as soon as usage drops under the target.
 
     Core's own `FindFilesToPrune` breaks out of its own file loop "are
-    we below our target?" (`node/blockstorage.cpp:373-375`, at
-    bitcoin/bitcoin@ca7162cde5) rather than reaching every file the
-    retained-depth bound would otherwise allow; matched here by a
-    `current_usage` that answers over target for the first three calls
-    and under it from the fourth call on, so pruning takes heights 0, 1
-    and 2, genesis being the first, and no further, well short of the
-    `MIN_BLOCKS_TO_KEEP` floor this chain's own length would otherwise
-    allow.
+    we below our target?" (`node/blockstorage.cpp:389-391`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) rather than reaching
+    every file the retained-depth bound would otherwise allow; matched
+    here by a `current_usage` that answers over target for the first
+    three calls and under it from the fourth call on, so pruning takes
+    heights 0, 1 and 2, genesis being the first, and no further, well
+    short of the `MIN_BLOCKS_TO_KEEP` floor this chain's own length
+    would otherwise allow.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     usages = iter([2**40, 2**40, 2**40, 0, 0, 0, 0, 0, 0, 0, 0, 0])
@@ -5078,9 +5146,10 @@ def test_a_pruned_node_still_prunes_when_usage_exactly_equals_the_target(
     """Usage exactly at the target still prunes, matching Core's own `>=`.
 
     Core's own check is `nCurrentUsage + nBuffer >= target`
-    (`node/blockstorage.cpp:373`, at bitcoin/bitcoin@ca7162cde5) --
-    inclusive, not `>`, so a node sitting precisely on its own target
-    still prunes one more height rather than stopping short of it.
+    (`node/blockstorage.cpp:368`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) -- inclusive, not `>`, so a node sitting precisely on its
+    own target still prunes one more height rather than stopping short
+    of it.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     target_bytes = 1 * 1024 * 1024
@@ -5099,9 +5168,10 @@ def test_a_pruned_node_over_target_leaves_headers_and_the_active_chain_untouched
     `BlockIndex` keeps every header this node has ever seen regardless
     of `Config.pruned`, matching Core's own block index -- pruning
     unlinks the file on disk (`node/blockstorage.cpp`'s
-    `UnlinkPrunedFiles`, at bitcoin/bitcoin@ca7162cde5), it does not
-    drop the `CBlockIndex` entry itself. What that entry's own
-    `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` do on prune is the next test.
+    `UnlinkPrunedFiles`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    it does not drop the `CBlockIndex` entry itself. What that entry's
+    own `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` do on prune is the next
+    test.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     _always_over_target(node, monkeypatch)
@@ -5119,11 +5189,11 @@ def test_a_pruned_node_over_target_clears_downloaded_for_every_block_it_deletes(
     """Pruning clears `BlockInfo.downloaded`, matching Core's own index entry.
 
     Core's own `BlockManager::PruneOneBlockFile`
-    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5)
-    clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex`
-    entry it prunes -- "any block we prune would have to be downloaded
-    again in order to consider its chain" -- matched here by
-    `BlockInfo.downloaded`, which `prune_up_to_height` clears for the
+    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the
+    `CBlockIndex` entry it prunes -- "any block we prune would have to
+    be downloaded again in order to consider its chain" -- matched here
+    by `BlockInfo.downloaded`, which `prune_up_to_height` clears for the
     same range `block_db.prune_up_to` deletes, genesis (height 0)
     included.
     """
@@ -6007,9 +6077,10 @@ def test_a_connected_block_erases_the_orphans_it_conflicts_with(node: Node) -> N
 def test_a_delta_makes_up_a_fee_under_the_relay_floor(node: Node) -> None:
     """The floor is asked of the modified fee, and the fee paid is answered.
 
-    `bitcoind` v31.1 accepts a free transaction prioritised by the relay
-    fee, `mining_prioritisetransaction.py` asserts. A delta short of it
-    is refused with the modified fee in the details.
+    `bitcoind` accepts a free transaction prioritised by the relay
+    fee, `mining_prioritisetransaction.py` asserts at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag. A delta short of it is
+    refused with the modified fee in the details.
     """
     free = a_funded_spend(node, 0)
     floor = fee_from_vsize(free.vsize, node.config.min_relay_feerate)
@@ -6142,8 +6213,8 @@ def test_a_delta_set_while_a_transaction_is_mined_applies_on_a_reorg(
     """The transaction comes back with the delta given after its block.
 
     The delta given before is gone with the block, so one given after is
-    the whole of it, as in `bitcoind` v31.1's
-    `mining_prioritisetransaction.py`.
+    the whole of it, as in `mining_prioritisetransaction.py` at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     """
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)

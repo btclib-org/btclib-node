@@ -3,11 +3,11 @@
 What this repository holds in common with the others of the organization
 — the toolchain, the lint gate, the tool tables behind it, the workflow
 set and the branch rules — is stated once in the
-[btclib-org repository standard](https://github.com/btclib-org/.github),
-each rule with the alternative it was decided against. It binds this
+[organization's standard](https://github.com/btclib-org/.github), each
+rule with the alternative it was decided against. It binds this
 repository, so a change departing from it is a divergence, and one filed
-as an issue in that repository rather than here: a difference between two
-repositories belongs to neither of them.
+as an issue in btclib-org/.github rather than here: a difference between
+two repositories belongs to neither of them.
 
 **This file is the same in every repository of the organization up to
 its last section.** What is true of one tree only — the commands that
@@ -470,8 +470,8 @@ nor `workflow_dispatch`, so there is no way to ask about a branch at
 all -- its own header says why.
 
 Which day each of the periodic ones runs is one calendar for the whole
-organization, in [section 10 of `btclib-org/.github`'s
-README](https://github.com/btclib-org/.github/blob/main/README.md), not
+organization, in [section 10 of the organization's
+standard](https://github.com/btclib-org/.github/blob/main/README.md), not
 repeated here. The trade it makes is worth knowing before relying on it:
 a defect only a sweep can see sits on `main` until that sweep runs, at
 most a week.
@@ -544,8 +544,8 @@ here does not dirty the tree that gate reads.
 ### A release path, and what it has published
 
 `.github/workflows/release.yml` exists and section 2 of
-[btclib-org/.github's
-README](https://github.com/btclib-org/.github/blob/main/README.md)
+[the organization's
+standard](https://github.com/btclib-org/.github/blob/main/README.md)
 measures a repository's tier from that file and `pyproject.toml` alone,
 so this tree is tier 1 — the decision
 [ISS btclib-org/btclib-node#286](https://github.com/btclib-org/btclib-node/issues/286)

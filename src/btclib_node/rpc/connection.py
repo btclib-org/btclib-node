@@ -461,7 +461,7 @@ class RequestHead:
     before it.
 
     `raw` and `fields` hold the `Authorization` field, so `repr` leaves
-    them out (section 7 of the btclib-org standard, *A refusal carries
+    them out (section 7 of the organization's standard, *A refusal carries
     no secret*).
     """
 

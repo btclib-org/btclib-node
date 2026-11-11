@@ -7,7 +7,7 @@
 Core's `BlockAssembler::CreateNewBlock` with its `addChunks`
 (`src/node/miner.cpp`), the nonce search of `GenerateBlock`
 (`src/rpc/mining.cpp`) and `TestBlockValidity` (`src/validation.cpp`),
-at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. `rpc.mining` is the RPC
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag. `rpc.mining` is the RPC
 surface over them.
 
 Everything here runs on `Node`'s own thread, `ARCHITECTURE.md`'s *The
@@ -18,14 +18,10 @@ searches on an RPC thread of its own.
 
 Where this module differs from Core:
 
-- The weight limit and `_minimum_time` follow Core's `master` at
-  bitcoin/bitcoin@aef8a04966, not v31.1. The weight limit compares a
-  chunk's real weight, where v31.1's sigop-adjusted weight can leave out
-  a chunk that fits (bitcoin/bitcoin#35580,
-  btclib-org/btclib-node#1754). The sigop limit is checked on its own.
-  `_minimum_time` holds the last block of a difficulty period to the
-  time of its first, BIP54's rule, on every network
-  (bitcoin/bitcoin#35949).
+- The coinbase `script_sig` ends in an `OP_0` at every height, as
+  `CreateNewBlock` with `include_dummy_extranonce` appends it at
+  bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
+  until ISS 2258.
 - `-blockmaxweight`, `-blockmintxfee`, `-blockreservedweight` and
   `-printpriority` are not options of this node: the block limits are
   Core's defaults, and the chunks from the first under
@@ -589,8 +585,8 @@ def accept_block(node: Node, block: Block) -> str | None:
 
     A block failing `main.assert_valid_block` is refused before anything
     is stored or marked, as `ProcessNewBlock` refuses one failing
-    `CheckBlock` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag). A signet block whose solution does not verify is one.
+    `CheckBlock` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). A signet block whose solution does not verify is one.
 
     The search can end after the tip the block was built on is
     invalidated, and then its header is refused `bad-prevblk`, as Core's

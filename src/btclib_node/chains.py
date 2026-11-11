@@ -97,20 +97,20 @@ class Chain:
     name: str
     port: int
     # Core's `vSeeds` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
-    # Core's order and with its trailing dot, which makes each name
-    # fully qualified for the resolver
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
+    # follows until ISS 2368), the DNS seeds, in Core's order and with its
+    # trailing dot, which makes each name fully qualified for the resolver
     addresses: list[str]
     # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): BIP155 serialized
     # endpoints, `p2p.address.fixed_seed_addresses`'s to decode.
     fixed_seeds: bytes
     # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
-    # "Blockchain is too short for pruning." floor, below which Core
-    # refuses `pruneblockchain` outright rather than merely clamping it.
-    # Each leaf's own `__init__` below cites the line its value comes
-    # from.
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+    # `rpc.callbacks.prune_blockchain`'s own "Blockchain is too short for
+    # pruning." floor, below which Core refuses `pruneblockchain` outright
+    # rather than merely clamping it. Each leaf's own `__init__` below cites
+    # the line its value comes from.
     prune_after_height: int
     # Core's `MinBIP9WarningHeight`, the height below which no block
     # counts towards the unknown-versionbit warning
@@ -255,7 +255,8 @@ class Main(Chain):
             "seed.mainnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_MAIN
-        # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 100000
         # src/kernel/chainparams.cpp:95, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 483840
@@ -279,7 +280,8 @@ class TestNet(Chain):
             "seed.testnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TEST
-        # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:279, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:226, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 836640
@@ -305,7 +307,8 @@ class SigNet(Chain):
             "seed.signet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
-        # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:536, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:490, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0
@@ -334,7 +337,8 @@ class RegTest(Chain):
         # domain, which RFC 6761 reserves to resolve to nothing
         self.addresses = ["dummySeed.invalid."]
         self.fixed_seeds = b""
-        # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
+        # src/kernel/chainparams.cpp:625, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag:
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
         # `-fastprune`, Core's own knob for a lower regtest value in its
         # test suite, so 1000 is the one value that applies here
@@ -366,7 +370,8 @@ class TestNet4(Chain):
             "seed.testnet4.wiz.biz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TESTNET4
-        # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:386, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:333, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0

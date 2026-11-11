@@ -26,7 +26,7 @@ and silence until the window ends, then one more warning for what was
 dropped. Every record written while a location is silenced opens with
 `[*]` and a space. A debug line is never limited: Core's `LogDebug` is
 not, "because users specifying -debug are assumed to be developers or
-power users" (`src/util/log.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+power users" (`src/util/log.h`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag).
 
 `open_history_log` is what a caller with a `Config` (or a `Config` never
@@ -58,7 +58,7 @@ __all__ = [
 ]
 
 # `BCLog::RATELIMIT_MAX_BYTES` and `BCLog::RATELIMIT_WINDOW`
-# (`src/logging.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the
+# (`src/logging.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
 # bytes one source location may write per window, and the window in seconds
 RATELIMIT_MAX_BYTES = 1024 * 1024
 RATELIMIT_WINDOW = 3600
@@ -97,7 +97,7 @@ class LogRateLimiter:
     """A fixed-window byte budget per source location, as Core's.
 
     `BCLog::LogRateLimiter` (`src/logging.h` and `src/logging.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core's scheduler resets
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Core's scheduler resets
     every budget each window; this one resets at the first `advance`
     past the window's end, which every line written calls. Not
     thread-safe: `Logger` holds its own lock around every call.
@@ -155,7 +155,7 @@ class LogRateLimiter:
 def _prefix(record: logging.LogRecord) -> str:
     """Return what Core's `GetLogPrefix` puts ahead of `record`'s message.
 
-    `src/logging.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: a
+    `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: a
     debug line with a category, which `Logger.log_debug` writes, is
     `[<category>] `. A line with none is nothing at `info`, and
     `[debug] `, `[warning] ` or `[error] ` otherwise. `CRITICAL`, which
@@ -181,8 +181,8 @@ def _escape(text: str) -> str:
     r"""Escape every C0 control, DEL and C1 control as `\x` and two hex digits.
 
     It follows Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`,
-    at bitcoin/bitcoin@aa76bd266d), which escapes a newline too; the v31.1
-    tag's, at bitcoin/bitcoin@9be056a8a7, leaves it as it is. Core escapes
+    at bitcoin/bitcoin@aa76bd266d), which escapes a newline too; the v32.1
+    tag's, at bitcoin/bitcoin@f0de87f040, leaves it as it is. Core escapes
     bytes, so it writes a C1 control's UTF-8 as it is; this escapes it too,
     because a terminal reading the log can act on it, and SECURITY.md's
     *Where this node departs from Bitcoin Core* lists the departure
@@ -199,9 +199,9 @@ class _LevelFormatter(logging.Formatter):
     """A `Formatter` writing Core's time, `_prefix`, then the message.
 
     The time is `LogTimestampStr`'s (`src/logging.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) without `-logtimemicros`, which this
-    node does not have: `FormatISO8601DateTime` of the whole second, in
-    UTC, and one space.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) without `-logtimemicros`,
+    which this node does not have: `FormatISO8601DateTime` of the whole
+    second, in UTC, and one space.
     """
 
     @override
@@ -271,7 +271,7 @@ class Logger(logging.Logger):
             )
             stream = handler.stream
             assert stream is not None  # noqa: S101 -- `delay=False` opens it above
-            # `StartLogging`, at bitcoin/bitcoin@9be056a8a7
+            # `StartLogging`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag
             # (`src/logging.cpp:72`): five blank lines, written to the file
             # the moment it opens and ahead of anything this node logs,
             # marking where this execution's own record begins in a file
@@ -294,7 +294,7 @@ class Logger(logging.Logger):
         """Write a debug line under Core's `category` if `-debug` selects it.
 
         Core's `LogDebug(category, ...)` (`src/util/log.h`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), `LogAcceptCategory`
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag), `ShouldDebugLog`
         deciding by the category, which `-debugexclude` takes out.
         `logging.Logger.debug` writes a line with none, which Core never
         does.
@@ -310,7 +310,7 @@ class Logger(logging.Logger):
     def callHandlers(self, record: logging.LogRecord) -> None:
         """Write `record` unless its source location is over its budget.
 
-        `Logger::LogPrintStr_`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        `Logger::LogPrint_`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag: the line's size is charged to its source location; the
         line that exhausts the budget is written, after a warning saying
         so; later ones from that location are not, until the window
@@ -407,7 +407,7 @@ def open_history_log(  # noqa: PLR0913
     config_file_line: str = "",
     log_warnings: Sequence[str] = (),
     section_warning: str = "",
-    max_connections_warning: str = "",
+    max_connections_warnings: Sequence[str] = (),
     debug_warnings: Sequence[str] = (),
     config_args: Sequence[str] = (),
     rate_limit: bool = True,
@@ -419,9 +419,9 @@ def open_history_log(  # noqa: PLR0913
     (all at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `log_warnings`,
     buffered while the settings were read, then the version line, then
     `section_warning` -- the one warning about a section naming no
-    chain, empty where there is none -- then `max_connections_warning`
-    -- the warning that `-maxconnections` was capped, empty where it was
-    not -- then `debug_warnings`, then `StartLogging`'s own "Default data
+    chain, empty where there is none -- then `max_connections_warnings`
+    -- the warnings that `-maxconnections` was capped or lowered -- then
+    `debug_warnings`, then `StartLogging`'s own "Default data
     directory" and "Using data directory", then `config_file_line`, then
     `config_args`, `LogArgs`'s own "Config file arg:"/"Command-line arg:"
     lines. Without `rate_limit` it ends with `AppInitMain`'s "Log rate
@@ -444,8 +444,8 @@ def open_history_log(  # noqa: PLR0913
     logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
     if section_warning:
         logger.warning(section_warning)
-    if max_connections_warning:
-        logger.warning(max_connections_warning)
+    for warning in max_connections_warnings:
+        logger.warning(warning)
     for warning in debug_warnings:
         logger.warning(warning)
     logger.info("Default data directory %s", default_data_dir())
