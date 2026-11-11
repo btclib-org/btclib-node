@@ -473,9 +473,12 @@ class _Production:
         input's.
 
         `from_script` refuses a key off the curve with ecc's `EccException`,
-        not btclib's. Either refusal leaves the input unsigned, as Core
-        leaves one it cannot satisfy (`src/script/sign.cpp:788-791`, at
-        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        not btclib's, and the input is left unsigned. Core reads any key of
+        33 bytes starting 02 or 03 there (`WshSatisfier::FromPKBytes`,
+        `src/script/sign.cpp:489-493`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag), so it still signs a script that never needs that key's
+        signature, such as `or_b(pk(A),s:pk(X))`:
+        ISS btclib-org/bip32-descriptors#292.
         """
         found = ((key_id, pair[0]) for key_id, pair in self.sigdata.signatures.items())
         key_hashes: dict[Octets, Octets] = dict(

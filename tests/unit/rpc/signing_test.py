@@ -163,6 +163,8 @@ THREE = multisig(2, PUB_A, PUB_B, PUB_C)
 FIFTEEN = multisig(15, *(pub(k) for k in range(21, 36)))
 # what a miniscript wants, `and_v(v:pk(A),pk(B))`
 MINISCRIPT = b"\x21" + PUB_A + b"\xad\x21" + PUB_B + b"\xac"
+# a compressed key of x = 5, which no point of the curve has
+OFF_CURVE = b"\x02" + (5).to_bytes(32, "big")
 ANCHOR = b"\x51\x02\x4e\x73"
 
 
@@ -964,16 +966,15 @@ def test_an_unknown_output_is_unsigned_with_its_own_error() -> None:
 def test_a_miniscript_with_a_key_off_the_curve_leaves_the_next_input_signed() -> None:
     """The input is unsigned with its own error, and the next one is signed.
 
-    `and_v(v:pk(A),pk(X))`, `X` having no point on the curve. Core reads
-    any key of 33 bytes there (`WshSatisfier::FromPKBytes`,
+    `and_v(v:pk(A),pk(X))`, `X` being `OFF_CURVE`. Core reads any key of
+    33 bytes starting 02 or 03 there (`WshSatisfier::FromPKBytes`,
     `src/script/sign.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     and cannot satisfy `pk(X)`: its error is the `miniscript-one-key`
     vector's.
     """
-    # 5**3 + 7 is no square modulo p, so no point has x = 5
+    # 5**3 + 7 is no square modulo p
     assert pow(5**3 + 7, (secp256k1.p - 1) // 2, secp256k1.p) != 1
-    off_curve = b"\x02" + (5).to_bytes(32, "big")
-    script = b"\x21" + PUB_A + b"\xad\x21" + off_curve + b"\xac"
+    script = b"\x21" + PUB_A + b"\xad\x21" + OFF_CURVE + b"\xac"
     raw = hex_of(a_spend((FUNDING, 0), (FUNDING, 1), values=(2 * AMOUNT - 1000,)))
     prevtxs = [
         prevtx(p2wsh(script), {"witnessScript": script.hex()}),
@@ -986,6 +987,31 @@ def test_a_miniscript_with_a_key_off_the_curve_leaves_the_next_input_signed() ->
     signed = Tx.parse(bytes.fromhex(result["hex"]))
     prevouts = [TxOut(AMOUNT, p2wsh(script)), TxOut(AMOUNT, WPKH_A)]
     verify_input(prevouts, signed, 1, STANDARD_FLAGS)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_unsigned(
+    *, nested: bool
+) -> None:
+    """`or_b(pk(A),s:pk(X))`, `X` being `OFF_CURVE`, is left unsigned.
+
+    This departs from Core, which signs it with A alone, in wsh and in
+    sh(wsh): bip32-descriptors' `from_script` refuses `X`, which Core
+    reads (`_Production.satisfy_miniscript`'s docstring,
+    ISS btclib-org/bip32-descriptors#292). The test pins the departure, so
+    it fails once bip32-descriptors reads such a key.
+    """
+    script = b"\x21" + PUB_A + b"\xac\x7c\x21" + OFF_CURVE + b"\xac\x9b"
+    extra = {"witnessScript": script.hex()}
+    spent = p2wsh(script)
+    if nested:
+        extra["redeemScript"] = spent.hex()
+        spent = p2sh(spent)
+    result = call("signrawtransactionwithkey", [RAW, [KA], [prevtx(spent, extra)]])
+    assert result["complete"] is False
+    assert [e["error"] for e in result["errors"]] == [
+        "Unable to sign input, invalid stack size (possibly missing key)"
+    ]
 
 
 def test_a_redeem_script_over_65535_bytes_is_pushed_with_pushdata4() -> None:
