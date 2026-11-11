@@ -302,7 +302,7 @@ def get_blockchain_info(
     ("warnings"))` (src/rpc/blockchain.cpp:1500, same sha) -- always the
     array form: this node has no `-deprecatedrpc` of its own, so the
     single-string form `use_deprecated=true` answers with is never reachable
-    here. Empty, ordinarily: `notify.Warnings`'s docstring lists which check
+    here. Empty, ordinarily; `notify.Warnings`'s docstring lists which check
     sets each id.
 
     Absent, each for its own reason rather than by oversight:
