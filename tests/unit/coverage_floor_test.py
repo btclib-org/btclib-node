@@ -8,20 +8,23 @@ The run that measures the suite is the whole suite, which is the one
 run the floor is never lowered on -- so the decision is a function, and
 this is what asks it the questions the command line otherwise would.
 
-The guard beside the floor is driven the same way, with one exception:
-the run it refuses cannot be the run reporting on it either, so the
-case it exists for is taken in a subprocess started from `tests/`.
+The guards beside the floor are driven the same way. The configuration
+guard has one exception: the run it refuses cannot be the run reporting
+on it either, so the case it exists for is taken in a subprocess started
+from `tests/`.
 """
 
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+import tests.conftest
 from tests.conftest import (
     CoverageConfiguration,
     asks_for_everything,
@@ -29,6 +32,7 @@ from tests.conftest import (
     coverage_configuration,
     pytest_configure,
     relax_coverage_floor,
+    sources_out_of_reach,
 )
 
 if TYPE_CHECKING:
@@ -43,6 +47,15 @@ ROOT = Path(__file__).parents[2]
 # what pytest reads its own configuration from here, which the guard
 # compares against what coverage read and the message names
 INIPATH = ROOT / "pyproject.toml"
+
+# what `[tool.coverage.run]` source names, read rather than restated
+SOURCE: list[str] = tomllib.loads(INIPATH.read_text(encoding="utf-8"))["tool"][
+    "coverage"
+]["run"]["source"]
+
+# the entries of that list which are paths and no module name, so that
+# coverage can only read them as directories: `.github/scripts`
+DIRECTORIES = [entry for entry in SOURCE if "/" in entry]
 
 # every way of asking for less than the suite that the function reads
 NARROWINGS = [
@@ -64,22 +77,29 @@ NARROWINGS = [
 WHOLE_SUITE = [[], TESTPATHS, ["tests"], ["."], ["./tests"], ["tests/"]]
 
 
-def a_cov_config(config_file: str | None) -> CoverageConfiguration:
-    """Build what the guard reads of coverage's own configuration.
+def a_cov_config(
+    config_file: str | None, source: list[str] | None = None
+) -> CoverageConfiguration:
+    """Build what the guards read of coverage's own configuration.
 
-    One attribute is the whole of it: the file coverage took its
-    settings from, `None` where it took them from none.
+    What it holds is the file coverage took its settings from, `None`
+    where it took them from none, and the `source` list it read there.
     """
-    return cast("CoverageConfiguration", SimpleNamespace(config_file=config_file))
+    return cast(
+        "CoverageConfiguration",
+        SimpleNamespace(config_file=config_file, source=source),
+    )
 
 
-def a_controller(config_file: str | None) -> object:
+def a_controller(config_file: str | None, source: list[str] | None = None) -> object:
     """Build the controller pytest-cov leaves on its plugin.
 
     A stand-in reachable by the attribute path `coverage_configuration`
     walks, and nothing else of one.
     """
-    return SimpleNamespace(cov=SimpleNamespace(config=a_cov_config(config_file)))
+    return SimpleNamespace(
+        cov=SimpleNamespace(config=a_cov_config(config_file, source))
+    )
 
 
 def a_config(
@@ -97,6 +117,7 @@ def a_config(
     collect_only: bool = False,
     measuring: bool = True,
     cov_config_file: str | None = str(INIPATH),
+    source: list[str] | None = None,
     inipath: Path | None = INIPATH,
     rootpath: Path | None = None,
 ) -> tuple[Any, SimpleNamespace]:
@@ -114,7 +135,7 @@ def a_config(
     """
     known_args_namespace = SimpleNamespace(cov_fail_under=FLOOR)
     plugin = SimpleNamespace(
-        cov_controller=a_controller(cov_config_file) if measuring else None
+        cov_controller=a_controller(cov_config_file, source) if measuring else None
     )
     return SimpleNamespace(
         option=SimpleNamespace(
@@ -491,7 +512,9 @@ def test_the_guards_own_names_are_ones_pytest_fills_in(
     assert not absent, f"pytest no longer fills in {absent}"
 
 
-def test_the_hook_refuses_a_run_that_cannot_see_its_floor() -> None:
+def test_the_hook_refuses_a_run_that_cannot_see_its_floor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """`pytest_configure` raises, and each path is in its own clause.
 
     The function above decides; this is what wires it to a run.
@@ -503,22 +526,35 @@ def test_the_hook_refuses_a_run_that_cannot_see_its_floor() -> None:
     a message naming the directory the run started in where it means
     the root sends a reader back to the run that is refused.
     """
-    root = Path("/a/rootdir/that/is/not/here")
+    monkeypatch.chdir(tmp_path)
     inipath = Path("/a/configuration/that/is/not/here/pyproject.toml")
-    config, _ = a_config(cov_config_file=None, inipath=inipath, rootpath=root)
+    config, _ = a_config(cov_config_file=None, inipath=inipath)
 
     with pytest.raises(pytest.UsageError) as raised:
         pytest_configure(config)
 
     message = str(raised.value)
-    assert f"the directory the run started in, {Path.cwd()}, and pytest" in message
-    assert f"read {inipath}." in message
-    assert f"Run from {root};" in message
-    # --cov-config is named with what it does not restore and never on
-    # its own: a reader sent to it alone gets a run held to the floor
-    # over a different set of files, which is what this message opens by
-    # naming
-    assert "--cov-config restores the floor and not the file set" in message
+    assert f"only in the directory the run started in, {tmp_path}, and" in message
+    assert f"pytest read {inipath}." in message
+    # no --cov-config is offered: in a checkout, from anywhere but the
+    # tree, it leaves `.github/scripts` unmeasured, which
+    # `sources_out_of_reach` refuses
+    assert message.endswith(f"Run from {ROOT}.")
+
+
+def test_the_refusal_names_the_tree_whatever_the_rootdir(tmp_path: Path) -> None:
+    """`-c` moves the rootdir, and the message still names this tree.
+
+    `-c other.ini` makes the rootdir the directory holding `other.ini`,
+    which is no place to run this suite from. The tree holding
+    `tests/conftest.py` is, and no flag moves it.
+    """
+    config, _ = a_config(cov_config_file=None, rootpath=tmp_path)
+
+    with pytest.raises(pytest.UsageError) as raised:
+        pytest_configure(config)
+
+    assert str(raised.value).endswith(f"Run from {ROOT}.")
 
 
 def test_a_selection_does_not_excuse_the_configuration_missing() -> None:
@@ -587,3 +623,192 @@ def test_a_run_started_from_tests_says_it_is_ungated(tmp_path: Path) -> None:
     # own output is, so the assertion is on the stream that carries it
     assert "coverage read no configuration" in completed.stderr
     assert str(ROOT) in completed.stderr
+
+
+def _laid_out(root: Path) -> Path:
+    """Lay out `.github/scripts` and `tests/` under `root`, and return it.
+
+    A tree of its own rather than this one: the sdist runs this suite and
+    ships no `.github`.
+    """
+    for directory in DIRECTORIES:
+        (root / directory).mkdir(parents=True)
+    (root / "tests").mkdir()
+    return root
+
+
+def test_every_source_directory_is_in_reach_from_the_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """From the tree, where the gate runs, the guard is silent."""
+    root = _laid_out(tmp_path)
+    monkeypatch.chdir(root)
+    measuring = a_cov_config(str(root / "pyproject.toml"), SOURCE)
+    assert (
+        sources_out_of_reach(
+            measuring, root, None, asked_for_help=False, collect_only=False
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("config_dir", "rootdir"),
+    [
+        ("tree", "tree"),
+        ("tree", "tree/tests"),
+        ("elsewhere", "tree"),
+        ("elsewhere", "tree/tests"),
+        ("elsewhere", "elsewhere"),
+    ],
+    ids=[
+        "--cov-config=../pyproject.toml",
+        "--rootdir=.",
+        "a copy outside the tree",
+        "a copy outside the tree, --rootdir=.",
+        "a copy outside the tree, -c other.ini beside it",
+    ],
+)
+def test_a_run_from_tests_leaves_the_scripts_out_of_reach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_dir: str, rootdir: str
+) -> None:
+    """From `tests/`, `.github/scripts` is neither a directory nor a module.
+
+    `tests` and the package are not named: from `tests/` coverage reads
+    them as module names, and measures them as such.
+
+    Each case moves the file coverage reads, the rootdir, or both, and
+    none of them moves the tree holding `tests/conftest.py`, which is
+    where the entry is looked for and where the run is sent. The tree is
+    stood in for by one laid out here, as `TREE` is what the hook reads.
+    """
+    root = _laid_out(tmp_path / "tree")
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.setattr(tests.conftest, "TREE", root)
+    monkeypatch.chdir(root / "tests")
+    config, known = a_config(
+        cov_config_file=str(tmp_path / config_dir / "pyproject.toml"),
+        source=SOURCE,
+        rootpath=tmp_path / rootdir,
+    )
+
+    with pytest.raises(pytest.UsageError) as raised:
+        pytest_configure(config)
+
+    assert DIRECTORIES, "source names no directory for this case to drop"
+    unmeasured = ", ".join(DIRECTORIES)
+    assert str(raised.value).startswith(f"coverage would not measure {unmeasured}:")
+    assert f"started in, {root / 'tests'}," in str(raised.value)
+    assert str(raised.value).endswith(f"Run from {root}.")
+    assert known.cov_fail_under == FLOOR
+
+
+def test_a_tree_without_the_directory_is_not_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An sdist ships no `.github`, and its run from `tests/` stands.
+
+    There the entry is no directory under the tree either, so it has
+    nothing to measure and nothing is lost.
+    """
+    (tmp_path / "tests").mkdir()
+    monkeypatch.chdir(tmp_path / "tests")
+    measuring = a_cov_config(str(tmp_path / "pyproject.toml"), SOURCE)
+    assert (
+        sources_out_of_reach(
+            measuring, tmp_path, None, asked_for_help=False, collect_only=False
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("with_tests", [False, True], ids=["scripts", "both"])
+def test_another_checkout_s_directories_are_not_the_tree_s(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_tests: bool,  # noqa: FBT001
+) -> None:
+    """From another checkout, coverage would measure that checkout's.
+
+    There each entry is a directory, so coverage measures it, and the
+    floor passes without the tree's own. Each entry the other checkout
+    holds is refused.
+    """
+    root = _laid_out(tmp_path / "tree")
+    elsewhere = tmp_path / "elsewhere"
+    for directory in DIRECTORIES:
+        (elsewhere / directory).mkdir(parents=True)
+    if with_tests:
+        (elsewhere / "tests").mkdir()
+    monkeypatch.chdir(elsewhere)
+    measuring = a_cov_config(str(root / "pyproject.toml"), SOURCE)
+    expected = ["tests", *DIRECTORIES] if with_tests else DIRECTORIES
+    unmeasured = sources_out_of_reach(
+        measuring, root, None, asked_for_help=False, collect_only=False
+    )
+    assert sorted(unmeasured) == sorted(expected)
+
+
+def test_the_tree_spelled_another_way_is_still_the_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The directories are compared, not the paths that name them."""
+    root = _laid_out(tmp_path)
+    monkeypatch.chdir(root)
+    measuring = a_cov_config(str(root / "pyproject.toml"), SOURCE)
+    spelled = root / "tests" / ".."
+    assert (
+        sources_out_of_reach(
+            measuring, spelled, None, asked_for_help=False, collect_only=False
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("asked", "asked_for_help", "collect_only"),
+    [(0, False, False), (None, True, False), (None, False, True)],
+    ids=["--cov-fail-under", "--help", "--collect-only"],
+)
+def test_the_source_guard_leaves_alone_what_the_other_one_does(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    asked: float | None,
+    asked_for_help: bool,  # noqa: FBT001
+    collect_only: bool,  # noqa: FBT001
+) -> None:
+    """The runs `held_to_a_floor` excuses are excused here too."""
+    root = _laid_out(tmp_path)
+    monkeypatch.chdir(root / "tests")
+    measuring = a_cov_config(str(root / "pyproject.toml"), SOURCE)
+    excused = sources_out_of_reach(
+        measuring,
+        root,
+        asked,
+        asked_for_help=asked_for_help,
+        collect_only=collect_only,
+    )
+    assert excused == []
+    assert (
+        sources_out_of_reach(None, root, None, asked_for_help=False, collect_only=False)
+        == []
+    )
+
+
+def test_the_tree_is_the_one_holding_the_conftest() -> None:
+    """`TREE` is this tree, the one the cases above stand in for."""
+    assert tests.conftest.TREE == ROOT
+
+
+def test_the_source_guard_reads_coverage_s_own_list(
+    pytestconfig: pytest.Config,
+) -> None:
+    """`source` is where coverage keeps what `pyproject.toml` names.
+
+    The cases of `sources_out_of_reach` above hand it a stand-in; this
+    one reads the attribute off coverage's own configuration for this
+    run. A run measuring nothing, `--no-cov`, has no configuration to
+    read.
+    """
+    measuring = coverage_configuration(pytestconfig)
+    assert measuring is None or measuring.source == SOURCE
