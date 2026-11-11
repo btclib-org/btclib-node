@@ -788,7 +788,8 @@ def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
     """Record that the peer wants `addrv2` gossip rather than `addr`.
 
     Ignored ahead of `version`, as Core ignores any message there
-    (`src/net_processing.cpp:4074`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    (`src/net_processing.cpp:4074`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
     """
     if conn.version_message is None:
         return
