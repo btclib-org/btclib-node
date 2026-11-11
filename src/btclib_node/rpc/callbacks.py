@@ -304,11 +304,8 @@ def get_blockchain_info(
     ("warnings"))` (src/rpc/blockchain.cpp:1500, same sha) -- always the
     array form: this node has no `-deprecatedrpc` of its own, so the
     single-string form `use_deprecated=true` answers with is never reachable
-    here. Empty, ordinarily: it takes an invalid chain with more work than
-    this node's own tip (`main.check_fork_warning_conditions`,
-    btclib-org/btclib-node#1522) or a version bit no deployment uses
-    reaching its threshold (`versionbits.check_unknown_activations`,
-    btclib-org/btclib-node#1475) to set anything.
+    here. Empty, ordinarily; `notify.Warnings`'s docstring lists which check
+    sets each id.
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
