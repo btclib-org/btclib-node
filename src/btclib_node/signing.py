@@ -39,6 +39,7 @@ from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
 from ecc import dsa, ssa
 from ecc.curves import bytes_from_prv_key_int
+from ecc.exceptions import EccException
 
 from btclib_node.interpreter import STANDARD_FLAGS
 
@@ -470,6 +471,11 @@ class _Production:
         signs first and `satisfy` takes the signatures the best non-malleable
         satisfaction needs, its lock times being the transaction's and the
         input's.
+
+        `from_script` refuses a key off the curve with ecc's `EccException`,
+        not btclib's. Either refusal leaves the input unsigned, as Core
+        leaves one it cannot satisfy (`src/script/sign.cpp:788-791`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         found = ((key_id, pair[0]) for key_id, pair in self.sigdata.signatures.items())
         key_hashes: dict[Octets, Octets] = dict(
@@ -477,7 +483,7 @@ class _Production:
         )
         try:
             miniscript = from_script(witness_script, "P2WSH", key_hashes)
-        except BTClibException:
+        except BTClibException, EccException:
             return False, []
         signatures: dict[Octets, Octets] = {}
         for key in miniscript.key_expressions:
