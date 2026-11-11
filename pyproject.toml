@@ -647,6 +647,9 @@ source-exclude = [
 # that list has no say over what the backend packs, and
 # [tool.uv.build-backend] above is where the omission is decided
 git-only = [
+    # the bestpractices.dev answers, which nothing installed from the
+    # sdist reads
+    ".bestpractices.json",
     ".claude/",
     # the atheris harnesses and the seeds they start from, read by
     # fuzz.yml and by tests/fuzz_corpus_test.py and by nothing a package
