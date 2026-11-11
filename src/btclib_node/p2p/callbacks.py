@@ -808,12 +808,9 @@ def feature(node: Node, msg: bytes, conn: Connection) -> None:
     nothing after them. One ahead of `version` is ignored here, and
     `p2p.main` drops a peer that sends one after `verack`, as Core does.
 
-    Over v2, a `feature` sent by its BIP324 short id, 37, does not reach
-    this handler: the btclib this tree pins refuses that id, so
-    `Connection.parse_messages` counts the message, drops it and keeps
-    the peer, after `verack` too, where Core reads it as `feature`
-    (btclib-org/btclib-node#2302). One sent under its full name reaches
-    it as over v1.
+    Over v2, a `feature` reaches it by its BIP324 short id, 37, or by its
+    full name, as Core's `V2_MESSAGE_IDS` (`src/net.cpp`, at the same tag)
+    reads both.
     """
     if conn.version_message is None:
         return

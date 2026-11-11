@@ -278,8 +278,9 @@ def test_a_refused_header_keeps_its_detail_in_the_log_line(
 ) -> None:
     """ISS 1600: the refusal is Core's word alone; the log has what follows it.
 
-    The two targets are the detail Core's `bad-diffbits` leaves out, and
-    the refusal's `__cause__` carries them.
+    The required target is the detail Core's `bad-diffbits` leaves out,
+    and the refusal's `__cause__` carries it in btclib's words, which
+    name no value the header holds (btclib-org/btclib#3005).
     """
     block_index = a_chainstate(None).block_index
     genesis = RegTest().genesis
@@ -296,7 +297,7 @@ def test_a_refused_header_keeps_its_detail_in_the_log_line(
 
     with pytest.raises(MisbehavingError) as refusal:
         block_index.add_headers([header])
-    detail = "proof-of-work target not the required one: 207ffffe instead of 207fffff"
+    detail = "proof-of-work target not the required one: 207fffff expected"
     assert str(refusal.value.__cause__) == detail
     assert f"bad-diffbits ({detail})" in capsys.readouterr().err
 

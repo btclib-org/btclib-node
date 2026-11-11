@@ -4760,7 +4760,7 @@ def test_a_record_missing_its_work_under_another_hash_is_refused_for_its_work() 
     )
     (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
     assert error.startswith(
-        f"Cannot load block from disk (invalid proof-of-work: {stored.hex()} > "
+        "Cannot load block from disk (invalid proof-of-work: hash above the target)"
     )
 
 
@@ -4828,7 +4828,7 @@ def test_a_forged_signet_record_missing_its_work_is_refused_for_its_work() -> No
     )
     node.chain = node.config.chain = SigNet()
     (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
-    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "invalid proof-of-work: hash above the target" in error
     assert "bad-signet-blksig" not in error
 
 
@@ -5494,7 +5494,7 @@ def test_getblocktxn_refuses_a_record_whose_header_misses_its_work() -> None:
         block_db=a_raw_store(raw),
     )
     error = a_refused_getblocktxn(node, wanted)
-    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "invalid proof-of-work: hash above the target" in error
 
 
 def test_getblocktxn_refuses_a_signet_record_with_a_forged_solution() -> None:
