@@ -19,6 +19,7 @@ them.
 """
 
 import os
+import sys
 
 # A real import and not TYPE_CHECKING-only like Mapping below, despite
 # costing nothing more at runtime than that one would: Config.__init__
@@ -34,6 +35,7 @@ import os
 # rather than trading the tenth's placeholder for an eleventh later.
 # btclib-org/btclib-node#1519
 from collections.abc import Collection, Sequence  # noqa: TC003
+from contextlib import suppress
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
@@ -72,6 +74,9 @@ __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
+    "DEFAULT_TX_SEND_RATE",
+    "MAX_ADDNODE_CONNECTIONS",
+    "MAX_PEER_CONNECTIONS",
     "BindAddress",
     "Config",
     "WhitebindAddress",
@@ -109,13 +114,75 @@ DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # `DEFAULT_MAX_PEER_CONNECTIONS` and `DEFAULT_FULL_RELAY_INBOUND_PCT`
 # (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the
 # automatic connections, and the percentage of the inbound slots
-# transaction-relaying peers may hold.
+# transaction-relaying peers may hold. `MAX_PEER_CONNECTIONS` (same file
+# and sha) is the most automatic connections `-maxconnections` gives.
 DEFAULT_MAX_PEER_CONNECTIONS = 200
+MAX_PEER_CONNECTIONS = 2000
 DEFAULT_FULL_RELAY_INBOUND_PCT = 50
+# Core's own `-txsendrate` default, `DEFAULT_TX_SEND_RATE`
+# (`src/net_processing.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# the transactions a second announced to inbound peers.
+DEFAULT_TX_SEND_RATE = 14
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most RPC clients connected at once.
 DEFAULT_MAX_HTTP_CONNECTIONS = 16
+# Core's own `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most `-addnode` peers
+# connected at once, outside `-maxconnections`.
+MAX_ADDNODE_CONNECTIONS = 8
+# The descriptors Core reserves ahead of any connection: `MIN_CORE_FDS`
+# (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+# `MIN_LEVELDB_FDS` for the database plus `NUM_FDS_MESSAGE_CAPTURE`
+# (`src/net.h`, same sha), one. `MIN_LEVELDB_FDS` is 0 on Windows, where
+# Core's database takes no descriptor, and 150 elsewhere.
+_NUM_FDS_MESSAGE_CAPTURE = 1
+# `std::numeric_limits<int>::max()`: the most descriptors Core counts
+_INT_MAX = 2**31 - 1
+
+if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+    _MIN_LEVELDB_FDS = 0
+
+    def _raise_file_descriptor_limit(min_fd: int) -> int:  # noqa: ARG001
+        """Answer 2048, as Core's `RaiseFileDescriptorLimit` does on Windows.
+
+        `src/util/fs_helpers.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag: Windows has no descriptor limit to read or raise.
+        """
+        return 2048
+
+else:
+    import resource
+
+    _MIN_LEVELDB_FDS = 150
+
+    def _raise_file_descriptor_limit(min_fd: int) -> int:
+        """Raise the soft `RLIMIT_NOFILE` to `min_fd`, and answer the limit.
+
+        Core's `RaiseFileDescriptorLimit` (`src/util/fs_helpers.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): the soft limit is raised
+        no further than the hard one, a raise the system refuses is ignored,
+        an unlimited limit, or one of at least `_INT_MAX`, answers
+        `_INT_MAX`, and a limit that cannot be read answers `min_fd`.
+        """
+        try:
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        except OSError:
+            return min_fd
+        if soft != resource.RLIM_INFINITY and soft < min_fd:
+            raised = min_fd
+            if hard != resource.RLIM_INFINITY and raised > hard:
+                raised = hard
+            if raised != soft:
+                with suppress(OSError, ValueError):
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (raised, hard))
+                soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        if soft == resource.RLIM_INFINITY or soft >= _INT_MAX:
+            return _INT_MAX
+        return soft
+
+
+_MIN_CORE_FDS = _MIN_LEVELDB_FDS + _NUM_FDS_MESSAGE_CAPTURE
 # A named module-level singleton rather than `Main()` written straight
 # into __init__'s own signature below: a call there is made once, at
 # import time, and B008 is what a reader would otherwise have to notice
@@ -360,19 +427,127 @@ def _refuse_bind_without_listen(
         raise ValueError(err_msg)
 
 
-def _refuse_rpcmaxconnections(rpcmaxconnections: int) -> None:
-    """Refuse a `-rpcmaxconnections` below one, in Core's words.
+def _cap_max_connections(max_connections: int) -> tuple[int, str]:
+    """Cap `max_connections` at `MAX_PEER_CONNECTIONS`, warning where it does.
 
-    `AppInitParameterInteraction` refuses it whatever `-server` says
-    (`src/init.cpp:1080-1082`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag).
+    `AppInitParameterInteraction` (`src/init.cpp:1063-1071`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) in its order: `GetArg<int>`
+    throws "JSON integer out of range" for a `settings.json` number past
+    a 32-bit `int`, which `cli` passes on unread for this point; then a
+    negative value is refused; then the cap comes with an `InitWarning`,
+    which `noui_ThreadSafeMessageBox` prints after `Warning: ` on stderr
+    and logs. The warning is `""` where nothing is capped.
     """
+    if not -(2**31) <= max_connections < 2**31:
+        err_msg = "JSON integer out of range"
+        raise ValueError(err_msg)
+    if max_connections < 0:
+        # Core's own wording, fatal there too
+        err_msg = "-maxconnections must be greater or equal than zero"
+        raise ValueError(err_msg)
+    if max_connections <= MAX_PEER_CONNECTIONS:
+        return max_connections, ""
+    warning = (
+        f"Reducing -maxconnections from {max_connections} to {MAX_PEER_CONNECTIONS}."
+    )
+    sys.stderr.write(f"Warning: {warning}\n")
+    return MAX_PEER_CONNECTIONS, warning
+
+
+def _refuse_rpcmaxconnections(rpcmaxconnections: float) -> int:
+    """Return `rpcmaxconnections`, refusing it as Core does.
+
+    `AppInitParameterInteraction` refuses one below one whatever `-server`
+    says (`src/init.cpp:1080-1082`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `GetArg<int>` throws "JSON integer out of range" first,
+    for a `settings.json` number that is not an integer or is past a
+    32-bit `int`, which `cli` hands over for this point.
+    """
+    if (
+        not isinstance(rpcmaxconnections, int)
+        or not -(2**31) <= rpcmaxconnections < 2**31
+    ):
+        err_msg = "JSON integer out of range"
+        raise ValueError(err_msg)
     if rpcmaxconnections < 1:
         err_msg = (
             "-rpcmaxconnections must be greater than zero. "
             "Use -server=0 to disable HTTP."
         )
         raise ValueError(err_msg)
+    return rpcmaxconnections
+
+
+def _fit_file_descriptors(
+    max_connections: int,
+    *,
+    p2p_binds: int,
+    rpc_binds: int,
+    rpcmaxconnections: int,
+    server: bool,
+) -> tuple[int, str]:
+    """Lower `max_connections` to the descriptors left, warning where it does.
+
+    `AppInitParameterInteraction` (`src/init.cpp:1056-1136`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) in its order. It reserves
+    `_MIN_CORE_FDS`, `MAX_ADDNODE_CONNECTIONS`, one descriptor for each
+    `-bind` and `-whitebind` (at least one), and under `-server` one for
+    each `-rpcbind` (at least two) and one for each RPC client
+    `-rpcmaxconnections` allows. It refuses a total past `_INT_MAX`,
+    raises the limit to the total, and refuses a limit below what it
+    reserves, or below the total where, under `-server`,
+    `-rpcmaxconnections` is above its default. The warning is an
+    `InitWarning`, printed after `Warning: ` on stderr, and `""` where
+    nothing is lowered.
+
+    Off Linux, Core polls its sockets with `select` and also lowers the
+    limit to `FD_SETSIZE` (`src/compat/compat.h`, same sha), which it sets
+    to 1024 on Windows. This node does not, because its `asyncio` loops do
+    not use `select` where anything else is offered. On Windows they use
+    I/O completion ports.
+    Elsewhere `selectors.DefaultSelector` takes `kqueue`, `epoll`,
+    `devpoll` or `poll` first, and none of those has that ceiling.
+    """
+    num_rpc_bind = max(rpc_binds, 2) if server else 0
+    rpc_max = rpcmaxconnections if server else 0
+    min_required = (
+        _MIN_CORE_FDS
+        + MAX_ADDNODE_CONNECTIONS
+        + max(p2p_binds, 1)
+        + num_rpc_bind
+        + rpc_max
+    )
+    total = min_required + max_connections
+    if total > _INT_MAX:
+        err_msg = (
+            "Too many file descriptors requested. Try lower values for "
+            "-rpcmaxconnections or -maxconnections, or fewer settings of "
+            "-rpcbind, -bind and -whitebind"
+        )
+        raise ValueError(err_msg)
+    available = _raise_file_descriptor_limit(total)
+    if available < min_required:
+        err_msg = (
+            "Not enough file descriptors available. "
+            f"{available} available, {min_required} required."
+        )
+        raise ValueError(err_msg)
+    if available < total and rpc_max > DEFAULT_MAX_HTTP_CONNECTIONS:
+        err_msg = (
+            "Not enough file descriptors available. Try reducing "
+            "-rpcmaxconnections or using the default value of "
+            f"{DEFAULT_MAX_HTTP_CONNECTIONS}"
+        )
+        raise ValueError(err_msg)
+    fitted = min(available - min_required, max_connections)
+    if fitted == max_connections:
+        return max_connections, ""
+    warning = (
+        f"Reducing -maxconnections from {max_connections} to {fitted}, "
+        "because of system limitations."
+    )
+    sys.stderr.write(f"Warning: {warning}\n")
+    return fitted, warning
 
 
 def _refuse_reindex_chainstate_when_pruned(
@@ -660,7 +835,9 @@ class Config:
     # version line; `""` where no section is unrecognised
     section_warning: str
     # `SetLoggingCategories`'s warnings, one per deprecated category it
-    # reads (`cli._resolve_debug`), logged after `section_warning`
+    # reads (`cli._resolve_debug`), then one per `-test` value
+    # `AppInitParameterInteraction` does not know (`cli._check_test_options`),
+    # logged after `max_connections_warnings`
     debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
@@ -727,6 +904,10 @@ class Config:
     # Core's own `-acceptstalefeeestimates`: read `block_policy_estimates.dat`
     # however old it is, on regtest alone (`FeeEstimator`)
     accept_stale_fee_estimates: bool
+    # Core's `-test=addrman` and `-checkaddrman`, the `deterministic` and
+    # `consistency_check_ratio` of `PeerDB`
+    deterministic_addrman: bool
+    check_addrman: int
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
@@ -816,25 +997,27 @@ class Config:
     # Core's own `-externalip` values, each an address `lookup_service`
     # reads without a lookup: `cli` resolves a name before it gets here.
     # `P2pManager` records each as a local address, as `AddLocal` at
-    # `LOCAL_MANUAL` does (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag, which this node follows until ISS 2249).
+    # `LOCAL_MANUAL` does (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag), even on a network this node does not reach.
     externalip: tuple[str, ...]
     # Core's own `-discover`: whether `P2pManager` records this
-    # machine's own interface addresses at all (`p2p.netif.local_addresses`,
-    # btclib-org/btclib-node#1238). `InitParameterInteraction`
-    # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag, which this node follows until ISS 2249) soft-sets it off under
-    # `-proxy`, `-listen=0` or `-externalip`; this node has no `-proxy`,
-    # so `-listen` and `externalip` are the conditions `__init__` reads,
-    # `-listen` off `self.listen` rather than off the `listen` parameter,
-    # so that an explicit `-listen`'s own soft-set (above) is what this
-    # one sees. `None` here is the sentinel `dnsseed` above already uses
-    # for a soft default an explicit value wins over. Discovery runs
-    # whether or not `_bind` itself goes on to succeed, as Core's
-    # `Discover()` (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain`
-    # calls it off `bind_on_any` (`src/init.cpp:2163`, same sha), never
-    # off `fListen`, so `P2pManager` calls it unless `bind` or
-    # `whitebind` above is given.
+    # machine's own interface addresses at all
+    # (`p2p.netif.local_addresses`, btclib-org/btclib-node#1238).
+    # `InitParameterInteraction` (`src/init.cpp:816-849`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) soft-sets it off
+    # under `-proxy`, `-listen=0` or `-externalip`; this node has no
+    # `-proxy`, so `-listen` and `externalip` are the conditions
+    # `__init__` reads, `-listen` off `self.listen` rather than off the
+    # `listen` parameter, so that an explicit `-listen`'s own soft-set
+    # (above) is what this one sees. `None` here is the sentinel
+    # `dnsseed` above already uses for a soft default an explicit value
+    # wins over. Discovery runs whether or not `_bind` itself goes on to
+    # succeed, as Core's `Discover()` (`src/net.cpp:3456-3466`, same
+    # sha) does: `AppInitMain` calls it off `should_discover`
+    # (`src/init.cpp:2290-2313`, same sha), never off `fListen`, so
+    # `P2pManager` calls it unless `bind` or `whitebind` above is given
+    # and none of them, an `=onion` bind apart, binds every interface
+    # (`P2pManager._should_discover`).
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered
@@ -860,14 +1043,26 @@ class Config:
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
     # connection outside it too. `P2pManager.__init__` divides it into
-    # inbound and outbound slots.
+    # inbound and outbound slots. `__init__` caps it at
+    # `MAX_PEER_CONNECTIONS`, then lowers it to the file descriptors left
+    # (`_fit_file_descriptors`).
     max_connections: int
+    # `AppInitParameterInteraction`'s warnings that it capped or lowered
+    # `max_connections` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag), in that order, logged after `section_warning`
+    max_connections_warnings: tuple[str, ...]
     # Core's own `-inboundrelaypercent`: the percentage of the inbound
     # slots that transaction-relaying peers may hold. `cli` clamps it to
     # 0 to 100, as `AppInitMain` does (`src/init.cpp`,
     # at bitcoin/bitcoin@f0de87f040), and `P2pManager.__init__` turns it
     # into a count.
     inbound_relay_percent: int
+    # Core's own `-txsendrate`: the transactions a second this node
+    # announces to its inbound peers, which `DownloadManager`'s
+    # announcement buckets refill by. `cli` clamps it to 1 to 1000, as
+    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    tx_send_rate: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     # soft-sets it off under `-connect` or a `-maxconnections` whose
@@ -959,7 +1154,7 @@ class Config:
         whitelist_relay: bool = True,
         whitelist_force_relay: bool = False,
         rpcservertimeout: int = int(IDLE_TIMEOUT),
-        rpcmaxconnections: int = DEFAULT_MAX_HTTP_CONNECTIONS,
+        rpcmaxconnections: float = DEFAULT_MAX_HTTP_CONNECTIONS,
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -983,6 +1178,8 @@ class Config:
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         accept_stale_fee_estimates: bool = False,
+        deterministic_addrman: bool = False,
+        check_addrman: int = 0,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
@@ -995,7 +1192,9 @@ class Config:
         v2transport: bool = True,
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        max_connections_warnings: Sequence[str] = (),
         inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
+        tx_send_rate: int = DEFAULT_TX_SEND_RATE,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -1029,6 +1228,8 @@ class Config:
         self.assume_valid = assume_valid
         self.max_tip_age = max_tip_age
         self.accept_stale_fee_estimates = accept_stale_fee_estimates
+        self.deterministic_addrman = deterministic_addrman
+        self.check_addrman = check_addrman
 
         data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir = data_dir.absolute() / self.chain.name
@@ -1100,15 +1301,22 @@ class Config:
 
         _refuse_bind_without_listen(self.bind, self.whitebind, listen=self.listen)
 
-        if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`, same
-            # sha), fatal there too
-            err_msg = "-maxconnections must be greater or equal than zero"
-            raise ValueError(err_msg)
-        self.max_connections = max_connections
+        capped, cap_warning = _cap_max_connections(max_connections)
         self.inbound_relay_percent = inbound_relay_percent
-        _refuse_rpcmaxconnections(rpcmaxconnections)
-        self.rpcmaxconnections = rpcmaxconnections
+        self.tx_send_rate = tx_send_rate
+        self.rpcmaxconnections = _refuse_rpcmaxconnections(rpcmaxconnections)
+        self.max_connections, fit_warning = _fit_file_descriptors(
+            capped,
+            p2p_binds=len(self.bind) + len(self.whitebind),
+            rpc_binds=len(rpcbind),
+            rpcmaxconnections=self.rpcmaxconnections,
+            server=allow_rpc,
+        )
+        # `max_connections_warnings` are the warnings of a `Config` built
+        # earlier from the value as given, which `cli` carries over
+        self.max_connections_warnings = tuple(
+            warning for warning in (cap_warning, fit_warning) if warning
+        ) or tuple(max_connections_warnings)
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
         self.send_buffer_max_size = send_buffer_max_size

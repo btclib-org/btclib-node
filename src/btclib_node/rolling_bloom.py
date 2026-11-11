@@ -4,7 +4,7 @@
 
 """Bitcoin Core's `CRollingBloomFilter`.
 
-`src/common/bloom.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the
+`src/common/bloom.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag: the
 same parameters, hash functions, generations and bits. Given Core's tweak,
 a filter here answers every query as Core's does.
 

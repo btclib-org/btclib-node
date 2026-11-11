@@ -11,6 +11,8 @@ the coverage floor went red all the same, on `run`'s own `except
 Exception`. The managers below are stand-ins, so the loop is handed its
 messages directly and what it does with them does not depend on
 scheduling.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import faulthandler
@@ -51,6 +53,7 @@ from btclib_node.constants import (
     RPC_THREADS,
     NodeStatus,
 )
+from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     DirectoryLockError,
@@ -247,8 +250,8 @@ def test_init(tmp_path: Path) -> None:
 def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
     """ISS 1449: Core's own `StartupNotify`, once, after RPC/P2P come up.
 
-    `src/init.cpp:2294-2309`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag -- the last line of `AppInitServers`, run once this node's own
+    `src/init.cpp:2403-2425`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag -- the last call of `AppInitMain`, run once this node's own
     equivalent (`_start_rpc_and_load` and the P2P bind check) has
     succeeded.
     """
@@ -273,9 +276,10 @@ def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
 def test_shutdownnotify_has_finished_by_the_time_stop_returns(tmp_path: Path) -> None:
     """ISS 1519: Core's own `ShutdownNotify`, joined ahead of everything else.
 
-    `src/init.cpp:256-276`, same sha: every configured command is run
-    and joined before `Interrupt` returns, so it has already finished
-    before this node's managers and stores ever close.
+    `src/init.cpp:275-295`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag: every configured command is run and joined before `Interrupt`
+    returns, so it has already finished before this node's managers and
+    stores ever close.
     """
     marker = tmp_path / "marker"
     node = Node(
@@ -1873,7 +1877,7 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     RPC starts first, as in Core's `AppInitMain`, so the peer-to-peer
     manager is never built; the bind comes before the cookie, so none
     is left in the data directory; and no store is opened, so the chain
-    directory holds what `bitcoind` v31.1.0's holds over a taken RPC
+    directory holds what `bitcoind`'s holds over a taken RPC
     port but its own files: the lock, `blocks/` holding its lock alone,
     and the log (ISS 1279).
     """
@@ -1942,7 +1946,7 @@ def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
 ) -> None:
     """ISS 1268: `InitHTTPAllowList`'s message, then `InitError`'s.
 
-    Measured on bitcoind v31.1.0 given `-rpcallowip=bogus`: both are in
+    Measured on `bitcoind` given `-rpcallowip=bogus`: both are in
     `debug.log`, in that order, and it exits 1.
     """
     node = Node(
@@ -1984,8 +1988,8 @@ def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
 
     `init_errors`, which `cli.main` prints, holds "Unable to start HTTP
     server" alone, and the value's own line is in the log ahead of it,
-    as `bitcoind` v31.1.0 shows them. The cookie `-rpcauth` is refused
-    after is deleted, and the port is free again.
+    as `bitcoind` shows them. The cookie written before `-rpcauth` is
+    refused is deleted, and the port is free again.
     """
     port = get_random_port()
     node = Node(
@@ -2122,6 +2126,62 @@ def test_a_start_that_ends_in_an_error_stays_in_warmup(
     assert rpc_manager.in_warmup
 
 
+@pytest.mark.parametrize(
+    ("stop_during", "warmup", "notified"),
+    [
+        ("load", ["start"], []),
+        (
+            "start_listener",
+            ["start", "Starting network threads…", "finish"],
+            ["startup command"],
+        ),
+    ],
+    ids=["before-the-last-check", "after-it"],
+)
+def test_a_stop_after_start_ups_last_check_still_ends_warmup(
+    a_networked_node: Node,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_during: str,
+    warmup: list[str],
+    notified: list[str],
+) -> None:
+    """ISS 2349: Core checks `ShutdownRequested` last just before step 12.
+
+    A stop asked for after that check, here while the P2P listener
+    starts, still runs `SetRPCWarmupFinished` and `StartupNotify`; one
+    asked for while the stores load runs neither (`src/init.cpp:2158-2160`
+    and `2403-2425`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    commands: list[str] = []
+    monkeypatch.setattr(
+        btclib_node, "run_detached", lambda _logger, command: commands.append(command)
+    )
+    node.config.startup_notify = "startup command"
+    real_load = node.load
+
+    def stopped_while_loading() -> None:
+        node.stop()
+        real_load()
+
+    class StoppedWhileStarting(AManager):
+        @override
+        def start_listener(self) -> bool:
+            node.stop()
+            return super().start_listener()
+
+    if stop_during == "load":
+        monkeypatch.setattr(node, "load", stopped_while_loading)
+    else:
+        node.p2p_manager = StoppedWhileStarting()  # type: ignore[assignment]
+    node.start()
+    wait_until(lambda: not node.is_alive())
+    assert rpc_manager.warmup == warmup
+    assert commands == notified
+    assert not node.init_errors
+
+
 def test_load_sets_the_init_messages_core_shows_for_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2134,14 +2194,18 @@ def test_load_sets_the_init_messages_core_shows_for_it(
     statuses: list[str] = []
     monkeypatch.setattr(node.rpc_manager, "set_warmup_status", statuses.append)
     node.start()
-    node.stop()
+    try:
+        # `Node.start` waits for the stores alone, not for this
+        # (btclib-org/btclib-node#2061)
+        wait_until(lambda: not node.rpc_manager.in_warmup)
+    finally:
+        node.stop()
     assert statuses == [
         "Loading P2P addresses…",
         "Loading banlist…",
         "Loading block index…",
         "Starting network threads…",
     ]
-    assert not node.rpc_manager.in_warmup
 
 
 def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
@@ -2200,6 +2264,55 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
 
     node.start()
     wait_until(every_queue_is_empty)
+
+
+def test_the_loop_sleeps_only_where_the_last_step_left_the_chain_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2352: a pass after one that moved the chain does not sleep.
+
+    The queues always read empty, and `update_chain` answers from a
+    script, so the only thing deciding each sleep is the step before it.
+    The last step sets `terminate_flag`, and the loop stops before the
+    fee estimator's flush that would follow it.
+    """
+    node = a_node(tmp_path)
+    events: list[bool | str] = []
+    answers = [True, True, False, False]
+
+    def step(_node: Node) -> bool:
+        answer = answers.pop(0)
+        events.append(answer)
+        if not answers:
+            node.terminate_flag.set()
+        return answer
+
+    monkeypatch.setattr(btclib_node, "update_chain", step)
+    monkeypatch.setattr(node, "_drain_message_queues", lambda: True)
+    monkeypatch.setattr(
+        node.fee_estimator, "flush_if_due", lambda: events.append("flush")
+    )
+    monkeypatch.setattr(
+        btclib_node,
+        "time",
+        SimpleNamespace(
+            monotonic=time.monotonic, sleep=lambda _seconds: events.append("sleep")
+        ),
+    )
+    node.start()
+    node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+    assert events == [
+        "sleep",
+        True,
+        "flush",
+        True,
+        "flush",
+        False,
+        "flush",
+        "sleep",
+        False,
+    ]
 
 
 def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
@@ -2650,7 +2763,7 @@ def test_a_node_logs_the_debug_warnings_after_the_section_warning(
     `AppInitParameterInteraction` warns over the sections, then sets the
     categories, both ahead of `init::StartLogging`'s "Default data
     directory" (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), the order bitcoind v32.1.0's `debug.log` shows.
+    tag), the order `bitcoind`'s `debug.log` shows.
     """
     node = Node(
         config=Config(
@@ -2674,15 +2787,57 @@ def test_a_node_logs_the_debug_warnings_after_the_section_warning(
     assert section_at < first_at < second_at < data_dir_at
 
 
+def test_a_node_logs_the_maxconnections_warning_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 2127, ISS 2338: the `-maxconnections` warnings come between the two.
+
+    `AppInitParameterInteraction` warns over the sections, caps
+    `-maxconnections`, lowers it to the file descriptors left, then sets
+    the categories (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `bitcoind`'s `debug.log` holds the cap's warning ahead of
+    "Default data directory".
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            max_connections=2000,
+            max_connections_warnings=[
+                "Reducing -maxconnections from 5000 to 2000.",
+                (
+                    "Reducing -maxconnections from 2000 to 846, "
+                    "because of system limitations."
+                ),
+            ],
+            debug_warnings=["first"],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    cap_at = log_text.index("[warning] Reducing -maxconnections from 5000 to 2000.\n")
+    fit_at = log_text.index("[warning] Reducing -maxconnections from 2000 to 846, ")
+    first_at = log_text.index("[warning] first")
+    data_dir_at = log_text.index("Default data directory")
+    assert section_at < cap_at < fit_at < first_at < data_dir_at
+
+
 def test_a_node_logs_its_config_args_after_the_section_warning(
     tmp_path: Path,
 ) -> None:
     """ISS 1305: `LogArgs`'s lines, last of what `open_history_log` writes.
 
     `ArgsManager::LogArgs` (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) runs at the end of `init::StartLogging`
-    (`src/init/common.cpp`), after the version line and the section
-    warning it dumps from its own buffer.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs at the end of
+    `init::StartLogging` (`src/init/common.cpp:145`), after the version
+    line and the section warning it dumps from its own buffer.
     """
     node = Node(
         config=Config(
@@ -2742,6 +2897,30 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
         assert reopened.loaded
     finally:
         reopened.stop()
+
+
+def test_an_inconsistent_address_table_ends_start_up(tmp_path: Path) -> None:
+    """ISS 2328: `LoadAddrman`'s refusal is the init error, as `InitError`'s.
+
+    The store's key is all zero, `CheckAddrman`'s `-16`.
+    """
+    config = Config(
+        chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+    )
+    node = Node(config=config)
+    store = KeyValueStore(node.data_dir / "peers")
+    store.put_meta(b"bucket-key", bytes(32))
+    store.close()
+    try:
+        node.start()
+        (message,) = node.init_errors
+    finally:
+        node.stop()
+    assert message.startswith(
+        "Invalid or corrupt peers.dat (Corrupt data. Consistency check failed "
+        "with code -16). "
+    )
+    assert not node.loaded
 
 
 def test_a_stop_asked_for_while_the_stores_load_starts_no_p2p_side(
@@ -3000,10 +3179,16 @@ def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
         pruned.stop()
 
 
+@pytest.mark.parametrize("reindex_chainstate", [False, True])
 def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
-    tmp_path: Path,
+    tmp_path: Path, *, reindex_chainstate: bool
 ) -> None:
-    """ISS 1997: Core's start-up ends on "Error loading block database"."""
+    """ISS 1997: Core's start-up ends on "Error loading block database".
+
+    `-reindex-chainstate` does not recover it, which is why
+    `cli._check_test_options` leaves
+    `-test=reindex_after_failure_noninteractive_yes` unread (ISS 2332).
+    """
     with unstarted_node_context(tmp_path) as node:
         header = unmined_header(node.chain.genesis.hash, b"\x03\x00\x00\x01")
         node.chainstate.db.put(
@@ -3011,7 +3196,11 @@ def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
         )
     refused = Node(
         config=Config(
-            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            reindex_chainstate=reindex_chainstate,
         )
     )
     try:
@@ -3022,3 +3211,34 @@ def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
     assert refused.init_errors == ["Error loading block database"]
     assert not refused.loaded
     assert refused.block_db.db.closed
+
+
+@pytest.mark.parametrize("ratio", [0, 5])
+def test_load_builds_the_address_table_from_test_and_checkaddrman(
+    tmp_path: Path, ratio: int
+) -> None:
+    """`LoadAddrman`: `-test=addrman` and `-checkaddrman` build the table."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            deterministic_addrman=bool(ratio),
+            check_addrman=ratio,
+        )
+    )
+    node.load()
+    try:
+        peer_db = node.p2p_manager.peer_db
+        assert peer_db._deterministic is bool(ratio)
+        assert peer_db._consistency_check_ratio == ratio
+        assert peer_db._logger is node.logger
+    finally:
+        node._close_worker_pool()
+        node.p2p_manager.peer_db.close()
+        node.chainstate.close()
+        node.block_db.close()
+        node.p2p_manager.loop.close()
+        node.rpc_manager.loop.close()
+        node.logger.close()

@@ -6,8 +6,8 @@
 
 Core's `SnapshotMetadata` (`src/node/utxo_snapshot.h`) and the coin
 serialization of `WriteUTXOSnapshot` (`src/rpc/blockchain.cpp`) with
-`Coin::Serialize` (`src/coins.h`), at bitcoin/bitcoin@9be056a8a7, the
-v31.1 tag.
+`Coin::Serialize` (`src/coins.h`), at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag.
 
 The file is the metadata, then each transaction's unspent outputs: its
 txid, how many there are, and for each the output's index and the coin.

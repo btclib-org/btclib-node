@@ -4,7 +4,7 @@
 
 """Signing a transaction with the keys a caller hands over, as Core does.
 
-Core's `src/script/sign.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+Core's `src/script/sign.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag: `SignTransaction`, `ProduceSignature` with its `SignStep`,
 `DataFromTransaction` and `SignatureData::MergeSignatureData`, for what a
 `FlatSigningProvider` can do. That provider holds private keys and the
@@ -37,8 +37,9 @@ from btclib.script.script import serialize
 from btclib.script.solver import solver
 from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
+from ecc import dsa, ssa
 from ecc.curves import bytes_from_prv_key_int
-from ecc.ecc import dsa, ssa
+from ecc.exceptions import EccException
 
 from btclib_node.interpreter import STANDARD_FLAGS
 
@@ -470,6 +471,14 @@ class _Production:
         signs first and `satisfy` takes the signatures the best non-malleable
         satisfaction needs, its lock times being the transaction's and the
         input's.
+
+        `from_script` refuses a key off the curve with ecc's `EccException`,
+        not btclib's, and the input is left unsigned. Core reads any key of
+        33 bytes starting 02 or 03 there (`WshSatisfier::FromPKBytes`,
+        `src/script/sign.cpp:489-493`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag), so it still signs a script that never needs that key's
+        signature, such as `or_b(pk(A),s:pk(X))`:
+        ISS btclib-org/bip32-descriptors#292.
         """
         found = ((key_id, pair[0]) for key_id, pair in self.sigdata.signatures.items())
         key_hashes: dict[Octets, Octets] = dict(
@@ -477,7 +486,7 @@ class _Production:
         )
         try:
             miniscript = from_script(witness_script, "P2WSH", key_hashes)
-        except BTClibException:
+        except BTClibException, EccException:
             return False, []
         signatures: dict[Octets, Octets] = {}
         for key in miniscript.key_expressions:

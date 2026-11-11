@@ -8,7 +8,7 @@ Two things have to hold before a test here actually runs: the opt-in
 itself, and a real `bitcoind` to point it at. `bitcoind_path` is where
 both are asked for, an opt-in that failed for a missing binary being a
 defect report that is not one; its skip message names the switch, the
-way section 7 of the organization standard asks for.
+way section 7 of the organization's standard asks for.
 """
 
 import os
@@ -37,9 +37,10 @@ if TYPE_CHECKING:
 # call, and how long it is given to exit once asked to. A regtest node
 # with an all but empty chain does both in well under a second on any
 # machine able to run this suite at all -- measured directly, starting
-# bitcoind v31.1.0 and reaching a first successful `getblockchaininfo`
-# call took under two seconds on an otherwise idle machine -- so this
-# bounds the failure rather than the ordinary case.
+# the bitcoind `integration-bitcoind.yml` pins and reaching a first
+# successful `getblockchaininfo` call took under two seconds on an
+# otherwise idle machine -- so this bounds the failure rather than the
+# ordinary case.
 _STARTUP_TIMEOUT = 30.0
 
 # How many lines of bitcoind's debug.log a failed call carries. The log is

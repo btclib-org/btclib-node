@@ -3,12 +3,12 @@ name: api-break
 
 # A pull request that breaks the public API is told so by a label,
 # `api-break`, and by nothing that gates a merge (btclib-org/.github#1674).
-# Section 12 of btclib-org/.github's README.md has why it gates nothing and
+# Section 12 of the organization's standard has why it gates nothing and
 # what a fork's pull request gets.
 #
 # The checkout, the griffe walk against the pull request's base commit and
 # the label are btclib-org/.github's: reusable-api-break.yml, called at
-# a tagged commit (section 10 of btclib-org/.github's README.md). What stays
+# a tagged commit (section 10 of the organization's standard). What stays
 # here is the trigger, the concurrency group, the job's permissions and the
 # package name, the one `release.yml` passes to reusable-public-api.yml.
 

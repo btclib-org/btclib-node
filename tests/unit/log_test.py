@@ -2,7 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`Logger` picks the right handler and drops it cleanly on `close`."""
+"""`Logger` picks the right handler and drops it cleanly on `close`.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
+"""
 
 import ast
 import logging
@@ -73,7 +76,7 @@ def test_closing_leaves_no_handler_a_late_record_could_reach() -> None:
 def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
     """ISS 1280: `GetLogPrefix`'s `[warning] ` and `[error] `, none at info.
 
-    As `bitcoind` v31.1.0's `debug.log` has them for a line with no
+    As `bitcoind`'s `debug.log` has them for a line with no
     category: `[error] Unable to start HTTP server. See debug log for
     details.` over a taken RPC port. `debug` is `[debug] `, and
     `critical`, which Core has no level for, is `[error] `.
@@ -96,9 +99,9 @@ def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
 def test_a_file_log_opens_on_five_blank_lines(tmp_path: Path) -> None:
     """ISS 1309: `StartLogging`'s five blank lines, absent from a stream.
 
-    `src/logging.cpp:72`, at bitcoin/bitcoin@9be056a8a7: written to the
-    file the moment it opens, marking one execution's record off from
-    the last one's in a file appended across restarts.
+    `src/logging.cpp:72`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
+    written to the file the moment it opens, marking one execution's
+    record off from the last one's in a file appended across restarts.
     """
     path = tmp_path / "history.log"
     logger = Logger(path)
@@ -120,7 +123,7 @@ def test_a_stream_log_opens_on_no_blank_line(
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset on Windows")
 def test_a_line_opens_with_core_s_utc_second_and_a_space(tmp_path: Path) -> None:
-    """ISS 1297: `LogTimestampStr`, as `bitcoind` v31.1.0's `debug.log` has it.
+    """ISS 1297: `LogTimestampStr`, as `bitcoind`'s `debug.log` has it.
 
     `2026-09-26T09:42:51Z [error] Unable to start HTTP server. See debug
     log for details.`: ISO 8601 in UTC, whatever the machine's zone, the
@@ -154,8 +157,8 @@ def _log_lines(path: Path) -> list[str]:
 def test_a_debug_line_carries_its_category_as_core_s_log_does(tmp_path: Path) -> None:
     """ISS 1322: `GetLogPrefix` writes `[net] ` for a debug line, no level.
 
-    As `bitcoind` v31.1.0's `debug.log` has it under `-debug=net`:
-    `[net] Flushed 0 banned node addresses/subnets to disk  0ms`.
+    As `bitcoind`'s `debug.log` has it under `-debug=net`:
+    `[net] Flushed 0 banned node addresses/subnets to disk 0ms`.
     """
     path = tmp_path / "history.log"
     logger = Logger(path, debug=True)
