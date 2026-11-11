@@ -4,7 +4,7 @@ name: claude-review
 # Claude reading a pull request against REVIEWING.md. The prompt, the
 # credential guard, the action, the verdict check and the @claude answer
 # are btclib-org/.github's reusable-claude-review.yml, called at a tagged
-# commit (section 10 of btclib-org/.github's README.md); what stays here is the
+# commit (section 10 of the organization's standard); what stays here is the
 # trigger, the concurrency group, the workflow-level permissions and this
 # header.
 #

@@ -32,7 +32,6 @@ from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, network_address
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
 from btclib.script.solver import solver
@@ -92,8 +91,9 @@ from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid
 from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
+from btclib_node.p2p.protocol_version import PROTOCOL_VERSION
 from btclib_node.p2p.selfannounce import LocalService, host_record
-from btclib_node.rpc.connection import COIN, RawJSON, btc_amount
+from btclib_node.rpc.connection import COIN, RawJSON, btc_amount, univalue_float
 from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
@@ -304,11 +304,8 @@ def get_blockchain_info(
     ("warnings"))` (src/rpc/blockchain.cpp:1500, same sha) -- always the
     array form: this node has no `-deprecatedrpc` of its own, so the
     single-string form `use_deprecated=true` answers with is never reachable
-    here. Empty, ordinarily: it takes an invalid chain with more work than
-    this node's own tip (`main.check_fork_warning_conditions`,
-    btclib-org/btclib-node#1522) or a version bit no deployment uses
-    reaching its threshold (`versionbits.check_unknown_activations`,
-    btclib-org/btclib-node#1475) to set anything.
+    here. Empty, ordinarily; `notify.Warnings`'s docstring lists which check
+    sets each id.
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
@@ -712,7 +709,7 @@ def get_chain_tips(
     active tip's own fork is empty by definition, so it is answered `0`
     without calling that method at all.
 
-    `status`, in Core's own priority order (`:1680-1697`): `"active"`
+    `status`, in Core's own priority order (`:1682-1700`): `"active"`
     for the chain's own tip; `"invalid"` for a tip `BlockStatus.invalid`
     already marks, itself or an ancestor, `invalidate` above already
     propagating that mark down every child rather than leaving it for a
@@ -1688,10 +1685,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     """Answer `getnetworkinfo` with the fields argued below.
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:671-797`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) also answers `inv_buckets`
-    and `tx_send_rate`, which this node does not answer yet
-    (btclib-org/btclib-node#2309). Core answers `asmap_version` only under
-    `-asmap`, which this node does not have.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers `asmap_version`
+    only under `-asmap`, which this node does not have.
 
     `version` is `constants.NUMERIC_CLIENT_VERSION`, this node's own
     version in the form of Core's `CLIENT_VERSION` (`:744`, same sha). The
@@ -1705,9 +1700,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     together -- `get_peer_info` above answers the matching `subver` a
     peer sees on the wire, both reading `constants.USER_AGENT`
     (btclib-org/btclib-node#1009) rather than each computing their own.
-    `protocolversion` is `PROTOCOL_VERSION` (`btclib.p2p.limits`), the
-    same constant every `version` this node sends and every
-    `getheaders` it builds already carries.
+    `protocolversion` is `p2p.protocol_version.PROTOCOL_VERSION`, the
+    same constant every `version` this node sends carries.
 
     `localservices` and `localservicesnames` are
     `p2p.connection.local_services` (`rpc/net.cpp:749-751`, same sha) -- the
@@ -1723,6 +1717,11 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
     `timeoffset` is `timeoffsets.median` of `node.outbound_time_offsets`,
     Core's `TimeOffsets::Median`.
+
+    `tx_send_rate` is `Config.tx_send_rate`, Core's `-txsendrate`.
+    `inv_buckets` is `DownloadManager.inv_bucket_info` (`:755-766`, same
+    sha): each direction's `backlog`, and its `count_tok` and `size_tok`
+    written as `UniValue` writes a `double`.
 
     `networks` is Core's `GetNetworksInfo` (`:649-669`, same sha): its
     networks in its order, each `reachable` where `p2p.manager.reaches`
@@ -1770,6 +1769,15 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "localservicesnames": service_names(services),
         "localrelay": True,
         "timeoffset": median(node.outbound_time_offsets),
+        "tx_send_rate": node.config.tx_send_rate,
+        "inv_buckets": {
+            direction: {
+                "backlog": info.backlog,
+                "count_tok": univalue_float(info.count_tokens),
+                "size_tok": univalue_float(info.size_tokens),
+            }
+            for direction, info in node.download_manager.inv_bucket_info().items()
+        },
         "networkactive": manager.get_network_active(),
         "connections": len(peers),
         "connections_in": connections_in,

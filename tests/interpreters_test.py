@@ -13,10 +13,10 @@ behind when a floor moves is a package advertising an interpreter its
 suite never touches, and the person it misleads is not reading this
 repository.
 
-Section 1 of the organization standard is what they have to say between
-them, and the window it asks for is python.org's release cycle rather
-than this tree's choice. This module does not know that calendar and
-does not try to: python.org keeps it, and a test hard-coding a date
+Section 1 of the organization's standard is what they have to say
+between them, and the window it asks for is python.org's release cycle
+rather than this tree's choice. This module does not know that calendar
+and does not try to: python.org keeps it, and a test hard-coding a date
 would be one more thing to move. What it holds is the weaker and
 checkable claim that whatever these say, they say the same thing.
 
@@ -104,7 +104,7 @@ _NAMED_INPUT = re.compile(rf'^ +python: "({_VERSION})"', re.MULTILINE)
 _NAMED_CALLER = re.compile(r"python-versions: '(?P<block>\[[^\]\n]*\])'")
 
 # the merge gate, and inside it the jobs a landing waits on. Section 3
-# of the organization standard declares a free-threading classifier
+# of the organization's standard declares a free-threading classifier
 # where the gate exercises that build, a gate being what refuses the
 # landing that breaks it, so what answers here is the aggregate's
 # `needs:` closure rather than the file: a job of this workflow that no
@@ -203,7 +203,7 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # way costs nothing that matters: an interpreter dropped is a claim of
 # support this tree does not make, where an interpreter counted in is a
 # claim that the gate exercises what it does not -- the "it passed
-# somewhere" that section 3 of the organization standard refuses, and
+# somewhere" that section 3 of the organization's standard refuses, and
 # the whole reason issue #750 exists.
 #
 # Nor does this read stop at the workflow file: a `uses: ./...` an
@@ -587,7 +587,7 @@ def test_pypy_is_classified_exactly_when_it_is_run() -> None:
 def test_free_threading_is_classified_exactly_when_the_gate_runs_it() -> None:
     """The free-threading classifier is a claim about the merge gate.
 
-    Section 3 of the organization standard declares one where the gate
+    Section 3 of the organization's standard declares one where the gate
     exercises the free-threaded build, a gate being what refuses the
     landing that breaks it. So a report-only cell does not answer for
     the classifier however loudly it runs: what it says is that the

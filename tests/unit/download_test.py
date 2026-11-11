@@ -10,6 +10,8 @@ single answer are indistinguishable from the right ones. What is left
 is the arithmetic between peers: who is told about a transaction, who is
 asked for it, which peer a block is fetched from, and when a peer that
 has stopped sending blocks is let go.
+
+`bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
 
 import math
@@ -34,7 +36,7 @@ from btclib_node import clock as clock_module
 from btclib_node.chains import RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.cluster_linearize import FeeFrac
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, DEFAULT_TX_SEND_RATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER, DownloadManager
 from btclib_node.log import Logger
@@ -49,6 +51,7 @@ from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from btclib_node.p2p.tx_checks import TxCheck, TxChecks
 from tests import (
+    debug_recorder,
     generate_random_header_chain,
     generate_random_transaction,
     random_mempool_history,
@@ -102,9 +105,8 @@ def a_conn(
     relayed to by txid (ISS 1183). Its trickle is due by default, and
     it has had a first one, which `_process_inv_backlog` asks before
     it queues the peer anything; `next_inv_send_time=0.0` is a peer
-    that has had none. Its `version_message` is a full node's
-    at this node's own protocol version unless one is given, `None`
-    included.
+    that has had none. Its `version_message` is a full node's at
+    btclib's `PROTOCOL_VERSION` unless one is given, `None` included.
     """
     if version_message is ...:
         version_message = a_version(
@@ -162,6 +164,7 @@ def make_manager(
     mempool: Any | None = None,
     warm_worker_pool: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+    tx_send_rate: int = DEFAULT_TX_SEND_RATE,
 ) -> DownloadManager:
     """Build a `DownloadManager` over a fake node with the given connections.
 
@@ -181,7 +184,9 @@ def make_manager(
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         warm_worker_pool=warm_worker_pool or (lambda: None),
         config=SimpleNamespace(
-            min_relay_feerate=min_relay_feerate, minimum_chain_work=0
+            min_relay_feerate=min_relay_feerate,
+            minimum_chain_work=0,
+            tx_send_rate=tx_send_rate,
         ),
         chain=SimpleNamespace(consensus=SimpleNamespace(segwit_height=0)),
         tx_checks=TxChecks(),
@@ -622,7 +627,11 @@ def test_a_feefilter_raised_while_queued_drops_what_it_now_excludes() -> None:
 
 
 def test_equal_scores_go_out_by_ascending_txid_not_arrival() -> None:
-    """Core v31.1's fallback order is the txid, in internal byte order."""
+    """Core's fallback order is the txid, in internal byte order.
+
+    The mempool's `fallback_order` (`src/txmempool.cpp:183-187`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
     other = a_conn(1)
     manager = make_manager([other])
     txs = [paying(manager, fee=1000) for _ in range(50)]
@@ -990,6 +999,117 @@ def test_the_announcement_buckets_take_core_s_rates_and_bounds() -> None:
     assert download_module._INV_SIZE_FLOOR == -50_000
 
 
+def test_the_announcement_buckets_take_the_configured_rate() -> None:
+    """ISS 2309: `-txsendrate` sets both buckets' count rate, cap and floor."""
+    manager = make_manager([], tx_send_rate=1)
+    inbound, outbound = manager._inbound_inv_bucket, manager._outbound_inv_bucket
+    for bucket, mult in ((inbound, 1.0), (outbound, 2.5)):
+        assert bucket.count_bucket.rate == mult
+        assert bucket.count_bucket.value == bucket.count_bucket.cap == 30
+        assert bucket.count_floor == -5
+    assert manager.inv_bucket_info() == {
+        "inbound": download_module.InvBucketInfo(0, 30, 12_000_000),
+        "outbound": download_module.InvBucketInfo(0, 30, 12_000_000),
+    }
+
+
+def test_the_bucket_info_reads_each_direction_s_own_bucket() -> None:
+    """ISS 2309: `inv_bucket_info` names each bucket by its direction."""
+    manager = make_manager([])
+    inbound, outbound = manager._inbound_inv_bucket, manager._outbound_inv_bucket
+    inbound.backlog = [a_hash(1)]
+    inbound.count_bucket.value = 1.5
+    outbound.size_bucket.value = 2.5
+    assert manager.inv_bucket_info() == {
+        "inbound": download_module.InvBucketInfo(1, 1.5, 12_000_000),
+        "outbound": download_module.InvBucketInfo(0, 420, 2.5),
+    }
+
+
+def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
+    """ISS 2309: Core's heartbeat, under `net`, at most every 2 seconds.
+
+    The first line comes once a backlog holds 100. The line after the
+    backlogs empty is the last. `bitcoind` logged, on regtest at
+    `-txsendrate=1`, `[net] Transaction rate-limiting backlog inbound=100
+    itok=-1.0 isz=11994429.6 outbound=100 otok=-1.0 osz=11994955.6`.
+    """
+    manager = make_manager([])
+    lines, record = debug_recorder()
+    manager.logger = cast("Any", SimpleNamespace(log_debug=record))
+    inbound = manager._inbound_inv_bucket
+    inbound.backlog = [paying(manager, fee=1000).hash for _ in range(100)]
+    inbound.count_bucket.value = -100.0
+    now = 1_700_000_000.0
+    manager._process_inv_backlog(now, bumped=True)
+    manager._process_inv_backlog(now + 1)
+    manager._process_inv_backlog(now + 2)
+    prefix = "Transaction rate-limiting backlog "
+    assert lines == [
+        (
+            "net",
+            prefix + "inbound=100 itok=-100.0 isz=12000000.0 "
+            "outbound=0 otok=420.0 osz=12000000.0",
+        ),
+        (
+            "net",
+            prefix + "inbound=100 itok=-72.0 isz=12040000.0 "
+            "outbound=0 otok=420.0 osz=12100000.0",
+        ),
+    ]
+    # a take with no peer to feed empties the backlog
+    inbound.count_bucket.value = 1.0
+    manager._process_inv_backlog(now + 3)
+    assert not inbound.backlog
+    manager._process_inv_backlog(now + 4)
+    manager._process_inv_backlog(now + 6)
+    assert len(lines) == 3
+    assert lines[2][1].startswith(prefix + "inbound=0 itok=")
+    assert " outbound=0 otok=" in lines[2][1]
+
+
+@pytest.mark.parametrize(
+    ("status", "refilled"),
+    [(None, False), (P2pConnStatus.Open, False), (P2pConnStatus.Connected, True)],
+    ids=["no peer", "in its handshake", "connected"],
+)
+def test_the_trickle_refills_the_buckets_only_for_a_connected_peer(
+    status: P2pConnStatus | None, *, refilled: bool
+) -> None:
+    """ISS 2309: Core's `SendMessages` reads the backlogs past the handshake.
+
+    `bitcoind` with no peer answered `getnetworkinfo`'s `size_tok`
+    12000000 however long it ran, on regtest.
+    """
+    clock = 1_700_000_000
+    clock_module.set_mock_time(clock)
+    manager = make_manager([] if status is None else [a_conn(1, status=status)])
+    size_bucket = manager._inbound_inv_bucket.size_bucket
+    manager.tx_download()
+    clock_module.set_mock_time(clock + 10)
+    manager.tx_download()
+    assert (size_bucket.value > 12_000_000) is refilled
+
+
+def test_a_backlog_short_of_a_hundred_logs_no_heartbeat() -> None:
+    """ISS 2309: Core's `INVENTORY_BUCKET_BACKLOG_HEARTBEAT_MIN`, 100."""
+    manager = make_manager([])
+    lines, record = debug_recorder()
+    manager.logger = cast("Any", SimpleNamespace(log_debug=record))
+    for bucket in (manager._inbound_inv_bucket, manager._outbound_inv_bucket):
+        bucket.count_bucket.value = -100.0
+    txs = [paying(manager, fee=1000) for _ in range(99)]
+    manager._inbound_inv_bucket.backlog = [tx.hash for tx in txs]
+    manager._outbound_inv_bucket.backlog = [tx.hash for tx in txs]
+    manager._process_inv_backlog(1_700_000_000.0, bumped=True)
+    assert not lines
+    manager._outbound_inv_bucket.backlog.append(paying(manager, fee=1000).hash)
+    manager._process_inv_backlog(1_700_000_001.0, bumped=True)
+    assert [line[1].split()[3:7:3] for line in lines] == [
+        ["inbound=99", "outbound=100"]
+    ]
+
+
 def test_a_take_runs_the_count_bucket_down_to_one_interval_of_debt() -> None:
     """Core's count floor: half a token left takes an interval's worth more.
 
@@ -1148,8 +1268,9 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 ) -> None:
     """An outbound peer draws its schedule from the shorter of the two means."""
     # net_processing.cpp's OUTBOUND_INVENTORY_BROADCAST_INTERVAL/
-    # INBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86:
-    # an outbound connection's mean is the shorter of the two
+    # INBOUND_INVENTORY_BROADCAST_INTERVAL,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag: an outbound
+    # connection's mean is the shorter of the two
     means: list[float] = []
 
     def record_mean(lambd: float) -> float:
@@ -1168,13 +1289,14 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 
 def test_two_inbound_ipv4_peers_share_one_schedule_regardless_of_subnet() -> None:
     """Two inbound IPv4 peers, different /16s, share one send-time draw."""
-    # `CNode::m_network_key` (net.h:755, at bitcoin/bitcoin@58a7869f86) is
-    # keyed on the peer's coarse `GetNetClass()` and this node's own bind
-    # address, not on anything of the peer's own subnet -- so two inbound
-    # IPv4 peers share `NextInvToInbounds`'s one draw even from two
-    # different /16s, and a peer opening several inbound connections
-    # cannot average several independent draws down to a receipt time
-    # finer than one connection's own jitter would allow.
+    # `CNode::m_network_key` (net.h:759, at bitcoin/bitcoin@f0de87f040,
+    # the v32.1 tag) is keyed on the peer's coarse `GetNetClass()` and
+    # this node's own bind address, not on anything of the peer's own
+    # subnet -- so two inbound IPv4 peers share `NextInvToInbounds`'s one
+    # draw even from two different /16s, and a peer opening several
+    # inbound connections cannot average several independent draws down
+    # to a receipt time finer than one connection's own jitter would
+    # allow.
     first = a_conn(1, address=peer_address("10.0.1.1", 8333))
     second = a_conn(2, address=peer_address("11.0.1.1", 8333))
     manager = make_manager([first, second])
@@ -2281,7 +2403,7 @@ def test_an_old_best_header_is_asked_of_one_peer_only() -> None:
     """Before the best header is recent, one peer is asked, not every one.
 
     Core's own `nSyncStarted == 0` gate (`SendMessages`,
-    `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    `net_processing.cpp:6148`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     first, second = an_outbound(1), an_outbound(2)
     manager = make_manager([first, second], block_index=HeaderIndex(age=_OLD))

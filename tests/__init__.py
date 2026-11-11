@@ -243,9 +243,9 @@ def anyone_can_spend_redeem_script() -> bytes:
     """Return the redeem script `anyone_can_spend` commits to: `OP_DROP OP_1`.
 
     No signature check, so no sigop counts against the 15 that
-    `AreInputsStandard` allows a P2SH redeem script, and it leaves the
-    single true element CLEANSTACK asks for once it has dropped the push
-    `anyone_can_spend_script_sig` puts ahead of it.
+    `ValidateInputsStandardness` allows a P2SH redeem script, and it
+    leaves the single true element CLEANSTACK asks for once it has
+    dropped the push `anyone_can_spend_script_sig` puts ahead of it.
     """
     return script.serialize(["OP_DROP", "OP_1"])
 
@@ -255,10 +255,11 @@ def anyone_can_spend() -> bytes:
 
     A P2SH output is one of `Solver`'s own templates, where the
     `<rand32> OP_2DROP OP_1` this replaced was `NONSTANDARD` and, spent,
-    `AreInputsStandard`'s `bad-txns-nonstandard-inputs` (`policy.cpp`, at
-    bitcoin/bitcoin@9be056a8a7). The spend stays standard throughout:
-    push-only, minimal pushes, a clean stack, and no witness, so a block
-    carrying one needs no witness commitment.
+    `ValidateInputsStandardness`'s `bad-txns-nonstandard-inputs`
+    (`policy.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The
+    spend stays standard throughout: push-only, minimal pushes, a clean
+    stack, and no witness, so a block carrying one needs no witness
+    commitment.
 
     Every one of these is the same script, so what makes two coinbases at
     one height two transactions is `generate_coinbase`'s extra nonce and

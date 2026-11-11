@@ -116,13 +116,15 @@ uv run pytest tests/unit/chainstate/filter_index_test.py -k scale
 
 ## `tests/unit/chainstate/_data/regtest_hash_serialized_3.json`
 
-Not vendored -- derived. A regtest chain of 103 blocks mined by Bitcoin
-Core v31.1.0 (`bitcoind -regtest`, `setmocktime 1700000000`): 101 blocks
-to a wallet address, a block holding one transaction with 301 outputs,
-and a block spending two of them (outputs 3 and 270). `blocks` is each
-block as `getblock <hash> 0` printed it, heights 1 to 103, and
-`gettxoutsetinfo` is that node's own answer to `gettxoutsetinfo` and
+Not vendored -- derived. A regtest chain of 103 blocks mined by
+`bitcoind -regtest` under `setmocktime 1700000000`: 101 blocks to a
+wallet address, a block holding one transaction with 301 outputs, and a
+block spending two of them (outputs 3 and 270). `blocks` is each block as
+`getblock <hash> 0` printed it, heights 1 to 103, and `gettxoutsetinfo`
+is that node's own answer to `gettxoutsetinfo` and
 `gettxoutsetinfo muhash` at height 103, the fields the tests compare.
+`bitcoind` at bitcoin/bitcoin@f0de87f040, the v32.1 tag, given the blocks
+by `submitblock`, gives the same answer.
 
 The hashes are Core's, not this tree's. The wide transaction is what
 makes the vector check the order the coins are folded in: the store
@@ -137,13 +139,13 @@ uv run pytest tests/unit/chainstate/utxo_index_test.py -k serialized_hash
 ## `tests/unit/chainstate/_data/mainnet_headers_1_32300.xz`
 
 Not vendored -- derived. The mainnet headers of heights 1 to 32,300, each
-as `getblockheader <hash> false` of a Bitcoin Core v31.1.0 node printed it,
-over its RPC. Height 32,256 is the first retarget that changes the target.
-The expected hashes, bits and chain work in
-`tests/unit/chainstate/real_header_chains_test.py` are that node's
-`getblockheader` answers at heights 32,255, 32,256 and 32,300; a second
-Core v31.1.0 with no peer, given the same headers by `submitheader`,
-answered the same tip and chain work. `chainparams.cpp` holds no
+as `getblockheader <hash> false` of a Bitcoin Core node on mainnet printed
+it, over its RPC. Height 32,256 is the first retarget that changes the
+target. The expected hashes, bits and chain work in
+`tests/unit/chainstate/real_header_chains_test.py` are the
+`getblockheader` answers at heights 32,255, 32,256 and 32,300 of
+`bitcoind` at bitcoin/bitcoin@f0de87f040, the v32.1 tag, with no peer,
+given the headers by `submitheader`. `chainparams.cpp` holds no
 checkpoint to compare a hash with.
 
 The file keeps, for each header, the 48 bytes its predecessor does not
@@ -186,9 +188,9 @@ the genesis. The heights 1 to 8,100 of
 `https://mempool.space/testnet4/api/v1/blocks/` are the same bytes.
 Height 7,465 is a minimum difficulty block and height 8,064 the retarget
 after it. The expected hashes, bits and chain work are the
-`getblockheader` answers of a Bitcoin Core v31.1.0 on testnet4 with no
-peer, given the headers by `submitheader`, at heights 7,464, 7,465,
-8,063, 8,064 and 8,100.
+`getblockheader` answers of `bitcoind` at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag, on testnet4 with no peer, given the headers by `submitheader`,
+at heights 7,464, 7,465, 8,063, 8,064 and 8,100.
 
 The 48-byte records and the compression are the mainnet entry's. The
 test pins the sha256
@@ -213,11 +215,11 @@ rather than as an extract: the vectors are calls in C++, and
 regex and counts them against the calls. Each `TestOptimalLinearization`
 is a serialized cluster with its one optimal linearization, and each
 `TestDepGraphSerialization` a cluster with its serialization.
-The blob is also the file at the v31.1 tag, bitcoin/bitcoin@9be056a8a7.
+The blob is also the file at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
 
 ## `tests/unit/_data/core_linearize_runs.txt`
 
-Not vendored -- derived. Clusters run through Bitcoin Core v31.1's own
+Not vendored -- derived. Clusters run through Bitcoin Core's own
 `Linearize` and `PostLinearize`, two lines a case: the input, and what
 Core printed. The odd lines are what this script prints, under
 `python3 -I`:
@@ -271,10 +273,10 @@ case(0, None, 0, 10**9)
 
 `core_linearize.cpp`, beside the file, is the program that read the odd
 lines and printed the even ones, compiled with Apple clang 21 against
-`src/` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+`src/` at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
 
 ```shell
-git -C <bitcoin> archive 9be056a8a7 src | tar -x -C <dir>
+git -C <bitcoin> archive f0de87f040 src | tar -x -C <dir>
 clang++ -std=c++20 -O1 -I<dir>/src \
     -o core_linearize tests/unit/_data/core_linearize.cpp
 awk 'NR % 2' tests/unit/_data/core_linearize_runs.txt | ./core_linearize
@@ -294,7 +296,7 @@ uv run pytest tests/unit/cluster_linearize_test.py -k core_s_own_runs
 
 ## `tests/unit/_data/core_rolling_bloom_runs.txt`
 
-Not vendored -- derived. Keys run through Bitcoin Core v31.1's own
+Not vendored -- derived. Keys run through Bitcoin Core's own
 `CRollingBloomFilter`, two lines a case: the input, and what Core
 printed. The odd lines are what this script prints, under `python3 -I`:
 
@@ -334,14 +336,14 @@ for n, fp in ((120000, 0.000001), (48000, 0.000001), (5000, 0.001)):
 `core_rolling_bloom.cpp`, beside the file, is the program that read the
 odd lines and printed the even ones, compiled with Apple clang 21. Its
 filter is Core's own code, cut out of `src/hash.cpp` and
-`src/common/bloom.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, but
+`src/common/bloom.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1 tag, but
 for `reset`, which takes the tweak from the input:
 
 ```shell
-git -C <bitcoin> archive 9be056a8a7 src | tar -x -C <dir>
-git -C <bitcoin> show 9be056a8a7:src/hash.cpp |
+git -C <bitcoin> archive f0de87f040 src | tar -x -C <dir>
+git -C <bitcoin> show f0de87f040:src/hash.cpp |
   sed -n '/^unsigned int MurmurHash3/,/^}/p' > <dir>/core_rolling_bloom.inc
-git -C <bitcoin> show 9be056a8a7:src/common/bloom.cpp |
+git -C <bitcoin> show f0de87f040:src/common/bloom.cpp |
   sed -n '/^CRollingBloomFilter::/,/::reset()$/p' |
   sed '$d' >> <dir>/core_rolling_bloom.inc
 clang++ -std=c++20 -O1 -I<dir>/src -I<dir> \

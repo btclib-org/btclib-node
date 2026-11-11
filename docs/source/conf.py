@@ -220,7 +220,7 @@ nitpick_ignore = [
 # xref to a target no page has, and -W fails the build. Six is every level
 # markdown heads at, which makes the number a fixed point rather than a
 # depth re-derived from the files it covers: CONTRIBUTING.md's shared half
-# is ported to every repository by section 14 of the organization
+# is ported to every repository by section 14 of the organization's
 # standard, so a heading added there moves a tree-derived depth in each of
 # them at once (btclib-org/.github#715)
 myst_heading_anchors = 6
@@ -262,7 +262,7 @@ html_theme = "furo"
 # path relative to the file. Sphinx sees them lifted out of the tree that
 # makes it correct, and myst resolves not one of those links. README.md
 # links it as BLOB plus its path, PyPI resolving no relative link against
-# the tree (section 2 of the organization standard), and myst renders
+# the tree (section 2 of the organization's standard), and myst renders
 # that as a link to GitHub.
 #
 # What myst emits for a relative link is the reason this needs code

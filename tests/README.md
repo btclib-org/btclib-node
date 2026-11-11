@@ -2,7 +2,7 @@
 
 ## Suite layout
 
-Section 7 of the [organization standard][std] admits a suite split by
+Section 7 of the [organization's standard][std] admits a suite split by
 kind, rather than by module, where a test's subject is a running process
 instead of something `tests/unit/` can mirror — and asks that the split
 be declared here, with its reason.
@@ -47,7 +47,7 @@ as well as because the three directories are each in it.
 
 ## Convention tests
 
-Section 7 of the [organization standard][std] lists convention-test
+Section 7 of the [organization's standard][std] lists convention-test
 bullets a suite can turn into a red test, and says a repository needs
 the ones its own conventions state in prose, plus the public surface,
 which a repository publishing an importable package has whether its
@@ -91,7 +91,7 @@ local run.
 
 ## Order
 
-Section 7 of the [organization standard][std] installs `pytest-randomly`
+Section 7 of the [organization's standard][std] installs `pytest-randomly`
 and needs no flag for it, and asks a suite that declines the shuffle to
 say so here with the reason. This suite takes it, and carries
 `pytest-order` beside it; what each of the two holds is said here

@@ -68,7 +68,7 @@ class BlockScriptVerifyError(BTClibValueError):
     amounts and its sigop cost have already passed.
     Composed as Core's own wire format for it,
     `block-script-verify-flag-failed (%s)` (`CheckInputScripts`,
-    `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    `src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     with `ScriptErrorString`, which btclib's `ScriptError.code` carries
     as `description`.
 
@@ -89,7 +89,7 @@ class MisbehavingError(BTClibValueError):
     among them, is logged and the peer kept, as Core's
     `PeerManagerImpl::ProcessMessages` catches an exception out of
     `ProcessMessage` and only logs it (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Raised where Core calls
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Raised where Core calls
     `Misbehaving`, directly or through `MaybePunishNodeForBlock`.
     `BTClibValueError`, so that a caller refusing a header or a block
     for any reason still catches it as one.
@@ -103,7 +103,7 @@ class LowWorkHeaderError(BTClibValueError):
     `AcceptBlockHeader` answers for a header whose caller has not checked
     that its chain clears `GetAntiDoSWorkThreshold`, and which
     `MaybePunishNodeForBlock` does not punish (`src/validation.cpp` and
-    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). Not a `MisbehavingError` for that reason.
     """
 
@@ -125,8 +125,8 @@ class MissingPrevoutError(ValueError):
 
 # The reasons whose Core result is `TX_RECONSIDERABLE`, which `PreChecks`,
 # `CheckFeeRate`, `ReplacementChecks` and the trim after an accepted
-# transaction give (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-# v31.1 tag): a refusal that a package with a child paying for it can undo.
+# transaction give (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag): a refusal that a package with a child paying for it can undo.
 _RECONSIDERABLE_REASONS = frozenset(
     {
         "mempool min fee not met",
@@ -145,7 +145,7 @@ class TxRejectedError(BTClibValueError):
     `reason` is `ValidationState::GetRejectReason` and `details` its debug
     message; `str()` is `ToString`, the two joined by ", ", or the reason
     alone where there is no debug message (`src/consensus/validation.h`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `rpc.callbacks` answers
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `rpc.callbacks` answers
     `testmempoolaccept`'s `reject-reason` and `reject-details` with them,
     and `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
     `p2p.callbacks.tx` hands it to `DownloadManager.mempool_rejected_tx`,
@@ -211,9 +211,9 @@ class NonStandardTxError(TxRejectedError):
     it defines the same set -- "we do not ban/disconnect nodes that
     forward txs violating the additional (non-mandatory) rules here, to
     improve forwards and backwards compatibility"
-    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@4519933391) --
-    and `p2p.callbacks.tx` is what honours it, catching this and
-    dropping the transaction alone.
+    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) -- and `p2p.callbacks.tx` is what honours it, catching
+    this and dropping the transaction alone.
 
     A `TxRejectedError`, so both RPC paths answer it in Core's words,
     as they answer any other refusal. Not a `MisbehavingError`, so
@@ -243,57 +243,12 @@ class ChainstateInconsistencyError(RuntimeError):
     `InvalidBlockInputError`, or `MissingPrevoutError`); reaching here
     is never that.
 
-    Two call sites used to belong on the list above: a stored `utxo-`
-    record `UtxoIndex.add_block`'s own prevout resolution or
-    `UtxoIndex.get_coin` reads back that `Coin.parse` cannot read.
-    Neither raises this class any more (btclib-org/btclib-node#650),
-    and the reasoning is Core's own. `CDBWrapper::Read`
-    (`src/dbwrapper.h:220-237`, at bitcoin/bitcoin@ca7162cde5) catches
-    a deserialize failure inside its own `try` and returns `false`,
-    and `CCoinsViewDB::GetCoin` (`src/txdb.cpp:88-95`) turns that
-    `false` into `std::nullopt` -- the coin reads back as absent,
-    never as an error. `CDBWrapper` reads with `verify_checksums =
-    true` (`src/dbwrapper.cpp:248`), and a checksum mismatch reaches
-    `HandleError` (`src/dbwrapper.cpp:46-53`), which throws
-    `dbwrapper_error` and ends the process, before `ReadImpl`
-    (`src/dbwrapper.cpp:346-357`) ever returns and `Read`'s own `try`
-    runs at all -- so the deserialize failure that `try` actually
-    catches is a format mismatch on an intact, checksummed read,
-    never bit rot. `db.py`'s own store now carries the same
-    separation: RocksDB verifies an equivalent per-block checksum on
-    every read (btclib-org/btclib-node#641), so a genuinely corrupted
-    `utxo-` record is caught there, as `StoreCorruptionError`, before
-    either `Coin.parse` call in `UtxoIndex` ever runs on it -- and
-    what reaches `Coin.parse` is therefore exactly the case Core
-    answers absent to. `UtxoIndex.get_coin` now returns `None` for
-    it, and `UtxoIndex.add_block` folds it into the same
-    `InvalidBlockInputError` ("prevout not found") a genuinely
-    missing prevout already raises, matching `GetCoin`'s own
-    `std::nullopt` rather than raising a class of this tree's own
-    that Core has no equivalent of at that call.
-
-    What that answer costs is real, and Core pays it too: a coin this
-    node wrote itself, that a bug in this node's own serializer alone
-    can make unparsable on a checksum-clean read, is from here
-    indistinguishable from a coin that never existed, and a later,
-    genuinely valid block spending it is rejected. `Consensus::CheckTxInputs`'s
-    own `HaveInputs` check (`src/consensus/tx_verify.cpp:169-174`, at
-    bitcoin/bitcoin@ca7162cde5) answers a missing coin
-    `TX_MISSING_INPUTS`, `"bad-txns-inputs-missingorspent"`, and
-    `ConnectBlock` (`src/validation.cpp:2543-2547`) turns that
-    failure into `BlockValidationResult::BLOCK_CONSENSUS` -- an
-    ordinary consensus rejection, on the wire indistinguishable from
-    a block that spent a coin that genuinely never existed. Core
-    carries this exposure knowingly, not by oversight: `CDBWrapper::Read`'s
-    own `try` has no way to tell "the checksum passed but the bytes
-    are not a `Coin`" apart from "nothing is stored here" before it
-    ever answers `false` for either, so a local deserialize bug
-    surfacing as a rejected valid block is the accepted cost of the
-    one read path that keeps every other cause of "missing" simple.
-    This tree now pays the identical cost, for the identical reason:
-    matching Core's behaviour end to end rather than only the half of
-    it that reads comfortably (CONTRIBUTING.md's own *Following Bitcoin
-    Core* argues the same trade for `CDBWrapper::Read` in general).
+    A stored `utxo-` record `Coin.parse` refuses is raised as this
+    class too, by `UtxoIndex._parse_stored`, whichever `UtxoIndex` read
+    reaches it. `UtxoIndex._stored_prevout`'s docstring says why it
+    stops the node, as Core's `CCoinsViewDB::GetCoin` does
+    (`src/txdb.cpp:88-108`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), rather than answer the coin absent.
 
     `message` and not a structured payload per call site: what is
     inconsistent (a hash, a count, a status) differs by call site, and
@@ -427,16 +382,11 @@ class StoreCorruptionError(RuntimeError):
     `db.py`'s own module docstring is where the checksum this class
     detects is argued against Core's `verify_checksums = true`
     (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637).
-    Neither of `UtxoIndex`'s two chainstate callers maps this onto
-    `ChainstateInconsistencyError`: `add_block` and `get_coin` both
-    call `self.db.get` unguarded, so a genuine `StoreCorruptionError`
-    there propagates as itself to whatever each caller's own caller
-    does with an exception outside its own -- `update_chain`'s trial
-    loop for `add_block`, `verify_mempool_acceptance`'s own callers
-    for `get_coin`. `ChainstateInconsistencyError`'s own docstring is
-    where the distinct, now-resolved question sits: what a
-    `Coin.parse` failure means once this guard has already passed a
-    record as intact (btclib-org/btclib-node#650).
+    `UtxoIndex` does not map this onto `ChainstateInconsistencyError`: a
+    read by outpoint that raises it stops the node and raises it again,
+    as `UtxoIndex._stored_prevout`'s docstring says. A record this guard
+    passes as intact and `Coin.parse` still refuses raises
+    `ChainstateInconsistencyError`.
     """
 
     def __init__(self, message: str) -> None:
@@ -540,7 +490,7 @@ class RejectedMessageError(BTClibValueError):
     """A whole message was framed and is dropped, its sender kept.
 
     Core's `reject_message` (`V1Transport::GetReceivedMessage`,
-    `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+    `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
     checksum that does not match the payload, or a command
     `IsMessageTypeValid` refuses. `size` is the message's own octets,
     header included, which the stream has been moved past.

@@ -3,11 +3,11 @@
 What this repository holds in common with the others of the organization
 — the toolchain, the lint gate, the tool tables behind it, the workflow
 set and the branch rules — is stated once in the
-[btclib-org repository standard](https://github.com/btclib-org/.github),
-each rule with the alternative it was decided against. It binds this
+[organization's standard](https://github.com/btclib-org/.github), each
+rule with the alternative it was decided against. It binds this
 repository, so a change departing from it is a divergence, and one filed
-as an issue in that repository rather than here: a difference between two
-repositories belongs to neither of them.
+as an issue in btclib-org/.github rather than here: a difference between
+two repositories belongs to neither of them.
 
 **This file is the same in every repository of the organization up to
 its last section.** What is true of one tree only — the commands that
@@ -62,14 +62,20 @@ review without the model. Text or code you have not read, or cannot
 explain, is closed without review.
 
 **For a pull request the agent opened, whoever approves it reads every
-line and answers for it as their own**, the agent being `claude[bot]`,
-run on an issue by [section 10][s10]'s `reusable-claude-implement.yml`.
-The maintainer, landing it through the bypass without an approval, reads
-every line and answers for it instead, the landing being their own act;
-requiring an approval even where the bypass is kept is the alternative
-set aside. The agent signs off nothing, since a bot cannot certify the
-[Developer Certificate of Origin][dco], so the approval, or that
-landing, is the certification.
+line and answers for it as their own**, the agent being the pull-request
+agent of [`GOVERNANCE.md`][governance]'s *Roles*. The maintainer,
+landing it through the bypass without an approval, reads every line and
+answers for it instead, the landing being their own act; requiring an
+approval even where the bypass is kept is the alternative set aside. The
+agent signs off nothing, since a bot cannot certify the [Developer
+Certificate of Origin][dco], so the approval, or that landing, is the
+certification.
+
+**The `agent` label hands an issue to that agent**, in a repository
+that calls its implement workflow. [Section 11][s11]'s *Labels and issue types*
+says who applies it, [section 10][s10] what the agent does with an issue
+it admits, and the workflow's header which issues it takes, what answers
+a `decision`, and the switch that turns it on.
 
 **Write plainly**, in the tree and on the forge: the point first, plain
 words, one fact per sentence. On the forge, the title and the first
@@ -171,12 +177,11 @@ free to move under a review:
 - the reviewer reopens a thread whose finding is still blocking, and
   re-reviews the delta rather than the branch.
 
-**What ends the loop is the ack of record**, and the author does not
-supply their own. A reading that says what it found and delivers no
-verdict is a review too and ends nothing; [the standard's *Review*][s-rev]
-has which is which, and `REVIEWING.md` has how each is written. A
-disagreement that survives a second exchange goes to the maintainer
-instead of into a third round.
+**What ends the loop is the ack of record.** A reading that says what
+it found and delivers no verdict is a review too and ends nothing; [the
+standard's *Review*][s-rev] has which is which, and `REVIEWING.md` has
+how each is written. A disagreement that survives a second exchange
+goes to the maintainer instead of into a third round.
 
 **The ack of record is not the approval *Landing it* asks for**: it is
 a bot's review of type COMMENT ([the standard's *Review*][s-rev] says
@@ -470,8 +475,8 @@ nor `workflow_dispatch`, so there is no way to ask about a branch at
 all -- its own header says why.
 
 Which day each of the periodic ones runs is one calendar for the whole
-organization, in [section 10 of `btclib-org/.github`'s
-README](https://github.com/btclib-org/.github/blob/main/README.md), not
+organization, in [section 10 of the organization's
+standard](https://github.com/btclib-org/.github/blob/main/README.md), not
 repeated here. The trade it makes is worth knowing before relying on it:
 a defect only a sweep can see sits on `main` until that sweep runs, at
 most a week.
@@ -544,8 +549,8 @@ here does not dirty the tree that gate reads.
 ### A release path, and what it has published
 
 `.github/workflows/release.yml` exists and section 2 of
-[btclib-org/.github's
-README](https://github.com/btclib-org/.github/blob/main/README.md)
+[the organization's
+standard](https://github.com/btclib-org/.github/blob/main/README.md)
 measures a repository's tier from that file and `pyproject.toml` alone,
 so this tree is tier 1 — the decision
 [ISS btclib-org/btclib-node#286](https://github.com/btclib-org/btclib-node/issues/286)
@@ -644,12 +649,11 @@ Mimicry is of the observed behaviour end to end, not of a local
 different code above it, and that is still matching. `db.py`'s store
 verifies a per-block checksum on every read
 (btclib-org/btclib-node#641), the guarantee LevelDB gives Core's
-`CDBWrapper::Read` before its deserialize `try` runs. `UtxoIndex`'s two
-`Coin.parse` fallbacks answer `None` for a checksum-clean record that
-does not deserialize, as `CDBWrapper::Read` and
-`CCoinsViewDB::GetCoin` answer "absent" rather than raising
-(btclib-org/btclib-node#650); `ChainstateInconsistencyError`'s docstring
-argues that decision.
+`CDBWrapper::Read` before its deserialize `try` runs. A checksum-clean
+`utxo-` record that `UtxoIndex` reads by outpoint and cannot deserialize
+stops the node, as Core's `CCoinsViewDB::GetCoin` does (`src/txdb.cpp`,
+at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
+`UtxoIndex._stored_prevout`'s docstring says how.
 
 A capability Core has that this tree lacks is a gap to close, not a
 constraint to design around, wherever the reason is a library fact

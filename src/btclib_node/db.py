@@ -22,12 +22,12 @@ wrapped by `CDBWrapper` -- to avoid a compiled dependency: no wheel
 missing on a platform, no compiler, no stubs. That measurement never
 weighed what LevelDB gives Core in exchange:
 `CDBWrapper` reads with `verify_checksums = true`
-(`src/dbwrapper.cpp:248`, at bitcoin/bitcoin@ca7162cde5) over data
-LevelDB itself checksums per block (CRC32C), so a bit flipped on disk
-is an exception at the read, never a wrong answer. sqlite3, as this
-store used it, checksummed nothing: a flipped bit in a value read back
-as a different, valid-looking value, silently, and a flipped bit in a
-key made the record it named cease to exist, both measured directly
+(`src/dbwrapper.cpp:248`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+over data LevelDB itself checksums per block (CRC32C), so a bit flipped
+on disk is an exception at the read, never a wrong answer. sqlite3, as
+this store used it, checksummed nothing: a flipped bit in a value read
+back as a different, valid-looking value, silently, and a flipped bit in
+a key made the record it named cease to exist, both measured directly
 (btclib-org/btclib-node#641). Only the first of those two is even in
 reach of a scheme built by hand inside a value's own bytes
 (btclib-org/btclib-node#637's own per-record CRC): a corrupted key is
@@ -88,7 +88,7 @@ benchmark could have fallen into).
 ## The configuration, matched to Core's `GetOptions`/`DBParams` line by line
 
 `src/dbwrapper.cpp` and `src/dbwrapper.h`, read at
-bitcoin/bitcoin@ca7162cde5:
+bitcoin/bitcoin@f0de87f040, the v32.1 tag:
 
 - `options.compression = leveldb::kNoCompression`
   (`src/dbwrapper.cpp:145`) -> `DBCompressionType.none()`. Compression is
@@ -112,7 +112,7 @@ bitcoin/bitcoin@ca7162cde5:
   too, on the scan alone: a full walk of the store is not the working
   set this store's own block cache exists to hold hot, and Core does
   not let one displace it either.
-- `DBParams.bloom_filter = true` by default (`src/dbwrapper.h:54`) ->
+- `DBParams.bloom_filter = true` by default (`src/dbwrapper.h:55`) ->
   `NewBloomFilterPolicy(10)` (`src/dbwrapper.cpp:144`) ->
   `BlockBasedOptions.set_bloom_filter(10, False)`, reached through
   `Options.set_block_based_table_factory`. This is the storage engine's
@@ -350,8 +350,8 @@ Bitcoin Core pays a narrower version of the same cost differently, because
 its own equivalent of this tree's block index and coins is not one store.
 Its block index (`BlockTreeDB`) and its coins cache (`CCoinsViewDB`) are two
 separate LevelDB instances, and `Chainstate::FlushStateToDisk`
-(`validation.cpp`, read at bitcoin/bitcoin@ca7162cde5) writes them in
-sequence rather than together -- `WriteBlockIndexDB()` first,
+(`validation.cpp`, read at bitcoin/bitcoin@f0de87f040, the v32.1 tag) writes
+them in sequence rather than together -- `WriteBlockIndexDB()` first,
 `CoinsTip().Flush()`/`.Sync()` second, both gated by the same `should_write`
 -- so blocks connected since the last such flush are lost to a crash exactly
 the way this store loses them, and Core redoes them the same way, through
@@ -433,7 +433,7 @@ _SCHEMA_VERSION = 1
 # Core's own default `-dbcache`, and what it gives the coins database
 # specifically: the module docstring's own configuration section
 # derives this arithmetic from `node/caches.cpp` and `kernel/caches.h`,
-# both read at bitcoin/bitcoin@ca7162cde5.
+# both read at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
 _N_CACHE_SIZE = 8 * 1024 * 1024  # 8 MiB
 
 
@@ -447,25 +447,25 @@ def _make_options() -> Options:
     options.create_if_missing(create_if_missing=True)
     options.create_missing_column_families(create_missing_cfs=True)
     # paranoid_checks = true (dbwrapper.cpp:150,162),
-    # at bitcoin/bitcoin@ca7162cde5
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
     options.set_paranoid_checks(True)
     # compression = kNoCompression (dbwrapper.cpp:145),
-    # at bitcoin/bitcoin@ca7162cde5
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
     options.set_compression_type(DBCompressionType.none())
     # write_buffer_size = nCacheSize / 4 (dbwrapper.cpp:143),
-    # at bitcoin/bitcoin@ca7162cde5
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
     options.set_write_buffer_size(_N_CACHE_SIZE // 4)
 
     block_based = BlockBasedOptions()
     # 10 bits/key is LevelDB's own NewBloomFilterPolicy(10), and
-    # DBParams.bloom_filter defaults to true (dbwrapper.h:54,
-    # dbwrapper.cpp:144, at bitcoin/bitcoin@ca7162cde5). This is the
-    # storage engine's own bloom filter, over the bytes of every key
-    # this store holds, unrelated to BIP37's deprecated,
+    # DBParams.bloom_filter defaults to true (dbwrapper.h:55,
+    # dbwrapper.cpp:144, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    # This is the storage engine's own bloom filter, over the bytes of
+    # every key this store holds, unrelated to BIP37's deprecated,
     # peer-relay one.
     block_based.set_bloom_filter(bits_per_key=10, block_based=False)
     # block_cache = NewLRUCache(nCacheSize / 2) (dbwrapper.cpp:142),
-    # at bitcoin/bitcoin@ca7162cde5
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
     block_based.set_block_cache(Cache(_N_CACHE_SIZE // 2))
     options.set_block_based_table_factory(block_based)
     return options
@@ -474,10 +474,10 @@ def _make_options() -> Options:
 # rocksdict's own ReadOptions default already verifies checksums; set
 # explicitly anyway, the way Core's own CDBWrapper constructor does
 # rather than relying on the vendor's default (dbwrapper.cpp:248-249,
-# at bitcoin/bitcoin@ca7162cde5). The iterator's own copy additionally
-# turns off fill_cache, matching iteroptions.fill_cache = false
-# (dbwrapper.cpp:250, same sha): a full walk of the store is not this
-# store's own working set.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The iterator's own copy
+# additionally turns off fill_cache, matching iteroptions.fill_cache =
+# false (dbwrapper.cpp:250, same sha): a full walk of the store is not
+# this store's own working set.
 _READ_OPTIONS = ReadOptions()
 _READ_OPTIONS.set_verify_checksums(True)
 

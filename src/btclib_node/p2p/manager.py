@@ -41,6 +41,7 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node import clock
 from btclib_node.config import (
+    MAX_ADDNODE_CONNECTIONS,
     BindAddress,
     WhitebindAddress,
     default_onion_bind,
@@ -199,16 +200,13 @@ _TIMEOUT_INTERVAL = 1200
 # added peer `_MANUAL_STEP` apart while a `semAddnode` grant is free,
 # then sleeping `_ADDNODE_RETRY_TRIED` where it dialled any and
 # `_ADDNODE_RETRY_IDLE` where it dialled none.
-# `_MAX_ADDNODE_CONNECTIONS` is Core's own
-# `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, same sha), the grants
-# `semAddnode` holds; an added peer counts as holding one for as long
-# as its own endpoint is held, where Core moves the grant into the
-# connection it made.
+# `config.MAX_ADDNODE_CONNECTIONS` is the grants `semAddnode` holds; an
+# added peer counts as holding one for as long as its own endpoint is
+# held, where Core moves the grant into the connection it made.
 _MANUAL_STEP = 0.5
 _CONNECT_MAX_STEPS = 10
 _ADDNODE_RETRY_TRIED = 60.0
 _ADDNODE_RETRY_IDLE = 2.0
-_MAX_ADDNODE_CONNECTIONS = 8
 
 # The outbound slots Core reserves out of `-maxconnections` before
 # inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
@@ -2903,7 +2901,7 @@ class P2pManager(threading.Thread):
         `ThreadOpenAddedConnections` (`src/net.cpp`, at
         bitcoin/bitcoin@f0de87f040, the v32.1 tag) over
         `GetAddedNodeInfo(include_connected=false)`: a `semAddnode`
-        grant is free while fewer than `_MAX_ADDNODE_CONNECTIONS` added
+        grant is free while fewer than `MAX_ADDNODE_CONNECTIONS` added
         peers are held, checked again before every dial in the pass so a
         peer that connects mid-pass counts at once, as Core's grant
         would; a dial that connects keeps its own grant, as Core moves
@@ -2938,7 +2936,7 @@ class P2pManager(threading.Thread):
             for node_str in raw:
                 if self._is_held(node_str, by_address, by_name):
                     continue
-                if self._added_held() >= _MAX_ADDNODE_CONNECTIONS:
+                if self._added_held() >= MAX_ADDNODE_CONNECTIONS:
                     break
                 tried = True
                 await self._open_manual(node_str, port, use_v2transport=v2[node_str])

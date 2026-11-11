@@ -9,9 +9,7 @@ transaction, of an orphan taken up again and of a parent with its child,
 on `Node`'s thread, and queues the candidate here.
 `p2p.main.resume_tx_checks` hands the scripts to `Node.worker_pool`, one
 candidate at a time, and applies the verdict back on `Node`'s thread,
-so the loop goes on serving other peers while it runs; the sending
-peer's later messages wait for the verdict and for any orphan it is to
-reconsider.
+so the loop goes on serving other peers while it runs.
 
 At most one candidate per peer is queued or checked at a time. A
 peer's later messages of every command wait here, in order, still
@@ -102,6 +100,9 @@ class TxChecks:
         self._pending: Counter[bytes] = Counter()
         # a peer's messages not read yet: command, payload, weight, time read
         self.waiting: dict[int, deque[tuple[str, bytes, int, float]]] = {}
+        # by connection id, the other peers its transactions marked an
+        # orphan for, each with the check its next orphan taken up queued
+        self.marked: dict[int, dict[int, TxCheck | None]] = {}
         # the one check handed to the pool, its pending verdict, and the
         # `time.monotonic()` it is due by
         self._in_flight: tuple[TxCheck, AsyncResult[Any], float] | None = None

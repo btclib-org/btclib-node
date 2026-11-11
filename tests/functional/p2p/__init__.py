@@ -56,7 +56,7 @@ from btclib.p2p.message import Message
 from btclib.p2p.negotiation import WtxidRelay
 from btclib.tx import Tx, TxIn
 
-from btclib_node import download
+from btclib_node import clock, download
 from btclib_node.chains import RegTest
 from tests import (
     brute_force_nonce,
@@ -70,7 +70,6 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
-    import pytest
     from btclib.p2p.payload import Payload
 
     from btclib_node import Node
@@ -82,19 +81,14 @@ _RECV_BYTES = 1 << 16
 # not require (Core's `bad-diffbits`)
 _WRONG_BITS = REGTEST_POW_LIMIT_BITS[:-1] + bytes([REGTEST_POW_LIMIT_BITS[-1] - 1])
 
-# how long a block may stay in flight before its peer is dropped: Core's
-# ten minutes (`BLOCK_DOWNLOAD_TIMEOUT_BASE` block intervals), cut to what
-# a test can wait for
-_BLOCK_DOWNLOAD_TIMEOUT_SECONDS = 3
+# one second past how long a block may stay in flight while no other peer
+# has one in flight, after which its peer is dropped
+_PAST_BLOCK_DOWNLOAD_TIMEOUT = (
+    int(download._POW_TARGET_SPACING * download._BLOCK_DOWNLOAD_TIMEOUT_BASE) + 1
+)
 
 DoctorHeaders = Callable[[int, list[BlockHeader]], list[BlockHeader]]
 DoctorBlock = Callable[[int, Block], Block]
-
-
-def shorten_block_download_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop a peer a block was asked of after a few seconds, not ten minutes."""
-    base = _BLOCK_DOWNLOAD_TIMEOUT_SECONDS / download._POW_TARGET_SPACING
-    monkeypatch.setattr(download, "_BLOCK_DOWNLOAD_TIMEOUT_BASE", base)
 
 
 class ScriptedPeer:
@@ -381,6 +375,12 @@ def _arrived(node: Node, peer: ScriptedPeer, known: set[int]) -> bool:
     return peer.dropped.is_set() or bool(set(node.p2p_manager.connections) - known)
 
 
+def _withheld(node: Node, peer: ScriptedPeer) -> bool:
+    """Whether the node holds `peer`'s tip header and `peer` refused a block."""
+    tip = peer.chain[-1].header.hash
+    return peer.lied.is_set() and tip in node.chainstate.block_index.header_dict
+
+
 @contextmanager
 def a_node_among_peers(
     tmp_path: Path,
@@ -397,10 +397,25 @@ def a_node_among_peers(
     so the node meets them in the order given. Yields the node, the
     peers, and the honest tip. The peers are closed and the node stopped
     on exit.
+
+    The node's clock is held from the start, so that no timeout of the
+    node's runs out on a slow runner, an honest peer's included. Once a
+    peer that serves no blocks has sent the headers of its whole chain
+    and answered the node's request with `notfound`, the clock is stepped
+    one second past Core's block download timeout, as
+    `test/functional/p2p_ibd_stalling.py` steps `setmocktime` past the
+    stalling timeout at bitcoin/bitcoin@f0de87f040, the v32.1 tag. Where
+    no other peer has blocks in flight, that drops the peer at once.
+
+    Another peer may still have blocks in flight then. While it does,
+    every peer's timeout is half a block interval longer, so nobody is
+    dropped until its queue empties, and a peer that delivers a block
+    restarts its own wait.
     """
     genesis = RegTest().genesis.hash
     honest = generate_random_chain(length, genesis)
     fork = generate_random_chain(length + 1, genesis)
+    clock.set_mock_time(int(time.time()))
     with (
         node_context(tmp_path, allow_rpc=False, v1transport=True) as node,
         ExitStack() as stack,
@@ -413,4 +428,8 @@ def a_node_among_peers(
             stack.enter_context(peer)
             peers.append(peer)
             wait_until(functools.partial(_arrived, node, peer, known))
+        for peer in peers:
+            if not peer.serves_blocks:
+                wait_until(functools.partial(_withheld, node, peer))
+                clock.set_mock_time(clock.mock_time() + _PAST_BLOCK_DOWNLOAD_TIMEOUT)
         yield node, peers, honest[-1].header.hash
