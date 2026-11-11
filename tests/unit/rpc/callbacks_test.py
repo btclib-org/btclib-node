@@ -5592,15 +5592,18 @@ def test_addnode_remove_succeeds_once_added() -> None:
 def test_addnode_refuses_an_empty_node_address() -> None:
     """Core's own exact text for a blank `node` argument."""
     added: list[str] = []
+
+    def record_add(node_str: str, *, use_v2transport: bool) -> bool:
+        added.append(node_str)
+        return True
+
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
             config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
-                add_added_peer=lambda node_str, *, use_v2transport: (
-                    added.append(node_str) or True
-                ),
+                add_added_peer=record_add,
                 connect_host=lambda host, port, *, use_v2transport: None,
             ),
         ),
