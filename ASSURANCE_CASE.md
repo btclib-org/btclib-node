@@ -395,21 +395,24 @@ and what counters each.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Exposure of sensitive information (CWE-209).** The rule is section 7's
   *A refusal carries no secret* in btclib-org/.github's README.md.
-  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
-  rule's tests call, and `git grep -n assert_secret_free -- tests/unit`
-  lists them. `cli.py`'s `_quoted_line` quotes a configuration line or key,
-  a section name, a command-line argument or a `settings.json` name in a
-  refusal, a warning or a log, as in the refusal of a line that fails to
-  parse: up to the first sensitive option's name and the first `=`, and
-  only where that has at most `_MAX_QUOTED_NAME` characters, a longer one
-  being given by its length. `settings_file.py`'s `read_settings` takes it
-  as `quote` for a key named twice. The settings log writes a
-  `settings.json` value only where its name is a known option that is not
-  sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
-  of `RequestHead` excludes `raw` and `fields`, which hold the
-  `Authorization` field, and the repr of `_Settings` excludes the fields
-  that may hold a credential. `assert_free_of_credential` is used in both
-  `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py`.
+  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper
+  the rule's tests call, the repr tests below apart, and
+  `git grep -n assert_secret_free -- tests/unit` lists its callers.
+  `cli.py`'s `_quoted_line` quotes a
+  configuration line or key, a section name, a command-line argument or a
+  `settings.json` name up to the first sensitive option's name and the
+  first `=`, and only where that has at most `_MAX_QUOTED_NAME`
+  characters; a longer one is given by its length. Refusals, warnings and
+  logs quote them this way, the refusal of a line that fails to parse
+  among them. `settings_file.py`'s `read_settings` takes it as `quote`
+  for a key named twice. The settings log writes a `settings.json` value
+  only where its name is a known option that is not sensitive, and `****`
+  for any other (`cli.py`'s `_log_args`). The repr of `RequestHead`
+  excludes `raw` and `fields`, which hold the `Authorization` field, and
+  the repr of `_Settings` excludes the fields that may hold a credential.
+  `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py` each
+  check this with an `assert_free_of_credential` of their own, not with
+  `assert_secret_free`.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
