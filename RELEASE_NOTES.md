@@ -22,6 +22,122 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.11
+
+Everything below is measured against `v2026.11.7`. `CHANGELOG.md`'s own
+`v2026.11.11` section is the record of what went into it.
+
+The public API changes: *Breaking changes* below names each break that griffe
+and btclib-org/.github's `api_gaps.py` report against `v2026.11.7`.
+
+### Upgrade from 2026.11.7
+
+- **btclib-node 2026.11.7 fails to import with btclib 2026.11.10**
+  (issue #2409). It asks for btclib 2026.10.28 or later, with no upper bound,
+  and imports `btclib.policy.are_inputs_standard`, which btclib 2026.11.10
+  removes. So a fresh install of 2026.11.7 resolves btclib 2026.11.10 and
+  raises `ImportError`. This release imports on btclib 2026.11.10.
+- **btclib is required at 2026.11.10 or later, ecc at 2026.11.11 or later and
+  bip32-descriptors at 2026.11.11 or later** (closes #2241, closes #2242),
+  where 2026.10.28, 2026.10.28 and 2026.11.2 were enough. An environment that
+  pins one of them lower no longer resolves. ecc 2026.11.11 is the first
+  release whose refusals print no byte of a value refused as a signature,
+  which may be a key passed in its place (btclib-org/ecc#495).
+
+### Breaking changes
+
+- **`submitblock`, the `getblocktemplate` proposal and `generateblock` answer
+  Core's reject reasons** (closes #2167, closes #2247). A block failing
+  CheckBlock or CheckTransaction gets Core's word, such as
+  `bad-txns-inputs-duplicate`, where it got btclib's text. A missing or spent
+  input gets `bad-txns-inputs-missingorspent`, and a connect failure written
+  as a word and its detail gets the word alone. `generateblock`'s refusal and
+  `TemplateError` read `TestBlockValidity failed: <word>`. A client that
+  matched the old text breaks.
+- **`scantxoutset` and `generateblock` refuse `raw()` inside `sh()`, `wsh()`
+  and `tr()`, `rawpkh()`, `rawnode()` and `rawleaf()` with -5**, as bitcoind
+  v32.1 refuses them (closes #2231, closes #2269). 2026.11.7 accepted them.
+- **A stored coin that does not deserialize, or that the store reports
+  corrupt, stops the node** (closes #2275, closes #2357), with "Error reading
+  from database" in the log, as bitcoind v32.1 aborts. 2026.11.7 answered the
+  first as absent, and stopped on the second only when a block read it.
+- **A start whose stored address table fails Core's consistency check ends on
+  "Invalid or corrupt peers.dat"** (closes #2328). 2026.11.7 started on it.
+- **`-maxconnections` is capped at 2000 and lowered to the file descriptors
+  left, each with Core's warning**, once read as a saturating 32-bit int
+  (closes #2127, closes #2338). `Config.max_connections` holds the result and
+  `Config.max_connections_warnings` the warnings, which `Node.logger` passes
+  to `open_history_log` as `max_connections_warnings`.
+  `MAX_ADDNODE_CONNECTIONS` is in `btclib_node.config`. Under `-server`, a
+  `-rpcmaxconnections` near `2**31` is refused, as in Core.
+- **`Config`'s `rpcmaxconnections` is annotated `float`, and `Config` refuses
+  a value that is no int or past one** (closes #2347): `cli` hands it a
+  `settings.json` number as given, as bitcoind v32.1 reads it.
+- **An empty `-addnode` value is skipped with "Ignoring empty -addnode
+  value"** (closes #2248). `Config.addnode` and `Config.addnode_args` leave it
+  out, and `Config.addnode_empty` counts it.
+- **`Config` gains the fields `deterministic_addrman`, `check_addrman`,
+  `addnode_empty`, `max_connections_warnings` and `tx_send_rate`** (issue #2175,
+  closes #2248, closes #2338, closes #2309), so the fields after them move in
+  `dataclasses.fields(Config)`.
+- **`Chain`, `Main`, `TestNet`, `TestNet4`, `SigNet` and `RegTest` end on a
+  field `bip94`**, false by default (closes #2327). `Chain.with_bip94` returns
+  a copy that enforces BIP94, which `-test=bip94` selects on regtest.
+- **`Connection.connected_time` and `EvictionCandidate.connected` are float
+  seconds** (closes #2252), so eviction tells apart two peers that connected
+  in the same second, as Core v32.1 does. `getpeerinfo`'s `conntime` stays in
+  whole seconds.
+- **`LocalService.address`, `reachability`'s `ours` and the address
+  `address_for_peer` returns, in `p2p.selfannounce`, are a `p2p.banman.Host`**
+  (closes #2249), which holds an onion or I2P address too: an `-externalip` on
+  a network this node does not reach is kept, as in Core v32.1.
+- **The node announces protocol version 70017, and `handshake_callbacks`
+  holds `feature`** (closes #2250). A BIP434 `feature` after `verack`, at a
+  common version below 70017, or whose payload Core refuses, drops the peer.
+- **`disconnectnode` matches a link-local peer by its scoped address alone**,
+  such as `[fe80::1%1]:8333`, as `getpeerinfo` writes it and as Core matches
+  it (closes #2266).
+- **`notify.Warnings.set_warning` and `unset_warning` raise `ValueError` for
+  an id Core does not have** (closes #2294).
+- **A stored block's refused CompactSize reads `non-canonical var_int of <n>
+  bytes` or `var_int too big: max is <limit>`** (closes #2351), and prints no
+  octet of the block.
+- **A miniscript input whose script names a key off the curve is left
+  unsigned**, where Core signs a script that never needs that key's signature
+  (btclib-org/bip32-descriptors#292). bip32-descriptors 2026.11.11 refuses
+  the key.
+
+### Worth knowing, though nothing raises
+
+- **`getnetworkinfo` answers `version`, `localrelay`, `timeoffset`,
+  `networks`, `relayfee`, `incrementalfee`, `tx_send_rate` and
+  `inv_buckets`** (closes #2128, closes #2309). `version` encodes this node's
+  own version as Core's `CLIENT_VERSION` does, which is above every Core's: a
+  client that gates a feature on it reads this node as newer than any Core.
+- **A median outbound clock offset past ten minutes sets Core's
+  `CLOCK_OUT_OF_SYNC` warning** (closes #2282), which `getblockchaininfo` and
+  `getnetworkinfo` list.
+- **Transaction announcements are rate-limited across peers, as in Core
+  v32.1** (closes #2106): `-txsendrate`, 14 by default, sets the rate.
+- **A message with octets past its fields is handled** (closes #2097).
+  2026.11.7 dropped it, and a `version` with one never completed the
+  handshake. Over v2, BIP324 short ids 33 to 37 are read (closes #2302).
+- **A typed outbound peer short of Core's services is dropped whatever the
+  sync state** (closes #2169).
+- **After a sync, the fee estimates start at the block that ended initial
+  block download** (closes #2178), and the unknown version bits are checked
+  from that block (closes #2345).
+- **A link-local `-bind` binds at its scope, and a manual dial connects at
+  it** (closes #2165, closes #2292). On Windows both listeners set
+  `IPV6_PROTECTION_LEVEL` (closes #2163).
+- **`-test=addrman`, `-checkaddrman` and `-test=bip94` are read with Core's
+  meaning** (issue #2175, closes #2327).
+- **A transaction whose input value, or input total, is outside
+  `0..MAX_MONEY` is refused with `bad-txns-inputvalues-outofrange`**
+  (closes #2111).
+- **The sdist leaves out the test modules that need the repository**
+  (closes #2232).
+
 ## v2026.11.7
 
 Everything below is measured against `v2026.11.4`. `CHANGELOG.md`'s own
