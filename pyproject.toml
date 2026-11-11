@@ -632,9 +632,8 @@ source-exclude = [
 # above is where what went unasked before it is written down. What that
 # table's source-exclude names is not repeated here, check-sdist reading
 # it for the uv backend, so this holds only what no include pattern adds
-# in the first place: the workspaces of an editor and of an agent, the
-# files git reads, and COPYRIGHT. Patterns are gitignore's, so a
-# directory covers what is under it at any depth.
+# in the first place and nothing installed from the sdist reads. Patterns
+# are gitignore's, so a directory covers what is under it at any depth.
 #
 # Root prose, AGENTS.md included, travels with the archive under `*.md`,
 # and .claude/ does not. Section 13 of btclib-org/.github tracks .claude/
@@ -647,6 +646,7 @@ source-exclude = [
 # that list has no say over what the backend packs, and
 # [tool.uv.build-backend] above is where the omission is decided
 git-only = [
+    ".bestpractices.json",
     ".claude/",
     # the atheris harnesses and the seeds they start from, read by
     # fuzz.yml and by tests/fuzz_corpus_test.py and by nothing a package
