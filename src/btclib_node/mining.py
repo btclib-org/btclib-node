@@ -18,10 +18,6 @@ searches on an RPC thread of its own.
 
 Where this module differs from Core:
 
-- The coinbase `script_sig` ends in an `OP_0` at every height, as
-  `CreateNewBlock` with `include_dummy_extranonce` appends it at
-  bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-  until ISS 2258.
 - `-blockmaxweight`, `-blockmintxfee`, `-blockreservedweight` and
   `-printpriority` are not options of this node: the block limits are
   Core's defaults, and the chunks from the first under
@@ -122,8 +118,7 @@ _COINBASE_VERSION = 2
 # `CTxIn::MAX_SEQUENCE_NONFINAL`, "make sure timelock is enforced"
 _COINBASE_SEQUENCE = 0xFFFFFFFE
 
-# heights up to 16 commit to a 1-byte BIP34 script, needing OP_0 for
-# `bad-cb-length`
+# the highest height whose BIP34 commitment is one byte
 _MAX_ONE_BYTE_BIP34_HEIGHT = 16
 
 # the witness reserved value `GenerateCoinbaseCommitment` writes
@@ -301,7 +296,7 @@ def _assemble(
     # Core appends an OP_0 only up to height 16, where the BIP34 height alone
     # is one byte and `bad-cb-length` asks for two
     # (`src/node/miner.cpp:203-209` at bitcoin/bitcoin@f0de87f040, from
-    # bitcoin/bitcoin@8544537f41).
+    # bitcoin/bitcoin@58eeab790d).
     extra_push = b"\x00" if height <= _MAX_ONE_BYTE_BIP34_HEIGHT else b""
     script_sig = bip34_commitment(height) + extra_push
     transactions = [
