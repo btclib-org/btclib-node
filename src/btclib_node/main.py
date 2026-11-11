@@ -32,10 +32,10 @@ from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.policy import (
     MIN_STANDARD_TX_NONWITNESS_SIZE,
-    are_inputs_standard,
     assert_standard_tx,
     dust_outputs,
     is_witness_standard,
+    validate_inputs_standardness,
 )
 from btclib.script.engine import sig_op_cost
 from btclib.tx.limits import COINBASE_MATURITY
@@ -2178,11 +2178,10 @@ def pre_verify_mempool_acceptance(
     everything else but a coinbase, so a candidate over
     `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" before its inputs are
     read or any script runs; then, after `CheckTxInputs`,
-    `AreInputsStandard` ("bad-txns-nonstandard-inputs") and
+    `ValidateInputsStandardness` ("bad-txns-nonstandard-inputs") and
     `IsWitnessStandard` ("bad-witness-nonstandard"), as `PreChecks` asks
-    them at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
-    follows until ISS 2241. `bypass_limits` skips none of them.
-    `btclib.policy` is that code.
+    them. `bypass_limits` skips none of them. `btclib.policy` is that
+    code.
 
     Refuses a candidate under `MIN_STANDARD_TX_NONWITNESS_SIZE`
     non-witness bytes "tx-size-small", right after `IsStandardTx`, whether
@@ -2686,18 +2685,25 @@ def _check_ephemeral_dust(node: Node, tx: Tx, fee: int) -> None:
 
 
 def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> None:
-    """Refuse inputs Core's `AreInputsStandard` or `IsWitnessStandard` refuses.
+    """Refuse what `ValidateInputsStandardness` or `IsWitnessStandard` refuses.
 
-    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag, which this node follows until ISS 2241) asks the first
-    after `CheckTxInputs`, and the second only of a transaction with a
-    witness, unless `-acceptnonstdtxn`. btclib-org/btclib-node#1382
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag) asks the first after `CheckTxInputs`, and the second only
+    of a transaction with a witness, unless `-acceptnonstdtxn`.
+    btclib-org/btclib-node#1382
+
+    The first refuses with "bad-txns-nonstandard-inputs" and Core's words
+    for the rule broken as its debug message, which btclib's
+    `validate_inputs_standardness` raises joined to the reason by ", ".
     """
     if not node.config.require_standard:
         return
-    if not are_inputs_standard(prev_outputs, tx):
+    try:
+        validate_inputs_standardness(prev_outputs, tx)
+    except BTClibValueError as error:
         reason = "bad-txns-nonstandard-inputs"
-        raise TxRejectedError(reason)
+        details = str(error).removeprefix(f"{reason}, ")
+        raise TxRejectedError(reason, details) from error
     if tx.is_segwit and not is_witness_standard(prev_outputs, tx):
         reason = "bad-witness-nonstandard"
         raise TxRejectedError(reason)

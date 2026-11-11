@@ -43,9 +43,7 @@ WTXID_RELAY_VERSION = 70016
 # a peer may send BIP434's `feature` between `version` and `verack` from it up
 FEATURE_VERSION = 70017
 
-# The version this node announces. Core's own, and not
-# `btclib.p2p.limits.PROTOCOL_VERSION`, which is still 70016 in the
-# btclib this tree pins (btclib-org/btclib#2995).
+# The version this node announces, Core's own
 PROTOCOL_VERSION = 70017
 
 

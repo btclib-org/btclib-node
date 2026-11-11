@@ -5255,7 +5255,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     }
     assert reported == {
         "subversion": USER_AGENT,
-        # Core v32.1's, ahead of btclib's (btclib-org/btclib#2995)
+        # Core v32.1's
         "protocolversion": 70017,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
