@@ -70,9 +70,10 @@ and btclib-org/.github's `api_gaps.py` report against `v2026.11.7`.
   to `open_history_log` as `max_connections_warnings`.
   `MAX_ADDNODE_CONNECTIONS` is in `btclib_node.config`. Under `-server`, a
   `-rpcmaxconnections` near `2**31` is refused, as in Core.
-- **`Config`'s `rpcmaxconnections` is annotated `float`, and `Config` refuses
-  a value that is no int or past one** (closes #2347): `cli` hands it a
-  `settings.json` number as given, as bitcoind v32.1 reads it.
+- **`Config(rpcmaxconnections=…)` is annotated `float`, and `Config` refuses
+  a value that is not an int or is past a 32-bit int** (closes #2347): `cli`
+  hands it a `settings.json` number as given, as bitcoind v32.1 reads it. The
+  field `Config.rpcmaxconnections` stays an `int`.
 - **An empty `-addnode` value is skipped with "Ignoring empty -addnode
   value"** (closes #2248). `Config.addnode` and `Config.addnode_args` leave it
   out, and `Config.addnode_empty` counts it.
@@ -96,7 +97,8 @@ and btclib-org/.github's `api_gaps.py` report against `v2026.11.7`.
   common version below 70017, or whose payload Core refuses, drops the peer.
 - **`disconnectnode` matches a link-local peer by its scoped address alone**,
   such as `[fe80::1%1]:8333`, as `getpeerinfo` writes it and as Core matches
-  it (closes #2266).
+  it (closes #2266). A link-local peer's `addr` and `addrbind` in
+  `getpeerinfo` now end in that `%<scope>` suffix (#2296).
 - **`notify.Warnings.set_warning` and `unset_warning` raise `ValueError` for
   an id Core does not have** (closes #2294).
 - **A stored block's refused CompactSize reads `non-canonical var_int of <n>

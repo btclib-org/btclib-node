@@ -224,7 +224,7 @@ btclib-org/.github#2107).
 ### The copied files and the `secret_free` helper follow btclib-org/.github
 
 They cite the standard as section 11 asks, as this tree's own prose does (issue
-btclib-org/.github#2137, issue btclib-org/.github#1950).
+btclib-org/.github#2137, issue btclib-org/.github#1950, #2379, #2391).
 
 ### The README links its own files absolutely and ends on a Status section
 
@@ -243,7 +243,8 @@ btclib-org/.github's hook, zizmor, ruff and uv (#2380).
 
 ### The version is 2026.11.11
 
-`pyproject.toml` declares `2026.11.11` in place of the `2026.12` placeholder.
+`pyproject.toml` declares `2026.11.11` in place of the `2026.12` placeholder
+that #2235 set.
 
 ## v2026.11.7
 
