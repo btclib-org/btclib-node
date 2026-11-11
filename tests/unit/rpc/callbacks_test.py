@@ -39,7 +39,6 @@ from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.headers_sync import ChainStart, HeadersSyncState, State
-from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import (
     ScriptPubKey,
@@ -2746,20 +2745,17 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
     """`testmempoolaccept` has no catch of its own for a storage fault.
 
     Neither `MissingPrevoutError` nor `BTClibValueError`, so
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `test_mempool_accept` uncaught, ending the
-    whole batch rather than being folded into this one entry's own
-    `"reject-reason"`. This matches Core's own `testmempoolaccept`
-    (`src/rpc/mempool.cpp:412-463`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), whose per-tx loop has no catch-all of its own either
-    (btclib-org/btclib-node#668).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `test_mempool_accept`
+    uncaught, ending the whole batch rather than being folded into this
+    one entry's own `"reject-reason"`. This matches Core's own
+    `testmempoolaccept` (`src/rpc/mempool.cpp:412-463`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), whose per-tx loop has
+    no catch-all of its own either (btclib-org/btclib-node#668).
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
@@ -5187,17 +5183,15 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     """`send_raw_transaction` has no catch of its own for a storage fault.
 
     Unlike `MissingPrevoutError` and `BTClibValueError` above,
-    `StoreCorruptionError` -- the one exception `verify_mempool_acceptance`
-    can still raise for this node's own storage rather than for `tx`'s
-    content, once btclib-org/btclib-node#650 stopped `UtxoIndex.get_coin`
-    raising `ChainstateInconsistencyError` for the other, checksum-clean
-    case -- propagates out of `send_raw_transaction` uncaught, for
-    `handle_rpc`'s own generic catch to answer as this node's own fault
-    rather than as a refusal of `tx` (btclib-org/btclib-node#631).
+    `StoreCorruptionError`, raised for this node's own storage rather
+    than for `tx`'s content, propagates out of `send_raw_transaction`
+    uncaught, for `handle_rpc`'s own generic catch to answer as this
+    node's own fault rather than as a refusal of `tx`
+    (btclib-org/btclib-node#631).
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:
-        err_msg = "stored utxo- record failed to parse"
+        err_msg = "chainstate: Corruption: block checksum mismatch"
         raise StoreCorruptionError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
@@ -5261,7 +5255,8 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     }
     assert reported == {
         "subversion": USER_AGENT,
-        "protocolversion": PROTOCOL_VERSION,
+        # Core v32.1's
+        "protocolversion": 70017,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
         "networkactive": True,

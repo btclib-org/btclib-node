@@ -3,8 +3,8 @@ name: deps-latest
 
 # the dependency sentinel: everything uv resolves, upgraded to the newest
 # release that satisfies pyproject.toml, and then put through the suite
-# and the lint gate -- two of the three btclib-org/.github's README.md
-# section 10 names this sentinel for.
+# and the lint gate -- two of the three section 10 of the organization's
+# standard names this sentinel for.
 #
 # Every dependency of this project is declared as a floor rather than a
 # pin, and the reason is in pyproject.toml: the resolution is meant to
@@ -26,7 +26,7 @@ name: deps-latest
 #
 # The upgrade, the session loop, the lint hooks and the suite run are
 # btclib-org/.github's reusable-deps-latest.yml, called at a tagged commit
-# (section 10 of btclib-org/.github's README.md, issue btclib-org/.github#35).
+# (section 10 of the organization's standard, issue btclib-org/.github#35).
 # What stays here is the trigger, the schedule, the concurrency group, the
 # permissions and dist-latest below, which the callee does not carry and says so
 # in its own header.

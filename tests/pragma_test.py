@@ -5,7 +5,7 @@
 """Every `pragma: no cover` gives its reason on the same line.
 
 `pyproject.toml`'s `[tool.coverage.report]` states the rule and points
-its check at section 8 of the organization standard rather than
+its check at section 8 of the organization's standard rather than
 restating it, so that the two move together:
 `git grep -nE 'pragma: no cover$' -- '*.py'` is what section 8 names,
 and what this module runs, unchanged -- a site giving no reason, a

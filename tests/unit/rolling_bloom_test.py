@@ -18,7 +18,7 @@ from btclib_node.rolling_bloom import RollingBloomFilter
 _DATA = Path(__file__).parent / "_data"
 
 
-# `src/test/hash_tests.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+# `src/test/hash_tests.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
 # the hash Core expects, the seed, and the data in hex
 _MURMUR_VECTORS = (
     (0x00000000, 0x00000000, ""),
@@ -72,7 +72,7 @@ _CORE_RUNS = _core_runs()
 
 @pytest.mark.parametrize(("case", "answer"), _CORE_RUNS, ids=range(len(_CORE_RUNS)))
 def test_core_s_own_runs(case: str, answer: str) -> None:
-    """Core v31.1's `CRollingBloomFilter`, run on the same keys and tweaks.
+    """Core's `CRollingBloomFilter`, run on the same keys and tweaks.
 
     Its sizes, its generation, its words and its answer to every query,
     across a `reset` to a given tweak.

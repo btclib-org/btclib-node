@@ -4,7 +4,7 @@
 
 """The property layer under the harnesses in `fuzz/`.
 
-Section 7 of [the organization standard][std] keys this layer on the
+Section 7 of [the organization's standard][std] keys this layer on the
 property section 10 keys the fuzzer on -- nobody standing between a
 parser and an adversary who chooses the bytes -- and this tree has that
 property: `fuzz.yml`'s own header says so, and each harness under

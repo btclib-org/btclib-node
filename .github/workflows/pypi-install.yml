@@ -110,11 +110,11 @@ jobs:
   # verdict no trigger can produce -- what is waited on is somebody
   # else's upload, so neither a release nor a rehearsal can arrange for
   # it to be late -- so it is a script with a test rather than a loop in
-  # a run: block, which is what section 10 of btclib-org/.github's
-  # README.md asks of a wait (btclib-org/.github#641). The checkout, the
+  # a run: block, which is what section 10 of the organization's
+  # standard asks of a wait (btclib-org/.github#641). The checkout, the
   # uv setup and the wait itself are btclib-org/.github's
   # reusable-wait-for-index.yml, called at a tagged commit (section 10 of
-  # btclib-org/.github's README.md, btclib-org/.github#35). What stays here is
+  # the organization's standard, btclib-org/.github#35). What stays here is
   # the trigger, the workflow-level permissions, the concurrency group and this
   # job's own `if:`, which the callee does not carry and says so in its own
   # header. `package` is btclib-org/.github's `wait_for_pypi_release.py`'s own
@@ -161,7 +161,7 @@ jobs:
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
         # macos-latest is here, arm64 alone as section 10 of
-        # btclib-org/.github's README.md says -- and test.yml's `windows`
+        # the organization's standard says -- and test.yml's `windows`
         # job is why windows-latest is here: this package's classifiers
         # now name Windows too (issue #430), and this workflow checks that
         # claim against the index the way it already checks the other two

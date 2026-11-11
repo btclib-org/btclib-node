@@ -389,8 +389,17 @@ def test_a_headers_is_dropped_unread_while_reindexing() -> None:
         headers(node, past_the_bound, a_peer())
 
 
-def test_a_block_is_dropped_unread_while_reindexing() -> None:
-    """Core's `LoadingBlocks()` return in `BLOCK`; the request stays queued."""
+def test_a_block_is_dropped_unread_while_reindexing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `LoadingBlocks()` return in `BLOCK`; the request stays queued.
+
+    Nor is the best chain activated, which a block taken once the node is
+    synced does. The activation is recorded, not run, over the stand-in
+    index.
+    """
+    calls: list[object] = []
+    monkeypatch.setattr("btclib_node.p2p.callbacks.activate_best_chain", calls.append)
     block = a_block()
     block_hash = block.header.hash
     added: list[Block] = []
@@ -407,9 +416,11 @@ def test_a_block_is_dropped_unread_while_reindexing() -> None:
     block_callback(node, payload, peer)
     assert not added
     assert peer.download_queue == [block_hash]
+    assert not calls
     node.status = NodeStatus.BlockSynced
     block_callback(node, payload, peer)
     assert added == [block]
+    assert calls == [node]
 
 
 def test_a_block_inv_asks_for_no_headers_while_reindexing() -> None:

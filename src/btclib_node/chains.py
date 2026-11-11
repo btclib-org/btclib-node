@@ -16,7 +16,8 @@ the same `name` `magic_from_network` already resolves. `config.py`'s
 `_resolve_chain` is what turns a chain's name, read from the command
 line or a functional test, into one of these.
 
-`Chain.with_activation_heights` is Core's `-testactivationheight`.
+`Chain.with_activation_heights` is Core's `-testactivationheight`, and
+`Chain.with_bip94` its `-test=bip94`.
 """
 
 import copy
@@ -71,13 +72,16 @@ BURIED_DEPLOYMENTS: Mapping[str, str] = MappingProxyType(
 
 @cache
 def _moved_consensus(
-    name: str, activation_heights: tuple[tuple[str, int], ...]
+    name: str, activation_heights: tuple[tuple[str, int], ...], *, bip94: bool
 ) -> ConsensusParams:
     """Return `name`'s row with `activation_heights`' fields replaced.
 
-    Cached, so that reading `Chain.consensus` builds no new row.
+    `bip94` also sets its `enforce_bip94`. Cached, so that reading
+    `Chain.consensus` builds no new row.
     """
     moved: dict[str, Any] = dict(activation_heights)
+    if bip94:
+        moved["enforce_bip94"] = True
     return replace(CONSENSUS_PARAMS[name], **moved)
 
 
@@ -93,20 +97,20 @@ class Chain:
     name: str
     port: int
     # Core's `vSeeds` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
-    # Core's order and with its trailing dot, which makes each name
-    # fully qualified for the resolver
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
+    # follows until ISS 2368), the DNS seeds, in Core's order and with its
+    # trailing dot, which makes each name fully qualified for the resolver
     addresses: list[str]
     # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): BIP155 serialized
     # endpoints, `p2p.address.fixed_seed_addresses`'s to decode.
     fixed_seeds: bytes
     # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
-    # "Blockchain is too short for pruning." floor, below which Core
-    # refuses `pruneblockchain` outright rather than merely clamping it.
-    # Each leaf's own `__init__` below cites the line its value comes
-    # from.
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+    # `rpc.callbacks.prune_blockchain`'s own "Blockchain is too short for
+    # pruning." floor, below which Core refuses `pruneblockchain` outright
+    # rather than merely clamping it. Each leaf's own `__init__` below cites
+    # the line its value comes from.
     prune_after_height: int
     # Core's `MinBIP9WarningHeight`, the height below which no block
     # counts towards the unknown-versionbit warning
@@ -117,6 +121,9 @@ class Chain:
     # the `ConsensusParams` fields `with_activation_heights` moved, with
     # their heights, sorted by field; empty on a chain nothing moved
     activation_heights: tuple[tuple[str, int], ...] = ()
+    # whether `with_bip94` set the row's `enforce_bip94`; `False` leaves
+    # the row's own value
+    bip94: bool = False
 
     @cached_property
     def genesis_block(self) -> Block:
@@ -152,12 +159,12 @@ class Chain:
         height, the subsidy interval, the easiest target, and the
         exceptions this chain's own history forces are read off it
         rather than held here a second time. A chain
-        `with_activation_heights` built answers a row of its own instead,
-        the shared one with those heights replaced.
+        `with_activation_heights` or `with_bip94` built answers a row of
+        its own instead, the shared one with those fields replaced.
         """
-        if not self.activation_heights:
+        if not self.activation_heights and not self.bip94:
             return CONSENSUS_PARAMS[self.name]
-        return _moved_consensus(self.name, self.activation_heights)
+        return _moved_consensus(self.name, self.activation_heights, bip94=self.bip94)
 
     def with_activation_heights(self, heights: Mapping[str, int]) -> Self:
         """Return a copy of this chain whose deployments bind at `heights`.
@@ -178,6 +185,21 @@ class Chain:
         moved |= ((BURIED_DEPLOYMENTS[name], h) for name, h in heights.items())
         chain = copy.copy(self)
         chain.activation_heights = tuple(sorted(moved.items()))
+        return chain
+
+    def with_bip94(self) -> Self:
+        """Return a copy of this chain that enforces BIP94's timewarp bound.
+
+        Core's `-test=bip94`, which `ReadRegTestArgs`
+        (`src/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag) reads into the `enforce_bip94` of `RegTestOptions`, the
+        `enforce_BIP94` of regtest's row. Core's kernel takes it on
+        regtest alone; `cli.py` refuses `-test` on any other chain, as
+        Core's init does. This chain and the shared row are left as they
+        are.
+        """
+        chain = copy.copy(self)
+        chain.bip94 = True
         return chain
 
     @property
@@ -233,7 +255,8 @@ class Main(Chain):
             "seed.mainnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_MAIN
-        # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 100000
         # src/kernel/chainparams.cpp:95, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 483840
@@ -257,7 +280,8 @@ class TestNet(Chain):
             "seed.testnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TEST
-        # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:279, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:226, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 836640
@@ -283,7 +307,8 @@ class SigNet(Chain):
             "seed.signet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
-        # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:536, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:490, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0
@@ -312,7 +337,8 @@ class RegTest(Chain):
         # domain, which RFC 6761 reserves to resolve to nothing
         self.addresses = ["dummySeed.invalid."]
         self.fixed_seeds = b""
-        # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
+        # src/kernel/chainparams.cpp:625, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag:
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
         # `-fastprune`, Core's own knob for a lower regtest value in its
         # test suite, so 1000 is the one value that applies here
@@ -344,7 +370,8 @@ class TestNet4(Chain):
             "seed.testnet4.wiz.biz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TESTNET4
-        # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
+        # src/kernel/chainparams.cpp:386, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:333, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0
