@@ -1528,7 +1528,7 @@ def test_parse_messages_counts_a_feature_under_its_own_key() -> None:
 
 
 def test_own_version_announces_core_v32_1_s_protocol_version() -> None:
-    """ISS 2250: 70017, Core v32.1's `PROTOCOL_VERSION`, not btclib's 70016."""
+    """ISS 2250: 70017, Core v32.1's `PROTOCOL_VERSION`."""
     connection, _ = a_connection()
     manager = cast("Any", connection.manager)
     manager.add_pending_outbound_nonce = lambda nonce: None

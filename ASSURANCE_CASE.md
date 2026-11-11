@@ -395,24 +395,25 @@ and what counters each.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Exposure of sensitive information (CWE-209).** The rule is section 7's
   *A refusal carries no secret* in the organization's standard.
-  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
-  rule's tests call. A configuration line that fails to parse, a refused
-  command-line argument, an unknown configuration key, a section name in
-  its warning and in the configuration log, and a `settings.json` name in
-  its unknown-name warning, in its duplicate-key refusal and in the
-  settings log are quoted up to the first sensitive option's name and the
-  first `=`, and only where that is at most 16 characters, a longer one
-  being given by its length (`cli.py`'s `_quoted_line`). The settings log
-  writes a `settings.json` value only where its name is a known option that
-  is not sensitive, and `****` for any other (`cli.py`'s `_log_args`). A
-  `settings.json` that is not an object is refused by its value's type,
-  never by the value (`settings_file.py`'s `read_settings`). A malformed
-  RPC header field is named by its index and its length
-  (`rpc/connection.py`'s `_FieldReader`), and the reprs of `RequestHead`
-  and `_Settings` leave out the fields that hold a credential. A
-  `scantxoutset` refusal of a function Core does not read quotes none of
-  its arguments (`rpc/utxo_set.py`'s `_parse`).
-  `git grep assert_secret_free -- tests/unit` lists the helper's callers.
+  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper
+  most of the rule's tests call, and
+  `git grep -n assert_secret_free -- tests/unit` lists its callers.
+  `cli.py`'s `_quoted_line` quotes a configuration line or key, a section
+  name, a command-line argument or a `settings.json` name up to the first
+  sensitive option's name and the first `=`, and only where that has at
+  most `_MAX_QUOTED_NAME` characters; a longer one is given by its length.
+  Refusals, warnings and logs quote them this way, the refusal of a line
+  that fails to parse among them. `settings_file.py`'s `read_settings`
+  takes it as `quote` for a key named twice. The settings log writes a
+  `settings.json` value only where its name is a known option that is not
+  sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
+  of `RequestHead` excludes `raw` and `fields`, which hold the
+  `Authorization` field, and the repr of `_Settings` excludes the fields
+  that may hold a credential. `tests/unit/rpc/connection_test.py` and
+  `tests/unit/cli_test.py` each define their own
+  `assert_free_of_credential`, which checks those reprs and, in
+  `connection_test.py`, the refusals of a header field and of a chunk-size
+  line.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

@@ -1820,7 +1820,7 @@ def test_standardness_is_judged_before_any_script_runs(
         {
             "check_transaction": None,
             "sig_op_cost": 0,
-            "are_inputs_standard": True,
+            "validate_inputs_standardness": None,
             "is_witness_standard": True,
         },
     )
@@ -1839,7 +1839,11 @@ def test_standardness_is_judged_before_any_script_runs(
 def test_the_inputs_are_judged_standard_before_any_script_runs(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`AreInputsStandard` refuses ahead of the sigop count and the scripts."""
+    """`ValidateInputsStandardness` refuses ahead of the sigops and the scripts.
+
+    Its debug message is the refusal's details: `OP_NOP OP_1`, the
+    script_pub_key spent, is no template `Solver` knows.
+    """
     parent = a_funded_spend(node, FEE)
     parent.vout[0] = TxOut(parent.vout[0].value, script.serialize(["OP_NOP", "OP_1"]))
     node.mempool.add_tx(parent, FEE, parent.vsize)
@@ -1849,7 +1853,8 @@ def test_the_inputs_are_judged_standard_before_any_script_runs(
 
     with pytest.raises(TxRejectedError) as refused:
         verify_mempool_acceptance(node, child)
-    assert str(refused.value) == "bad-txns-nonstandard-inputs"
+    assert refused.value.reason == "bad-txns-nonstandard-inputs"
+    assert refused.value.details == "input 0 script unknown"
     assert calls == []
 
 
