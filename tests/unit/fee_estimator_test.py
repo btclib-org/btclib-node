@@ -62,18 +62,20 @@ def an_estimator(tmp_path: Path) -> tuple[FeeEstimator, LogLines]:
     return FeeEstimator(tmp_path / "fee_estimates.dat", logger), lines
 
 
-def _add(estimator: FeeEstimator, txid: bytes, fee: int, height: int) -> RemovedTx:
+def _add(
+    estimator: FeeEstimator, txid: bytes, fee: int, height: int, vsize: int = _VSIZE
+) -> RemovedTx:
     estimator.process_transaction(
         txid,
         fee,
-        _VSIZE,
+        vsize,
         height,
         limit_bypassed=False,
         in_package=False,
         chain_current=True,
         has_no_mempool_parents=True,
     )
-    return RemovedTx(txid, fee, _VSIZE, height)
+    return RemovedTx(txid, fee, vsize, height)
 
 
 def _txid(blocknum: int, j: int, k: int) -> bytes:
@@ -645,27 +647,114 @@ def test_smart_estimates_clamp_the_target(tmp_path: Path) -> None:
     assert empty.estimate_smart_fee(6, conservative=False) == (0, 0)
 
 
-def test_smart_fee_logs_under_estimatefee(tmp_path: Path) -> None:
-    """Core v32.1 logs the selected estimate and reason under estimatefee."""
-    estimator, lines = an_estimator(tmp_path)
-    for blocknum in range(20):
-        block = [tx for txs in _fill(estimator, blocknum) for tx in txs[: j_cut(txs)]]
-        estimator.process_block(block, blocknum + 1)
-    lines.messages.clear()
-    fee, target = estimator.estimate_smart_fee(1, conservative=False)
-    assert fee > 0
-    assert target == 2
-    (logged,) = [
-        msg
-        for msg in lines.messages
-        if msg.startswith("estimateSmartFee Selected feerate:")
-    ]
-    assert 'Reason: "Half Target 60% Threshold"' in logged
-    assert "Tgt: 2 (requested 1)" in logged
+# what a regtest bitcoind v32.1 logs under -debug=estimatefee after the
+# events `_replay_core_s_events` replays, by target and conservative mode
+_CORE_SMART_FEE_LINES = {
+    (1, False): (
+        "estimateSmartFee Selected feerate: 62500 Tgt: 2 (requested 1) "
+        'Reason: "Target 85% Threshold" Decay 0.96200: Estimation: '
+        "(59675.8 - 72536.3) 100.00% 56.8/(56.8 0 mem 0.0 out) Fail: "
+        "(51550.2 - 59675.8) 69.14% 42.6/(42.6 19 mem 0.0 out)"
+    ),
+    (4, False): (
+        "estimateSmartFee Selected feerate: 62500 Tgt: 4 (requested 4) "
+        'Reason: "Double Target 95% Threshold" Decay 0.96200: Estimation: '
+        "(59675.8 - 72536.3) 100.00% 56.8/(56.8 0 mem 0.0 out) Fail: "
+        "(51550.2 - 59675.8) 76.61% 42.6/(42.6 13 mem 0.0 out)"
+    ),
+    (8, False): (
+        "estimateSmartFee Selected feerate: 10416 Tgt: 8 (requested 8) "
+        'Reason: "Half Target 60% Threshold" Decay 0.96200: Estimation: '
+        "(10303.5 - 20400.2) 80.00% 49.0/(61.2 0 mem 0.0 out) Fail: "
+        "(0 - 10303.5) 0.00% 0.0/(0.0 0 mem 0.0 out)"
+    ),
+    (12, True): (
+        "estimateSmartFee Selected feerate: 20833 Tgt: 9 (requested 12) "
+        'Reason: "Conservative Double Target longer horizon" Decay 0.99931: '
+        "Estimation: (10303.5 - 40390.9) 98.65% 218.8/(218.8 3 mem 0.0 out) "
+        "Fail: (0 - 10303.5) 0.00% 0.0/(0.0 0 mem 0.0 out)"
+    ),
+}
 
+
+def _replay_core_s_events(estimator: FeeEstimator) -> None:
+    """Replay what bitcoind's estimator saw for `_CORE_SMART_FEE_LINES`.
+
+    Twenty rounds from height 901: forty transactions of 96 vbytes enter
+    the mempool, four at each fee from 1000 to 10000 sat, then a block
+    takes those held that pay at least a threshold. The threshold falls
+    from 5000 sat to 1000 and starts again every five blocks. Every tenth
+    transaction paying 5000 sat or less is never taken.
+    """
+    estimator.process_block([], 901)
+    held: list[tuple[int, RemovedTx]] = []
+    for blocknum in range(20):
+        height = 901 + blocknum
+        for j in range(10):
+            for k in range(4):
+                n = 40 * blocknum + 4 * j + k + 1
+                tx = _add(
+                    estimator, n.to_bytes(32, "little"), 1000 * (j + 1), height, 96
+                )
+                held.append((n, tx))
+        threshold = 1000 * (5 - blocknum % 5)
+        taken = [
+            (n, tx)
+            for n, tx in held
+            if tx.fee >= threshold and (tx.fee > 5000 or n % 10 != 0)
+        ]
+        held = [item for item in held if item not in taken]
+        estimator.process_block([tx for _, tx in taken], height + 1)
+
+
+@pytest.mark.parametrize(("asked", "line"), list(_CORE_SMART_FEE_LINES.items()))
+def test_smart_fee_logs_bitcoind_s_line(
+    tmp_path: Path, asked: tuple[int, bool], line: str
+) -> None:
+    """Each reason that can decide logs bitcoind v32.1's line, every figure."""
+    estimator, lines = an_estimator(tmp_path)
+    _replay_core_s_events(estimator)
+    lines.messages.clear()
+    target, conservative = asked
+    estimator.estimate_smart_fee(target, conservative=conservative)
+    assert lines.messages == [line]
+
+
+def test_a_smart_fee_refused_logs_no_line(tmp_path: Path) -> None:
+    """Core logs the selected feerate only where it returns one.
+
+    Eleven blocks of one transaction each leave a target of 4 to read,
+    and no estimate passes there.
+    """
+    estimator, lines = an_estimator(tmp_path)
+    for height in range(1, 12):
+        tx = _add(estimator, height.to_bytes(32, "little"), 2000, height)
+        estimator.process_block([tx], height + 1)
     lines.messages.clear()
     assert estimator.estimate_smart_fee(0, conservative=False) == (0, 0)
-    assert not any("estimateSmartFee" in msg for msg in lines.messages)
+    assert estimator.estimate_smart_fee(4, conservative=False) == (0, 4)
+    assert not lines.messages
+
+
+def test_a_million_in_the_mempool_is_logged_as_core_s_g(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-mempool count of a million or more is printed in exponent form."""
+    estimator, lines = an_estimator(tmp_path)
+    _replay_core_s_events(estimator)
+    for stats in (estimator.short_stats, estimator.fee_stats, estimator.long_stats):
+        estimate = stats.estimate_median_val
+
+        def crowded(*args: Any, estimate: Any = estimate, **kwargs: Any) -> float:
+            median: float = estimate(*args, **kwargs)
+            args[-1].fail_bucket.in_mempool = 1234567
+            return median
+
+        monkeypatch.setattr(stats, "estimate_median_val", crowded)
+    lines.messages.clear()
+    estimator.estimate_smart_fee(1, conservative=False)
+    (line,) = lines.messages
+    assert line.endswith("(42.6 1.23457e+06 mem 0.0 out)")
 
 
 def test_the_longer_horizons_answer_a_far_target(tmp_path: Path) -> None:
@@ -803,7 +892,7 @@ def test_a_conservative_double_target_past_the_short_horizon_is_the_long_s(
         13, 0.1, 0.95, estimator.best_seen_height
     )
     assert medium > 0
-    assert estimator._estimate_conservative_fee(13) == -1
+    assert estimator._estimate_conservative_fee(13, EstimationResult()) == -1
 
 
 _NOW = 1_800_000_000

@@ -12,11 +12,6 @@ of different half-lives; `estimate_smart_fee` and `estimate_raw_fee` read
 them back. `write` and `read` are Core's
 `fees/block_policy_estimates.dat`, byte for byte.
 
-The file's path, with `migrate_legacy_file` moving the
-`fee_estimates.dat` an older node left; the directory `flush_estimates`
-creates; and the refusal of a file of an older version also follow the
-v32.1 tag.
-
 Every caller runs on `Node`'s thread, so this carries no lock where Core
 has `m_cs_fee_estimator`. Core's estimator also learns of each event
 through the validation interface's queue, which `estimatesmartfee`
@@ -161,13 +156,18 @@ class EstimationResult:
     scale: int = 0
 
 
+def _assign_estimation_result(dest: EstimationResult, src: EstimationResult) -> None:
+    """Copy `src` into `dest`, as Core's `*result = tempResult`."""
+    dest.pass_bucket = replace(src.pass_bucket)
+    dest.fail_bucket = replace(src.fail_bucket)
+    dest.decay = src.decay
+    dest.scale = src.scale
+
+
 def _copy_estimation_result(result: EstimationResult) -> EstimationResult:
-    return EstimationResult(
-        pass_bucket=replace(result.pass_bucket),
-        fail_bucket=replace(result.fail_bucket),
-        decay=result.decay,
-        scale=result.scale,
-    )
+    copy = EstimationResult()
+    _assign_estimation_result(copy, result)
+    return copy
 
 
 def _fee_per_k(fee: int, vsize: int) -> int:
@@ -741,7 +741,7 @@ class FeeEstimator:
         success_threshold: float,
         *,
         check_shorter: bool,
-        result: EstimationResult | None = None,
+        result: EstimationResult,
     ) -> float:
         """Estimate at the shortest horizon tracking `conf_target`.
 
@@ -770,26 +770,22 @@ class FeeEstimator:
         ):
             if conf_target <= stats.max_confirms:
                 continue
-            temp_result = EstimationResult() if result is not None else None
+            temp_result = EstimationResult()
             shorter = stats.estimate_median_val(
                 stats.max_confirms, sufficient, success_threshold, height, temp_result
             )
             if shorter > 0 and (estimate == -1 or shorter < estimate):
                 estimate = shorter
-                if result is not None and temp_result is not None:
-                    result.pass_bucket = replace(temp_result.pass_bucket)
-                    result.fail_bucket = replace(temp_result.fail_bucket)
-                    result.decay = temp_result.decay
-                    result.scale = temp_result.scale
+                _assign_estimation_result(result, temp_result)
         return estimate
 
     def _estimate_conservative_fee(
-        self, double_target: int, result: EstimationResult | None = None
+        self, double_target: int, result: EstimationResult
     ) -> float:
         """Hold `double_target` to 95% at the longer horizons too."""
         height = self.best_seen_height
         estimate = -1.0
-        temp_result = EstimationResult() if result is not None else None
+        temp_result = EstimationResult()
         if double_target <= self.short_stats.max_confirms:
             estimate = self.fee_stats.estimate_median_val(
                 double_target, _SUFFICIENT_FEETXS, _DOUBLE_SUCCESS_PCT, height, result
@@ -804,11 +800,7 @@ class FeeEstimator:
             )
             if long_estimate > estimate:
                 estimate = long_estimate
-                if result is not None and temp_result is not None:
-                    result.pass_bucket = replace(temp_result.pass_bucket)
-                    result.fail_bucket = replace(temp_result.fail_bucket)
-                    result.decay = temp_result.decay
-                    result.scale = temp_result.scale
+                _assign_estimation_result(result, temp_result)
         return estimate
 
     def estimate_smart_fee(self, conf_target: int, *, conservative: bool) -> SmartFee:
@@ -822,7 +814,9 @@ class FeeEstimator:
         seen so far can answer, and the target used is returned.
 
         Core logs the chosen feerate, target and reason under `estimatefee`
-        at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag. It gives the
+        in-mempool counts, which are doubles, to a `%d` that tinyformat
+        prints as `%g` does.
         """
         desired_target = conf_target
         if conf_target <= 0 or conf_target > self.long_stats.max_confirms:
@@ -885,8 +879,8 @@ class FeeEstimator:
         self.logger.log_debug(
             "estimatefee",
             'estimateSmartFee Selected feerate: %g Tgt: %d (requested %d) Reason: "%s" '
-            "Decay %.5f: Estimation: (%g - %g) %.2f%% %.1f/(%.1f %d mem %.1f out) "
-            "Fail: (%g - %g) %.2f%% %.1f/(%.1f %d mem %.1f out)",
+            "Decay %.5f: Estimation: (%g - %g) %.2f%% %.1f/(%.1f %g mem %.1f out) "
+            "Fail: (%g - %g) %.2f%% %.1f/(%.1f %g mem %.1f out)",
             median,
             conf_target,
             desired_target,
@@ -897,14 +891,14 @@ class FeeEstimator:
             pass_pct,
             pass_b.within_target,
             pass_b.total_confirmed,
-            int(pass_b.in_mempool),
+            pass_b.in_mempool,
             pass_b.left_mempool,
             fail_b.start,
             fail_b.end,
             fail_pct,
             fail_b.within_target,
             fail_b.total_confirmed,
-            int(fail_b.in_mempool),
+            fail_b.in_mempool,
             fail_b.left_mempool,
         )
         return SmartFee(llround(median), conf_target)
