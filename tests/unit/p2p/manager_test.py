@@ -6946,25 +6946,25 @@ def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
     """
     port = get_random_port()
     manager = a_manager(port=port)
-    real_socket = socket.socket
+    real_bind_one = manager._bind_one
 
     def refuses_ipv6(
-        family: socket.AddressFamily, *args: Any, **kwargs: Any
+        family: socket.AddressFamily, host: str, port: int | None = None
     ) -> socket.socket:
-        # `*args, **kwargs` and not the two positional arguments `_bind`
-        # is given: a listening socket's own `accept()` builds the
-        # accepted connection through this same module-level name, with
-        # `fileno=` rather than a family and a kind, and a wrapper that
-        # only took `_bind`'s shape would refuse every inbound peer too
         if family == socket.AF_INET6:
             # OSError, not a class of this tree's own (TRY003): `_bind`
             # itself catches `OSError`, so a double standing in for what
             # the real socket module raises has to raise that type, not
             # a lookalike `_bind` was never written to catch
             raise OSError("no ipv6 route")  # noqa: TRY003
-        return real_socket(family, *args, **kwargs)
+        return real_bind_one(family, host, port)
 
-    monkeypatch.setattr(socket, "socket", refuses_ipv6)
+    # `_bind_one` and not `socket.socket`: the Proactor loop's `recv` asks
+    # `isinstance(conn, socket.socket)`, so a function in that name ends
+    # every accepted connection on Windows with a `TypeError`.
+    # `test_a_failed_bind_says_which_call_failed_and_why_as_core_does`
+    # covers a socket that cannot be opened.
+    monkeypatch.setattr(manager, "_bind_one", refuses_ipv6)
     manager.start()
     wait_until_listening(manager)
     # held open across the stop rather than closed by a `with`, on
