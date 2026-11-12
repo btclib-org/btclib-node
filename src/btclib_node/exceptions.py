@@ -30,6 +30,8 @@ bug.
 
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
+from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+
 __all__ = [
     "BlockScriptVerifyError",
     "ChainstateInconsistencyError",
@@ -483,7 +485,13 @@ class WrongNetworkMagicError(BTClibValueError):
     """
 
     def __init__(self, magic: bytes) -> None:
-        super().__init__(f"message for another network: {magic.hex()}")
+        # section 7 of the organization's standard, *A refusal carries no
+        # secret*: a refused magic is by definition not this node's, so it
+        # may hold anything, key bytes included, and is printed only where
+        # it is one of the magics `btclib_node.chains` defines
+        known = {cls().magic for cls in (Main, TestNet, TestNet4, SigNet, RegTest)}
+        suffix = f": {magic.hex()}" if magic in known else ""
+        super().__init__(f"message for another network{suffix}")
 
 
 class RejectedMessageError(BTClibValueError):
