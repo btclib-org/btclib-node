@@ -121,6 +121,8 @@ def a_connection(
         peer_db=None,
         messages=deque(),
         handshake_messages=deque(),
+        # `Connection._close` drops the connection through it first
+        remove_connection=lambda _: None,
     )
     connection = Connection(
         cast("P2pManager", manager),
@@ -693,6 +695,8 @@ def a_running_connection(
         discouraged=discouraged,
         messages=deque(),
         handshake_messages=deque(),
+        # `Connection._close` drops the connection through it first
+        remove_connection=lambda _: None,
     )
     return Connection(
         cast("P2pManager", manager),

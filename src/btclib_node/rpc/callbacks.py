@@ -1592,14 +1592,14 @@ def get_peer_info(
     """Answer `getpeerinfo`, one entry per connection, in id order.
 
     A connection still short of `verack` is listed too, as Core lists
-    every node `CConnman::GetNodeStats` returns. So is one whose socket
-    is closed, until `P2pManager.remove_connection` drops it: Core's
-    `CloseSocketDisconnect` leaves its node in `m_nodes` until
-    `DisconnectNodes` runs (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
-    the v32.1 tag). No field is read off the socket, so this lists the
-    connections `get_network_info` counts. Each field matches one
-    `getpeerinfo` pushes (`src/rpc/net.cpp`, same sha), argued in
-    `_peer_entry` beside where it is built.
+    every node `CConnman::GetNodeStats` returns. So is a stopped one
+    whose socket is not closed yet: `Connection._close` drops it from the
+    tables before the close, as Core's `DisconnectNodes` takes a node out
+    of `m_nodes` before `CloseSocketDisconnect` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). No field is read off the
+    socket, so this lists the connections `get_network_info` counts. Each
+    field matches one `getpeerinfo` pushes (`src/rpc/net.cpp`, same sha),
+    argued in `_peer_entry` beside where it is built.
     """
     manager = node.p2p_manager
     # The table is built whole, and sorted into a list, before the loop

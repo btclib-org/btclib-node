@@ -920,13 +920,23 @@ class Connection:
         self.stop()
 
     def _close(self) -> None:
-        """Unregister `self.client`'s reader and writer, then close it.
+        """Drop this connection from the manager, then close its socket.
 
         Runs on `self.loop`'s own thread, scheduled there by `stop`
         above through `call_soon_threadsafe` regardless of which
         thread called `stop` -- the loop's own selector is not safe to
         touch from any other one, which is the reason this is a
         separate step and not inlined into `stop` itself.
+
+        `remove_connection` comes first, so a peer this node drops has
+        left `getpeerinfo` and every count before its socket closes and
+        the peer sees the hangup. Core's `DisconnectNodes` takes a node
+        out of `m_nodes` before `CloseSocketDisconnect` (`src/net.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). A peer that hung up
+        leaves the same way, one step of this loop after its read ends.
+        Core lists that one, its socket already reset, until the next
+        pass of `ThreadSocketHandler` runs `DisconnectNodes`. Here this
+        is the one step that closes a socket, so it drops both.
 
         The ordering is the fix for btclib-org/btclib-node#518.
         `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
@@ -996,14 +1006,19 @@ class Connection:
         the same, so `_count_sent` misses its last chunk.
         btclib-org/btclib-node#1164
         """
-        fd = self.client.fileno()
-        if fd != -1:
-            with contextlib.suppress(NotImplementedError):
-                self.loop.remove_reader(fd)
-                self.loop.remove_writer(fd)
-        if self._writing is not None:
-            self._writing.cancel()
-        self.client.close()
+        # The socket closes whatever the removal raises: a failed write
+        # of `_finalize` to the address table is no reason to hold it.
+        try:
+            self.manager.remove_connection(self.id)
+        finally:
+            fd = self.client.fileno()
+            if fd != -1:
+                with contextlib.suppress(NotImplementedError):
+                    self.loop.remove_reader(fd)
+                    self.loop.remove_writer(fd)
+            if self._writing is not None:
+                self._writing.cancel()
+            self.client.close()
 
     async def run(self) -> None:
         """Send `version` if outbound, then dispatch messages until `stop`.
