@@ -15,8 +15,9 @@ from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
+from tests.secret_free import assert_secret_free
 from btclib_node.p2p.transport import (
     HEADER_SIZE,
     NetMessage,
@@ -276,3 +277,23 @@ def test_frame_message_bytes_refuses_octets_ending_inside_a_message(cut: int) ->
     """Whatever the cut, short octets are `IncompleteMessageError`."""
     with pytest.raises(IncompleteMessageError):
         frame_message_bytes(wire("ping", b"\x01" * 8)[:cut])
+
+def test_a_wrong_network_magic_refusal_does_not_echo_unknown_octets() -> None:
+    """Section 7: a refusal carries no secret, and a refused magic may hold any.
+
+    A magic that is not one of the chains this package defines is never
+    printed; a magic one of them defines still names the network.
+    """
+    transport = V1Transport(MAGIC)
+    secret = bytes.fromhex(
+        "3a0f9c8d1e7b2a4f6c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a1b2c3d4"
+    )
+    with pytest.raises(WrongNetworkMagicError) as exc_info:
+        transport.received_bytes(memoryview(secret[:4] + bytes(20)))
+    assert secret[:4].hex() not in str(exc_info.value)
+    assert_secret_free(exc_info.value, [secret])
+
+    other = Main().magic
+    assert other != MAGIC
+    with pytest.raises(WrongNetworkMagicError, match=other.hex()):
+        V1Transport(MAGIC).received_bytes(memoryview(other + bytes(20)))
