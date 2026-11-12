@@ -5602,6 +5602,25 @@ def test_addnode_refuses_an_empty_node_address() -> None:
     assert raised.value.message == "Error: Node address cannot be empty"
 
 
+def test_addnode_does_not_strip_non_ascii_whitespace() -> None:
+    """A non-breaking space is not ASCII whitespace."""
+    dialed: list[tuple[str, int]] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda host, port, *, use_v2transport: dialed.append(
+                    (host, port)
+                )
+            ),
+        ),
+    )
+    add_node(node, _CONN, ["\xa0", "onetry"])
+    assert dialed == [("\xa0", 18444)]
+
+
 def test_addnode_refuses_an_unknown_command() -> None:
     """A `command` outside `add`/`remove`/`onetry` is refused with the help."""
     node = cast(

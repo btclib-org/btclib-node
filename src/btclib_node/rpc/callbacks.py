@@ -1855,7 +1855,7 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
         # than the one-line usage string this used to raise
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
 
-    if not node_arg.strip():
+    if not node_arg.strip(" \t\n\r\v\f"):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
