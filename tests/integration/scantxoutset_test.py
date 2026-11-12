@@ -7,9 +7,11 @@
 bitcoind mines a coinbase to each script under test and the node syncs
 from it, so both hold one UTXO set. A scan of it is held to bitcoind's own
 answer for the same call, key for key, `desc` included. A refusal is held
-to its code, and to its message where `_REFUSED` says so.
+to its code, and to its message where `_REFUSED` says so. A refusal of a
+key that is no point is held to both, bitcoind's quote of the key aside.
 """
 
+import re
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -281,6 +283,33 @@ def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
             assert ours[1] == _NO_KEYS, params
         elif same_message:
             assert ours[1] == theirs[1], params
+
+
+# an x no point of the curve has, as an x-only key and a compressed one
+_NOT_A_POINT_X = "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+_NOT_A_POINT = f"02{_NOT_A_POINT_X}"
+_NOT_A_POINT_DESCRIPTORS = [
+    f"pk({_NOT_A_POINT})",
+    f"sh(wpkh([deadbeef/0]{_NOT_A_POINT}))",
+    f"multi(1,{_K},{_NOT_A_POINT})",
+    f"wsh(and_v(v:pk({_NOT_A_POINT}),older(10)))",
+    f"tr({_NOT_A_POINT_X})",
+    f"tr({_X},{{pk({_X2}),pk({_NOT_A_POINT_X})}})",
+    f"tr({_X},pkh({_NOT_A_POINT_X}))",
+]
+
+
+def test_a_key_that_is_no_point_is_refused_as_bitcoind_does(
+    both: tuple[Bitcoind, Node],
+) -> None:
+    """Held to bitcoind's refusal, its quote of the key aside (SECURITY.md)."""
+    bitcoind, node = both
+    client = rpc_client(node)
+    for text in _NOT_A_POINT_DESCRIPTORS:
+        theirs = _refusal(bitcoind.rpc, ["start", [text]])
+        assert isinstance(theirs, tuple), text
+        unquoted = re.sub(r"Pubkey '[0-9a-f]+'", "Pubkey '...'", theirs[1])
+        assert _refusal(client.call, ["start", [text]]) == (theirs[0], unquoted), text
 
 
 def test_help_is_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
