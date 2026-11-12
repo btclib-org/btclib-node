@@ -144,11 +144,10 @@ somebody else's server answered, `os-macos.yml` runs on a schedule and
 reports what a sweep sees rather than what a pull request introduced,
 and `claude-review.yml` writes an opinion for an author to weigh.
 `scorecard.yml` carries neither a `pull_request` trigger nor
-`workflow_dispatch` (`CONTRIBUTING.md`'s *What gates a merge, and what
-only reports*), so a required check on it could never be satisfied by
-any pull request at all, and `verified-signatures.yml` runs after a push, so a
-context no pull request reports would wait for ever. Each says so in its own
-header.
+`workflow_dispatch`, so a required check on it could never be satisfied
+by any pull request at all, and `verified-signatures.yml` runs after a push,
+so a context no pull request reports would wait for ever. Each says so in its
+own header.
 
 `codeql.yml` is not among them. It runs on `pull_request` and carries an
 aggregate job, `codeql: every job passed`, so its result is one context

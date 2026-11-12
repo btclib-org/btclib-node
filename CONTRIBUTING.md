@@ -417,69 +417,66 @@ there is and reasoned about where it is set.
 
 ### What gates a merge, and what only reports
 
+`lint.yml`, `test.yml`, `docs.yml`, `integration-bitcoind.yml` and
+`sourcery.yml` produce the required checks, and `REPOSITORY.md` reads the
+rule back from the endpoint rather than restating it. So a diff does not
+reach a review without having passed them or passing them beside it on the
+same sha, which is the reliance `REVIEWING.md` provides for.
+
+| workflow | when | what it varies |
+| --- | --- | --- |
+| `test` | pull request, push to main | `windows-latest`, report-only `3.14t` |
+| `lint`, `docs` | pull request, push to main | — |
+| `integration-bitcoind` | pull request, push to main, weekly | — |
+| `claude-review` | pull request, and `@claude` in a comment | — |
+| `api-break` | pull request | — |
+| `sourcery` | pull request | — |
+| `verified-signatures` | push to main | — |
+| `codeql` | pull request, push to main, and weekly | the languages |
+| `os-ubuntu` | weekly | `ubuntu-latest`, `ubuntu-24.04-arm` |
+| `os-macos` | weekly | `macos-latest` |
+| `deps-latest` | weekly | dependencies upgraded |
+| `deps-oldest` | weekly | the floor interpreter, dependencies at their floors |
+| `slow` | weekly | — |
+| `bootstrap-dns` | weekly | — |
+| `scorecard` | weekly, push to main | — |
+| `links` | weekly | — |
+| `mutation` | weekly | — |
+| `fuzz` | weekly | — |
+| `vendored-vectors` | weekly | the vendored files' pins |
+| `pypi-install` | weekly, a release | what PyPI serves |
+| `sdist-rebuild` | weekly | the latest release's sdist, rebuilt |
+| `release` | a tag, and a rehearsal | the workflows it calls |
+
+Which workflows that last row covers is
+`grep -n 'uses: \$/\.github/workflows/' .github/workflows/release.yml`,
+not a list here. Which day each of the rest runs is section 10 of [the
+organization's standard](https://github.com/btclib-org/.github), and
+not this file's to restate. A defect only a sweep can see sits on `main`
+until that sweep runs, at most a week.
+
+A `when` cell leaves out a `pull_request` trigger that `paths:` filters.
+Such a workflow also runs on a pull request that changes a file its
+`paths:` names. The `test` row's push to main also leaves out what its
+`paths-ignore:` names.
+
 `lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
 is no second list of tools and versions to keep in step; its invocation
 differs from the one above only in being `--locked` and in printing what
-a fixing hook would have written. `test.yml` runs the suite over the
-interpreter and platform axes its own header argues, held to the
-coverage floor `pyproject.toml` declares on its `ubuntu-latest` cells.
-A pull request that touches
+a fixing hook would have written. `docs.yml` runs the same build as the
+environment section above. The coverage floor `pyproject.toml` declares
+holds on the `ubuntu-latest` cells of `test`. A pull request that touches
 only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
-happened. `docs.yml` runs the same build the environment section above
-does, on every pull request the way `lint.yml` and `test.yml` do rather
-than on a schedule, and is a required check alongside them.
-`integration-bitcoind.yml` starts a real `bitcoind` and asks it what no
-recorded reply under `tests/_data` can answer, and is required too, as is
-`sourcery.yml`, which runs Sourcery's rules on every pull request:
-`REPOSITORY.md`'s *Required checks on main* names them all.
+happened.
 
-**Whether any of these can refuse a merge is a repository setting and
-not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
-than restating it here. Read that file before assuming a red run stops
-anything.
-
-Everything else reports. `api-break.yml` labels a pull request that
-breaks the public API and gates nothing. `slow.yml` runs the tests marked
-`slow` weekly and on demand. `codeql.yml`
-follows a value from a peer's message or an RPC request body to where it
-is used, which no hook here does. `os-macos.yml` runs the suite on the one
-platform `pyproject.toml` classifies that the gate does not run, and its header
-says what differs beneath it. `os-ubuntu.yml` runs it on
-`ubuntu-24.04-arm` beside the gate's own image, which is where aarch64
-Linux is exercised at all. `links.yml` asks whether somebody else's
-server answered, and
-`bootstrap-dns.yml` asks the same question of the DNS seeds
-`src/btclib_node/chains.py` names. `verified-signatures.yml` reports after each
+`claude-review` gates nothing: a review that gates a merge would make a
+model's judgement a branch rule. `api-break` gates nothing either: it adds
+a label. So few checks gate a merge because the plan caps the jobs the
+whole organization may run at once, and `REPOSITORY.md`'s *Plan-gated
+settings* records that ceiling. `verified-signatures` reports after each
 push to `main` whether every commit pushed is `verified`; [the standard's
-*Signatures*][s-sigs] has the rule. `claude-review.yml` writes the review
-and its own header says it must not become a required check.
-`vendored-vectors.yml` re-checks `tests/_data/README.md`'s and
-`scripts/seeds/README.md`'s pins against upstream, `deps-latest.yml`
-upgrades every dependency and runs the suite,
-the lint gate and the packaging checks against the result,
-`deps-oldest.yml` is that sentinel's mirror and takes the registry
-specifiers down to their oldest allowed release instead, its own header
-saying which declared floor that leaves out and why, `pypi-install.yml`
-installs `btclib-node` from the index rather than from a checkout and
-runs it past import, `sdist-rebuild.yml` rebuilds the latest release's
-sdist from its tag and verifies it against the release's attestation, and
-`mutation.yml` is its own section below. `fuzz.yml` runs the atheris harnesses
-under `fuzz/` against octets nobody chose, and its own header says which
-parser this tree owns of what a peer reaches and why the harness is a script
-rather than the ClusterFuzzLite container the sibling libraries build.
-`scorecard.yml` runs OpenSSF's third-party audit of the repository's
-supply-chain posture, on push to `main` and on a weekly schedule. Unlike
-every other workflow above, it carries neither a `pull_request` trigger
-nor `workflow_dispatch`, so there is no way to ask about a branch at
-all -- its own header says why.
-
-Which day each of the periodic ones runs is one calendar for the whole
-organization, in [section 10 of the organization's
-standard](https://github.com/btclib-org/.github/blob/main/README.md), not
-repeated here. The trade it makes is worth knowing before relying on it:
-a defect only a sweep can see sits on `main` until that sweep runs, at
-most a week.
+*Signatures*][s-sigs] has the rule.
 
 ### Mutation testing
 
