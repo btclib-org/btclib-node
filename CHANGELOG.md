@@ -32,6 +32,33 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.11.12
+
+### btclib and bip32-descriptors 2026.11.12 are required
+
+A `headers` batch whose transaction counts are not zero is taken, as in Core
+(closes #2307), and a miniscript needing no signature of a key off the curve is
+signed, as bitcoind v32.1 signs it (closes #2412).
+
+### A dropped peer leaves `getpeerinfo` before its socket closes
+
+`Connection._close` removes it from the tables first, as Core's
+`DisconnectNodes` does (issue #2416).
+
+### The code takes Sourcery's rewrites
+
+Every rule but `dont-import-test-modules` is on (issue btclib-org/.github#2162).
+
+### The pinned actions and dev tools move
+
+btclib-org/.github's workflows to v2026.11.12 (#2384), and the dev-tooling
+group in `uv.lock` (#2408).
+
+### The version is 2026.11.12
+
+`pyproject.toml` declares `2026.11.12` in place of the `2026.12` placeholder
+that #2415 set.
+
 ## v2026.11.11
 
 ### btclib 2026.11.10 and ecc 2026.11.11 are required

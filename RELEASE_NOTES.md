@@ -22,6 +22,40 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.12
+
+Everything below is measured against `v2026.11.11`. `CHANGELOG.md`'s own
+`v2026.11.12` section is the record of what went into it.
+
+griffe and btclib-org/.github's `api_gaps.py` find no break in the public API
+against `v2026.11.11`.
+
+### Upgrade from 2026.11.11
+
+- **btclib is required at 2026.11.12 or later and bip32-descriptors at
+  2026.11.12 or later** (closes #2307, closes #2412), where 2026.11.10 and
+  2026.11.11 were enough. An environment that pins one of them lower no longer
+  resolves.
+- **The attestations name `reusable-build.yml` at btclib-org/.github's commit
+  `cb5a79443399980ba717df2dea23dbedf6bdbc3a`, its tag v2026.11.12**, where
+  v2026.11.11's named `5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11` (#2384). The
+  command `SECURITY.md` gives names the signer without a ref and verifies both.
+  A check that pins `--signer-workflow` to the old commit fails: drop the ref.
+
+### Worth knowing, though nothing raises
+
+- **A peer this node drops leaves `getpeerinfo` before its socket closes**
+  (issue #2416). 2026.11.11 listed it until the next prune pass over the
+  connections, so a client reading `getpeerinfo` right after the disconnect
+  still found it.
+- **A `headers` batch whose transaction count after a header is not zero is
+  taken, as Core takes it** (closes #2307). 2026.11.11 dropped the batch on a
+  btclib before 2026.11.12.
+- **A miniscript input that needs no signature of a key off the curve is
+  signed, as bitcoind v32.1 signs it** (closes #2412), such as
+  `or_b(pk(A),s:pk(X))` with A's key. 2026.11.11 left it unsigned on a
+  bip32-descriptors before 2026.11.12.
+
 ## v2026.11.11
 
 Everything below is measured against `v2026.11.7`. `CHANGELOG.md`'s own
