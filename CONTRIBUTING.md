@@ -425,7 +425,7 @@ same sha, which is the reliance `REVIEWING.md` provides for.
 
 | workflow | when | what it varies |
 | --- | --- | --- |
-| `test` | pull request, push to main | `windows-latest`, `3.14t` |
+| `test` | pull request, push to main | `windows-latest`, report-only `3.14t` |
 | `lint`, `docs` | pull request, push to main | — |
 | `integration-bitcoind` | pull request, push to main, weekly | — |
 | `claude-review` | pull request, and `@claude` in a comment | — |
