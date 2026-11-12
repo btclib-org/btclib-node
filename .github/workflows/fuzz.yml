@@ -55,18 +55,14 @@ on:
     # nothing until it reaches main -- elsewhere the dispatch below is
     # the way in
     - cron: "20 4 * * 2"
-  # the escape hatch, and the way to ask for a fuzzing run before a
-  # release rather than waiting for the weekly one
+  # the escape hatch, and what runs it on a pull request's own branch
+  # where section 10's `fuzz` entry asks for it
   workflow_dispatch:
-  # No pull_request trigger. Section 10 of the organization's standard
-  # would permit one -- a paths filter on fuzz/** and on this file is
-  # exactly the shape it allows, those being paths an ordinary branch
-  # does not touch -- so this is declined rather than unavailable: ten
-  # minutes of exploration is the sentinel's own work, and a branch that
-  # edits a harness is not the occasion to spend it. What a pull request
-  # does owe is the deterministic half -- every seed still parsing and
-  # reserializing to itself -- and that is a test in the suite,
-  # tests/fuzz_corpus_test.py, run by test.yml like any other.
+  # No pull_request trigger: section 10's `fuzz` entry says why a branch
+  # that changes the harness dispatches the run instead.
+  # What every pull request owes is the deterministic half -- every seed
+  # still parsing and reserializing to itself -- and that is a test in
+  # the suite, tests/fuzz_corpus_test.py, run by test.yml like any other.
   #
   # What a green run here says is bounded by what the harness
   # suppresses, and that is BTClibException alone -- the family
