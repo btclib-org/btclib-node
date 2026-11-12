@@ -171,13 +171,15 @@ def test_the_coinbase_commits_to_the_height_past_sixteen(node: Node) -> None:
     assert block16.transactions[0].vin[0].script_sig == bip34_commitment(16) + b"\x00"
     assert block16.transactions[0].lock_time == 15
     assert check_block_validity(node, block16, check_merkle_root=True) is None
-
-    mine(node, 1)
+    mined16 = mine_template(node, block16)
+    assert mined16.transactions[0].vin[0].script_sig == bip34_commitment(16) + b"\x00"
 
     block17 = create_new_block(node, SCRIPT).block
     assert block17.transactions[0].vin[0].script_sig == bip34_commitment(17)
     assert block17.transactions[0].lock_time == 16
     assert check_block_validity(node, block17, check_merkle_root=True) is None
+    mined17 = mine_template(node, block17)
+    assert mined17.transactions[0].vin[0].script_sig == bip34_commitment(17)
 
 
 def test_the_reserved_value_is_written_once_segwit_is_active(
