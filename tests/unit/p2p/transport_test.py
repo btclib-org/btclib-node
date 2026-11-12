@@ -291,7 +291,6 @@ def test_a_wrong_network_magic_refusal_does_not_echo_unknown_octets() -> None:
     )
     with pytest.raises(WrongNetworkMagicError) as exc_info:
         transport.received_bytes(memoryview(secret[:4] + bytes(20)))
-    assert secret[:4].hex() not in str(exc_info.value)
     assert_secret_free(exc_info.value, [secret[:4]])
 
     other = Main().magic
