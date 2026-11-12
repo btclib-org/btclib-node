@@ -74,7 +74,7 @@ jobs:
   # tag-requires-day is left at its default of true rather than passed
   # explicitly
   version-check:
-    uses: btclib-org/.github/.github/workflows/reusable-version-check.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-version-check.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
 
   # walks the public API of the release before this one against the one
   # being cut and reports what broke: a removed object, a changed
@@ -99,7 +99,7 @@ jobs:
   # btclib-org/btclib-node#553) and the called workflow does not carry it
   # (btclib-org/.github#35)
   public-api:
-    uses: btclib-org/.github/.github/workflows/reusable-public-api.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-public-api.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       package: btclib_node
 
@@ -113,7 +113,7 @@ jobs:
   # above do. github-release does not name it: it runs only after publish-pypi
   # succeeds
   audit:
-    uses: btclib-org/.github/.github/workflows/reusable-audit.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-audit.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
 
   # the build and its signature: btclib-org/.github's reusable-build.yml,
   # called at a tagged commit (section 10 of the organization's standard). It
@@ -135,7 +135,7 @@ jobs:
       contents: read
       id-token: write # the OIDC token the callee's attest job mints
       attestations: write # the build provenance attestation it writes
-    uses: btclib-org/.github/.github/workflows/reusable-build.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-build.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       python: "3.14"
       version-suffix: ${{ needs.version-check.outputs.version-suffix }}
@@ -326,7 +326,7 @@ jobs:
       needs.build.result == 'success'
     permissions:
       contents: write # what creates the GitHub release
-    uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       dist-artifact: dist
       # refuses the files unless their digests are the ones the build job
@@ -399,6 +399,6 @@ jobs:
   documented:
     needs: version-check
     if: github.event_name == 'push'
-    uses: btclib-org/.github/.github/workflows/reusable-documented.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-documented.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       readthedocs-slug: btclib-node
