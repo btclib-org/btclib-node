@@ -56,7 +56,7 @@ from collections import deque
 from collections.abc import Iterator  # noqa: TC003
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 from btclib.fee import FeeRate  # noqa: TC002
@@ -407,12 +407,10 @@ def asks_for_everything(
     # would compare `/tmp/...` against `/private/tmp/...` and find no
     # containment anywhere.
     wanted = [(rootpath / p).resolve() for p in testpaths]
-    if not wanted:
-        # `all` over nothing is true, and would make every path named
-        # here the whole suite. Nothing names the suite, so a bare run
-        # collects the rootdir and anything asked for is less than it.
-        return False
-    return all(
+    # `all` over nothing is true, and would make every path named here
+    # the whole suite. Nothing names the suite, so a bare run collects
+    # the rootdir and anything asked for is less than it.
+    return bool(wanted) and all(
         any(target == path or path in target.parents for path in given)
         for target in wanted
     )
@@ -492,12 +490,13 @@ def coverage_configuration(config: pytest.Config) -> CoverageConfiguration | Non
     """
     plugin = config.pluginmanager.getplugin("_cov")
     controller = getattr(plugin, "cov_controller", None)
-    if controller is None:
-        return None
-    # annotated because the plugin manager hands back `Any`, and a
-    # return of that is what mypy's strict mode refuses here
-    measuring: CoverageConfiguration = controller.cov.config
-    return measuring
+    # cast because the plugin manager hands back `Any`, and a return of
+    # that is what mypy's strict mode refuses here
+    return (
+        None
+        if controller is None
+        else cast("CoverageConfiguration", controller.cov.config)
+    )
 
 
 def held_to_a_floor(
@@ -509,12 +508,11 @@ def held_to_a_floor(
     `pytest.Config` by the caller rather than taken as one, for the
     reason `asks_for_everything` above gives.
     """
-    if asked is not None:
-        # section 8 of the organization's standard has the hook never
-        # overruling an explicit `--cov-fail-under`, and a caller who
-        # named the floor has not had one taken away in silence
-        return False
-    # neither `--help` nor `--collect-only` is held to a floor to begin
+    # not where `asked` is set: section 8 of the organization's standard
+    # has the hook never overruling an explicit `--cov-fail-under`, and a
+    # caller who named the floor has not had one taken away in silence.
+    #
+    # Neither `--help` nor `--collect-only` is held to a floor to begin
     # with: `--help` exits before a session, and `collectonly` is the one
     # invocation shape pytest-cov itself exempts, its `pytest_runtestloop`
     # returning on `cov_fail_under is None or self.options.collectonly`
@@ -524,7 +522,7 @@ def held_to_a_floor(
     # it is the rejected alternative, and `--setup-plan` is what says so:
     # pytest-cov gates one, so a run of it started from `tests/` is held
     # to a floor it cannot see and is refused rather than exempted
-    return not (asked_for_help or collect_only)
+    return asked is None and not asked_for_help and not collect_only
 
 
 def configuration_went_unread(

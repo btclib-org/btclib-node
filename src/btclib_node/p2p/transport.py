@@ -72,6 +72,8 @@ _COMMAND_SIZE = 12
 _LENGTH_AT = _MAGIC_SIZE + _COMMAND_SIZE
 _LENGTH_SIZE = 4
 
+_INCOMPLETE = "no whole message yet"
+
 
 class TransportProtocolType(StrEnum):
     """Core's `TransportProtocolType`, valued as `getpeerinfo` spells it."""
@@ -254,8 +256,7 @@ class V1Transport(Transport):
         """
         wanted = self._wanted()
         if self._length is None or wanted:
-            err_msg = "no whole message yet"
-            raise IncompleteMessageError(err_msg, wanted)
+            raise IncompleteMessageError(_INCOMPLETE, wanted)
         raw = bytes(self._buffer)
         self._buffer.clear()
         self._length = None

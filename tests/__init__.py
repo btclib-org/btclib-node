@@ -1022,7 +1022,7 @@ def cookie_path(data_dir: Path) -> Path:
 def authorization(data_dir: Path) -> str:
     """Return the `Authorization` value the cookie in `data_dir` makes."""
     cookie = cookie_path(data_dir).read_bytes()
-    return "Basic " + base64.b64encode(cookie).decode()
+    return f"Basic {base64.b64encode(cookie).decode()}"
 
 
 def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:

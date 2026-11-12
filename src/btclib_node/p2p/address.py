@@ -2295,10 +2295,11 @@ class PeerDB:
             old_try = self._last_try.get(old_key, 0.0)
             if now - old_success < _ADDRMAN_REPLACEMENT:
                 return True
-            if now - old_try < _ADDRMAN_REPLACEMENT:
-                if now - old_try <= _ADDRMAN_RECENT_TRY_GRACE:
-                    return False
-            elif now - waiting <= _ADDRMAN_TEST_WINDOW:
+            if (
+                now - old_try <= _ADDRMAN_RECENT_TRY_GRACE
+                if now - old_try < _ADDRMAN_REPLACEMENT
+                else now - waiting <= _ADDRMAN_TEST_WINDOW
+            ):
                 return False
         self._good(known, now, test_before_evict=False)
         return True

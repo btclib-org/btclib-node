@@ -142,7 +142,7 @@ def dump_mempool(mempool: Mempool, path: Path, *, v1: bool = False) -> bool:
     }
     unbroadcast = set(mempool.unbroadcast)
     mid = time.monotonic()
-    new = path.with_name(path.name + ".new")
+    new = path.with_name(f"{path.name}.new")
     try:
         file = new.open("wb")
     except OSError:

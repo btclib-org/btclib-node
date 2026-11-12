@@ -1342,9 +1342,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     # `ProcessNewBlock`, ahead of `ActivateBestChain` (`src/validation.cpp`,
     # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     new_pow_valid_block(node, block)
-    if extends_tip:
-        return _validate_extending_tip(node, block_hash)
-    return None
+    return _validate_extending_tip(node, block_hash) if extends_tip else None
 
 
 def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
@@ -1870,12 +1868,12 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
             RPCErrorCode.INVALID_PARAMETER,
             "Error: v2transport requested but not enabled (see -v2transport)",
         )
-    if not use_v2transport and not node.config.v1transport:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            "Error: v1transport requested but not enabled (see -v1transport)",
-        )
-    return node_arg, command, use_v2transport
+    if use_v2transport or node.config.v1transport:
+        return node_arg, command, use_v2transport
+    raise RpcError(
+        RPCErrorCode.INVALID_PARAMETER,
+        "Error: v1transport requested but not enabled (see -v1transport)",
+    )
 
 
 def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
@@ -2721,9 +2719,7 @@ def _address(script_type: str, solutions: list[bytes], network: str) -> str | No
         witness = (1, _ANCHOR_PROGRAM)
     elif script_type == "witness_unknown":
         witness = (solutions[0][0], solutions[1])
-    if witness is None:
-        return None
-    return b32.address_from_witness(*witness, network)
+    return None if witness is None else b32.address_from_witness(*witness, network)
 
 
 def _script_pub_key_dict(script: bytes, network: str) -> dict[str, Any]:

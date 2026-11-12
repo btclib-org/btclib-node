@@ -180,7 +180,7 @@ def test_a_feeler_past_its_version_is_read_no_further(
     handle_p2p_handshake(node)
     handle_p2p(node)
     assert seen == ([] if versioned else ["verack"])
-    assert conn.prefers_headers is False
+    assert not conn.prefers_headers
     assert not stopped
 
 

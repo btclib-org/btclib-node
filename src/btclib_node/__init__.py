@@ -206,9 +206,7 @@ def _default_worker_count() -> int:
         count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", ""))
     except ValueError:
         count = 0
-    if count < 1:
-        return 8
-    return max(1, (os.cpu_count() or 8) // count)
+    return 8 if count < 1 else max(1, (os.cpu_count() or 8) // count)
 
 
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute

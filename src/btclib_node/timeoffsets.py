@@ -51,9 +51,7 @@ def median(offsets: Collection[int]) -> int:
     For an even count that is the upper of the two middle samples, as
     Core's "approximate median" is.
     """
-    if len(offsets) < _MIN_SAMPLES:
-        return 0
-    return sorted(offsets)[len(offsets) // 2]
+    return 0 if len(offsets) < _MIN_SAMPLES else sorted(offsets)[len(offsets) // 2]
 
 
 def warn_if_out_of_sync(node: Node) -> bool:

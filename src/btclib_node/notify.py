@@ -121,7 +121,7 @@ def alert_notify(logger: logging.Logger, command: str, message: str) -> None:
     """
     if not command:
         return
-    safe = "'" + _sanitize(message) + "'"
+    safe = f"'{_sanitize(message)}'"
     run_detached(logger, command.replace("%s", safe))
 
 

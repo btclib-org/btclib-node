@@ -6446,9 +6446,7 @@ def a_filters_node(
 
     def get_ancestor(block_hash: bytes, height: int) -> bytes | None:
         own_height = header_dict[block_hash].index
-        if height > own_height or height < 0:
-            return None
-        return active_chain[height]
+        return None if height > own_height or height < 0 else active_chain[height]
 
     filter_index = SimpleNamespace(
         get_filter=lambda h: b"\x01" + h[-1:],

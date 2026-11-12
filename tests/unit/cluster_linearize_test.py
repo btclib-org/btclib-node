@@ -587,7 +587,8 @@ def _evaluate(size: int, diagram: list[tuple[int, int]]) -> Fraction:
 def _points(chunks: list[FeeFrac]) -> list[tuple[int, int]]:
     points = [(0, 0)]
     for fee, size in chunks:
-        points.append((points[-1][0] + fee, points[-1][1] + size))
+        point = (points[-1][0] + fee, points[-1][1] + size)
+        points.append(point)
     return points
 
 

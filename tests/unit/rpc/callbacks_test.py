@@ -1397,9 +1397,7 @@ def a_coin_stats_node(
         cursor: object, interruption_point: Callable[[], None]
     ) -> bytes | None:
         calls.append("serialized_hash")
-        if scan is None:
-            return b"\x00" * 32
-        return scan(cursor, interruption_point)
+        return b"\x00" * 32 if scan is None else scan(cursor, interruption_point)
 
     return SimpleNamespace(
         terminate_flag=threading.Event(),
@@ -3227,7 +3225,7 @@ def test_hex_with_whitespace_is_refused_like_core(
     # two spaces, not one: an odd-length probe would already be refused
     # by the length-parity half of the guard, telling this test nothing
     # about the character-set half `is_hex` has
-    with_space = raw[:8] + "  " + raw[8:]
+    with_space = f"{raw[:8]}  {raw[8:]}"
     assert len(with_space) % 2 == 0
     params = [with_space] if callback is send_raw_transaction else [[with_space]]
     with pytest.raises(RpcError) as raised:
@@ -3895,7 +3893,7 @@ def test_decoderawtransaction_refuses_whitespace_like_core() -> None:
     this test nothing about the character-set half of `is_hex`.
     """
     raw = a_tx().serialize(include_witness=True).hex()
-    with_space = "  " + raw
+    with_space = f"  {raw}"
     assert len(with_space) % 2 == 0
     with pytest.raises(RpcError) as raised:
         cb.decode_raw_transaction(a_node(), _CONN, [with_space])
@@ -8363,7 +8361,7 @@ def test_submit_header_indexes_a_header_alone(
     (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
     hexdata = header.serialize().hex()
 
-    submit_header(node, _CONN, [hexdata + "00"])
+    submit_header(node, _CONN, [f"{hexdata}00"])
     submit_header(node, _CONN, [hexdata])
 
     block_index = node.chainstate.block_index

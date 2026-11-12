@@ -133,13 +133,14 @@ def locator_entries(block_index: BlockIndex, block_hash: bytes) -> list[bytes]:
         if height == 0:
             return have
         height = max(height - step, 0)
-        if on_header_index:
-            block_hash = block_index.header_index[height]
-        else:
-            # always found: `height` is below `block_hash`'s own
-            block_hash = cast("bytes", block_index.get_ancestor(block_hash, height))
         if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
             step *= 2
+        # `get_ancestor` always finds it: `height` is below `block_hash`'s own
+        block_hash = (
+            block_index.header_index[height]
+            if on_header_index
+            else cast("bytes", block_index.get_ancestor(block_hash, height))
+        )
 
 
 def block_time(header: BlockHeader) -> int:
@@ -626,9 +627,9 @@ class BlockIndex:
         return self._ancestor(block_hash, own_height, height)
 
     def _ancestor(self, block_hash: bytes, walk_height: int, height: int) -> bytes:
-        header_dict = self.header_dict
         skip = self.skip
         walk = block_hash
+        header_dict = self.header_dict
         while walk_height > height:
             skip_height = _skip_height(walk_height)
             skip_height_prev = _skip_height(walk_height - 1)
@@ -638,9 +639,8 @@ class BlockIndex:
                 skip_height == height
                 or (
                     skip_height > height
-                    and not (
-                        skip_height_prev < skip_height - 2
-                        and skip_height_prev >= height
+                    and (
+                        skip_height_prev >= skip_height - 2 or skip_height_prev < height
                     )
                 )
             ):

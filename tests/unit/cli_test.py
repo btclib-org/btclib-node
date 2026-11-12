@@ -3213,7 +3213,7 @@ def test_build_config_a_configuration_file_refusal_is_core_s(
     """`ReadConfigFiles`'s words after `InitConfig`'s prefix, each measured."""
     data = paths / "d"
     (data / "j.conf").write_text(conf, encoding="utf-8")
-    refusal = "Error reading configuration file: " + refusal.format(d=data, s=os.sep)
+    refusal = f"Error reading configuration file: {refusal.format(d=data, s=os.sep)}"
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", *argv])
 
@@ -3336,7 +3336,7 @@ def test_build_config_an_unreadable_configuration_file_is_refused_as_core_s(
     (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
     (data / "inc.conf").write_text("port=1\n", encoding="utf-8")
     (data / conf).chmod(0)
-    refusal = "Error reading configuration file: " + refusal.format(d=data)
+    refusal = f"Error reading configuration file: {refusal.format(d=data)}"
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", *argv])
 

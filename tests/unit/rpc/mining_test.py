@@ -217,7 +217,7 @@ def test_generatetoaddress_fills_each_block_from_the_mempool(funded: Node) -> No
         ),
         ([1, "garbage"], -5, "Error: Invalid address"),
         ([1, ""], -5, "Error: Invalid address"),
-        ([1, ADDRESS[:-1] + "x"], -5, "Error: Invalid address"),
+        ([1, f"{ADDRESS[:-1]}x"], -5, "Error: Invalid address"),
         ([1.5, ADDRESS], -1, "JSON integer out of range"),
         ([2**31, ADDRESS], -1, "JSON integer out of range"),
         ([1, ADDRESS, 1.5], -1, "JSON integer out of range"),
@@ -292,9 +292,7 @@ def test_generatetoaddress_stops_where_the_tries_are_spent(
     def solve(
         node_: Node, block: Block, tries: int
     ) -> Generator[bool, None, tuple[Block | None, int]]:
-        if next(solved):
-            return real(node_, block, tries)
-        return answer((None, 0))
+        return real(node_, block, tries) if next(solved) else answer((None, 0))
 
     monkeypatch.setattr(rpc_mining, "solve_block", solve)
 
@@ -1447,11 +1445,11 @@ def test_the_long_poll_counter_starts_at_zero_and_counts_each_block(
     node: Node,
 ) -> None:
     """As `bitcoind`'s after a restart: 0, then one per block."""
-    assert template(node)["longpollid"] == tip(node).hex() + "0"
+    assert template(node)["longpollid"] == f"{tip(node).hex()}0"
 
     generate_to_address(node, CONN, [3, ADDRESS])
 
-    assert template(node)["longpollid"] == tip(node).hex() + "3"
+    assert template(node)["longpollid"] == f"{tip(node).hex()}3"
 
 
 def test_the_long_poll_counter_counts_transactions_and_disconnections(
@@ -1618,7 +1616,7 @@ def test_the_other_waits_are_served_as_core_names_them() -> None:
             "current_tip must be of length 64 (not 2, for 'zz')",
         ),
         (
-            [1, ZERO + " "],
+            [1, f"{ZERO} "],
             -8,
             f"current_tip must be of length 64 (not 65, for '{ZERO} ')",
         ),

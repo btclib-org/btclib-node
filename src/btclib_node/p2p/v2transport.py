@@ -352,7 +352,7 @@ class V2Transport(Transport):
         with self._send_lock:
             if self._send_state is SendState.V1:
                 return self._v1.set_message_to_send(msg)
-            if not (self._send_state is SendState.READY and not self._send_buffer):
+            if self._send_state is not SendState.READY or self._send_buffer:
                 return False
             self._send_buffer = self._cipher.encrypt(
                 contents_from_message(msg.command, msg.payload)

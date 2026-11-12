@@ -2387,7 +2387,8 @@ def a_cluster(node: Node, root: Tx, count: int) -> list[Tx]:
     """Hold a chain of `count` transactions spending `root`, and return it."""
     chain = [root]
     for _ in range(count - 1):
-        chain.append(child_of(chain[-1]))
+        child = child_of(chain[-1])
+        chain.append(child)
     for tx in chain:
         assert node.mempool.add_tx(tx, FEE, tx.vsize)
     return chain
@@ -3237,7 +3238,7 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     second = generate_random_chain(3, RegTest().genesis.hash)
     connect(node, second)
 
-    assert node.mempool._block_since_last_rolling_fee_bump is True
+    assert node.mempool._block_since_last_rolling_fee_bump
     assert node.mempool._last_rolling_fee_update > 0.0
 
 
@@ -3952,7 +3953,7 @@ def test_a_block_connected_with_an_empty_mempool_asks_it_nothing_per_tx(
     connect(node, chain[-1:])
     assert len(chain[-1].transactions) > 1
     assert not asked
-    assert node.mempool._block_since_last_rolling_fee_bump is True
+    assert node.mempool._block_since_last_rolling_fee_bump
 
 
 def test_a_reorg_during_initial_block_download_announces_nothing(

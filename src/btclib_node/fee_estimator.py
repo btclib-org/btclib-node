@@ -332,9 +332,7 @@ class _TxConfirmStats:
         self, entry_height: int, best_seen_height: int, bucket: int, *, in_block: bool
     ) -> None:
         """Stop counting a transaction as unconfirmed, failed if not mined."""
-        blocks_ago = best_seen_height - entry_height
-        if best_seen_height == 0:
-            blocks_ago = 0
+        blocks_ago = 0 if best_seen_height == 0 else best_seen_height - entry_height
         if blocks_ago < 0:
             return
         if blocks_ago >= len(self.unconf_txs):

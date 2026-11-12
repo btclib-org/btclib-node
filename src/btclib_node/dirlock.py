@@ -137,7 +137,8 @@ def lock_directories(*directories: Path) -> tuple[DirectoryLock, ...]:
         # a loop and not `extend`: each lock taken is in `locks` before
         # the next is asked for, which is what the refusal below releases
         for directory in directories:
-            locks.append(DirectoryLock(directory))  # noqa: PERF401
+            lock = DirectoryLock(directory)
+            locks.append(lock)
     except DirectoryLockError:
         for lock in locks:
             lock.release()
