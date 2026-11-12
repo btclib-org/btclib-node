@@ -732,10 +732,10 @@ class P2pManager(threading.Thread):
         # `remove_connection` pops from `connections` and then, only if
         # that missed, from `pending_connections` -- two statements
         # again. `promote_connection` runs on `Node`'s own loop, off
-        # `callbacks.verack`; `remove_connection` runs on this
-        # manager's own loop, off `_prune_stale_connections`, and on
-        # `Node`'s, off the `disconnectnode` RPC and off
-        # `evict_tx_peer_if_full`. Unlocked,
+        # `callbacks.verack`. `remove_connection` runs on both loops:
+        # on this manager's off `Connection._close` and
+        # `_prune_stale_connections`, for example, and on `Node`'s off
+        # the `disconnectnode` RPC and `evict_tx_peer_if_full`. Unlocked,
         # a `remove_connection` whose first pop misses because the
         # connection is still pending can run its second pop after
         # `promote_connection` has already moved it, missing it there
@@ -754,12 +754,9 @@ class P2pManager(threading.Thread):
         # deadlock. Nothing here blocks `Node`'s thread for longer than
         # a dict operation, or than the transport holds its own locks.
         #
-        # `stop()`'s own closing sweep (below) reads this same pair
-        # unlocked, on purpose: it runs only after `join()`, and its own
-        # comment there is what argues nothing but this manager's thread
-        # can still be reaching either dict by then, `promote_connection`
-        # included -- not a second snapshot-style reader this lock left
-        # out.
+        # `stop()`'s own closing sweep (below) takes this lock to read
+        # and empty both dicts, as Core's `StopNodes` swaps `m_nodes`
+        # out under `m_nodes_mutex`.
         self._connections_lock = threading.Lock()
         # `reserve_automatic_slot`'s reservations by `connection_type`:
         # a dial past its capacity check that has not yet registered or
@@ -1923,8 +1920,9 @@ class P2pManager(threading.Thread):
             # handshake has to clear before it is sent as `inv` or `tx`
             # is (#131). `_TIMEOUT_INTERVAL` is not asked here, being
             # longer: a connection quiet that long is past this one.
-            # A v2 outbound attempt a v1-only peer refuses ends here, as a
-            # `Closed` pending connection: `remove_connection` is Core's
+            # A v2 outbound attempt a v1-only peer refuses ends as a
+            # `Closed` pending connection, dropped by `Connection._close`
+            # or here, whichever runs first: `remove_connection` is Core's
             # `DisconnectNodes`, where it reads `ShouldReconnectV1`.
             if conn.status == P2pConnStatus.Closed or _inactivity_checks_due(conn, now):
                 self.remove_connection(conn.id)
@@ -4084,10 +4082,19 @@ class P2pManager(threading.Thread):
         # and it terminates because the accept loop is cancelled on the
         # first pass (btclib-org/btclib-node#312).
         while True:
-            for conn in (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            ):
+            # Taken out of the tables first, as Core's `StopNodes` swaps
+            # `m_nodes` out before it closes each node, so that
+            # `Connection._close` drops none of them a second time: no
+            # second `_finalize`, and no v1 retry queued past the clear
+            # above.
+            with self._connections_lock:
+                held = (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+                self.connections.clear()
+                self.pending_connections.clear()
+            for conn in held:
                 conn.stop()
             pending = asyncio.all_tasks(self.loop)
             if not pending:

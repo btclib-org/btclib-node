@@ -908,10 +908,12 @@ def test_a_peer_whose_socket_is_closed_is_listed_and_counted(
 ) -> None:
     """ISS 2168: `getpeerinfo` lists the peers `getnetworkinfo` counts.
 
-    Core's `CloseSocketDisconnect` leaves a node in `m_nodes` until
-    `DisconnectNodes` runs, and `GetNodeStats` and `GetNodeCount` both
-    read `m_nodes` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag). So a peer whose socket is closed, handshaken or still
+    Core's `GetNodeStats` and `GetNodeCount` both read `m_nodes`
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    `Connection._close` drops a peer from the tables before it closes the
+    socket, so tables holding a peer whose socket is closed are a
+    snapshot `get_peer_info` took before a concurrent `_close`, which the
+    node built here stands for. That peer, handshaken or still
     mid-handshake, is in both answers, with the addresses it had.
     """
     # `Connection.stop` sets `Closed` before its `_close` closes the socket

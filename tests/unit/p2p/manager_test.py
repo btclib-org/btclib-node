@@ -6059,6 +6059,119 @@ def test_create_connection_keeps_the_bind_address_past_the_socket(
     assert conn.addr_bind == f"127.0.0.1:{bound}"
 
 
+@pytest.mark.parametrize("handshaken", [True, False], ids=["handshaken", "pending"])
+def test_a_peer_this_node_drops_leaves_the_tables_before_its_socket_closes(
+    a_manager: AManagerFactory, *, handshaken: bool
+) -> None:
+    """ISS 2416: once the peer sees the hangup, `getpeerinfo` has no entry.
+
+    Core's `DisconnectNodes` takes a node out of `m_nodes`, which
+    `GetNodeStats` and `GetNodeCount` read, before `CloseSocketDisconnect`
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). No
+    `_prune_stale_connections` pass runs here, so only `Connection._close`
+    can have dropped it.
+    """
+    manager = a_manager()
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+
+    async def drop() -> Connection:
+        manager.create_connection(ours, peer_address("127.0.0.1", port), inbound=True)
+        (conn,) = manager.pending_connections.values()
+        if handshaken:
+            manager.promote_connection(conn.id)
+        # what `DownloadManager.block_download` does to a staller
+        conn.stop()
+        # the peer's end reads the close
+        assert await manager.loop.sock_recv(theirs, 1) == b""
+        return conn
+
+    with ours, theirs:
+        # non-blocking, as `sock_recv` needs it
+        theirs.settimeout(0)
+        conn = manager.loop.run_until_complete(drop())
+    assert conn.status == P2pConnStatus.Closed
+    assert conn.id not in manager.connections
+    assert conn.id not in manager.pending_connections
+
+
+def test_a_connection_stopped_at_shutdown_is_finalized_once(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2416: `stop` empties the tables before it stops each connection.
+
+    Core's `StopNodes` swaps `m_nodes` out before it closes each node
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so no
+    `DisconnectNodes` drops one again. Here `Connection._close` then finds
+    nothing to drop, and a full outbound peer is told to the table once.
+    """
+    peer_db = a_peer_db_stub(is_empty=True)
+    manager = a_manager(peer_db=peer_db, listen=False, max_connections=0)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+    address = peer_address("127.0.0.1", port)
+
+    async def connect() -> None:
+        manager.create_connection(ours, address, inbound=False)
+        (conn,) = manager.pending_connections.values()
+        manager.promote_connection(conn.id)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(connect())
+        manager.stop()
+        # `_close` ran: a closed socket's own fileno is -1
+        assert ours.fileno() == -1
+    assert peer_db.connected_to == [address]
+
+
+def test_a_dropped_peer_sees_the_close_where_the_table_refuses_the_write(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2416: a raise from `remove_connection` still closes the socket.
+
+    `_finalize` writes to the address table, a store that can fail. The
+    error reaches the loop's exception handler, and the peer reads the
+    close all the same.
+    """
+
+    def refuses(_: NetworkAddressV2) -> None:
+        raise OSError(errno.ENOSPC, "no space left")
+
+    peer_db = a_peer_db_stub(is_empty=True, connected=refuses)
+    manager = a_manager(peer_db=peer_db, listen=False, max_connections=0)
+    reported: list[object] = []
+    manager.loop.set_exception_handler(
+        lambda _, context: reported.append(context.get("exception"))
+    )
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+
+    async def drop() -> None:
+        manager.create_connection(ours, peer_address("127.0.0.1", port), inbound=False)
+        (conn,) = manager.pending_connections.values()
+        manager.promote_connection(conn.id)
+        conn.stop()
+        # the peer's end reads the close, where a socket left open would
+        # time out
+        read = manager.loop.sock_recv(theirs, 1)
+        assert await asyncio.wait_for(read, 10) == b""
+
+    with ours, theirs:
+        # non-blocking, as `sock_recv` needs it
+        theirs.settimeout(0)
+        manager.loop.run_until_complete(drop())
+        # a closed socket's own fileno is -1
+        assert ours.fileno() == -1
+    assert [type(error) for error in reported] == [OSError]
+    assert not manager.connections
+
+
 @pytest.mark.parametrize(
     ("family", "host", "answer"),
     [
