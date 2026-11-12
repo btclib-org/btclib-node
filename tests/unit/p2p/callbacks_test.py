@@ -5827,11 +5827,11 @@ def test_a_batch_with_octets_past_its_headers_is_taken() -> None:
     assert index.given == chain
 
 
-def test_a_batch_with_a_transaction_count_is_dropped_and_the_peer_kept() -> None:
-    """ISS 2307: Core ignores the count; btclib's parse refuses it.
-
-    The divergence `headers` states, until btclib-org/btclib#2992.
-    """
+@pytest.mark.parametrize(
+    "count", [b"\x01", b"\xfd\xfd\x00"], ids=["one octet", "three octets"]
+)
+def test_a_batch_with_a_transaction_count_is_taken(count: bytes) -> None:
+    """ISS 2307: Core's `HEADERS` reads the count and ignores it."""
     chain = generate_random_header_chain(4, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     index = FakeHeaderIndex(tip=chain[-1].hash, header_index_tip=chain[-1].hash)
@@ -5840,11 +5840,9 @@ def test_a_batch_with_a_transaction_count_is_dropped_and_the_peer_kept() -> None
     # the count after the first header: one octet for the batch's own
     # count, then the eighty of the header
     assert payload[81] == 0
-    payload = payload[:81] + b"\x01" + payload[82:]
-    with pytest.raises(BTClibValueError, match="invalid transaction count") as refusal:
-        headers(node, payload, a_peer())
-    assert not isinstance(refusal.value, MisbehavingError)
-    assert index.given is None
+    payload = payload[:81] + count + payload[82:]
+    headers(node, payload, a_peer())
+    assert index.given == chain
 
 
 def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
