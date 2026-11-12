@@ -40,6 +40,7 @@ from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from ecc import ellswift
 from ecc.curves import secp256k1
 
+from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.exceptions import RejectedMessageError
 from btclib_node.p2p.transport import (
     BytesToSend,
@@ -73,6 +74,14 @@ _V1_VERSION_COMMAND = b"version\x00\x00\x00\x00\x00"
 # Core's `MAX_CONTENTS_LEN` for a packet: the long type's 0x00 and its
 # 12 bytes, and the largest payload
 _MAX_CONTENTS_LEN = 1 + 12 + MAX_PROTOCOL_MESSAGE_LENGTH
+# the magics the chains `btclib_node.chains` defines: a refusal names the
+# magic it received only where it holds one of these values. Section 7 of
+# the organization's standard, *A refusal carries no secret*: a refused
+# magic is by definition not this node's, so it may hold anything, key
+# bytes included.
+_KNOWN_MAGICS = frozenset(
+    chain().magic for chain in (Main, TestNet, TestNet4, SigNet, RegTest)
+)
 
 
 class V2TransportError(BTClibValueError):
@@ -276,7 +285,13 @@ class V2Transport(Transport):
             and buffer[offset : offset + len(_V1_VERSION_COMMAND)]
             == _V1_VERSION_COMMAND
         ):
-            err_msg = f"V1 peer with wrong MessageStart {bytes(buffer[:offset]).hex()}"
+            wrong_magic = bytes(buffer[:offset])
+            # section 7 of the organization's standard, *A refusal carries
+            # no secret*: the refused magic is by definition not this
+            # node's, so it may hold anything, key bytes included, and is
+            # printed only where it is one of the chains' own
+            suffix = f" {wrong_magic.hex()}" if wrong_magic in _KNOWN_MAGICS else ""
+            err_msg = f"V1 peer with wrong MessageStart{suffix}"
             raise V2TransportError(err_msg)
         if len(buffer) < _KEY_LEN:
             return
