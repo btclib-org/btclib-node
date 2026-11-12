@@ -990,16 +990,13 @@ def test_a_miniscript_with_a_key_off_the_curve_leaves_the_next_input_signed() ->
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_unsigned(
+def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_signed(
     *, nested: bool
 ) -> None:
-    """`or_b(pk(A),s:pk(X))`, `X` being `OFF_CURVE`, is left unsigned.
+    """`or_b(pk(A),s:pk(X))`, `X` being `OFF_CURVE`, is signed with A alone.
 
-    This departs from Core, which signs it with A alone, in wsh and in
-    sh(wsh): bip32-descriptors' `from_script` refuses `X`, which Core
-    reads (`_Production.satisfy_miniscript`'s docstring,
-    ISS btclib-org/bip32-descriptors#292). The test pins the departure, so
-    it fails once bip32-descriptors reads such a key.
+    As Core signs it, in wsh and in sh(wsh) (ISS 2412): the witness is
+    the empty push that fails `pk(X)`, A's signature, and the script.
     """
     script = b"\x21" + PUB_A + b"\xac\x7c\x21" + OFF_CURVE + b"\xac\x9b"
     extra = {"witnessScript": script.hex()}
@@ -1008,10 +1005,13 @@ def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_unsigned(
         extra["redeemScript"] = spent.hex()
         spent = p2sh(spent)
     result = call("signrawtransactionwithkey", [RAW, [KA], [prevtx(spent, extra)]])
-    assert result["complete"] is False
-    assert [e["error"] for e in result["errors"]] == [
-        "Unable to sign input, invalid stack size (possibly missing key)"
-    ]
+    # what `bitcoind` v32.1 answered for the same call
+    core = {
+        False: "0200000000010101010101010101010101010101010101010101010101010101010101010101010000000000fdffffff01b882010000000000160014362995a6e6922a04e0b832a80bc56c33709a42d2030047304402204529a2ff39d489a3249f5d985bbe705248b7d6043c34818cbda9ae081b50a517022010e3503d75a3532fc4e219354817333927d402c7a134db3113871ca9a7e70fc901482103774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac7c21020000000000000000000000000000000000000000000000000000000000000005ac9b00000000",
+        True: "0200000000010101010101010101010101010101010101010101010101010101010101010101010000000023220020d31bbe4387eac9d5420dfbf475aabb81baba09e34572ed5a1b2653a337b77d39fdffffff01b882010000000000160014362995a6e6922a04e0b832a80bc56c33709a42d2030047304402204529a2ff39d489a3249f5d985bbe705248b7d6043c34818cbda9ae081b50a517022010e3503d75a3532fc4e219354817333927d402c7a134db3113871ca9a7e70fc901482103774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac7c21020000000000000000000000000000000000000000000000000000000000000005ac9b00000000",
+    }[nested]
+    assert result == {"hex": core, "complete": True}
+    assert accepted(result["hex"], spent)
 
 
 def test_a_redeem_script_over_65535_bytes_is_pushed_with_pushdata4() -> None:

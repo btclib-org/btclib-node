@@ -95,7 +95,12 @@ dependencies = [
     # `policy.validate_inputs_standardness` (btclib-org/btclib#2939),
     # which `main.py` calls, and with Core v32.1's BIP324 short ids
     # (btclib-org/btclib#2938), which `p2p/v2transport.py` reads.
-    "btclib[secp256k1,bip324]>=2026.11.10",
+    #
+    # 2026.11.12 is the first release whose `Headers.parse` reads the
+    # transaction count after each header and ignores it, as Core's
+    # `HEADERS` handler does (btclib-org/btclib#2992): an earlier one
+    # refuses a nonzero count, so `headers` drops the batch (issue #2307).
+    "btclib[secp256k1,bip324]>=2026.11.12",
     # Descriptors and miniscript, as ARCHITECTURE.md's *What is delegated,
     # and what is not* says. 2026.11.2 is the first release whose
     # provider gives a key spelled twice in a fragment Core v32.1's origin
@@ -103,10 +108,16 @@ dependencies = [
     # the place of the earlier one's fingerprint: `[aaaaaaaa/5]` then
     # `[bbbbbbbb/7]` give `[bbbbbbbb/7/5/0/1]` at `/0/1`.
     #
-    # The floor is 2026.11.11, the first release that imports on btclib
-    # 2026.11.10 and ecc 2026.11.11: an earlier one imports
+    # 2026.11.11 is the first release that imports on btclib 2026.11.10
+    # and ecc 2026.11.11: an earlier one imports
     # `btclib.base58` or `ecc.ecc`, which those releases remove.
-    "bip32-descriptors>=2026.11.11",
+    #
+    # The floor is 2026.11.12, the first release whose `from_script` reads
+    # a 33-byte key that is no curve point, as Core's signer does
+    # (btclib-org/bip32-descriptors#292): an earlier one refuses the
+    # script, and `satisfy_miniscript` leaves the input unsigned
+    # (issue #2412).
+    "bip32-descriptors>=2026.11.12",
     # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
     # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
