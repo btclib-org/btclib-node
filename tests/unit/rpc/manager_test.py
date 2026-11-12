@@ -1986,9 +1986,17 @@ def test_server_holds_a_queued_client_until_there_is_room(
         time.sleep(0.2)
         assert queue.qsize() == 1
         pairs[0][1].close()
-        wait_until(queue.empty)
-        (second,) = manager.connections.values()
-        assert second.client is pairs[1][0]
+        # `server` takes a client off the queue before it adds it to
+        # `connections`, and this thread can read between the two
+        # (btclib-org/btclib-node#2401). `list` copies the values in one
+        # call, so the loop changing the dict between two steps of the
+        # comprehension does not fail it.
+        wait_until(
+            lambda: (
+                [c.client for c in list(manager.connections.values())] == [pairs[1][0]]
+            )
+        )
+        assert queue.empty()
     finally:
         for _, theirs in pairs:
             theirs.close()
