@@ -72,4 +72,4 @@ jobs:
   # is one of its own hooks -- and needs no history beyond the tip, so
   # `submodules` and `fetch-depth` are left at their defaults
   lint:
-    uses: btclib-org/.github/.github/workflows/reusable-lint.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-lint.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
