@@ -178,6 +178,14 @@ whole, a private key in it included (`ParseScript` in
 tag). This node's refusal quotes none of its arguments, as in
 `'rawnode(...)' is not a valid descriptor function`.
 
+Core's `scantxoutset` refusal of a hex key that is not a point quotes the
+key, which may be a private key given by mistake (`ParsePubkeyInner` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). Where ecc refuses the key, this node's refusal writes `...` in its
+place, as in `pk(): Pubkey '...' is invalid`. Where bip32_descriptors
+refuses it, as a `musig()` participant or an x-only key outside `tr()`,
+the refusal names the key by its index alone.
+
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
 `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This

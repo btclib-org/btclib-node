@@ -622,6 +622,35 @@ def test_generateblock_refuses_a_multipath_descriptor_parse_refuses(
     )
 
 
+# an x no point of the curve has, as an x-only key and a compressed one
+NOT_A_POINT_X = "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+NOT_A_POINT = f"02{NOT_A_POINT_X}"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        f"pk({NOT_A_POINT})",
+        f"sh(wpkh({NOT_A_POINT}))",
+        f"combo({NOT_A_POINT})",
+        f"tr({NOT_A_POINT_X})",
+        f"tr({X_ONLY},multi_a(1,{NOT_A_POINT_X}))",
+        f"wsh(multi(1,{TPUB}/<0;1>/0,{NOT_A_POINT}))",
+        # bip32_descriptors refuses the multipath key first, and ecc then
+        # refuses the other in one of the paths
+        f"tr({TPUB}/<0;1>/0,pk({NOT_A_POINT_X}))",
+        f"wsh(or_d(pk({TPUB}/<0;1>/0),pk({NOT_A_POINT})))",
+    ],
+)
+def test_generateblock_refuses_a_key_that_is_no_point(node: Node, output: str) -> None:
+    """`Parse` refuses the key, and the text is no address either."""
+    assert refusal(lambda: generate_block(node, CONN, [output, []])) == (
+        -5,
+        "Error: Invalid address or descriptor",
+    )
+    assert height(node) == 0
+
+
 def test_generateblock_mines_to_raw_at_top_level_with_its_checksum(
     node: Node,
 ) -> None:

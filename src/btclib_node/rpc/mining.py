@@ -35,6 +35,7 @@ from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR
 from btclib.exceptions import BTClibException
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.tx import Tx
+from ecc.exceptions import EccException
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.mining import (
@@ -162,7 +163,8 @@ def _parse_refuses(node: Node, text: str) -> bool:
         stripped = strip_checksum(text)
         for one in multipath_descriptors(stripped):
             parse_descriptor(one, node.chain.name, {})
-    except BTClibException:
+    # ecc refuses a hex key that is no point, which `Parse` refuses too
+    except BTClibException, EccException:
         return True
     return _core_refusal(stripped, _TOP) is not None
 
@@ -187,7 +189,8 @@ def _descriptor_script(node: Node, text: str) -> ScriptPubKey | None:
         # `parse` moves each xprv into `prv_keys`, which a hardened step needs
         prv_keys: dict[str, str] = {}
         descriptor = parse_descriptor(text, node.chain.name, prv_keys)
-    except BTClibException as err:
+    # ecc refuses a hex key that is no point, which `Parse` refuses too
+    except (BTClibException, EccException) as err:
         if "multipath" in str(err) and not _parse_refuses(node, text):
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER, "Multipath descriptor not accepted"

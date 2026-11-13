@@ -26,6 +26,7 @@ from bip32_descriptors.descriptors import (
 from btclib.exceptions import BTClibException
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
+from ecc.exceptions import EccException
 
 from btclib_node.rpc import utxo_set
 from btclib_node.rpc.callbacks import arg_names, callbacks
@@ -708,6 +709,54 @@ def test_a_refusal_quotes_no_key(node: Node, text: str, name: str | None) -> Non
 def test_a_tree_walk_stops_at_a_parenthesis_it_cannot_pass(args: str) -> None:
     """A `)` at level 0 ends the walk, which would otherwise not progress."""
     assert utxo_set._tree_refusal(args) is None
+
+
+# an x no point of the curve has, as an x-only key and a compressed one
+NOT_A_POINT_X = "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+NOT_A_POINT = f"02{NOT_A_POINT_X}"
+INVALID = "Pubkey '...' is invalid"
+
+# Each with the message of `ParseScript` in `src/script/descriptor.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag, whose key is `...` here
+NOT_A_POINT_REFUSALS = [
+    (f"pk({NOT_A_POINT})", f"pk(): {INVALID}"),
+    (add_checksum(f"pkh({NOT_A_POINT})"), f"pkh(): {INVALID}"),
+    (f"sh(wpkh([deadbeef/0]{NOT_A_POINT}))", f"wpkh(): {INVALID}"),
+    (f"combo({NOT_A_POINT})", f"combo(): {INVALID}"),
+    (f"pk(04{'00' * 64})", f"pk(): {INVALID}"),
+    (f"multi(1,{KEY},{NOT_A_POINT})", f"Multi: {INVALID}"),
+    (f"wsh(multi(1,{TPUB}/<0;1>/0,{NOT_A_POINT}))", f"Multi: {INVALID}"),
+    (f"tr({TPUB}/<0;1>/0,pk({NOT_A_POINT_X}))", f"pk(): {INVALID}"),
+    (f"sh(wsh(pkh({NOT_A_POINT})))", f"pkh(): {INVALID}"),
+    (f"wsh(and_v(v:pk({NOT_A_POINT}),older(10)))", INVALID),
+    (f"tr({NOT_A_POINT_X})", f"tr(): {INVALID}"),
+    (f"tr({NOT_A_POINT},pk({X_ONLY}))", f"tr(): {INVALID}"),
+    (f"rawtr({NOT_A_POINT_X})", f"rawtr(): {INVALID}"),
+    (f"tr({X_ONLY},{{pk({X_ONLY2}),pk({NOT_A_POINT_X})}})", f"pk(): {INVALID}"),
+    (f"tr({X_ONLY},multi_a(1,{X_ONLY2},{NOT_A_POINT_X}))", f"Multi: {INVALID}"),
+    (f"tr({X_ONLY},pkh({NOT_A_POINT_X}))", INVALID),
+    (f"tr({X_ONLY},and_v(v:pk({NOT_A_POINT_X}),older(10)))", INVALID),
+    (f"unused({NOT_A_POINT})", INVALID),
+]
+
+
+@pytest.mark.parametrize(("text", "message"), NOT_A_POINT_REFUSALS)
+def test_a_key_that_is_no_point_is_refused_with_core_s_message(
+    node: Node, text: str, message: str
+) -> None:
+    """bip32_descriptors refuses it with ecc's error, which is no BTClib one."""
+    with pytest.raises(EccException):
+        parse(multipath_descriptors(strip_checksum(text))[0], "regtest", {})
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert (int(caught.value.code), caught.value.message) == (-5, message)
+    assert_secret_free(caught.value, [NOT_A_POINT_X])
+
+
+@pytest.mark.parametrize("text", [NOT_A_POINT, f"raw({NOT_A_POINT})", f"pk({KEY})"])
+def test_a_text_with_no_key_that_is_no_point_has_no_such_refusal(text: str) -> None:
+    """A key outside a function, an argument that is no key, and a point."""
+    assert utxo_set._invalid_key_refusal(text) is None
 
 
 def test_a_null_range_is_absent_and_scan_objects_are_read_in_order(node: Node) -> None:
