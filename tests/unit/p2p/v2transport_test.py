@@ -42,6 +42,7 @@ from btclib_node.p2p.v2transport import (
     V2Transport,
     V2TransportError,
 )
+from tests.secret_free import assert_secret_free
 
 MAGIC = RegTest().magic
 KEY_LEN = 64
@@ -510,6 +511,22 @@ def test_the_wrong_network_is_refused_with_its_magic_named() -> None:
     transport = V2Transport(MAGIC, V1Transport(MAGIC), initiating=False)
     with pytest.raises(V2TransportError, match=r"wrong MessageStart f9beb4d9"):
         feed(transport, Main().magic + b"version\x00\x00\x00\x00\x00" + bytes(8))
+
+
+def test_a_wrong_network_refusal_does_not_echo_unknown_octets() -> None:
+    """Section 7: a refusal carries no secret, and a refused magic may hold any.
+
+    A magic that is not one of the chains this package defines is never
+    printed; the test above checks that one of them defines still names
+    the network.
+    """
+    secret = bytes.fromhex(
+        "3a0f9c8d1e7b2a4f6c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a1b2c3d4"
+    )
+    transport = V2Transport(MAGIC, V1Transport(MAGIC), initiating=False)
+    with pytest.raises(V2TransportError) as exc_info:
+        feed(transport, secret[:4] + b"version\x00\x00\x00\x00\x00" + bytes(8))
+    assert_secret_free(exc_info.value, [secret[:4]])
 
 
 def test_an_initiator_does_not_take_a_v1_header_for_the_wrong_network() -> None:
