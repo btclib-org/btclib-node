@@ -32,6 +32,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
+from btclib_node import clock
 from btclib_node.db import KeyValueStore
 from btclib_node.p2p.address import (
     SEEDS_SERVICE_FLAGS,
@@ -3066,8 +3067,9 @@ _CORE_SLOTS = [
 def core_table(**kwargs: Any) -> PeerDB:
     """Build a `deterministic` table holding `_CORE_SLOTS`, as Core did."""
     peer_db = PeerDB(cast("Chain", None), None, deterministic=True, **kwargs)
+    now = int(clock.now())
     for host, port, tried, _ in _CORE_SLOTS:
-        address = peer_address(host, port, timestamp=int(time.time()))
+        address = peer_address(host, port, timestamp=now)
         assert peer_db.add_addresses([address], source=address)
         if tried:
             assert peer_db.add_active_address(address)
@@ -3108,6 +3110,9 @@ def test_a_store_s_key_wins_over_the_deterministic_one(tmp_path: Path) -> None:
 
 def test_a_deterministic_table_draws_the_same_on_every_build() -> None:
     """The draws of two tables built and called alike are the same."""
+    # one second for both builds: `core_table`'s stamp, and the answered
+    # rows `add_active_address` stamps
+    clock.set_mock_time(int(time.time()))
     first, second = core_table(), core_table()
     for table in (first, second):
         table._collisions.update(table._rows)
