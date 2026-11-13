@@ -26,7 +26,7 @@ from btclib_node.p2p.transport import (
     V1Transport,
     frame_message_bytes,
 )
-from tests.secret_free import assert_secret_free
+from tests.secret_free import assert_secret_free, chained
 
 MAGIC = RegTest().magic
 
@@ -145,6 +145,29 @@ def test_a_length_past_the_bound_is_refused_at_the_header(
     else:
         transport.received_bytes(memoryview(header))
         assert not transport.received_message_complete()
+
+
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("90613d08a6bf29e30e96f1f684ae088d38685b772367c106254a02ef69022846")
+
+
+def test_a_length_past_the_bound_is_refused_without_its_octets() -> None:
+    """The refusal names the bound, never the length it read.
+
+    `assert_secret_free` looks for pieces whose length `WINDOW` gives, so
+    the four octets fed and the length they read as, in decimal, are
+    looked for as secrets of their own.
+    """
+    fed = _KEY[:4]
+    length = int.from_bytes(fed, "little")
+    assert length > MAX_PROTOCOL_MESSAGE_LENGTH
+    header = wire("ping")[:16] + fed + bytes(4)
+    with pytest.raises(BTClibValueError) as refusal:
+        V1Transport(MAGIC).received_bytes(memoryview(header))
+    expected = f"at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
+    assert str(refusal.value) == f"invalid payload length: {expected}"
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, fed, str(length)])
 
 
 def test_a_bad_checksum_is_rejected_and_the_next_message_is_taken() -> None:
