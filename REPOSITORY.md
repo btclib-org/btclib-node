@@ -178,7 +178,7 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 ```
 
 `enforce_admins: false` is not a relaxation but what makes a merge
-through the emergency bypass possible at all: the ruleset bypass below
+through the bypass possible at all: the ruleset bypass below
 reaches the ruleset's own rule and nothing else.
 
 `signatures: false` is classic protection's own copy of the signature rule,
@@ -189,10 +189,11 @@ every repository](https://github.com/btclib-org/.github#branch-protection-and-ru
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '{name, target, rules: [.rules[].type],
-           bypass: [.bypass_actors[]?.bypass_mode]}'
+           bypass: [.bypass_actors[]? | [.actor_id, .bypass_mode]]}'
 # {"bypass":[],"name":"main-integrity","target":"branch",
 #  "rules":["required_linear_history","non_fast_forward","deletion"]}
-# {"bypass":[],"name":"main-self-merge","target":"branch",
+# {"bypass":[[3296421,"pull_request"]],"name":"main-self-merge",
+#  "target":"branch",
 #  "rules":["pull_request"]}
 # {"bypass":[],"name":"tag-integrity","target":"tag",
 #  "rules":["required_signatures"]}
@@ -203,8 +204,13 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   what makes every one of those true of an administrator too.
 - `main-self-merge` — a pull request, an approving review, stale reviews
   dismissed on push, conversations resolved, and `squash` as the only
-  merge method it accepts — with **no bypass actor**, so every merge
-  needs an approval from somebody other than its author.
+  merge method it accepts — with one bypass actor, the maintainer, in
+  `pull_request` mode, so the maintainer can merge without an approval
+  from somebody other than the author, and nobody else can. It is the
+  organization-wide bypass, which the maintainer keeps until the backlog
+  settles, with no date set (btclib-org/.github#2021). Once it is
+  removed, the ruleset has no bypass actor, as the standard asks of a
+  tree whose `README.md` carries the OpenSSF Best Practices badge.
 - `tag-integrity` — required signatures on `refs/tags/v*`, no bypass.
 
 A `v*` tag push that brings an unsigned commit is refused. A tag on a
@@ -217,14 +223,13 @@ steps and on reading the signature back:
 gh api repos/<owner>/<repo>/git/tags/<sha> --jq .verification
 ```
 
-**The bypass mode is the whole of the design.** In an emergency the
-maintainer adds a bypass in `pull_request` mode and removes it after the
-merge. It excuses its holder from the rule while merging a pull request
-and at no other time, which is all the bypass is for: a pull request
-landing without an approval.
+**The bypass mode is the whole of the design.** The bypass is in
+`pull_request` mode. It excuses its holder from the rule while merging a
+pull request and at no other time, which is all the bypass is for: a
+pull request landing without an approval.
 [`GOVERNANCE.md`](https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md)'s
-*How a decision is made* says when, and `CONTRIBUTING.md`'s *Landing it*
-has the command.
+*How a decision is made* says when the maintainer adds it back once it
+is removed, and `CONTRIBUTING.md`'s *Landing it* has the command.
 `always` in that field would mean a direct push to `main` had become
 possible for its holder, which is the drift the command above exists to
 catch.
