@@ -9,7 +9,8 @@ answer has to end the request rather than the node. The answers are
 `bitcoind`'s, whose envelope and HTTP status follow the version a
 request names (`rpc.jsonrpc`).
 
-`bitcoind` here is the release `integration-bitcoind.yml` pins.
+`bitcoind` here is the release `integration-bitcoind.yml` pins. A test
+that follows Core's master instead says so.
 """
 
 import threading
@@ -250,29 +251,58 @@ def test_an_empty_batch_answers_an_empty_array() -> None:
 
 
 def test_a_batch_is_answered_200_whatever_its_members_versions() -> None:
-    """Every member of a batch is answered inside HTTP 200.
-
-    A member that is not an object is refused before its own `id` is
-    read, so it carries the previous member's `id` and version, as
-    `bitcoind` answers `[{"id":7,...},5,...]`.
-    """
-    node, sent, _, stopped = make_node(
-        [LEGACY_PING, "garbage", {"id": "b", "method": "nosuch"}]
-    )
+    """Every member of a batch is answered inside HTTP 200."""
+    node, sent, _, stopped = make_node([LEGACY_PING, {"id": "b", "method": "nosuch"}])
     handle_rpc(node)
-    invalid = error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
     not_found = error(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
     assert sent == [
         HttpReply(
             OK,
             [
                 {"result": None, "error": None, "id": "a"},
-                {"result": None, "error": invalid, "id": "a"},
                 {"result": None, "error": not_found, "id": "b"},
             ],
         )
     ]
     assert not stopped
+
+
+def test_a_member_that_is_not_an_object_carries_nothing_of_the_one_before() -> None:
+    """A member that is not an object is answered legacy, with a null `id`.
+
+    This follows Core's master (`rpc.main._answer_batch`). The first two
+    batches take the shapes of `test_batch_invalid_element_reply` in Core's
+    `test/functional/interface_rpc.py` (at bitcoin/bitcoin@a527a0077a).
+    The third has a member with no method, answered with its own `id`.
+    """
+    invalid = error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
+    missing = error(RPCErrorCode.INVALID_REQUEST, "Missing method")
+    count = {"jsonrpc": "2.0", "method": "getblockcount", "id": "X"}
+    notification = {"jsonrpc": "2.0", "method": "getblockcount"}
+    for body, replies in (
+        (
+            [count, 2],
+            [
+                {"jsonrpc": "2.0", "result": 0, "id": "X"},
+                {"result": None, "error": invalid, "id": None},
+            ],
+        ),
+        ([notification, 2], [{"result": None, "error": invalid, "id": None}]),
+        (
+            [count, {"jsonrpc": "2.0", "id": "Y"}],
+            [
+                {"jsonrpc": "2.0", "result": 0, "id": "X"},
+                {"jsonrpc": "2.0", "error": missing, "id": "Y"},
+            ],
+        ),
+    ):
+        node, sent, _, _ = make_node(body)
+        # the genesis block alone: a height of 0
+        node.chainstate = SimpleNamespace(
+            block_index=SimpleNamespace(active_chain=[None])
+        )
+        handle_rpc(node)
+        assert sent == [HttpReply(OK, replies)]
 
 
 def test_each_batch_member_is_answered_in_its_own_version() -> None:
@@ -301,13 +331,9 @@ def test_a_batch_leaves_out_its_notifications() -> None:
 
 
 def test_a_batch_of_notifications_is_answered_no_content() -> None:
-    """A non-empty batch with nothing to answer is 204, as in Core.
-
-    The member refused after a notification carries that notification's
-    missing `id` and version, so it is left out too.
-    """
+    """A non-empty batch with nothing to answer is 204, as in Core."""
     notification = {"jsonrpc": "2.0", "method": "ping"}
-    node, sent, _, _ = make_node([notification, "garbage"])
+    node, sent, _, _ = make_node([notification, notification])
     handle_rpc(node)
     assert sent == [HttpReply(NO_CONTENT, None)]
 

@@ -148,10 +148,8 @@ class JsonRpcRequest:
     where Core throws, so what a refused request is answered with is
     what `parse` had read by then. A fresh request has a null `id` and
     reads as legacy, which is what a body that is not a request object
-    at all is answered with. Core parses every member of a batch into
-    one `JSONRPCRequest`, so a member refused before its own `id` is
-    read is answered with the previous member's `id` and version;
-    `handle_rpc` reuses one of these across a batch for that reason.
+    at all is answered with, and a batch member that is not one
+    (`rpc.main._answer_batch`).
     """
 
     def __init__(self) -> None:

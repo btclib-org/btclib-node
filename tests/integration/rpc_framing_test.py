@@ -83,10 +83,12 @@ _CASES = {
         b"",
         b'{"jsonrpc":"2.0","method":"getblockcount"}',
     ),
+    # the member that is not an object comes first, where the release
+    # answers it as Core's master does (`rpc.main._answer_batch`)
     "batch": (
         b"POST / HTTP/1.1",
         b"",
-        b'[{"id":7,"method":"getblockcount"},5,{"jsonrpc":"2.0","method":"x"}]',
+        b'[5,{"id":7,"method":"getblockcount"},{"jsonrpc":"2.0","method":"x"}]',
     ),
     "method-twice": (
         b"POST / HTTP/1.1",
