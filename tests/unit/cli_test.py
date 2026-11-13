@@ -772,6 +772,13 @@ def test_build_config_norpccookiefile_false_still_writes_a_cookie(
     assert cli.build_config([f"-datadir={tmp_path}"]).rpc_cookie_file is not None
 
 
+# ISS 2386: digits past `sys.int_info.default_max_str_digits`, where `int`
+# refuses a text with its own message, leading zeros counted; the lengths
+# `bitcoind` was measured with
+_PAST_DIGIT_LIMIT = "9" * 5000
+_ZEROS_PAST_DIGIT_LIMIT = "0" * 4996
+
+
 def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
     """Build a `Config` from `argv`, `conf` in `tmp_path`'s `bitcoin.conf`."""
     (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
@@ -1492,8 +1499,20 @@ def test_build_config_a_network_only_value_given_on_the_command_line_too(
         (["-port=+80"], "", "Invalid port specified in -port: '+80'"),
         (["-rpcport=65536"], "", "Invalid port specified in -rpcport: '65536'"),
         ([], "regtest=1\nnoport=1\n", "Invalid port specified in -port: '0'"),
+        (
+            [f"-port={_PAST_DIGIT_LIMIT}"],
+            "",
+            f"Invalid port specified in -port: '{_PAST_DIGIT_LIMIT}'",
+        ),
     ],
-    ids=["-noport", "elided", "a sign", "too large", "negated in the default section"],
+    ids=[
+        "-noport",
+        "elided",
+        "a sign",
+        "too large",
+        "negated in the default section",
+        "past the digit limit",
+    ],
 )
 def test_build_config_refuses_a_port_as_check_host_port_options(
     tmp_path: Path, argv: list[str], conf: str, message: str
@@ -1568,9 +1587,18 @@ def test_build_config_refuses_a_logging_category_first(
         _build(tmp_path, *argv)
 
 
-def test_build_config_reads_a_port_with_leading_zeros(tmp_path: Path) -> None:
-    """`-port=0080` is `80`: `bitcoind` started on it."""
-    assert _build(tmp_path, "-port=0080").p2p_port == 80
+@pytest.mark.parametrize(
+    ("value", "port"),
+    [("0080", 80), pytest.param(f"{_ZEROS_PAST_DIGIT_LIMIT}8333", 8333, id="zeros")],
+)
+def test_build_config_reads_a_port_with_leading_zeros(
+    tmp_path: Path, value: str, port: int
+) -> None:
+    """`-port=0080` is `80`: `bitcoind` started on it, and on the second.
+
+    ISS 2386: the second's zeros alone are past CPython's digit limit.
+    """
+    assert _build(tmp_path, f"-port={value}").p2p_port == port
 
 
 @pytest.mark.parametrize(
@@ -1749,10 +1777,18 @@ def test_build_config_reads_prune_from_the_file(tmp_path: Path) -> None:
         ("0x10", 0),
         ("99999999999999999999", 2**63 - 1),
         ("-99999999999999999999", -(2**63)),
+        ("1000000000000000000", 10**18),
+        pytest.param(_PAST_DIGIT_LIMIT, 2**63 - 1, id="digits"),
+        pytest.param(f"-{_PAST_DIGIT_LIMIT}", -(2**63), id="-digits"),
+        pytest.param(f"{_ZEROS_PAST_DIGIT_LIMIT}5", 5, id="zeros"),
+        pytest.param(f"-{_ZEROS_PAST_DIGIT_LIMIT}7x", -7, id="-zeros"),
     ],
 )
 def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> None:
-    """ISS 1313, ISS 1324: the leading integer, saturated to `int64_t`."""
+    """ISS 1313, ISS 1324: the leading integer, saturated to `int64_t`.
+
+    ISS 2386: however many digits, leading zeros included.
+    """
     assert cli._atoi64(value) == read
 
 
@@ -2074,12 +2110,27 @@ def test_prune_is_the_target_bitcoind_reads(
         ),
         ("-7x", "Prune cannot be configured with a negative value."),
         ("-99999999999999999999", "Prune cannot be configured with a negative value."),
+        pytest.param(
+            f"-{_PAST_DIGIT_LIMIT}",
+            "Prune cannot be configured with a negative value.",
+            id="-digits",
+        ),
+        pytest.param(
+            f"-{_ZEROS_PAST_DIGIT_LIMIT}1",
+            "Prune cannot be configured with a negative value.",
+            id="-zeros",
+        ),
+        pytest.param(
+            f"{_ZEROS_PAST_DIGIT_LIMIT}100",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+            id="zeros",
+        ),
     ],
 )
 def test_prune_is_refused_as_bitcoind_refuses_it(
     tmp_path: Path, value: str, message: str
 ) -> None:
-    """ISS 1313, ISS 1324: measured on `bitcoind`, the same words."""
+    """ISS 1313, ISS 1324, ISS 2386: measured on `bitcoind`, the same words."""
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, f"-prune={value}")
 
@@ -5646,7 +5697,13 @@ def test_get_args_refuses_the_first_value_it_cannot_read() -> None:
 
 @pytest.mark.parametrize(
     ("content", "expected"),
-    [("12", 12), ('"12"', 12), ("-0", 0), ("9223372036854775807", 2**63 - 1)],
+    [
+        ("12", 12),
+        ('"12"', 12),
+        ("-0", 0),
+        ("9223372036854775807", 2**63 - 1),
+        ("-9223372036854775808", -(2**63)),
+    ],
 )
 def test_a_number_is_an_integer_option(content: str, expected: int) -> None:
     """`bitcoind`: `{"maxconnections": 12}` and `"12"` alike."""
@@ -5656,7 +5713,16 @@ def test_a_number_is_an_integer_option(content: str, expected: int) -> None:
 
 @pytest.mark.parametrize(
     "content",
-    ["1.5", "1e1", "12.0", "9223372036854775808", "-9223372036854775809"],
+    [
+        "1.5",
+        "1e1",
+        "12.0",
+        "9223372036854775808",
+        "-9223372036854775809",
+        pytest.param(_PAST_DIGIT_LIMIT, id="digits"),
+        pytest.param(f"-{_PAST_DIGIT_LIMIT}", id="-digits"),
+        pytest.param(f"{_PAST_DIGIT_LIMIT}.5", id="digits and a fraction"),
+    ],
 )
 def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
     """`bitcoind`: `JSON integer out of range`."""
@@ -5693,6 +5759,40 @@ def test_an_int_option_number_past_an_int_is_out_of_range(
         f'{{"{name}":{content}}}', encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        _build(tmp_path, "-regtest")
+
+
+@pytest.mark.parametrize("name", ["maxconnections", "prune"])
+@pytest.mark.parametrize("sign", ["", "-"], ids=["positive", "negative"])
+def test_a_number_past_the_digit_limit_is_out_of_range(
+    tmp_path: Path, name: str, sign: str
+) -> None:
+    """ISS 2386: Core's words, not CPython's digit-limit refusal.
+
+    Measured on `bitcoind` v32.1.0 with `_PAST_DIGIT_LIMIT` of either sign
+    as `maxconnections` and as `prune` in `regtest/settings.json`: "JSON
+    integer out of range", ending the start.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"{name}": {sign}{_PAST_DIGIT_LIMIT}}}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        _build(tmp_path, "-regtest")
+
+
+def test_a_string_past_the_digit_limit_saturates(tmp_path: Path) -> None:
+    """ISS 2386: `LocaleIndependentAtoi` saturates it, as on the command line.
+
+    Measured on `bitcoind` v32.1.0 with `-` and `_PAST_DIGIT_LIMIT` as a
+    `prune` string in `regtest/settings.json`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"prune": "-{_PAST_DIGIT_LIMIT}"}}', encoding="utf-8"
+    )
+    message = "Prune cannot be configured with a negative value."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, "-regtest")
 
 
