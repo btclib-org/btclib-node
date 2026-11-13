@@ -325,11 +325,20 @@ class V2Transport(Transport):
             raise V2TransportError(err_msg)
 
     def _process_packet_bytes(self) -> None:
+        # Neither refusal prints the length decrypted, which Core's log
+        # does (`src/net.cpp:1229` and `:1244`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Section 7 of the
+        # organization's standard, *A refusal carries no secret*: the
+        # length is the peer's octets XORed with this session's keystream,
+        # so a reader of the refusal who holds one of the two learns the
+        # other.
         buffer = self._recv_buffer
         if len(buffer) == LENGTH_LEN:
             self._recv_len = self._cipher.decrypt_length(bytes(buffer))
             if self._recv_len > _MAX_CONTENTS_LEN:
-                err_msg = f"packet too large ({self._recv_len} bytes)"
+                err_msg = (
+                    f"packet too large: at most {_MAX_CONTENTS_LEN} bytes expected"
+                )
                 raise V2TransportError(err_msg)
         elif len(buffer) > LENGTH_LEN and len(buffer) == self._recv_len + EXPANSION:
             try:
@@ -337,7 +346,7 @@ class V2Transport(Transport):
                     bytes(buffer[LENGTH_LEN:]), self._recv_aad
                 )
             except BTClibValueError as e:
-                err_msg = f"packet decryption failure ({self._recv_len} bytes)"
+                err_msg = "packet decryption failure"
                 raise V2TransportError(err_msg) from e
             # a packet decrypted with the AAD expected: it is not expected again
             self._recv_aad = b""

@@ -664,7 +664,7 @@ def test_without_a_key_or_garbage_given_both_are_random() -> None:
     assert to_send(first)[:KEY_LEN] != to_send(second)[:KEY_LEN]
 
 
-def test_a_packet_that_does_not_authenticate_is_an_error_naming_its_size() -> None:
+def test_a_packet_that_does_not_authenticate_is_an_error() -> None:
     """A version packet without the garbage as AAD fails to decrypt."""
     tester = Peer(random.Random(0), initiator=True)
     tester.send_key()
@@ -674,7 +674,7 @@ def test_a_packet_that_does_not_authenticate_is_an_error_naming_its_size() -> No
     tester.send_garbage_term()
     # a version packet that does not carry the garbage as AAD
     tester.send_packet(b"", b"not the garbage")
-    with pytest.raises(V2TransportError, match=r"decryption failure \(0 bytes\)"):
+    with pytest.raises(V2TransportError, match=r"^packet decryption failure$"):
         feed(tester.transport, bytes(tester.to_send))
 
 
@@ -694,8 +694,71 @@ def test_a_packet_is_refused_over_the_largest_message() -> None:
     assert out is not None
     assert [m.command for m in out if m] == ["big"]
     tester.send(tester.cipher.encrypt(bytes(1 + 12 + 4_000_001))[:LENGTH_LEN])
-    with pytest.raises(V2TransportError, match=r"packet too large \(4000014 bytes\)"):
+    expected = r"^packet too large: at most 4000013 bytes expected$"
+    with pytest.raises(V2TransportError, match=expected):
         feed(tester.transport, bytes(tester.to_send))
+
+
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("5f2d9da4f2261a5ddc8cf18f1a2a8df7a1140bc21b12ff4ebbfcdf33aaab1eab")
+
+
+def encrypted_length(tester: Peer, length: bytes) -> bytes:
+    """Return the octets the transport decrypts as `length`, next packet.
+
+    The length of the empty packet encrypted, and dropped, is the
+    keystream the next length is read with.
+    """
+    keystream = tester.cipher.encrypt(b"")[:LENGTH_LEN]
+    return bytes(a ^ b for a, b in zip(keystream, length, strict=True))
+
+
+def handshaken() -> Peer:
+    """Return a tester whose transport has taken the version packet."""
+    tester = Peer(random.Random(0), initiator=True)
+    tester.send_key()
+    tester.send_garbage(0)
+    assert tester.interact() == []
+    tester.receive_key()
+    tester.send_garbage_term()
+    tester.send_version()
+    assert tester.interact() == []
+    return tester
+
+
+def test_a_length_past_the_bound_is_refused_without_it() -> None:
+    """The refusal names the bound, never the length it decrypted.
+
+    The length decrypted is made a key's octets, which are looked for with
+    their decimal and the octets on the wire they are decrypted from.
+    """
+    tester = handshaken()
+    length = _KEY[:LENGTH_LEN]
+    assert int.from_bytes(length, "little") > 1 + 12 + 4_000_000
+    wire = encrypted_length(tester, length)
+    with pytest.raises(V2TransportError) as refusal:
+        feed(tester.transport, wire)
+    decimal = str(int.from_bytes(length, "little"))
+    assert_secret_free(refusal.value, [_KEY, length, decimal, wire])
+    assert str(refusal.value) == "packet too large: at most 4000013 bytes expected"
+
+
+def test_a_packet_that_does_not_authenticate_is_refused_without_its_length() -> None:
+    """The refusal names the failure, never the length it decrypted.
+
+    The test above says how the length is looked for.
+    """
+    tester = handshaken()
+    length = _KEY[LENGTH_LEN : 2 * LENGTH_LEN]
+    size = int.from_bytes(length, "little")
+    assert size <= 1 + 12 + 4_000_000
+    wire = encrypted_length(tester, length)
+    # a packet body of the size the length says, that does not authenticate
+    wire += random.Random(0).randbytes(size + EXPANSION - LENGTH_LEN)
+    with pytest.raises(V2TransportError) as refusal:
+        feed(tester.transport, wire)
+    assert_secret_free(refusal.value, [_KEY, length, str(size), wire[:LENGTH_LEN]])
+    assert str(refusal.value) == "packet decryption failure"
 
 
 @pytest.mark.parametrize(
