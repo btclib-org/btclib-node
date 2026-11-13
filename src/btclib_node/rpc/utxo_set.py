@@ -259,7 +259,7 @@ def _key_prefix(calls: list[str]) -> str:
     if name in _MULTI_FUNCTIONS:
         return "Multi: "
     # `pkh()` in a tree is miniscript's
-    if name in _KEY_FUNCTIONS and not (name == "pkh" and "tr" in calls[:depth]):
+    if name in _KEY_FUNCTIONS and (name != "pkh" or "tr" not in calls[:depth]):
         return f"{name}(): "
     return ""
 
