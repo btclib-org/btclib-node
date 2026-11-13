@@ -2,8 +2,7 @@
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution, worktree,
 setup, and cleanup steps. Read [REPOSITORY.md](./REPOSITORY.md) before
-changing repository settings, and [REVIEWING.md](./REVIEWING.md) before
-reviewing a pull request. Read [ARCHITECTURE.md](./ARCHITECTURE.md)
+changing repository settings. Read [ARCHITECTURE.md](./ARCHITECTURE.md)
 before changing the P2P or RPC design.
 
 Keep the primary checkout clean and on `main`; use a separate worktree
