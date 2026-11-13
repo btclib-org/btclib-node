@@ -1201,27 +1201,54 @@ def _submitted_body_refusal(
     return error_text
 
 
-def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
-    """Run `main.update_chain` here, and answer its verdict on `block_hash`.
+def _activate_and_answer(node: Node, block_hash: bytes) -> str | None:
+    """Activate the best chain, and answer what it found of `block_hash`.
 
-    Called only where the block just stored extends the active tip --
-    `submit_block`'s own docstring argues why, and is where the caller
-    already knows that. A failure the trial does not swallow into
-    `Node.last_rejected_block` is this node's own storage or bookkeeping
-    proving itself unsafe to keep running past, not this submission's
-    content, and is left to propagate, `Node.terminate_flag` set first
-    so a caller reached from here still stops `Node.run`'s loop for it.
+    `main.update_chain` runs until a step neither moves the tip nor
+    invalidates a block, the loop of `main.activate_best_chain`. Core's
+    `submitblock` answers what `BlockChecked` says of the block, which
+    `ConnectTip` sends once `ConnectBlock` has run on it, and
+    `"inconclusive"` where nothing sent it (`src/rpc/mining.cpp` and
+    `src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    Where several steps reach it, the last one's verdict stands, as the
+    catcher keeps the last `BlockChecked`.
+
+    A step that refuses the block answers its reason. A block the active
+    chain holds afterwards answers `None`. So does a block below the one a
+    step refuses on the same branch: `update_chain` tries a branch whole
+    and rolls it back whole, so the block passed the trial, as Core's
+    `ConnectTip` connects it before the later block fails and the tip goes
+    back. Any other block answers `"inconclusive"`: one that does not
+    outrank the tip, a tie included, is never connected.
+
+    A failure a step does not swallow into `Node.last_rejected_block` is
+    this node's own storage or bookkeeping proving itself unsafe to keep
+    running past, not this submission's content, and is left to
+    propagate, `Node.terminate_flag` set first so a caller reached from
+    here still stops `Node.run`'s loop for it.
     """
+    block_index = node.chainstate.block_index
+    height = block_index.get_block_info(block_hash).index
+    answer: str | None = "inconclusive"
+    seen = node.last_rejected_block
     try:
-        update_chain(node)
+        while update_chain(node):
+            failed = node.last_rejected_block
+            if failed is None or failed is seen:
+                continue
+            seen = failed
+            if failed[0] == block_hash:
+                # Core answers `GetRejectReason()` alone, not its debug message
+                answer = block_reject_reason(failed[1])
+            elif block_index.get_ancestor(failed[0], height) == block_hash:
+                answer = None
     except Exception:
         node.terminate_flag.set()
         raise
-    failed = node.last_rejected_block
-    if failed is not None and failed[0] == block_hash:
-        # Core answers `GetRejectReason()` alone, never its debug message
-        return block_reject_reason(failed[1])
-    return None
+    active_chain = block_index.active_chain
+    if height < len(active_chain) and active_chain[height] == block_hash:
+        return None
+    return answer
 
 
 def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | None:
@@ -1232,8 +1259,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `UpdateUncommittedBlockStructures` where its parent is indexed, and
     hands it to `ProcessNewBlock`, whose `AcceptBlock` indexes the header
     only once `CheckBlock` passes (`src/validation.cpp`, same sha): `None`
-    for one accepted, `"duplicate"` for one already held, and a reject
-    reason for one refused. Some reasons are Core's literally:
+    for one connected, even where the tip then goes back,
+    `"inconclusive"` for one stored and never connected
+    (`_activate_and_answer`), `"duplicate"` for one already held, and a
+    reject reason for one refused. Some reasons are Core's literally:
     `"duplicate-invalid"` for one whose header is marked invalid
     (`main.is_cached_invalid`),
     `BlockValidationResult::BLOCK_MISSING_PREV`'s own `"prev-blk-not-found"`
@@ -1258,22 +1287,18 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     (`remove_block_request`), which does not apply to a block submitted
     out of band.
 
-    Where the stored block extends the active tip, `main.update_chain`
-    is run right here rather than waited for on `Node`'s next pass:
-    Core's own `ProcessNewBlock` calls `AcceptBlock` and then
-    `ActivateBestChain` -- contextual and connect validation both --
-    before it ever returns to `submitblock` (`src/validation.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so a caller is answered
-    only once that trial has actually run, and never told a block was
-    accepted that its own contextual or script check refuses a moment
-    later (ISS 1335, ISS 1390). `_ready_fork` is not gated on
+    The best chain is activated right here (`_activate_and_answer`)
+    rather than waited for on `Node`'s next pass: Core's own
+    `ProcessNewBlock` calls `AcceptBlock` and then `ActivateBestChain`
+    -- contextual and connect validation both -- before it ever returns
+    to `submitblock` (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), so a caller is answered only once that trial has
+    actually run, and never told a block was accepted that its own
+    contextual or script check refuses a moment later (ISS 1335, ISS
+    1390). A block that makes its branch outrank the tip is connected,
+    the reorg included, before the answer. `_ready_fork` is not gated on
     `Node.status` for exactly this reason (its own comment,
-    btclib-org/btclib-node#1071): calling it here finds this same
-    submission ready, or finds nothing and costs nothing. A block that
-    does not extend the tip is stored and left for that later pass, as
-    before -- Core's own `ActivateBestChain` runs unconditionally too,
-    but a competing, lower branch is not what either issue measured,
-    and this tree does not chase it synchronously.
+    btclib-org/btclib-node#1071).
 
     Where the parent is indexed and segwit binds after it, a coinbase that
     commits to a witness and carries none gets its nonce first, as Core's
@@ -1335,14 +1360,13 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     if refusal is not None:
         return refusal
 
-    extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
     # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
     # `ProcessNewBlock`, ahead of `ActivateBestChain` (`src/validation.cpp`,
     # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
     new_pow_valid_block(node, block)
-    return _validate_extending_tip(node, block_hash) if extends_tip else None
+    return _activate_and_answer(node, block_hash)
 
 
 def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
