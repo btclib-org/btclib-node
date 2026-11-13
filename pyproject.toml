@@ -1174,15 +1174,10 @@ ignore = [
 # these four codes is left under `src/btclib_node/`. `exceptions.py`'s
 # own `D107` entry further down is the one reasoned suppression left,
 # argued where it sits rather than deferred by directory.
-# SphinxPostTransform.run itself is typed `(self, **kwargs: Any) -> None`
-# (sphinx.transforms.post_transforms, read directly from the installed
-# package rather than assumed) -- an override matching the base class's
-# own signature is not a choice this file made, so ANN401 is not a
-# per-site decision the way it is where this tree picks its own `Any`.
 # INP001: sphinx imports conf.py by its own convention, reading
 # docs/source/ as a configuration directory rather than a package, so
 # an __init__.py there would misrepresent it as one.
-"docs/source/conf.py" = ["ANN401", "INP001"]
+"docs/source/conf.py" = ["INP001"]
 # flake8-no-pep420: each of these is a standalone entry point -- a
 # workflow step's "python .github/scripts/<name>.py", or a script a
 # person runs from a checkout -- never an import. The directories hold
