@@ -337,7 +337,8 @@ class V2Transport(Transport):
             self._recv_len = self._cipher.decrypt_length(bytes(buffer))
             if self._recv_len > _MAX_CONTENTS_LEN:
                 err_msg = (
-                    f"packet too large: at most {_MAX_CONTENTS_LEN} bytes expected"
+                    "packet contents too large:"
+                    f" at most {_MAX_CONTENTS_LEN} bytes expected"
                 )
                 raise V2TransportError(err_msg)
         elif len(buffer) > LENGTH_LEN and len(buffer) == self._recv_len + EXPANSION:
