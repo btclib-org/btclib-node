@@ -110,6 +110,7 @@ from btclib_node.p2p.selfannounce import (
     address_for_peer,
     host_record,
 )
+from btclib_node.p2p.transport import TransportProtocolType
 from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
@@ -1918,13 +1919,14 @@ class P2pManager(threading.Thread):
             # of `fSuccessfullyConnected` (btclib-org/btclib-node#1169).
             # No ping in between: `ping` is as much a message the
             # handshake has to clear before it is sent as `inv` or `tx`
-            # is (#131). `_TIMEOUT_INTERVAL` is not asked here, being
-            # longer: a connection quiet that long is past this one.
+            # is (#131).
             # A v2 outbound attempt a v1-only peer refuses ends as a
             # `Closed` pending connection, dropped by `Connection._close`
             # or here, whichever runs first: `remove_connection` is Core's
             # `DisconnectNodes`, where it reads `ShouldReconnectV1`.
-            if conn.status == P2pConnStatus.Closed or _inactivity_checks_due(conn, now):
+            if conn.status == P2pConnStatus.Closed or self._inactivity_check(
+                conn, now, connected=False
+            ):
                 self.remove_connection(conn.id)
 
     def is_reachable(self, address: NetworkAddressV2) -> bool:
@@ -2068,6 +2070,16 @@ class P2pManager(threading.Thread):
         slowly keeps `last_send` fresh, and one at `BIP0031_VERSION` or
         below owes no `pong`, so without this check such a peer stays
         paused while what is queued for it grows.
+
+        Once `_inactivity_checks_due`, a peer that has never sent this
+        node an octet, or never been sent one, is dropped too, as
+        `InactivityCheck` drops any such node, connected or not. A peer
+        past its handshake has octets both ways.
+
+        Each drop logs the `-debug=net` line Core logs for its case:
+        `_inactivity_check`'s, or `MaybeSendPing`'s for the `pong`. Core
+        runs the two checks on two threads, so where both hold either
+        line can come first; here `InactivityCheck`'s does.
         """
         # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
         # on the other thread, clears it the moment a pong answers this
@@ -2076,19 +2088,70 @@ class P2pManager(threading.Thread):
         # peer for having just answered.
         # btclib-org/btclib-node#357
         ping_sent = conn.ping_sent
-        # `pause_send` first: `Connection._set_pause_send` writes the time
-        # before the flag.
-        paused = conn.pause_send
-        if _inactivity_checks_due(conn, now) and (
-            now - conn.last_receive > _TIMEOUT_INTERVAL
-            or now - conn.last_send > _TIMEOUT_INTERVAL
-            or (ping_sent and now - ping_sent > _TIMEOUT_INTERVAL)
-            or (paused and now - conn.pause_send_since > _TIMEOUT_INTERVAL)
+        if self._inactivity_check(conn, now, connected=True):
+            self.remove_connection(conn.id)
+            return False
+        if (
+            ping_sent
+            and _inactivity_checks_due(conn, now)
+            and now - ping_sent > _TIMEOUT_INTERVAL
         ):
+            self.logger.log_debug(
+                "net",
+                "ping timeout: %fs, disconnecting peer=%d",
+                now - ping_sent,
+                conn.id,
+            )
             self.remove_connection(conn.id)
             return False
         if not ping_sent and now - conn.ping_start > _PING_INTERVAL:
             conn.send_ping()
+        return True
+
+    def _inactivity_check(
+        self, conn: Connection, now: float, *, connected: bool
+    ) -> bool:
+        """Whether to drop `conn` for inactivity, logging why where it is.
+
+        `CConnman::InactivityCheck` (`src/net.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): nothing until
+        `_inactivity_checks_due`; then, in Core's order and each with
+        Core's `-debug=net` line, a peer never heard from or never sent
+        to, a send or a receive `_TIMEOUT_INTERVAL` old, a pause that
+        long, and last a connection short of `fSuccessfullyConnected`,
+        which `connected` false stands for. Core's `m_last_recv` and
+        `m_last_send` are stamped where `nRecvBytes` and `nSendBytes`
+        grow, so the octet counts in `stats` say "never".
+        """
+        if not _inactivity_checks_due(conn, now):
+            return False
+        # `pause_send` first: `Connection._set_pause_send` writes the time
+        # before the flag.
+        paused = conn.pause_send
+        has_never = ""
+        if not conn.stats.bytes_recv:
+            has_never += ", never received from peer"
+        if not conn.stats.bytes_sent:
+            has_never += ", never sent to peer"
+        if has_never:
+            reason = (
+                f"socket no message in first {_PEER_CONNECT_TIMEOUT} seconds{has_never}"
+            )
+        elif now - conn.last_send > _TIMEOUT_INTERVAL:
+            reason = f"socket sending timeout: {int(now - conn.last_send)}s"
+        elif now - conn.last_receive > _TIMEOUT_INTERVAL:
+            reason = f"socket receive timeout: {int(now - conn.last_receive)}s"
+        elif paused and now - conn.pause_send_since > _TIMEOUT_INTERVAL:
+            reason = f"send buffer full for {int(now - conn.pause_send_since)}s"
+        elif connected:
+            return False
+        elif (
+            conn.transport.get_info().transport_type is TransportProtocolType.DETECTING
+        ):
+            reason = "V2 handshake timeout"
+        else:
+            reason = "version handshake timeout"
+        self.logger.log_debug("net", "%s, disconnecting peer=%d", reason, conn.id)
         return True
 
     def _maybe_add_fixed_seeds(self) -> None:
