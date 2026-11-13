@@ -716,6 +716,72 @@ def test_a_block_confirming_untracked_transactions_records_none(
     assert estimator.first_recorded_height == 0
 
 
+# what a regtest bitcoind v32.1, run with `-debug=estimatefee`, logged
+# for blocks 102, 103 and, after a restart, 111: the wallet's first
+# transaction at height 101 was tracked, the two spending its unconfirmed
+# outputs were not, and block 102 held the first two of the three
+_CORE_PROCESS_BLOCK_LINES = (
+    (
+        "Blockpolicy estimates updated by 1 of 2 block txs, since last block 1 of 3 "
+        "tracked, mempool map size 0, max target 0 from current"
+    ),
+    (
+        "Blockpolicy estimates updated by 0 of 1 block txs, since last block 0 of 0 "
+        "tracked, mempool map size 0, max target 0 from current"
+    ),
+    (
+        "Blockpolicy estimates updated by 0 of 0 block txs, since last block 0 of 0 "
+        "tracked, mempool map size 0, max target 4 from historical"
+    ),
+)
+
+
+def test_a_block_is_logged_as_core_logs_it(tmp_path: Path) -> None:
+    """`process_block` logs Core's line, the block's size and span's source too.
+
+    `CBlockPolicyEstimator::processBlock`
+    (`src/policy/fees/block_policy_estimator.cpp:713-715`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) logs how many of the
+    block's transactions were counted out of how many it took from the
+    mempool, and whether the historical span or the current one is the
+    longer; the lines compared are bitcoind's own, for the same blocks.
+    """
+    estimator, lines = an_estimator(tmp_path)
+    estimator.process_block([], 101)
+    tracked = _add(estimator, b"\x01" * 32, _BASE_FEE, 101)
+    children: list[RemovedTx] = []
+    for txid in (b"\x02" * 32, b"\x03" * 32):
+        estimator.process_transaction(
+            txid,
+            _BASE_FEE,
+            _VSIZE,
+            101,
+            limit_bypassed=False,
+            in_package=False,
+            chain_current=True,
+            has_no_mempool_parents=False,
+        )
+        children.append(RemovedTx(txid, _BASE_FEE, _VSIZE, 101))
+    lines.messages.clear()
+    # an iterator, as a caller may pass: its length is not asked of it
+    estimator.process_block(iter([tracked, children[0]]), 102)
+    estimator.process_block([children[1]], 103)
+    assert _updates(lines) == list(_CORE_PROCESS_BLOCK_LINES[:2])
+
+    for blocknum in range(104, 111):
+        estimator.process_block([], blocknum)
+    restarted, lines = an_estimator(tmp_path)
+    assert restarted.read(estimator.write())
+    restarted.process_block([], 111)
+    assert _updates(lines) == [_CORE_PROCESS_BLOCK_LINES[2]]
+
+
+def _updates(lines: LogLines) -> list[str]:
+    """Return the lines `process_block` logs once a block is recorded."""
+    prefix = "Blockpolicy estimates updated by "
+    return [line for line in lines.messages if line.startswith(prefix)]
+
+
 def test_twice_a_target_past_the_long_horizon_is_no_estimate(tmp_path: Path) -> None:
     """Above 504, the 95% estimate at twice the target has nothing to read."""
     estimator = _busy(tmp_path)
