@@ -286,10 +286,7 @@ class V2Transport(Transport):
             == _V1_VERSION_COMMAND
         ):
             wrong_magic = bytes(buffer[:offset])
-            # section 7 of the organization's standard, *A refusal carries
-            # no secret*: the refused magic is by definition not this
-            # node's, so it may hold anything, key bytes included, and is
-            # printed only where it is one of the chains' own
+            # `_KNOWN_MAGICS` says why any other magic is not printed
             suffix = f" {wrong_magic.hex()}" if wrong_magic in _KNOWN_MAGICS else ""
             err_msg = f"V1 peer with wrong MessageStart{suffix}"
             raise V2TransportError(err_msg)
