@@ -682,6 +682,7 @@ git-only = [
     # installed from the sdist runs
     "fuzz/",
     ".gitignore",
+    ".prettierignore",
     ".vscode/",
     "COPYRIGHT",
 ]
