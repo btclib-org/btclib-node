@@ -1302,6 +1302,26 @@ def test_a_mainnet_template_before_segwit_reports_the_limits_of_a_legacy_miner(
     assert template["height"] == 11
 
 
+def test_a_mainnet_template_after_segwit_names_the_taproot_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core lists `taproot` with `!segwit`, though no deployment is active."""
+    chain = Main()
+    node = stub(chain, peers=1, syncing=False, tip_height=chain.consensus.segwit_height)
+    block = template_block(node, parent=bytes(32))
+    # every block of the stand-in chain is this one, its own parent
+    node.chainstate.block_index.header_dict[bytes(32)] = cast(
+        "Any", SimpleNamespace(header=block.block.header)
+    )
+    monkeypatch.setattr(rpc_mining, "create_new_block", lambda _n, _s: block)
+
+    template = get_block_template(node, CONN, [{"rules": ["segwit"]}])
+
+    assert isinstance(template, dict)
+    assert template["rules"] == ["csv", "!segwit", "taproot"]
+    assert template["vbavailable"] == {}
+
+
 def test_a_signet_template_names_the_signet_rule_and_its_challenge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1316,7 +1336,7 @@ def test_a_signet_template_names_the_signet_rule_and_its_challenge(
     template = get_block_template(node, CONN, [{"rules": ["segwit", "signet"]}])
 
     assert isinstance(template, dict)
-    assert template["rules"] == ["csv", "!segwit", "!signet", "taproot"]
+    assert template["rules"] == ["csv", "!segwit", "taproot", "!signet"]
     assert template["signet_challenge"] == SIGNET_CHALLENGE.hex()
     assert (
         list(template).index("signet_challenge") == list(template).index("height") + 1
