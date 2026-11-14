@@ -283,13 +283,16 @@ gh api repos/btclib-org/btclib-node \
          title: .squash_merge_commit_title,
          message: .squash_merge_commit_message,
          old_title: .use_squash_pr_title_as_default}'
-# {"auto":true,"delete_on_merge":true,"merge":false,
+# {"auto":false,"delete_on_merge":true,"merge":false,
 #  "message":"COMMIT_MESSAGES","old_title":false,"rebase":false,
 #  "squash":true,"title":"COMMIT_OR_PR_TITLE"}
 ```
 
 Squash is the only method, and `main-self-merge` names it too, so the
 constraint holds even if this repository setting is flipped.
+
+Auto-merge is off, so no pull request can be armed: the merge is
+explicit.
 
 `COMMIT_OR_PR_TITLE` is the subject — the pull request title with its
 number, or the subject of the single commit where a branch has one, which
