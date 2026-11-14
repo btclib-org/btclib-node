@@ -5,17 +5,12 @@
 """`FeeEstimator`, Core's `CBlockPolicyEstimator`.
 
 A port of `src/policy/fees/block_policy_estimator.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-ISS 2276. A transaction entering the mempool is put in a feerate bucket;
-each connected block records how many blocks the transactions it
-confirms took, in three moving averages of different half-lives;
-`estimate_smart_fee` and `estimate_raw_fee` read them back. `write` and
-`read` are Core's `fees/block_policy_estimates.dat`, byte for byte.
-
-These follow v32.1 instead, at bitcoin/bitcoin@f0de87f040, the v32.1
-tag: the file's path, with `migrate_legacy_file` moving the
-`fee_estimates.dat` an older node left; the directory `flush_estimates`
-creates; and the refusal of a file of an older version.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. A transaction entering the
+mempool is put in a feerate bucket; each connected block records how
+many blocks the transactions it confirms took, in three moving averages
+of different half-lives; `estimate_smart_fee` and `estimate_raw_fee` read
+them back. `write` and `read` are Core's
+`fees/block_policy_estimates.dat`, byte for byte.
 
 Every caller runs on `Node`'s thread, so this carries no lock where Core
 has `m_cs_fee_estimator`. Core's estimator also learns of each event
@@ -30,7 +25,7 @@ import math
 import struct
 import time
 from bisect import bisect_left
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from io import BytesIO
 from typing import TYPE_CHECKING, NamedTuple
@@ -159,6 +154,20 @@ class EstimationResult:
     fail_bucket: EstimatorBucket = field(default_factory=EstimatorBucket)
     decay: float = 0.0
     scale: int = 0
+
+
+def _assign_estimation_result(dest: EstimationResult, src: EstimationResult) -> None:
+    """Copy `src` into `dest`, as Core's `*result = tempResult`."""
+    dest.pass_bucket = replace(src.pass_bucket)
+    dest.fail_bucket = replace(src.fail_bucket)
+    dest.decay = src.decay
+    dest.scale = src.scale
+
+
+def _copy_estimation_result(result: EstimationResult) -> EstimationResult:
+    copy = EstimationResult()
+    _assign_estimation_result(copy, result)
+    return copy
 
 
 def _fee_per_k(fee: int, vsize: int) -> int:
@@ -725,7 +734,12 @@ class FeeEstimator:
         return min(self.long_stats.max_confirms, span // 2)
 
     def _estimate_combined_fee(
-        self, conf_target: int, success_threshold: float, *, check_shorter: bool
+        self,
+        conf_target: int,
+        success_threshold: float,
+        *,
+        check_shorter: bool,
+        result: EstimationResult,
     ) -> float:
         """Estimate at the shortest horizon tracking `conf_target`.
 
@@ -744,7 +758,7 @@ class FeeEstimator:
             stats, sufficient = long, _SUFFICIENT_FEETXS
         height = self.best_seen_height
         estimate = stats.estimate_median_val(
-            conf_target, sufficient, success_threshold, height
+            conf_target, sufficient, success_threshold, height, result
         )
         if not check_shorter:
             return estimate
@@ -754,28 +768,37 @@ class FeeEstimator:
         ):
             if conf_target <= stats.max_confirms:
                 continue
+            temp_result = EstimationResult()
             shorter = stats.estimate_median_val(
-                stats.max_confirms, sufficient, success_threshold, height
+                stats.max_confirms, sufficient, success_threshold, height, temp_result
             )
             if shorter > 0 and (estimate == -1 or shorter < estimate):
                 estimate = shorter
+                _assign_estimation_result(result, temp_result)
         return estimate
 
-    def _estimate_conservative_fee(self, double_target: int) -> float:
+    def _estimate_conservative_fee(
+        self, double_target: int, result: EstimationResult
+    ) -> float:
         """Hold `double_target` to 95% at the longer horizons too."""
         height = self.best_seen_height
         estimate = -1.0
+        temp_result = EstimationResult()
         if double_target <= self.short_stats.max_confirms:
             estimate = self.fee_stats.estimate_median_val(
-                double_target, _SUFFICIENT_FEETXS, _DOUBLE_SUCCESS_PCT, height
+                double_target, _SUFFICIENT_FEETXS, _DOUBLE_SUCCESS_PCT, height, result
             )
         if double_target <= self.fee_stats.max_confirms:
-            estimate = max(
-                estimate,
-                self.long_stats.estimate_median_val(
-                    double_target, _SUFFICIENT_FEETXS, _DOUBLE_SUCCESS_PCT, height
-                ),
+            long_estimate = self.long_stats.estimate_median_val(
+                double_target,
+                _SUFFICIENT_FEETXS,
+                _DOUBLE_SUCCESS_PCT,
+                height,
+                temp_result,
             )
+            if long_estimate > estimate:
+                estimate = long_estimate
+                _assign_estimation_result(result, temp_result)
         return estimate
 
     def estimate_smart_fee(self, conf_target: int, *, conservative: bool) -> SmartFee:
@@ -788,28 +811,94 @@ class FeeEstimator:
         horizons. The target is raised to 2 and lowered to what the data
         seen so far can answer, and the target used is returned.
 
-        Core also returns which estimate decided, for its wallet; no
-        caller here reads it.
+        Core logs the chosen feerate, target and reason under `estimatefee`
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag. It gives the
+        in-mempool counts, which are doubles, to a `%d` that tinyformat
+        prints as `%g` does.
         """
+        desired_target = conf_target
         if conf_target <= 0 or conf_target > self.long_stats.max_confirms:
             return SmartFee(0, conf_target)
         conf_target = max(conf_target, 2)
         conf_target = min(conf_target, self._max_usable_estimate())
         if conf_target <= 1:
             return SmartFee(0, conf_target)
-        median = max(
-            self._estimate_combined_fee(
-                conf_target // 2, _HALF_SUCCESS_PCT, check_shorter=True
-            ),
-            self._estimate_combined_fee(conf_target, _SUCCESS_PCT, check_shorter=True),
-            self._estimate_combined_fee(
-                2 * conf_target, _DOUBLE_SUCCESS_PCT, check_shorter=not conservative
-            ),
+
+        temp_result = EstimationResult()
+        half_est = self._estimate_combined_fee(
+            conf_target // 2, _HALF_SUCCESS_PCT, check_shorter=True, result=temp_result
         )
+        est = _copy_estimation_result(temp_result)
+        reason = "Half Target 60% Threshold"
+        median = half_est
+
+        actual_est = self._estimate_combined_fee(
+            conf_target, _SUCCESS_PCT, check_shorter=True, result=temp_result
+        )
+        if actual_est > median:
+            median = actual_est
+            est = _copy_estimation_result(temp_result)
+            reason = "Target 85% Threshold"
+
+        double_est = self._estimate_combined_fee(
+            2 * conf_target,
+            _DOUBLE_SUCCESS_PCT,
+            check_shorter=not conservative,
+            result=temp_result,
+        )
+        if double_est > median:
+            median = double_est
+            est = _copy_estimation_result(temp_result)
+            reason = "Double Target 95% Threshold"
+
         if conservative or median == -1:
-            median = max(median, self._estimate_conservative_fee(2 * conf_target))
+            cons_est = self._estimate_conservative_fee(
+                2 * conf_target, result=temp_result
+            )
+            if cons_est > median:
+                median = cons_est
+                est = _copy_estimation_result(temp_result)
+                reason = "Conservative Double Target longer horizon"
+
         if median < 0:
             return SmartFee(0, conf_target)
+
+        pass_b = est.pass_bucket
+        fail_b = est.fail_bucket
+        pass_total = pass_b.total_confirmed + pass_b.in_mempool + pass_b.left_mempool
+        fail_total = fail_b.total_confirmed + fail_b.in_mempool + fail_b.left_mempool
+        pass_pct = (
+            100.0 * pass_b.within_target / pass_total if pass_total > 0.0 else 0.0
+        )
+        fail_pct = (
+            100.0 * fail_b.within_target / fail_total if fail_total > 0.0 else 0.0
+        )
+
+        self.logger.log_debug(
+            "estimatefee",
+            'estimateSmartFee Selected feerate: %g Tgt: %d (requested %d) Reason: "%s" '
+            "Decay %.5f: Estimation: (%g - %g) %.2f%% %.1f/(%.1f %g mem %.1f out) "
+            "Fail: (%g - %g) %.2f%% %.1f/(%.1f %g mem %.1f out)",
+            median,
+            conf_target,
+            desired_target,
+            reason,
+            est.decay,
+            pass_b.start,
+            pass_b.end,
+            pass_pct,
+            pass_b.within_target,
+            pass_b.total_confirmed,
+            pass_b.in_mempool,
+            pass_b.left_mempool,
+            fail_b.start,
+            fail_b.end,
+            fail_pct,
+            fail_b.within_target,
+            fail_b.total_confirmed,
+            fail_b.in_mempool,
+            fail_b.left_mempool,
+        )
         return SmartFee(llround(median), conf_target)
 
     def flush_unconfirmed(self) -> None:
