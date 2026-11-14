@@ -757,6 +757,8 @@ def test_a_key_that_is_no_point_is_refused_with_core_s_message(
     ("text", "message"),
     [
         (f"tr(musig({NOT_A_POINT_X},{X_ONLY}))", f"tr(): musig(): {INVALID}"),
+        (f"rawtr(musig({NOT_A_POINT_X},{X_ONLY}))", f"rawtr(): musig(): {INVALID}"),
+        (f"tr(musig({X_ONLY},{X_ONLY2}))", f"tr(): musig(): {INVALID}"),
         (f"pk({X_ONLY})", f"pk(): {INVALID}"),
         (f"wsh(pk({X_ONLY}))", f"pk(): {INVALID}"),
         (f"unused({X_ONLY})", INVALID),
@@ -772,6 +774,26 @@ def test_a_btclib_key_refusal_uses_core_s_secret_free_message(
         scan(node, text)
     assert (int(caught.value.code), caught.value.message) == (-5, message)
     assert_secret_free(caught.value, [NOT_A_POINT_X, X_ONLY])
+
+
+def test_an_earlier_musig_context_refusal_is_not_replaced(node: Node) -> None:
+    """A key argument is irrelevant when its holder is refused first."""
+    text = f"wpkh(musig({NOT_A_POINT_X},{X_ONLY}))"
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        "key 0: musig() is only allowed in tr() and rawtr()",
+    )
+
+
+def test_an_unmatched_closing_parenthesis_keeps_the_parser_refusal(node: Node) -> None:
+    """The key walker does not replace malformed-syntax diagnostics."""
+    text = f"pk({KEY}))"
+    assert utxo_set._invalid_key_refusal(text) is None
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert (int(caught.value.code), caught.value.message) == (-5, "unbalanced brackets")
 
 
 @pytest.mark.parametrize("text", [NOT_A_POINT, f"raw({NOT_A_POINT})", f"pk({KEY})"])

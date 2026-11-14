@@ -260,15 +260,24 @@ def _key_prefix(calls: list[str]) -> str:
     The function they hold then names itself, as `Multi` for one of
     `_MULTI_FUNCTIONS`, unless miniscript reads it, which names nothing.
     """
+    holder = calls[-1].rpartition(":")[2]
+    if holder == "musig":
+        owner = next(
+            (
+                call.rpartition(":")[2]
+                for call in reversed(calls[:-1])
+                if call.rpartition(":")[2] in {"rawtr", "tr"}
+            ),
+            "",
+        )
+        return f"{owner}(): musig(): " if owner else "musig(): "
+
     depth = 0
     while calls[depth] in {"sh", "wsh"} or (
         calls[depth] == "tr" and depth < len(calls) - 1
     ):
         depth += 1
     name = calls[depth]
-    if name == "musig":
-        owner = calls[depth - 1] if depth else ""
-        return f"{owner}(): musig(): " if owner else "musig(): "
     if name in _MULTI_FUNCTIONS:
         return "Multi: "
     # `pkh()` in a tree is miniscript's
@@ -294,16 +303,16 @@ def _invalid_key_refusal(text: str) -> str | None:
         if part == "(":
             calls.append(word)
         elif part == ")":
+            if not calls:
+                return None
             calls.pop()
         elif (key := _HEX_KEY.fullmatch(part)) and calls:
             key_bytes = bytes.fromhex(key["key"])
             holder = calls[-1].rpartition(":")[2]
-            x_only_outside_taproot = len(key_bytes) == _X_ONLY_KEY_BYTES and not any(
-                call in {"rawtr", "tr"} for call in calls
+            invalid_x_only = len(key_bytes) == _X_ONLY_KEY_BYTES and (
+                holder == "musig" or not any(call in {"rawtr", "tr"} for call in calls)
             )
-            if holder in _KEY_HOLDERS and (
-                not _is_point(key_bytes) or x_only_outside_taproot
-            ):
+            if holder in _KEY_HOLDERS and (not _is_point(key_bytes) or invalid_x_only):
                 return f"{_key_prefix(calls)}Pubkey '...' is invalid"
         word = part
     return None
@@ -327,9 +336,12 @@ def _parse(node: Node, text: str) -> list[_Source]:
             for one in multipath_descriptors(stripped)
         ]
     except BTClibValueError as err:
+        parse_error = str(err)
         message = (
-            _invalid_key_refusal(stripped) if stripped is not None else None
-        ) or str(err)
+            _invalid_key_refusal(stripped)
+            if stripped is not None and "x-only public keys" in parse_error
+            else None
+        ) or parse_error
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     except BTClibException as err:
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, str(err)) from err
