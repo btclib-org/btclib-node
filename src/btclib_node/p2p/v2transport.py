@@ -41,7 +41,7 @@ from ecc import ellswift
 from ecc.curves import secp256k1
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
-from btclib_node.exceptions import RejectedMessageError
+from btclib_node.exceptions import RejectedMessageError, TransportError
 from btclib_node.p2p.transport import (
     BytesToSend,
     NetMessage,
@@ -84,8 +84,10 @@ _KNOWN_MAGICS = frozenset(
 )
 
 
-class V2TransportError(BTClibValueError):
+class V2TransportError(TransportError):
     """Bytes received are invalid: the transport cannot be used anymore."""
+
+    prefix = "V2 transport error"
 
 
 class V1PeerRefusedError(V2TransportError):
@@ -261,7 +263,9 @@ class V2Transport(Transport):
                 self._start_sending_handshake()
         elif len(self._recv_buffer) == _V1_PREFIX_LEN:
             if not self._allow_v1:
-                err_msg = "V1 peer refused"
+                # this node's own refusal, which SECURITY.md's *Where this
+                # node departs from Bitcoin Core* argues
+                err_msg = "V1 peer refused (see -v1transport)"
                 raise V1PeerRefusedError(err_msg)
             with self._send_lock:
                 self._v1.received_bytes(memoryview(bytes(self._recv_buffer)))
@@ -289,7 +293,8 @@ class V2Transport(Transport):
             # `_KNOWN_MAGICS` says why any other magic is not printed
             suffix = f" {wrong_magic.hex()}" if wrong_magic in _KNOWN_MAGICS else ""
             err_msg = f"V1 peer with wrong MessageStart{suffix}"
-            raise V2TransportError(err_msg)
+            # Core's line names no peer
+            raise V2TransportError(err_msg, names_peer=False)
         if len(buffer) < _KEY_LEN:
             return
         assert self._prv_key is not None  # noqa: S101 -- None only after this state
@@ -337,8 +342,7 @@ class V2Transport(Transport):
             self._recv_len = self._cipher.decrypt_length(bytes(buffer))
             if self._recv_len > _MAX_CONTENTS_LEN:
                 err_msg = (
-                    "packet contents too large:"
-                    f" at most {_MAX_CONTENTS_LEN} bytes expected"
+                    f"packet too large: at most {_MAX_CONTENTS_LEN} bytes expected"
                 )
                 raise V2TransportError(err_msg)
         elif len(buffer) > LENGTH_LEN and len(buffer) == self._recv_len + EXPANSION:

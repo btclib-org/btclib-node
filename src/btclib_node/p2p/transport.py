@@ -26,8 +26,9 @@ being constants.
 **Where this differs from Core's shape**, each for a Python reason:
 
 - `received_bytes` takes a `memoryview` and returns what it left, where
-  Core chops the consumed octets off a span in place. It raises where
-  Core returns `false`, so the refusal carries its reason.
+  Core chops the consumed octets off a span in place. It raises a
+  `TransportError` where Core returns `false`, so the refusal carries
+  its reason.
 - `get_received_message` raises `RejectedMessageError` where Core sets
   `reject_message`, and takes no time: the caller reads the clock.
   Either way the transport can go on.
@@ -48,7 +49,11 @@ from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
-from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
+from btclib_node.exceptions import (
+    RejectedMessageError,
+    TransportError,
+    WrongNetworkMagicError,
+)
 
 __all__ = [
     "HEADER_SIZE",
@@ -242,9 +247,13 @@ class V1Transport(Transport):
             self._buffer[_LENGTH_AT : _LENGTH_AT + _LENGTH_SIZE], "little"
         )
         if length > MAX_PROTOCOL_MESSAGE_LENGTH:
-            err_msg = "invalid payload length:"
+            # Core's reason names the message type and the length read,
+            # octets the peer sent that may be a secret's (section 7 of the
+            # organization's standard, *A refusal carries no secret*): this
+            # names the bound instead.
+            err_msg = "Size too large:"
             err_msg += f" at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
-            raise BTClibValueError(err_msg)
+            raise TransportError(err_msg)
         self._length = length
 
     @override

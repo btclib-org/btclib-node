@@ -41,7 +41,7 @@ from btclib_node.constants import (
     USER_AGENT,
     P2pConnStatus,
 )
-from btclib_node.exceptions import RejectedMessageError
+from btclib_node.exceptions import RejectedMessageError, TransportError
 from btclib_node.p2p.address import ip_and_port, service_key
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import handshake_callbacks
@@ -61,7 +61,7 @@ from btclib_node.p2p.transport import (
     TransportProtocolType,
     V1Transport,
 )
-from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
+from btclib_node.p2p.v2transport import V2Transport
 from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
@@ -1096,17 +1096,12 @@ class Connection:
                             self.transport.get_info().transport_type
                             is TransportProtocolType.DETECTING
                         )
-                except V1PeerRefusedError:
-                    # Core's wording for a v2 transport error
-                    # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
-                    # v32.1 tag), for what `-v1transport` refuses: no
-                    # discouragement. SECURITY.md's *Where this node
-                    # departs from Bitcoin Core* argues the refusal.
-                    self.node.logger.log_debug(
-                        "net",
-                        "V2 transport error: V1 peer refused (see -v1transport), peer=%d",
-                        self.id,
-                    )
+                except TransportError as e:
+                    # Core's `ReceiveMsgBytes` answers the transport's
+                    # refusal by dropping the connection, and discourages
+                    # nobody (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+                    # the v32.1 tag)
+                    self._log_refusal(e)
                     return self.stop(cancel_task=False)
                 # deliberately blind (BLE001), not for the event loop's
                 # own sake: `run` reaches this coroutine through
@@ -1116,21 +1111,31 @@ class Connection:
                 # on it -- asyncio isolates that much on its own. What
                 # this catch buys instead is one explicit outcome for
                 # every failure this loop can hit: a bug in this node's
-                # own parsing reaches the same `stop()` below that a
-                # peer's bad envelope does, in the one place that
-                # decides it, rather than falling through to the outer
+                # own parsing reaches `stop()` as a transport's refusal
+                # does, rather than falling through to the outer
                 # `finally` by coincidence with nothing having looked at
                 # it
                 except Exception:  # noqa: BLE001
-                    # the transport refusing a header -- another
-                    # network's magic, an oversized length -- or this
-                    # node's own bug. Core's `ReceiveMsgBytes` answers
-                    # the first by dropping the connection and
-                    # discourages nobody (`src/net.cpp`,
-                    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
                     return self.stop(cancel_task=False)
         finally:
             self.stop(cancel_task=False)
+
+    def _log_refusal(self, refusal: TransportError) -> None:
+        """Write Core's `net` debug lines for a transport's `refusal`.
+
+        The transport's line, then the one `SocketHandlerConnected` writes
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        Where Core's reason prints what the peer sent, the refusal's text
+        may leave it out, and the code that raises it says why.
+        """
+        log_debug = self.node.logger.log_debug
+        if refusal.names_peer:
+            log_debug("net", "%s: %s, peer=%d", refusal.prefix, refusal, self.id)
+        else:
+            log_debug("net", "%s: %s", refusal.prefix, refusal)
+        log_debug(
+            "net", "receiving message bytes failed, disconnecting peer=%d", self.id
+        )
 
     async def _send(self, data: bytes, sent: list[tuple[str, int]], /) -> None:
         """Write `data`, raising `OSError` where the socket cannot take it.

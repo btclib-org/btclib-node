@@ -12,6 +12,7 @@ a peer answered past what this connection will queue for it.
 
 import asyncio
 import logging
+import random
 import socket
 import threading
 import time
@@ -25,6 +26,7 @@ import pytest
 from btclib.exceptions import BTClibRuntimeError
 from btclib.hashes import hash256
 from btclib.p2p.address import ServiceFlags
+from btclib.p2p.bip324 import EXPANSION, GARBAGE_TERMINATOR_LEN, LENGTH_LEN
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
@@ -33,7 +35,7 @@ from btclib.p2p.message import Message
 
 from btclib_node import Node
 from btclib_node import clock as clock_module
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.constants import DEFAULT_MAXSENDBUFFER, NodeStatus, P2pConnStatus
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
@@ -57,7 +59,7 @@ from btclib_node.p2p.transport import (
     V1Transport,
 )
 from btclib_node.p2p.tx_checks import TxChecks
-from btclib_node.p2p.v2transport import V2Transport
+from btclib_node.p2p.v2transport import MAX_GARBAGE_LEN, V2Transport
 from tests import (
     debug_recorder,
     discourage_recorder,
@@ -68,7 +70,7 @@ from tests import (
 
 if TYPE_CHECKING:
     import concurrent.futures
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from btclib.block import BlockHeader
     from btclib.p2p.payload import Payload
@@ -2121,10 +2123,10 @@ def test_stop_when_sent_writes_what_was_sent_first() -> None:
     assert closed
 
 
-def _run_inbound_v2_connection_spoken_to_in_v1(
-    *, allow_v1: bool
+def _run_inbound_connection_sent(
+    octets: bytes, *, use_v2transport: bool, allow_v1: bool = True
 ) -> tuple[Connection, list[tuple[str, str]]]:
-    """Run an inbound v2 connection sent a v1 `version`, then hung up on."""
+    """Run an inbound connection sent `octets`, then hung up on."""
     entries, record = debug_recorder()
 
     async def drive() -> Connection:
@@ -2134,12 +2136,12 @@ def _run_inbound_v2_connection_spoken_to_in_v1(
         connection = a_running_connection(
             loop,
             ours,
-            use_v2transport=True,
+            use_v2transport=use_v2transport,
             inbound=True,
             allow_v1=allow_v1,
             log_debug=record,
         )
-        theirs.sendall(RegTest().magic + b"version\x00\x00\x00\x00\x00" + bytes(8))
+        theirs.sendall(octets)
         theirs.shutdown(socket.SHUT_WR)
         try:
             async with asyncio.timeout(10):
@@ -2151,15 +2153,180 @@ def _run_inbound_v2_connection_spoken_to_in_v1(
     return asyncio.run(drive()), entries
 
 
+def _run_inbound_v2_connection_spoken_to_in_v1(
+    *, allow_v1: bool
+) -> tuple[Connection, list[tuple[str, str]]]:
+    """Run an inbound v2 connection sent a v1 `version`, then hung up on."""
+    return _run_inbound_connection_sent(
+        RegTest().magic + b"version\x00\x00\x00\x00\x00" + bytes(8),
+        use_v2transport=True,
+        allow_v1=allow_v1,
+    )
+
+
+# Core's line after the transport's, for every refusal
+_DISCONNECTING = ("net", "receiving message bytes failed, disconnecting peer=0")
+
+
 def test_an_inbound_v1_peer_is_refused_without_allow_v1_and_not_discouraged() -> None:
     """`run` logs the refusal in `net`, stops, and discourages nobody."""
     connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=False)
     assert connection.status == P2pConnStatus.Closed
     assert not discouraged_of(connection)
     assert entries == [
-        ("net", "V2 transport error: V1 peer refused (see -v1transport), peer=0")
+        ("net", "V2 transport error: V1 peer refused (see -v1transport), peer=0"),
+        _DISCONNECTING,
     ]
     assert connection.stats.bytes_recv == 24
+
+
+_TOO_LARGE = f"at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
+# a v2 packet's bound: the long type's 0x00 and its 12 octets, and the payload
+_V2_TOO_LARGE = f"at most {1 + 12 + MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
+
+
+@pytest.mark.parametrize(
+    ("octets", "use_v2transport", "line"),
+    [
+        (
+            Message(Main().magic, "verack", b"").serialize(),
+            False,
+            "Header error: Wrong MessageStart f9beb4d9 received, peer=0",
+        ),
+        (
+            a_message_for_another_network(),
+            False,
+            "Header error: Wrong MessageStart received, peer=0",
+        ),
+        (
+            a_message_too_long_to_take(),
+            False,
+            f"Header error: Size too large: {_TOO_LARGE}, peer=0",
+        ),
+        (
+            # the first 16 octets of a v1 `version` hand over to the fallback
+            a_message_too_long_to_take()[:4]
+            + b"version\x00\x00\x00\x00\x00"
+            + a_message_too_long_to_take()[16:],
+            True,
+            f"Header error: Size too large: {_TOO_LARGE}, peer=0",
+        ),
+        (
+            Message(Main().magic, "version", bytes(8)).serialize(),
+            True,
+            "V2 transport error: V1 peer with wrong MessageStart f9beb4d9",
+        ),
+        (
+            # a key, then garbage as long as it may be, with no terminator
+            random.Random(0).randbytes(64 + MAX_GARBAGE_LEN + GARBAGE_TERMINATOR_LEN),
+            True,
+            "V2 transport error: missing garbage terminator, peer=0",
+        ),
+    ],
+    ids=[
+        "v1, mainnet's magic",
+        "v1, a magic no chain defines",
+        "v1, a length past the bound",
+        "v2 fallen back to v1, a length past the bound",
+        "v2, a v1 version under mainnet's magic",
+        "v2, no garbage terminator",
+    ],
+)
+def test_a_transport_s_refusal_is_logged_as_core_logs_it(
+    *, octets: bytes, use_v2transport: bool, line: str
+) -> None:
+    """ISS 2454: Core's `net` lines, the transport's and the disconnect's.
+
+    Each line is what a regtest bitcoind of bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag, wrote under `-debug=net` for octets of the same shape,
+    but where section 7 of the organization's standard keeps out what the
+    peer sent. Core's line for a v1 `version` under another network's
+    magic names no peer.
+    """
+    connection, entries = _run_inbound_connection_sent(
+        octets, use_v2transport=use_v2transport
+    )
+    assert connection.status == P2pConnStatus.Closed
+    assert not discouraged_of(connection)
+    assert entries == [("net", line), _DISCONNECTING]
+
+
+def _a_tampered_tag(packet: bytes) -> bytes:
+    """Return `packet` with a bit of its authentication tag flipped."""
+    return packet[:-1] + bytes([packet[-1] ^ 1])
+
+
+def _a_length_past_the_bound(packet: bytes) -> bytes:
+    """Return the octets the receiver decrypts as a length past the bound.
+
+    The length of `packet` XORed with what it encrypts is the keystream.
+    """
+    actual = (len(packet) - EXPANSION).to_bytes(LENGTH_LEN, "little")
+    past = (1 + 12 + MAX_PROTOCOL_MESSAGE_LENGTH + 1).to_bytes(LENGTH_LEN, "little")
+    return bytes(
+        a ^ b ^ c for a, b, c in zip(packet[:LENGTH_LEN], actual, past, strict=True)
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "line"),
+    [
+        (_a_tampered_tag, "V2 transport error: packet decryption failure, peer=0"),
+        (
+            _a_length_past_the_bound,
+            f"V2 transport error: packet too large: {_V2_TOO_LARGE}, peer=0",
+        ),
+    ],
+    ids=["a tag that does not authenticate", "a length past the bound"],
+)
+def test_a_v2_packet_s_refusal_is_logged_as_core_logs_it(
+    *, tamper: Callable[[bytes], bytes], line: str
+) -> None:
+    """ISS 2454: the refusals past the handshake, as the test above.
+
+    Core's reason names the length decrypted, which section 7 of the
+    organization's standard keeps out of these.
+    """
+    entries, record = debug_recorder()
+    magic = RegTest().magic
+    peer = V2Transport(magic, V1Transport(magic), initiating=False, garbage=b"")
+
+    async def drive() -> Connection:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        connection = a_running_connection(
+            loop, ours, use_v2transport=True, log_debug=record
+        )
+        task = asyncio.ensure_future(connection.run())
+        try:
+            async with asyncio.timeout(10):
+                # the handshake, until the connection's `version` is read
+                read: list[NetMessage] = []
+                while not read:
+                    read += _peer_reads(peer, await loop.sock_recv(theirs, 65536))
+                    await loop.sock_sendall(theirs, _peer_writes(peer))
+                assert peer.set_message_to_send(
+                    SerializedMessage("ping", Ping(1).serialize())
+                )
+                await loop.sock_sendall(theirs, tamper(_peer_writes(peer)))
+                await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            theirs.close()
+        return connection
+
+    connection = asyncio.run(drive())
+    assert connection.status == P2pConnStatus.Closed
+    assert not discouraged_of(connection)
+    # an outbound connection's own `version` is logged first
+    assert entries == [
+        ("net", "Sending message: version"),
+        ("net", line),
+        _DISCONNECTING,
+    ]
 
 
 def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:

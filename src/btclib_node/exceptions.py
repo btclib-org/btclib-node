@@ -28,6 +28,8 @@ sites, which fire on a peer's bad block rather than this tree's own
 bug.
 """
 
+from typing import ClassVar
+
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
@@ -55,6 +57,7 @@ __all__ = [
     "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
+    "TransportError",
     "TxRejectedError",
     "UnknownChainError",
     "UnsupportedAddressTypeError",
@@ -491,13 +494,32 @@ class UnsupportedAddressTypeError(ValueError):
         super().__init__("Address type not yet supported")
 
 
-class WrongNetworkMagicError(BTClibValueError):
+class TransportError(BTClibValueError):
+    """Octets a transport refuses: the connection they came on ends.
+
+    Core's transport answers them with `false` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), after a `net` debug line
+    that starts with `prefix`, then gives the reason, then the peer where
+    `names_peer` is true. `Connection.run` writes that line. `prefix` is
+    Core's `V1Transport`'s; `V2TransportError` has its own.
+    """
+
+    prefix: ClassVar[str] = "Header error"
+
+    def __init__(self, reason: str, *, names_peer: bool = True) -> None:
+        super().__init__(reason)
+        self.names_peer = names_peer
+
+
+class WrongNetworkMagicError(TransportError):
     """A message's magic names a chain other than the one this node runs.
 
     `BTClibValueError` and not a plain `ValueError`: it is the peer's
     envelope being wrong, as `Message.parse`'s own refusals are, and
     `fuzz/fuzz_framing.py` tells a refusal from a finding by
-    `isinstance(e, BTClibException)`.
+    `isinstance(e, BTClibException)`. The text is Core's `readHeader`
+    reason (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    less a magic no chain defines.
     """
 
     def __init__(self, magic: bytes) -> None:
@@ -506,8 +528,8 @@ class WrongNetworkMagicError(BTClibValueError):
         # may hold anything, key bytes included, and is printed only where
         # it is one of the magics `btclib_node.chains` defines
         known = {cls().magic for cls in (Main, TestNet, TestNet4, SigNet, RegTest)}
-        suffix = f": {magic.hex()}" if magic in known else ""
-        super().__init__(f"message for another network{suffix}")
+        suffix = f" {magic.hex()}" if magic in known else ""
+        super().__init__(f"Wrong MessageStart{suffix} received")
 
 
 class RejectedMessageError(BTClibValueError):
