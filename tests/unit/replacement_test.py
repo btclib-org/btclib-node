@@ -423,9 +423,9 @@ def test_a_package_that_does_not_improve_the_diagram_is_refused(
         (1_000, 100, "0.00010000 BTC/kvB"),
         (2, 3, "0.00000666 BTC/kvB"),
         (10**8, 1, "1000.00000000 BTC/kvB"),
-        (-5, 1_000, "0.-0000005 BTC/kvB"),
-        (-(10**8 + 5), 1_000, "-1.-0000005 BTC/kvB"),
-        (-1, 3, "0.-0000334 BTC/kvB"),
+        (-5, 1_000, "-0.00000005 BTC/kvB"),
+        (-(10**8 + 5), 1_000, "-1.00000005 BTC/kvB"),
+        (-1, 3, "-0.00000334 BTC/kvB"),
     ],
 )
 def test_a_fee_rate_is_written_as_core_s_cfeerate(
