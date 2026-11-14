@@ -12,9 +12,8 @@ entry (sections 9 and 12 of the organization standard).
 The record starts here, and nothing is reconstructed for the years of
 work before it: a changelog written backwards from a git log is a guess
 at what somebody would have noticed, and there is no way to check the
-guess. This paragraph used to date that boundary to a `v0.1.0` tag,
-deleted on 2026-08-23 (#553, btclib-org/.github#105); the boundary is
-where this file was written rather than where anything was tagged.
+guess. The boundary is where this file was written rather than where
+anything was tagged.
 
 This record carries two shapes of citation. The bullet, beside the claim
 it answers, is where section 9 of the organization standard puts the

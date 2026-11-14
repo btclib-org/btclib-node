@@ -4,7 +4,7 @@
 
 """An atheris harness fuzzing `p2p.callbacks.py`'s handlers through a node.
 
-Issue #516 split the octets a stranger's own bytes reach into three
+Issue #516 splits the octets a stranger's own bytes reach into three
 shapes: a pure function of bytes over a codec `btclib` owns, this
 tree's own hostile-input arithmetic ahead of that codec, pulled into a
 function of octets for the same reason (`fuzz_framing.py`,
@@ -119,9 +119,9 @@ harness's own axis,
 `isinstance(exc, BTClibException)`: btclib refusing `data` into
 `refused`, anything else, a bug, into `escaped` -- `handle_p2p`
 returning nothing for either, neither shows in what it returns. What
-lands in `escaped` is re-raised by `dispatch` below exactly as before,
-so `handle_p2p` runs unmodified, exactly as `Node`'s own loop calls it,
-and what it would have hidden is still what makes this harness red; what
+lands in `escaped` is re-raised by `dispatch` below, so `handle_p2p`
+runs unmodified, exactly as `Node`'s own loop calls it, and what it
+would have hidden is still what makes this harness red; what
 lands in `refused` is raised too, once `escaped` is checked and found
 empty, so a callback's own refusal of `data` -- a call this harness
 would otherwise report exactly as it reports genuine acceptance -- is
@@ -383,7 +383,7 @@ def dispatch(data: bytes) -> None:
         # once garbage collection reaches it, as a failure of whichever
         # test happens to be running at that moment rather than of any
         # seed -- measured directly, against `tests/fuzz_corpus_test.py`
-        # before this line was added.
+        # without this line.
         conn.client.close()
     if _capture.escaped:
         raise _capture.escaped[0]

@@ -31,19 +31,17 @@ name: deps-latest
 # permissions and dist-latest below, which the callee does not carry and says so
 # in its own header.
 #
-# One interpreter and one image, as this tree ran before the call:
+# One interpreter and one image:
 # .python-version pins 3.14 and requires-python is >=3.14, so the runners
 # and python-versions inputs below are each a one-cell list rather than a
 # matrix narrowed to one.
 #
 # measure-coverage: true, because this job's own upgrade step is the one
 # place in the tree where the fail_under ratchet meets a coverage.py
-# nobody has pinned it against yet, and this tree had established the
-# floor across the whole of its sweep -- the one cell above. Before
-# db37555b converted this job onto the callee and lost the check
-# unrecorded, five consecutive runs of the bare `pytest` this job used to
-# run (2026-08-26 through 2026-09-16) each reported `Required test
-# coverage of 100.0% reached. Total coverage: 100.00%` on that cell
+# nobody has pinned it against yet, and the floor holds across the whole
+# of this sweep -- the one cell above: five consecutive runs of this
+# job's `pytest`, 2026-08-26 through 2026-09-16, each reported `Required
+# test coverage of 100.0% reached. Total coverage: 100.00%` on that cell
 # (issue #975). No fetch-tags beside it: nothing in tests/ compares a
 # released section against its own git tag, so the callee's header
 # naming the two as coupled does not apply here.

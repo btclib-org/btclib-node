@@ -15,17 +15,9 @@ name: pypi-install
 #
 # `import btclib_node` runs __init__.py alone, and what a bare import
 # cannot see is the runtime path a user actually exercises. The store
-# is where the tree and the index currently disagree: this tree's own
-# store is RocksDB through `rocksdict`, `src/btclib_node/db.py` being
-# what depends on it, but the one release this workflow installs --
-# `btclib-node` 2026.8.27 -- declares no store dependency at all, its
-# own `db.py` importing the stdlib `sqlite3` instead, so no cell below
-# resolves a `rocksdict` wheel. `pyproject.toml` already depends on
-# `rocksdict>=0.3.29`, unreleased, so what this paragraph describes holds
-# for as long as 2026.8.27 is the newest release and for no longer:
-# whoever reads it against a later one measures the index again rather
-# than trusting the sentence. This package unconditionally depends on
-# `btclib[secp256k1]` as well, and there an import that returns settles
+# is RocksDB through `rocksdict`, which the release declares and
+# `src/btclib_node/db.py` imports. This package unconditionally depends
+# on `btclib[secp256k1]` as well, and there an import that returns settles
 # nothing -- `btclib._libsecp256k1` degrades a broken pair silently to
 # the Python arithmetic, tens of times slower and not constant-time,
 # rather than failing on import. So the checks below ask past the
@@ -125,9 +117,8 @@ jobs:
   # wherever no release is calling, and an empty tag is nothing to wait
   # for. An `if:` on it would make a tag the only thing that ever runs
   # this, and a job a release is the first to run is a job whose defect
-  # ships with that release -- which has already happened to this wait,
-  # in more than one repository of this organization. The draft
-  # condition is the matrix job's own, for the reason given there.
+  # ships with that release. The draft condition is the matrix job's
+  # own, for the reason given there.
   # `version` below is forwarded rather than originated: drop it and the
   # wait silently becomes a no-op on exactly the run that needs it, a
   # release
@@ -163,8 +154,8 @@ jobs:
         # macos-latest is here, arm64 alone as section 10 of
         # the organization's standard says -- and test.yml's `windows`
         # job is why windows-latest is here: this package's classifiers
-        # now name Windows too (issue #430), and this workflow checks that
-        # claim against the index the way it already checks the other two
+        # name Windows (issue #430), and this workflow checks that claim
+        # against the index the way it checks the other two
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -188,15 +179,10 @@ jobs:
     steps:
       # every run step below declares `shell: bash`, and the matrix is why:
       # the default shell on a Windows runner is PowerShell, which parses
-      # none of this. A run step went in without the line on a sibling
-      # repository's own copy of this file (btclib-org/btclib#1141) and
-      # took every Windows cell of a release run with it -- "Missing
-      # opening '(' after keyword 'for'" -- having never run before that
-      # tag, a release being then the only trigger that reached it. A
-      # step whose script happens to be a couple of plain commands
-      # survives PowerShell unchanged, which is what makes an omission
-      # invisible on review; declaring it on every step is what makes the
-      # absence of one visible instead
+      # none of this. A step whose script happens to be a couple of plain
+      # commands survives PowerShell unchanged, which is what makes an
+      # omission invisible on review; declaring it on every step is what
+      # makes the absence of one visible instead (btclib-org/btclib#1141)
       # uv rather than actions/setup-python, which is what every other
       # workflow here already uses. The windows-11-arm gap the
       # setup-python action carries on a sibling repository's copy of
@@ -281,9 +267,9 @@ jobs:
       # and `RpcManager` each schedule `server` on a background thread
       # through `run_coroutine_threadsafe`, and neither `node.start()`
       # nor `node.stop()` below ever reads the `concurrent.futures.Future`
-      # that scheduling returns, so the `NotImplementedError`
-      # `loop.add_reader` used to raise there never reached this script
-      # at all -- this step's pass names nothing about whether the
+      # that scheduling returns, so a `NotImplementedError` from
+      # `loop.add_reader` there would never reach this script at all --
+      # this step's pass names nothing about whether the
       # installed release's own listener actually accepts a connection,
       # only that starting and stopping a `Node` does not raise
       - name: Verify a Node starts and stops on regtest

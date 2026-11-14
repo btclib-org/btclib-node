@@ -17,13 +17,11 @@ name: sdist-rebuild
 # permissions, the concurrency group and the calling job's `if:` and
 # `permissions:`, which the callee does not carry and says so in its own
 # header.
-# No input is named below: this tree's own build was a bare `uv build`, which
-# the callee's default (`sdist-builder: uv`, running `uv build --sdist`)
-# replaces -- the wheel that bare `uv build` also wrote was read by nothing in
-# this file and this tree stops building it here. `submodules` and
-# `setup-python` are likewise left at the callee's own defaults, `""` and
-# `false`: this tree's checkout named no submodules and its build ran no
-# setup-python step.
+# No input is named below: the callee's default (`sdist-builder: uv`,
+# running `uv build --sdist`) builds the sdist alone, and nothing in this
+# file reads a wheel. `submodules` and `setup-python` are likewise left at
+# the callee's own defaults, `""` and `false`: this tree has no submodules
+# and uv fetches the interpreter itself.
 #
 # The sdist alone: section 10 of the organization's standard makes
 # the row the sdist's. A red run is an issue against this tree. It gates

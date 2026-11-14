@@ -21,10 +21,10 @@ license = "MIT"
 # too, under `scripts/**` below.
 license-files = ["LICENSE", "AUTHORS.md"]
 # Above the standard's 3.10 floor, deliberately: this is the version
-# .python-version pins, and with no CI matrix here
-# (btclib-org/btclib-node#33) it is the only version anything runs on.
-# A lower bound would be a claim of support nothing checks. Lower it to
-# whatever the matrix covers once there is one.
+# .python-version pins, and with no interpreter matrix here it is the
+# only version anything runs on. A lower bound would be a claim of
+# support nothing checks. Lower it to whatever the matrix covers once
+# there is one.
 requires-python = ">=3.14"
 # Floors only, here and in the dependency groups below: an upper bound
 # on a release nobody has seen break is a guess, and uv.lock is what
@@ -37,14 +37,14 @@ requires-python = ">=3.14"
 dependencies = [
     # The `secp256k1` extra, not an optional-dependencies table of this
     # package's own: btclib-org/btclib-node#361 is where dependency
-    # versus extra was decided, and why.
+    # versus extra is decided, and why.
     #
     # 2026.9.3, the first release carrying every module and name `src/`
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848). Raised to 2026.9.30, the
-    # release fixing `Tx.assert_valid`'s own check order to match
+    # import (btclib-org/btclib-node#848). 2026.9.30 is the release
+    # fixing `Tx.assert_valid`'s own check order to match
     # Core's `CheckTransaction` (btclib-org/btclib#2417,
     # btclib-org/btclib#2422): `tx_check.py`'s own
     # `_reject_reason` answers a multi-violation transaction's reject
@@ -131,7 +131,7 @@ dependencies = [
     # GHSA-m38m-987v-j55h.
     "ecc>=2026.11.11",
     "rocksdict>=0.3.29",
-    # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
+    # `rpc/errors.py` imports `RPCErrorCode` directly, so this is a
     # direct runtime dependency rather than the transitive arrival
     # btclib's own `[project.dependencies]` already brings in -- depend
     # on what is imported rather than rest on what a sibling happens to
@@ -160,8 +160,8 @@ keywords = [
     "consensus",
     "p2p",
     "script-interpreter",
-    # rocksdb, not sqlite: a keyword is what somebody searches with, and
-    # the storage layer moved (btclib-org/btclib-node#641), through
+    # rocksdb: a keyword is what somebody searches with, and the storage
+    # layer is RocksDB (btclib-org/btclib-node#641), through
     # `rocksdict` rather than a `leveldb`-named binding, which is the
     # name PyPI's own listing for that dependency uses. The classifiers
     # below are the other kind of claim -- each has to be true on the
@@ -174,20 +174,18 @@ keywords = [
 # sibling's.
 #
 # One interpreter, because `requires-python` above is `>=3.14` and its
-# comment says why: with no CI matrix here, a lower bound would be a
-# claim of support nothing checks, and a classifier is that claim made
-# to an index.
+# comment says why: with no interpreter matrix here, a lower bound
+# would be a claim of support nothing checks, and a classifier is that
+# claim made to an index.
 #
 # `Typing :: Typed` is below, and only because `src/btclib_node/py.typed`
-# now ships: the classifier is machine-readable and a downstream type
+# ships: the classifier is machine-readable and a downstream type
 # checker acts on it, so it is not declared ahead of the marker it
 # reports on (btclib-org/.github#239).
 #
-# No PyPy, and the reason is no longer plyvel: that dependency is gone,
-# and with it the C extension built from source against a LevelDB the
-# reader had to install first. What is left is the line at the top of
-# this file -- `requires-python = ">=3.14"`, and no PyPy release targets
-# 3.14. `Implementation :: CPython` is that bound restated where an
+# No PyPy, because of the line at the top of this file --
+# `requires-python = ">=3.14"`, and no PyPy release targets 3.14.
+# `Implementation :: CPython` is that bound restated where an
 # index reads it, and it needs no dependency to justify it.
 #
 # No `Free Threading` classifier, and `3.14t` running in this repository
@@ -199,11 +197,11 @@ keywords = [
 # publishes no `cp314t` wheel and no sdist, so that job's sync step
 # fails, a `::notice::` says so and the suite step behind it is skipped
 # (issue #746). The classifier would promise a consumer of this package
-# a build nothing here runs. It returns when a job the merge gate waits
-# on runs the suite free-threaded; a place in those `needs:` is not
-# that condition, a job green with its suite step skipped refusing no
-# landing. `tests/interpreters_test.py` is what refuses the classifier
-# and the gate's own matrix coming apart.
+# a build nothing here runs. It belongs here once a job the merge gate
+# waits on runs the suite free-threaded; a place in those `needs:` is
+# not that condition, a job green with its suite step skipped refusing
+# no landing. `tests/interpreters_test.py` is what refuses the
+# classifier and the gate's own matrix coming apart.
 #
 # No `OS Independent` either, and two things argue against it. The first
 # is a dependency, and it takes the inventory to see which: what this
@@ -229,12 +227,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Typing :: Typed",
-    # the README's own claim, made of the 2023 prototype and still made
-    # here: this node downloaded and validated the whole chain, which is
-    # past pre-alpha and short of what a beta would promise about its
-    # interfaces. The prototype is a commit, d0ac7646, rather than a
-    # tag: `v0.1.0` named it until that tag was deleted on 2026-08-23
-    # (btclib-org/.github#105, btclib-org/btclib-node#553)
+    # SECURITY.md's closing claim: this node downloaded and validated the
+    # whole chain, which is past pre-alpha and short of what a beta would
+    # promise about its interfaces. The prototype that did so is a
+    # commit, d0ac7646, and no tag names it
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",
@@ -273,7 +269,7 @@ repository = "https://github.com/btclib-org/btclib-node"
 issues = "https://github.com/btclib-org/btclib-node/issues"
 pull_requests = "https://github.com/btclib-org/btclib-node/pulls"
 
-# `btclib-node` is what `pip install btclib-node` now puts on PATH,
+# `btclib-node` is what `pip install btclib-node` puts on PATH,
 # `cli.py`'s own `main` behind it -- btclib-org/btclib-node#583, #581,
 # #573. `python -m btclib_node` reaches the same function through
 # `__main__.py` for a checkout nobody has installed yet.
@@ -307,14 +303,13 @@ btclib-node = "btclib_node.cli:main"
 # uv-lock hook "does not upgrade", and deps-latest.yml's `uv lock
 # --upgrade` moves uv.lock's resolution and never this file's text. So
 # every number here drifts below the lock by design and that is not the
-# defect. The defect is a bound no run has ever exercised -- `mypy`'s
-# `1.18.2` was installed by nothing, so it claimed a compatibility
-# nothing had tested. A number that was the resolution when it was
-# written stays a number some run did exercise, which is the property
-# that matters and the only one that does not decay. What a reader
-# checks against this table is therefore that the consumer named beside
-# an entry is still that entry's consumer, not that the digits still
-# match uv.lock.
+# defect. The defect is a bound no run has ever exercised: a floor no
+# lock installs claims a compatibility nothing has tested. A number that
+# was the resolution when it was written stays a number some run did
+# exercise, which is the property that matters and the only one that
+# does not decay. What a reader checks against this table is therefore
+# that the consumer named beside an entry is still that entry's
+# consumer, not that the digits still match uv.lock.
 
 # The test runner and its plugins, nothing else.
 harness = [
@@ -339,9 +334,10 @@ harness = [
     # properties is argued (btclib-org/btclib-node#742).
     "hypothesis>=6.168.0",
     # `addopts` below passes --cov, so the plugin that reads it is the
-    # runner's. No "toml" extra: pytest-cov absorbed it and warns on the
-    # name now. coverage is declared beside it so that uv.lock pins it
-    # as a direct requirement rather than whatever pytest-cov brings.
+    # runner's. No "toml" extra: pytest-cov declares none, and requires
+    # `coverage[toml]` itself. coverage is declared beside it so that
+    # uv.lock pins it as a direct requirement rather than whatever
+    # pytest-cov brings.
     "pytest-cov>=7.1.0",
     "coverage>=7.16.2",
 ]
@@ -356,15 +352,15 @@ test = [
     # tests/functional/rpc and tests/integration/conftest.py both import
     # this at module top, the former against this node's own rpc surface
     # and the latter as the client for a real bitcoind. It arrives
-    # already, transitively, as one of btclib's own dependencies -- true
-    # today and declared nowhere before this line, so nothing here
-    # noticed if btclib ever dropped or gated it (btclib-org/btclib-node#606,
-    # extended to the integration client by btclib-org/btclib-node#607).
-    # The floor moves to >=2026.8.29 for `call_raw`, `call_batch` and
-    # `SessionTransport` (btclib-org/btclib-node#632, #633): the
-    # functional rpc suite's own hand-rolled envelope posts are built
-    # through the first two where they express the case, and the
-    # integration client is a `SessionTransport` now.
+    # transitively, as one of btclib's own dependencies, and is declared
+    # here so that a btclib release dropping or gating it is noticed
+    # (btclib-org/btclib-node#606, and btclib-org/btclib-node#607 for the
+    # integration client). The suite needs `call_raw`,
+    # `call_batch` and `SessionTransport`, which 2026.8.29 carries
+    # (btclib-org/btclib-node#632, #633): the functional rpc suite's own
+    # hand-rolled envelope posts are built through the first two where
+    # they express the case, and the integration client is a
+    # `SessionTransport`.
     #
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
@@ -388,9 +384,7 @@ test = [
 # from astral-sh/ruff-pre-commit at its own `rev:`, which pre-commit
 # builds as an environment of its own, so the entry below is installed
 # here and run nowhere, and its floor answers to that `rev:` rather
-# than to anything this group resolves. The two had already drifted
-# apart -- `0.16.4` here against `v0.16.5` there -- when
-# btclib-org/btclib-node#800 measured them.
+# than to anything this group resolves (btclib-org/btclib-node#800).
 lint = [
     "pre-commit>=4.6.2",
     "ruff>=0.16.5",
@@ -483,7 +477,7 @@ required-version = ">=0.13.4"
 # The ceiling is the minor after the newest one uv.lock locks, which is
 # where uv's versioning policy puts a breaking change, this backend
 # releasing with uv and versioned by it. btclib-org/.github#118 is where
-# a pure-Python project was decided onto this backend
+# this backend is chosen for a pure-Python project
 requires = ["uv_build>=0.12.0,<0.14"]
 build-backend = "uv_build"
 
@@ -498,20 +492,13 @@ build-backend = "uv_build"
 # so `*.md` is the root's own markdown and does not reach tests/_data/
 # README.md, and `/**` is what recurses.
 #
-# This is the first statement of what this sdist holds rather than a
-# translation of an older one: the backend was setuptools and no
-# MANIFEST.in was ever written, so the archive was whatever that backend
-# defaulted to and nobody had declared it. What it left out was the
-# suite, and every configuration file of the lint gate that is a file of
-# its own: pyproject.toml went, so the tools reading their settings from
-# this file were served and the hooks keeping one of their own were not.
-# What this table produces instead is read off the archive rather than
-# listed here,
+# This table is the one statement of what the sdist holds. It carries
+# the suite and, beside pyproject.toml, the lint gate's configuration
+# files the next paragraph names, so the hooks reading those are served
+# as well as the tools reading theirs from this one. What it produces is
+# read off the archive rather than listed here:
 #
 #     tar tzf dist/*.tar.gz | sed 's|^[^/]*/||' | sort
-#
-# and CHANGELOG.md's entry for this change carries the pair of builds
-# that shows the difference.
 #
 # The gate is what the list is drawn from: the configuration a hook of
 # .pre-commit-config.yaml reads travels with the sources it is a rule
@@ -656,12 +643,11 @@ source-exclude = [
 ]
 
 [tool.check-sdist]
-# Tracked files the sdist is meant not to carry, and the first thing in
-# this repository to ask the question at all -- [tool.uv.build-backend]
-# above is where what went unasked before it is written down. What that
-# table's source-exclude names is not repeated here, check-sdist reading
-# it for the uv backend, so this holds only what no include pattern adds
-# in the first place and nothing installed from the sdist reads. Patterns
+# Tracked files the sdist is meant not to carry. What source-exclude in
+# [tool.uv.build-backend] above names is not repeated here, check-sdist
+# reading it for the uv backend, so this holds only what no include
+# pattern adds in the first place and nothing installed from the sdist
+# reads. Patterns
 # are gitignore's, so a directory covers what is under it at any depth.
 #
 # Root prose, AGENTS.md included, travels with the archive under `*.md`,
@@ -806,30 +792,29 @@ markers = [
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the
-# two images that gate a merge, from one run's own `--durations=10`
-# (run 33304347389, at btclib-org/btclib-node#737): the slowest tests
-# are tests/unit/chainstate/utxo_index_test.py::test_rev_patch and its
-# ::test_long_init beside it, 75.30s and 63.78s on `ubuntu-latest`
-# under coverage, and 86.20s for the second of them on
-# `windows-latest` without it, where the first exceeded the 120 this
-# line used to carry. tests/functional/p2p/download_test.py's own
-# ::test_download is third at 81.60s there. That is the bound that
-# matters rather than the spread: a limit anywhere near where the suite
-# reports which condition it was waiting on trades a diagnosis for a
-# timeout, and this is nearly three times the worst of them while still
-# turning the ten-minute hangs of btclib-org/btclib-node#98 into a
-# failure that names its test.
+# two images that gate a merge, from one run's own `--durations=10` (run
+# 33304347389, at btclib-org/btclib-node#737): the slowest tests are
+# tests/unit/chainstate/utxo_index_test.py::test_rev_patch and its
+# ::test_long_init beside it, 75.30s and 63.78s on `ubuntu-latest` under
+# coverage, and 86.20s for the second of them on `windows-latest`
+# without it, where the first did not finish within 120s.
+# tests/functional/p2p/download_test.py's own ::test_download is third,
+# at 53.57s and 81.60s. 300 is two and a half times the 120s
+# ::test_rev_patch did not finish within, and more than three times
+# every duration the run did measure. That is the bound that matters
+# rather than the spread: a limit anywhere near where the suite reports
+# which condition it was waiting on trades a diagnosis for a timeout,
+# and this one still turns the ten-minute hangs of
+# btclib-org/btclib-node#98 into a failure that names its test.
 #
-# 120 was that same ratio against a suite whose worst was
-# ::test_download at 42.09s, which this tree has since grown past: what
-# moved is the suite and not the runner, ::test_rev_patch staging a
-# 20000-block chain and unwinding all 20000 of its `RevBlock`s in 34s
-# serial on a ten-core machine, at a 143 MiB peak, rather than leaking
-# or thrashing on the four-vCPU one.
+# What makes those tests slow is the suite's own work and not the
+# runner: ::test_rev_patch stages a 20000-block chain and unwinds all
+# 20000 of its `RevBlock`s in 34s serial on a ten-core machine, at a
+# 143 MiB peak, so it is not leaking or thrashing on the four-vCPU one.
 #
 # The number is one measured bound and not a per-test marker beside a
-# tighter one, because three tests now sit within a factor of two of
-# it: marking two of them leaves the third to be the next to fail.
+# tighter one, because those three tests each take over 50s on both
+# images: marking two of them leaves the third to be the next to fail.
 #
 # **A firing here is not reported the same way on both images.**
 # pytest-timeout picks `signal` where `SIGALRM` exists and `thread`
@@ -855,13 +840,13 @@ xfail_strict = true
 # setup in view to stay under this one (btclib-org/btclib-node#1037).
 # Issue #46 is where a node's starvation under `-n auto` is tracked.
 timeout = 300
-# `["error"]`, once the fixtures in tests/conftest.py closed what
-# tests/unit/main_test.py's regtest_node and its kind (issue #111,
-# issue #195) left open -- a socket, an event loop, a worker pool or
-# an open file, warned about by __del__ at whatever moment the
-# collector reaches it, which is why the same tests used to fail this
-# differently on every run. Two other warnings that turning this
-# on surfaced are not that shape and stay out of this list: a
+# `["error"]`, which holds because the fixtures in tests/conftest.py
+# close what tests/unit/main_test.py's regtest_node and its kind
+# (issue #111, issue #195) would leave open -- a socket, an event loop, a
+# worker pool or an open file, warned about by __del__ at whatever
+# moment the collector reaches it, so that the same tests would fail
+# differently on every run. Two other warnings that `error` surfaces
+# are not that shape and stay out of this list: a
 # deliberately unhandled exception on a manager's own thread and a
 # deliberately unawaited coroutine, each provoked on purpose by the
 # handful of tests that exercise it and silenced there with its own
@@ -872,8 +857,8 @@ filterwarnings = [
     # `TestNet` and `TestNet4` (`src/btclib_node/chains.py`) are chains,
     # not tests: pytest collects any class whose name matches `Test*`
     # and warns where it cannot, `__init__` being what stops it here.
-    # Named to these two classes rather than to every class the blanket
-    # entry above used to cover -- nothing here is renamed to dodge
+    # Named to these two classes rather than to every class a blanket
+    # entry would cover -- nothing here is renamed to dodge
     # pytest's own default, `python_classes` in this same table being
     # what would have to change instead, at the cost of the name the
     # wire protocol and every other repository reading it already
@@ -918,13 +903,13 @@ filterwarnings = [
     # own regression test has to, straight through `_accept_loop` to keep
     # the race deterministic, the identical warning attributes to the
     # test's own module instead, outside either manager entirely, so
-    # naming just the two manager modules would not even have caught the
-    # reproduction this fix ships with. Nor is this the handful-of-tests
-    # shape `pytest.mark.filterwarnings` answers elsewhere in this file:
+    # naming just the two manager modules would not reach that test
+    # either. Nor is this the handful-of-tests shape
+    # `pytest.mark.filterwarnings` answers elsewhere in this file:
     # the race is OS-timing-dependent and reachable from any test that
     # stops a `P2pManager`/`RpcManager`, not a knowable set to mark one
-    # by one -- the issue's own report caught it in a functional test
-    # neither accept loop is the subject of. No narrower `pytest` filter
+    # by one -- btclib-org/btclib-node#904 reports it from a functional
+    # test neither accept loop is the subject of. No narrower `pytest` filter
     # exists for this; the trade-off is accepted rather than hidden.
     "ignore:unclosed <socket\\.socket:ResourceWarning",
 ]
@@ -1088,8 +1073,8 @@ ignore = [
     #            or what lets a spy forward blindly to the real method
     #            it wraps (`socket.socket(*args, **kwargs)`,
     #            `Task.cancel(*args, **kwargs)`); read individually
-    #            (issue #341) rather than swallowed as a family -- 4 of
-    #            the 71 measured were narrowed to a real type instead
+    #            (issue #341) rather than swallowed as a family -- a
+    #            site a real type fits carries that type instead
     #            (`AbstractContextManager[KeyValueStore]`,
     #            `Callable[..., object]`, `Iterable[Iterable[object]]`,
     #            a `Node` already built by an internal `cast`)
@@ -1106,8 +1091,8 @@ ignore = [
     #           tests/functional/p2p/block_filters_test.py): a pytest
     #           fixture requested only for its own construction's side
     #           effect (`mark`'s own docstring says which), not for a
-    #           value the test reads. Read individually (issue #341)
-    #           before this ignore was added, not assumed.
+    #           value the test reads. Each read individually (issue
+    #           #341), not assumed.
     "ARG002", # the method-argument shape of the same two reasons above
     "ARG005", # the lambda-argument shape of the same reasons -- most of
     #           this rule's own 63 findings, a `lambda *a: None` or
@@ -1144,8 +1129,8 @@ ignore = [
 # table's own shared signature, not a mistake naming it would hide, and
 # renaming it to `_` would lose that signature's own documentation for
 # a table that calls every handler the same way. Read individually
-# against both dispatch tables before this ignore was added (issue
-# #341) -- every ARG001 finding in each file is one of its own
+# against both dispatch tables (issue #341) -- every ARG001 finding in
+# each file is one of its own
 # registered handlers, none a free helper mistaken for one.
 "src/btclib_node/p2p/callbacks.py" = ["ARG001"]
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
@@ -1168,13 +1153,11 @@ ignore = [
 # Connection under test.
 "tests/unit/p2p/connection_test.py" = ["FBT003"]
 "tests/unit/rpc/connection_test.py" = ["FBT003"]
-# `D101`/`D102`/`D103`/`D107` closed for `src/btclib_node/`'s own
-# root-level modules and for `block_db/`, `chainstate/`, `p2p/` and
-# `rpc/` in turn -- issue #373's own five-slice split, one package
-# directory at a time, is done: no directory-wide deferral for any of
-# these four codes is left under `src/btclib_node/`. `exceptions.py`'s
-# own `D107` entry further down is the one reasoned suppression left,
-# argued where it sits rather than deferred by directory.
+# `D101`/`D102`/`D103`/`D107` hold across `src/btclib_node/` with no
+# directory-wide deferral (issue #373): `exceptions.py`'s own `D107`
+# entry further down is the one per-file entry for them, argued where
+# it sits, and `chains.py`'s `__init__`s each carry a `noqa: D107` with
+# its reason above it.
 # INP001: sphinx imports conf.py by its own convention, reading
 # docs/source/ as a configuration directory rather than a package, so
 # an __init__.py there would misrepresent it as one.
@@ -1190,9 +1173,8 @@ ignore = [
 # by hand before a run, not a program run as-is: their reset itself is
 # commented out on purpose, one block per operation, so whoever runs
 # the script picks which by uncommenting it. Each block is kept current
-# against the index's own API across refactors -- most recently issue
-# #117 -- rather than left to rot, which is what distinguishes this
-# from ERA001's usual leftover.
+# against the index's own API rather than left to rot, which is what
+# distinguishes this from ERA001's usual leftover.
 "scripts/reset_chainstate.py" = ["ERA001"]
 "scripts/reset_download.py" = ["ERA001"]
 # a GitHub Actions step reads its result from stdout, not from a return
@@ -1234,11 +1216,9 @@ convention = "pep257"
 notice-rgx = "^(#![^\\n]*\\n)?# Copyright \\(c\\) The btclib developers\\n# Distributed under the MIT software license, see the accompanying\\n# LICENSE file or https://opensource\\.org/license/mit for the full text\\."
 
 [tool.codespell]
-# "clear" alone, where codespell's default is "clear,rare": measured
-# over this tree, "clear" alone already found and fixed every genuine
-# typo this repository had, in README.md, a docstring, a comment and a
-# handful of identifiers -- so the other three builtins were not tried,
-# there being nothing left here for them to add.
+# "clear" alone, where codespell's default is "clear,rare": with "rare"
+# added it reports only `readded` and `readd`, names this tree writes on
+# purpose, and "clear" alone reports nothing.
 builtin = "clear"
 # the vendored vectors are skipped rather than corrected: a test vector
 # has to stay byte for byte what upstream published, so a typo inside a
@@ -1331,10 +1311,9 @@ python_version = "3.14"
 # in its place -- that table states which checks the tree passes and
 # leaves what is annotated to be read tree by tree, where
 # `strict = true` states that every function in `files` declares its
-# types. `check_untyped_defs` was the one member of the bundle this
-# table still left off: btclib-org/btclib-node#105 read what it found
-# one at a time, and what is left after #104's annotation pass measures
-# at zero --
+# types.
+# `check_untyped_defs` on its own measures at zero
+# (btclib-org/btclib-node#104, btclib-org/btclib-node#105) --
 #
 #   uv run --locked --no-default-groups --group lint --group test \
 #     mypy --check-untyped-defs
@@ -1428,11 +1407,11 @@ seeked = "seeked"
 # bitcoin/bitcoin@9be056a8a7): four bytes of a witness commitment's own
 # push data. typos tokenizes the hex literal `ecc7daa2` splitting the
 # trailing digit off, so the word it actually flags is `daa`, not
-# `data`, the misspelling its dictionary offers -- measured with
-# `uvx typos src/btclib_node/signet.py`, which named `daa` at column
-# 37 and --write-changes rewrote it to `ecc7data2` before this entry
-# existed. [tool.codespell]'s own `ignore-words-list` above names
-# `daa` too, for the bare word on the line right below.
+# `data`, the misspelling its dictionary offers -- without this entry,
+# `uvx typos src/btclib_node/signet.py` names `daa` at column 37, and
+# --write-changes rewrites it to `ecc7data2`. [tool.codespell]'s own
+# `ignore-words-list` above names `daa` too, for the bare word on the
+# line right below.
 daa = "daa"
 # `intoto` in the bundle's name `<tag>.intoto.jsonl`, as for codespell above:
 # typos' dictionary offers "into" for it too

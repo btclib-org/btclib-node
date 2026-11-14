@@ -35,19 +35,17 @@ name: integration-bitcoind
 # and it is the price of the question.
 #
 # The checkout, the node install, the test run and the report upload
-# move into btclib-org/.github's reusable-integration-bitcoind.yml,
+# are btclib-org/.github's reusable-integration-bitcoind.yml,
 # called at a tagged commit (section 10 of the organization's standard).
 # `btclib` calls the same file. What stays here is the trigger, the schedule
 # minute, the concurrency group, and this tree's own pinned release, digest and
 # environment-variable names.
 #
-# A reusable workflow changes the check context a required check reports
-# under -- GitHub composes it from the calling job's own id and the
-# called job's `name:`, joined by " / " -- so the required check on main
-# that named this job's own `name:` receives no run once this call
-# lands. The called workflow's own header has why; updating the setting
-# and REPOSITORY.md's record of it is this repository's own to do,
-# outside this pull request and before it is relied on.
+# A reusable workflow's check context is composed by GitHub from the
+# calling job's own id and the called job's `name:`, joined by " / ",
+# so the check main requires of this file is
+# "regtest / Regtest against Bitcoin Core". REPOSITORY.md's *Required
+# checks on main* reads that setting back.
 #
 # A schedule too, like every other unattended question here, and it is
 # not about the tree: the job below asks the same node the same question

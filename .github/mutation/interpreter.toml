@@ -24,11 +24,10 @@ module-path = "src/btclib_node/interpreter.py"
 # a mutant computing what the original computes having nothing to
 # assert against. `check_scripts`' `len(x[0]) != len(x[1].vin)`
 # as `is not` is an equivalence too, small-int identity answering
-# there as `!=` does on every length the suite tries. As `<` it was
-# the gap that run found: every test reaching the line passed fewer
-# prevouts than inputs, and none passed more, until
-# `test_a_prevout_count_that_exceeds_the_inputs_is_also_refused` gave
-# it one (btclib-org/btclib-node#986). That mutant is caught now.
+# there as `!=` does on every length the suite tries. As `<` it is
+# caught by `test_a_prevout_count_that_exceeds_the_inputs_is_also_refused`,
+# the one test passing more prevouts than inputs
+# (btclib-org/btclib-node#986).
 test-command = """python -m pytest -x -q -n0 --no-cov \
   tests/unit/interpreter_test.py"""
 

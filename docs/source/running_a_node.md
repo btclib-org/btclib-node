@@ -285,9 +285,7 @@ of a coinbase not yet `COINBASE_MATURITY` deep
 same coinbase landing twice, BIP30
 ([#570](https://github.com/btclib-org/btclib-node/issues/570)); and a
 transaction's own `nLockTime` together with its BIP68 relative lock
-([#572](https://github.com/btclib-org/btclib-node/issues/572)). All
-five of those were open questions this tracker carried and are now
-closed.
+([#572](https://github.com/btclib-org/btclib-node/issues/572)).
 
 Pruning is honoured, as *Pruning* above says. A caller can audit the
 UTXO set against `gettxoutsetinfo`, which answers `hash_serialized_3`,

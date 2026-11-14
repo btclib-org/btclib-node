@@ -13,7 +13,7 @@ name: os-ubuntu
 # takes the newest interpreter its dependencies allow, which is what
 # issue #507 settled, so the axis has nothing else to hold and a second
 # column would schedule a weekly re-run of the cell every pull request
-# already spends. Widening this back to the sibling shape means giving
+# already spends. Widening this to the sibling shape means giving
 # that axis versions this package does not claim.
 #
 # What the second image buys is not the pure Python, which is the same
