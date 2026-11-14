@@ -4,7 +4,8 @@
 
 """What `decode` refuses as JSON, and what `get_real` refuses as a double.
 
-An integer past CPython's digit limit is decoded, and its text kept.
+A number whose text `float` or `int` loses is decoded with its text kept,
+and so is an integer past CPython's digit limit.
 
 Overflow and the constants are held to bitcoind, the release
 `integration-bitcoind.yml` pins, by `tests/integration/json_double_test.py`.
@@ -103,6 +104,22 @@ def test_an_integer_at_the_digit_limit_is_an_int() -> None:
     """The control: `int` reads an integer as long as the limit."""
     (value,) = decode(f"[{'9' * sys.get_int_max_str_digits()}]".encode())
     assert type(value) is int
+
+
+@pytest.mark.parametrize("text", ["1.50", "1e2", "-0.0", "1E400", "1E-400", "1.0E+2"])
+def test_a_number_with_a_fraction_or_an_exponent_keeps_its_text(text: str) -> None:
+    """ISS 2469: read as `float` reads it, and its text kept."""
+    (value,) = decode(f"[{text}]".encode())
+    assert value.text == text
+    assert value == float(text)
+
+
+def test_minus_zero_is_an_integer_zero_that_keeps_its_text() -> None:
+    """ISS 2469: `0` to a reader of a signed integer, and `-0` to a reply."""
+    (value,) = decode(b"[-0]")
+    assert value.text == "-0"
+    assert isinstance(value, int)
+    assert value == 0
 
 
 @pytest.mark.parametrize(
