@@ -9,7 +9,8 @@ reads it the way Core's `HTTPReq_JSONRPC` and `ExecuteHTTPRPC` do
 (`src/httprpc.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and
 dispatches each request through `rpc.callbacks.callbacks` by method
 name. `rpc.jsonrpc` is where a request is parsed and where the answer's
-envelope and HTTP status come from.
+envelope and HTTP status come from. `_answer_batch` says where a batch
+follows Core's master instead.
 
 Core runs each request on an HTTP worker thread of its own, so a method
 that waits for the tip, or searches nonces, holds that thread alone.
@@ -227,19 +228,21 @@ def _answer_one(node: Node, conn: RpcConnection, body: dict[str, Any]) -> Job:
 def _answer_batch(node: Node, conn: RpcConnection, body: list[Any]) -> Job:
     """Answer a batch, and say whether -- and how late -- to stop.
 
-    Every member is answered inside HTTP 200, whatever its version. One
-    `JsonRpcRequest` is parsed into for the whole batch, as in Core, so
-    a member refused before its own `id` is read carries the previous
-    member's `id` and version -- and is dropped where that previous
-    member was a notification.
+    Every member is answered inside HTTP 200, whatever its version. Each
+    member is parsed into a `JsonRpcRequest` of its own, as
+    `ExecuteHTTPRPC` does on Core's master (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@a527a0077a), so a member that is not an object is
+    answered as a fresh request is: legacy, with a null `id`, and never
+    dropped as a notification. At
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag, `ExecuteHTTPRPC` parses
+    every member into one request, and answers such a member with the
+    previous member's `id` and version.
 
     As in `_answer_one`, a member only sets `stop` where its own answer
     carries no error (btclib-org/btclib-node#1441): a member whose
-    `request.parse` itself raises is answered from the previous member's
-    still-held method and version and never sets `stop`, since it is not
-    that method's own reply. `stop` latches: once one member has set it,
-    a later member's own `wait` -- or refusal -- is never read, the same
-    way a later member's method name never was before it either.
+    `request.parse` raises never sets `stop`. `stop` latches: once one
+    member has set it, a later member's own `wait` -- or refusal -- is
+    never read.
 
     Members run in order, as Core runs them on one worker: a member that
     waits holds back the ones after it, and the reply. Where `stop`
@@ -247,11 +250,11 @@ def _answer_batch(node: Node, conn: RpcConnection, body: list[Any]) -> Job:
     waits ends at its next step, as `bitcoind` answers both together
     and exits; `_step` still sends the reply and calls `node.stop()`.
     """
-    request = JsonRpcRequest()
     replies: list[dict[str, Any]] = []
     stop = False
     delay = 0.0
     for member in body:
+        request = JsonRpcRequest()
         try:
             request.parse(member)
             response = yield from _exec(node, conn, request, catch_errors=True)
