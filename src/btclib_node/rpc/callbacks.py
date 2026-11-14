@@ -1295,8 +1295,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     the v32.1 tag), so a caller is answered only once that trial has
     actually run, and never told a block was accepted that its own
     contextual or script check refuses a moment later (ISS 1335, ISS
-    1390). A block that makes its branch outrank the tip is connected,
-    the reorg included, before the answer. `_ready_fork` is not gated on
+    1390). A block that makes its branch outrank the tip is tried, the
+    reorg included, before the answer. `_ready_fork` is not gated on
     `Node.status` for exactly this reason (its own comment,
     btclib-org/btclib-node#1071).
 

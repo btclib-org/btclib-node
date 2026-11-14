@@ -7895,7 +7895,7 @@ def test_submit_block_reorgs_onto_a_heavier_branch_before_it_answers(
 def test_submit_block_answers_why_a_heavier_branch_does_not_connect(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A block refused while its branch is connected answers the reason.
+    """A block refused while its branch is tried answers the reason.
 
     `ConnectBlock` runs on it, and `submitblock` answers the reason that
     `BlockChecked` carries, as for a block extending the tip.
