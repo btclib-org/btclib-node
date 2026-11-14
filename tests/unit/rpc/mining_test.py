@@ -1470,6 +1470,21 @@ def test_a_long_poll_id_is_read_as_core_reads_it(
     )
 
 
+@pytest.mark.parametrize(
+    ("suffix", "counter"),
+    [
+        ("0" * 5_000 + "7", 7),
+        ("9" * 5_000, 2**32 - 1),
+        ("-" + "9" * 5_000, 0),
+    ],
+)
+def test_a_long_poll_counter_past_python_s_digit_limit(
+    node: Node, suffix: str, counter: int
+) -> None:
+    """ISS 2458: a counter of any length saturates before Python reads it."""
+    assert _long_poll_id(node, tip(node).hex() + suffix) == (tip(node), counter)
+
+
 def test_the_long_poll_counter_starts_at_zero_and_counts_each_block(
     node: Node,
 ) -> None:
