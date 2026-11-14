@@ -22,6 +22,62 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.14
+
+Everything below is measured against `v2026.11.12`. `CHANGELOG.md`'s own
+`v2026.11.14` section is the record of what went into it.
+
+The public API changes: *Breaking changes* below names each break that griffe
+and btclib-org/.github's `api_gaps.py` report against `v2026.11.12`.
+
+### Upgrade from 2026.11.12
+
+The dependency ranges, and the workflow that signs the release files, are
+those of 2026.11.12.
+
+### Breaking changes
+
+- **`Main.addresses` and `TestNet.addresses` drop the DNS seeds Core dropped**
+  (closes #2368): `seed.bitcoin.sipa.be.` on mainnet and
+  `seed.testnet.bitcoin.sprovoost.nl.` on testnet3. 2026.11.12 listed both.
+- **`submitblock` answers `"inconclusive"` for a new block it stores and does
+  not try to connect** (closes #2419), as Core does: one on a branch that does
+  not outrank the tip, a tie included, one on a branch missing a block's data,
+  or one above a block the trial refuses. 2026.11.12 answered `null` for such
+  a block. A client that read `null` as accepted breaks. The best chain is
+  activated, a reorg included, before the answer.
+- **A JSON-RPC batch member that is not an object is answered with a null
+  `id`, in the legacy envelope**, as Core's master answers it (closes #2186).
+  2026.11.12 answered such a member after an object with the `id` and version
+  of the last object before it, with no `id` after a legacy notification, and
+  not at all after a JSON-RPC 2.0 notification.
+- **V1Transport's payload-length refusal and V2Transport's too-large refusal
+  name the bound, V2Transport's decryption failure prints no length, and a magic
+  is printed only where a chain defines it** (closes #2358, closes #2437,
+  closes #2439, closes #2440). A caller or a log reader that matched the old
+  texts breaks. `RejectedMessageError` still prints the length of a message it
+  rejects (issue #2484).
+
+### Worth knowing
+
+- **An integer past CPython's digit limit is read as bitcoind reads it**
+  (closes #2386, closes #2456). 2026.11.12 ended the start on `int`'s own
+  message for such an integer in `settings.json`, in an integer option or in a
+  port, and answered such a JSON-RPC body as a parse error. `getblockhash`
+  answers "JSON integer out of range" for such a height, `estimaterawfee`
+  "JSON double out of range" for such a threshold, and
+  `sendrawtransaction` "Invalid amount" for such a `maxfeerate`, as bitcoind
+  does. A request `id` holding one is written back as given.
+- **A descriptor holding a hex key off the curve gets -5** from
+  `generateblock` and `scantxoutset`, where 2026.11.12 answered -32603
+  (closes #2404). `scantxoutset` writes the key as `...` where Core quotes it,
+  as `SECURITY.md` says.
+- **Each inactivity drop logs Core's `-debug=net` line** (closes #2369), such
+  as `socket receive timeout: 1300s, disconnecting peer=1`.
+- **`RawJSON` is defined in `btclib_node.rpc.jsonrpc`**, beside the new
+  `LongInteger`. `btclib_node.rpc.connection` still imports it, and leaves it
+  out of its `__all__`.
+
 ## v2026.11.12
 
 Everything below is measured against `v2026.11.11`. `CHANGELOG.md`'s own
