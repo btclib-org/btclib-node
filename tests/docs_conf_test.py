@@ -169,3 +169,17 @@ def test_github_link_other_than_blob_is_left(conf: ModuleType, url: str) -> None
     node = _run(conf, _url(conf, url))
     assert isinstance(node, conf.nodes.reference)
     assert node["refuri"] == url
+
+
+def test_nitpick_ignore_lists_only_reached_placeholders(conf: ModuleType) -> None:
+    """`nitpick_ignore` lists the placeholders 1 to 7 only.
+
+    The build renders no `__annotationlib_name_8__` or `_9__`, so an entry for
+    either would hide the next warning carrying that number.
+    """
+    placeholders = [
+        target
+        for _, target in conf.nitpick_ignore
+        if target.startswith("__annotationlib_name_")
+    ]
+    assert placeholders == [f"__annotationlib_name_{n}__" for n in range(1, 8)]
