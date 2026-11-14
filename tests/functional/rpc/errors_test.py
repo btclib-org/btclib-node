@@ -242,3 +242,42 @@ def test_an_object_argument_is_named_an_object(rpc_node: Node) -> None:
         assert json.loads(body)["error"] == {"code": -3, "message": message}
 
     assert node.is_alive()
+
+
+def test_an_integer_past_the_digit_limit_is_read_as_bitcoind_reads_it(
+    rpc_node: Node,
+) -> None:
+    """ISS 2456: as the `bitcoind` `integration-bitcoind.yml` pins reads it.
+
+    An extra key holding it, of either sign or nested, changes nothing; a
+    height holding it, of either sign, is "JSON integer out of range";
+    an id holding it is written back. Raw bytes rather than `post`'s
+    `json.dumps`, which cannot write such an integer.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+    digits = "9" * 5000
+
+    def answer(body: str) -> tuple[int, str]:
+        status, reply = http_request(
+            f"http://127.0.0.1:{node.rpc_port}",
+            data=body.encode(),
+            headers={"Authorization": authorization(node.config.data_dir)},
+            timeout=5,
+        )
+        return status, reply.decode()
+
+    plain = answer('{"method":"getblockcount","id":1}')
+    for extra in (digits, f"-{digits}", f'[{{"y":[{digits}]}}]'):
+        assert answer(f'{{"method":"getblockcount","id":1,"x":{extra}}}') == plain
+    refusal = (
+        '{"result":null,"error":{"code":-1,"message":"JSON integer out of range"},'
+        '"id":1}\n'
+    )
+    for height in (digits, f"-{digits}"):
+        body = f'{{"method":"getblockhash","params":[{height}],"id":1}}'
+        assert answer(body) == (500, refusal)
+    status, reply = answer(f'{{"method":"getblockcount","id":{digits}}}')
+    assert (status, reply) == (plain[0], plain[1].replace('"id":1', f'"id":{digits}'))
+
+    assert node.is_alive()

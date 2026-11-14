@@ -93,7 +93,7 @@ from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.p2p.protocol_version import PROTOCOL_VERSION
 from btclib_node.p2p.selfannounce import LocalService, host_record
-from btclib_node.rpc.connection import COIN, RawJSON, btc_amount, univalue_float
+from btclib_node.rpc.connection import COIN, btc_amount, univalue_float
 from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
@@ -107,7 +107,7 @@ from btclib_node.rpc.errors import (
 )
 from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject, get_real
+from btclib_node.rpc.jsonrpc import JsonObject, RawJSON, get_real
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,

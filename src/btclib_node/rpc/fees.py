@@ -30,10 +30,10 @@ from btclib_node.mempool_estimator import (
     FeeRateEstimate,
     fee_per_k,
 )
-from btclib_node.rpc.connection import RawJSON, btc_amount, univalue_float
+from btclib_node.rpc.connection import btc_amount, univalue_float
 from btclib_node.rpc.errors import RpcError, check_object, type_errors
 from btclib_node.rpc.help import HELP_TEXT
-from btclib_node.rpc.jsonrpc import get_real
+from btclib_node.rpc.jsonrpc import RawJSON, get_real
 
 if TYPE_CHECKING:
     from btclib_node import Node

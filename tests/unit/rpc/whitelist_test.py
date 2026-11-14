@@ -49,6 +49,10 @@ def whitelisted(*values: str, default: bool | None = None) -> RpcAuth:
 
 PYTEST_ONLY = (f"pytest:{ALLOWED}",)
 
+# ISS 2456: an id past CPython's digit limit, which `json.dumps` cannot
+# write, so the request carrying it is sent as its text
+LONG_ID = "9" * 5000
+
 
 def test_parse_whitelist_splits_at_every_comma_and_space() -> None:
     """`SplitString(..., ", ")`: either separator, empty names kept."""
@@ -270,6 +274,14 @@ CORE_ERRORS = [
         "400 Bad Request",
         '{"result":null,"error":{"code":-32600,"message":"Missing method"},"id":1}',
     ),
+    (
+        f'{{"id":{LONG_ID},"method":5}}'.encode(),
+        "400 Bad Request",
+        (
+            '{"result":null,"error":{"code":-32600,"message":"Method must be a string"},'
+            f'"id":{LONG_ID}}}'
+        ),
+    ),
 ]
 CORE_ERROR_IDS = [
     "batch, non-object after an allowed method",
@@ -285,16 +297,17 @@ CORE_ERROR_IDS = [
     "jsonrpc a number",
     "version not supported, no id",
     "no method",
+    "id past the digit limit",
 ]
 
 
 def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list[Any]]:
     """Send `requests` over one kept-alive connection, the last closing it.
 
-    Returns every reply's bytes, what was queued for `handle_rpc`, and
-    every warning logged. A request queued is answered here the way
-    `handle_rpc` would, with a reply of its own, so that the next one
-    is read.
+    A request given as `bytes` is sent as it is. Returns every reply's
+    bytes, what was queued for `handle_rpc`, and every warning logged. A
+    request queued is answered here the way `handle_rpc` would, with a
+    reply of its own, so that the next one is read.
     """
     warnings: list[Any] = []
 
@@ -330,7 +343,9 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         userpass = base64.b64encode(b"pytest:pytest")
         for index, payload in enumerate(requests):
-            body = json.dumps(payload).encode()
+            body = (
+                payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+            )
             head = b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic " + userpass
             if index == len(requests) - 1:
                 head += b"\r\nConnection: close"
