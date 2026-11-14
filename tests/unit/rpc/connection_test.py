@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 
 import btclib_node.rpc.connection as connection_module
-from btclib_node.constants import RPC_WORK_QUEUE
+from btclib_node.constants import MAX_JSON_DEPTH, RPC_WORK_QUEUE
 from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
@@ -1811,6 +1811,34 @@ def test_a_body_holding_a_lone_surrogate_is_a_500_parse_error() -> None:
     assert not messages
 
 
+def _nested_request(depth: int) -> bytes:
+    """Return a request whose `x` holds 1 at `depth`, its object counted."""
+    arrays = depth - 1
+    return b'{"method":"getblockcount","x":%s1%s}' % (b"[" * arrays, b"]" * arrays)
+
+
+def test_a_body_as_deep_as_core_reads_is_dispatched() -> None:
+    """ISS 2468: `MAX_JSON_DEPTH` containers open at once are read."""
+    body = _nested_request(MAX_JSON_DEPTH)
+    _, messages, _ = drive([with_length(body)])
+    assert messages == [(json.loads(body), 0)]
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH + 1, 100_000])
+def test_a_body_deeper_than_core_reads_is_a_500_parse_error(depth: int) -> None:
+    """ISS 2468: `bitcoind` answers it `-32700`, at any depth."""
+    body = _nested_request(depth)
+    headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(body)
+    reply, _ = conversation(request(headers, body))
+    head, _, content = reply.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
+    assert json.loads(content) == {
+        "result": None,
+        "error": {"code": -32700, "message": "Parse error"},
+        "id": None,
+    }
+
+
 def test_a_key_named_twice_is_read_as_its_first_value() -> None:
     """`method` named twice runs the first, as `bitcoind` does (issue #1151)."""
     body = b'{"id":1,"method":"getblockcount","method":"nosuch"}'
@@ -1826,9 +1854,11 @@ def test_an_id_naming_a_key_twice_is_written_back_whole() -> None:
 
 
 def test_an_id_past_the_digit_limit_is_written_back_as_read() -> None:
-    """ISS 2456: as `bitcoind` writes it, at any depth."""
+    """ISS 2456: as `bitcoind` writes it, as deep as it reads."""
     digits = "9" * 5000
-    deep = "[" * 2000 + f"-{digits}" + "]" * 2000
+    # inside the request object and the id's own array
+    nested = MAX_JSON_DEPTH - 2
+    deep = "[" * nested + f"-{digits}" + "]" * nested
     request_id = f'[{digits},{{"a":-{digits},"a":{digits}}},{deep},"x"]'
     request = JsonRpcRequest()
     request.parse(decode(f'{{"id":{request_id},"method":"x"}}'.encode()))
