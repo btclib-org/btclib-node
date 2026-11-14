@@ -1904,7 +1904,9 @@ class P2pManager(threading.Thread):
             # (btclib-org/btclib-node#1284).
             if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
                 self.logger.log_debug(
-                    "net", "addrfetch connection timeout, peer=%s", conn.id
+                    "net",
+                    "addrfetch connection timeout, disconnecting peer=%s",
+                    conn.id,
                 )
                 self.remove_connection(conn.id)
                 continue

@@ -1116,7 +1116,7 @@ def test_the_checks_start_once_the_connect_timeout_is_past_on_the_mock_clock(
 
 
 def test_an_addr_fetch_connection_is_dropped_once_its_timeout_passes(
-    a_manager: AManagerFactory,
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ISS 1284: `_ADDR_FETCH_TIMEOUT` drops an addr-fetch peer either way.
 
@@ -1127,8 +1127,11 @@ def test_an_addr_fetch_connection_is_dropped_once_its_timeout_passes(
     bound = manager_module._ADDR_FETCH_TIMEOUT
     conn = a_conn(1, connected_time=int(time.time()) - bound - 1, addr_fetch=True)
     manager = a_manager([conn])
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     asyncio.run(one_pass(manager))
     assert not manager.connections
+    assert logged == [("net", "addrfetch connection timeout, disconnecting peer=1")]
 
 
 def test_an_addr_fetch_connection_survives_short_of_its_timeout(
