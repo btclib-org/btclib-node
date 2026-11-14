@@ -23,7 +23,7 @@ from bip32_descriptors.descriptors import (
     parse,
     strip_checksum,
 )
-from btclib.exceptions import BTClibException
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
 from ecc.exceptions import EccException
@@ -751,6 +751,27 @@ def test_a_key_that_is_no_point_is_refused_with_core_s_message(
         scan(node, text)
     assert (int(caught.value.code), caught.value.message) == (-5, message)
     assert_secret_free(caught.value, [NOT_A_POINT_X])
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (f"tr(musig({NOT_A_POINT_X},{X_ONLY}))", f"tr(): musig(): {INVALID}"),
+        (f"pk({X_ONLY})", f"pk(): {INVALID}"),
+        (f"wsh(pk({X_ONLY}))", f"pk(): {INVALID}"),
+        (f"unused({X_ONLY})", INVALID),
+    ],
+)
+def test_a_btclib_key_refusal_uses_core_s_secret_free_message(
+    node: Node, text: str, message: str
+) -> None:
+    """These are rejected before ecc's exception reaches `_parse`."""
+    with pytest.raises(BTClibValueError):
+        parse(multipath_descriptors(strip_checksum(text))[0], "regtest", {})
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert (int(caught.value.code), caught.value.message) == (-5, message)
+    assert_secret_free(caught.value, [NOT_A_POINT_X, X_ONLY])
 
 
 @pytest.mark.parametrize("text", [NOT_A_POINT, f"raw({NOT_A_POINT})", f"pk({KEY})"])
