@@ -236,7 +236,7 @@ from btclib_node.constants import (
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
-from btclib_node.exceptions import DirectoryLockError
+from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeError
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
@@ -1691,8 +1691,7 @@ def _get_int(settings: _Settings, name: str) -> int | None:
             or not _LEADING_INTEGER.fullmatch(value)
             or not _INT64_MIN <= int(value) <= _INT64_MAX
         ):
-            err_msg = "JSON integer out of range"
-            raise ValueError(err_msg)
+            raise JsonIntegerOutOfRangeError
         return int(value)
     if not isinstance(value, str):
         raise _wrong_type(value)
@@ -3074,6 +3073,37 @@ def _setup_environment() -> None:
         os.umask(_PRIVATE_UMASK)
 
 
+def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
+    """Return what Core's `PrintExceptionContinue` logs for `error`.
+
+    `FormatException` (`src/util/exception.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) after a line of asterisks:
+    the `typeid` name of `getInt`'s `std::runtime_error`, its message, and
+    where `AppInit` caught it, each of these lines ending in seven
+    spaces. Core names its executable's path in place of `bitcoin` on
+    Windows. Here that executable is the Python interpreter, which names
+    no node, so `bitcoin` stands on every platform.
+    """
+    return (
+        "\n\n************************\n"
+        "EXCEPTION: St13runtime_error       \n"
+        f"{error}       \n"
+        "bitcoin in AppInit()       \n"
+    )
+
+
+def _refusal(error: Exception) -> str:
+    """Return what `main` writes to stderr for a refusal of the start.
+
+    `PrintExceptionContinue`'s block and the newline it adds for a
+    `JsonIntegerOutOfRangeError`, `InitError`'s `Error: <message>` for any
+    other.
+    """
+    if isinstance(error, JsonIntegerOutOfRangeError):
+        return f"{_exception_block(error)}\n"
+    return f"Error: {error}\n"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -3090,6 +3120,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     refusal after the lock reaches `history.log` too, `open_history_log`
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
+
+    A `JsonIntegerOutOfRangeError` is the exception: Core throws it rather
+    than reporting it, so stderr gets `_exception_block`'s text, and a
+    refusal after the lock also logs it as a warning, as
+    `PrintExceptionContinue` writes it to both. The exit status is `1`
+    there too.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -3101,7 +3137,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
     except (ValueError, DirectoryLockError) as error:
-        sys.stderr.write(f"Error: {error}\n")
+        sys.stderr.write(_refusal(error))
         raise SystemExit(1) from error
     # `Node.__init__` takes the same locks, and holds them once these go
     try:
@@ -3134,9 +3170,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
-            logger.error(str(error))  # noqa: TRY400
+            if isinstance(error, JsonIntegerOutOfRangeError):
+                logger.warning(_exception_block(error))
+            else:
+                logger.error(str(error))  # noqa: TRY400
             logger.close()
-            sys.stderr.write(f"Error: {error}\n")
+            sys.stderr.write(_refusal(error))
             raise SystemExit(1) from error
         node = Node(config=config)
     finally:
