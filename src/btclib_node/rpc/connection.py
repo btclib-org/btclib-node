@@ -14,9 +14,7 @@ method or a path Core refuses before it checks a credential
 (`_dispatch_refusal`), answers a request whose `Authorization` header
 `rpc.auth.RpcAuth` does not accept with 401, and decodes the body of one
 it does accept, which `rpc.manager.RpcManager.messages` queues for
-`rpc.main.handle_rpc`. `RawJSON` is a JSON number written back out
-exactly as given, the way Core's own `UniValue` writes one built from a
-string rather than from a `float`.
+`rpc.main.handle_rpc`.
 
 Each answer is framed as Core's `HTTPRequest::WriteReply` frames it
 (`_frame`), in the version of the request it answers, and the socket is
@@ -53,7 +51,13 @@ from btclib_node.rpc.auth import (
     WWW_AUTHENTICATE,
     Refusal,
 )
-from btclib_node.rpc.jsonrpc import NO_CONTENT, HttpReply, decode, error_reply
+from btclib_node.rpc.jsonrpc import (
+    NO_CONTENT,
+    HttpReply,
+    RawJSON,
+    decode,
+    error_reply,
+)
 
 if TYPE_CHECKING:
     import socket
@@ -68,7 +72,6 @@ __all__ = [
     "MAX_BODY_BYTES",
     "MAX_HEADER_BYTES",
     "JSONEncoder",
-    "RawJSON",
     "RequestHead",
     "RpcConnection",
     "btc_amount",
@@ -109,45 +112,6 @@ _SEND_CHUNK = 0x10000
 _SELECT_TIMEOUT = 0.05
 
 
-class RawJSON:
-    """A JSON number written to the wire exactly as given, not from a `float`.
-
-    Core's own `UniValue(UniValue::VNUM, "<string>")` does the same: the
-    value is built from a string and written out verbatim, whatever that
-    string was, rather than round-tripped through a floating-point type on
-    the way out. `ValueFromAmount` (`src/core_io.cpp:283-293`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is the caller this exists
-    for -- `rpc.callbacks.get_mempool_info`'s own `mempoolminfee`, an exact
-    eight-decimal BTC amount a Python `float` cannot always carry: `repr`
-    fixes no decimal places and emits exponent notation (`1e-06`) at a
-    magnitude ordinary for a feerate, which Core's own `%d.%08d` format
-    never does.
-
-    `json.JSONEncoder.default` cannot return this directly -- its
-    return value is re-encoded through the same machinery rather than
-    written as-is, and Python's `json` has no hook for a raw literal.
-    `JSONEncoder.default` below returns a marked placeholder instead,
-    and `RpcConnection.async_send` substitutes it, quotes and all, for
-    `text` once encoding has already run.
-
-    The mark is not a fixed word: a fixed one is not actually safe -- a
-    plain string value that happens to contain it once, unpaired (an
-    error message echoing back a client's own malformed method name,
-    say), lets a regex substitution's own non-greedy match run past
-    that string's closing quote and merge it with an unrelated
-    placeholder later in the same response, corrupting both.
-    `RpcConnection.async_send` passes a fresh random token instead, one
-    per call, so a legitimate value colliding with it is not a
-    realistic risk the way colliding with a guessable word is.
-    """
-
-    __slots__ = ("text",)
-
-    def __init__(self, text: str) -> None:
-        """Wrap `text`, the exact number `JSONEncoder` writes back out."""
-        self.text = text
-
-
 # Core's own `COIN` (`src/consensus/amount.h`,
 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 COIN = 100_000_000
@@ -184,10 +148,10 @@ class JSONEncoder(json.JSONEncoder):
     """Encode `bytes` as hex and unwrap a `RawJSON` under a caller's mark.
 
     `default` below is `json.dumps`'s own hook for a type it has no
-    built-in encoding for; it is what `RpcConnection.async_send` supplies
-    `cls=` and `mark=` to, so that a `RawJSON` value comes out marked
-    rather than quoted, for `async_send` to unquote once encoding is
-    done -- `json` itself has no hook for writing a literal unquoted.
+    built-in encoding for; it is what `_json_text` supplies `cls=` and
+    `mark=` to, so that a `RawJSON` value comes out marked rather than
+    quoted, for `_json_text` to unquote once encoding is done -- `json`
+    itself has no hook for writing a literal unquoted.
     """
 
     def __init__(
@@ -216,7 +180,7 @@ class JSONEncoder(json.JSONEncoder):
             if not self._mark:
                 # A RawJSON reached an encoder built with no mark to wrap
                 # it in -- json.dumps(cls=JSONEncoder) with no mark=,
-                # which only RpcConnection.async_send is meant to supply.
+                # which only _json_text is meant to supply.
                 # Refusing here is the same "not serializable" TypeError
                 # super().default(obj) below raises for any other object
                 # json does not know, rather than writing RawJSON's own
@@ -224,6 +188,26 @@ class JSONEncoder(json.JSONEncoder):
                 return super().default(obj)
             return f"{self._mark}{obj.text}{self._mark}"
         return super().default(obj)
+
+
+def _json_text(body: object, *, ensure_ascii: bool = True) -> str:
+    """Encode `body` as one line of JSON, each `RawJSON` as its own text."""
+    # A fresh token per call, not a fixed word: RawJSON's own
+    # docstring has why -- a legitimate string value containing a
+    # guessable mark once, unpaired, corrupts a fixed-word
+    # substitution the way it cannot corrupt one this unlikely to
+    # collide with.
+    mark = secrets.token_hex(16)
+    text = json.dumps(
+        body,
+        separators=(",", ":"),
+        ensure_ascii=ensure_ascii,
+        cls=JSONEncoder,
+        mark=mark,
+    )
+    # RawJSON's own placeholder, quotes and all, unquoted to the
+    # exact text it carries
+    return re.sub(f'"{mark}(.*?){mark}"', r"\1", text)
 
 
 # `HTTPStatusReasonString` (`src/rpc/protocol.h`, at bitcoin/bitcoin@f0de87f040,
@@ -1226,12 +1210,10 @@ class RpcConnection:
     async def async_send(self, reply: HttpReply, *, close: bool = False) -> None:
         """Write `reply` back as one JSON-RPC HTTP reply.
 
-        Wraps any `RawJSON` value in a fresh per-call mark before
-        encoding, substitutes it back out unquoted once encoding is
-        done, and frames the result as `_frame` does, which also
-        decides what happens once the reply is on the wire: `client`
-        closes, or this reads another request off the same socket
-        (issue #640). A reply with no body is `rpc.jsonrpc.NO_CONTENT`,
+        Encodes it as `_json_text` does, and frames the result as `_frame`
+        does, which also decides what happens once the reply is on the
+        wire: `client` closes, or this reads another request off the same
+        socket (issue #640). A reply with no body is `rpc.jsonrpc.NO_CONTENT`,
         which `bitcoind` writes with no `Content-Type`. `close` closes
         `client` once the reply is written, whatever the request asked.
         """
@@ -1240,21 +1222,7 @@ class RpcConnection:
                 self._frame(reply.status, b"", close=close), on_worker=True
             )
             return
-        # A fresh token per call, not a fixed word: RawJSON's own
-        # docstring has why -- a legitimate string value containing a
-        # guessable mark once, unpaired, corrupts a fixed-word
-        # substitution the way it cannot corrupt one this unlikely to
-        # collide with.
-        mark = secrets.token_hex(16)
-        output_str = json.dumps(
-            reply.body, separators=(",", ":"), cls=JSONEncoder, mark=mark
-        )
-        # RawJSON's own placeholder, quotes and all, unquoted to the
-        # exact text it carries -- before Content-Length, which has to
-        # count what is actually sent rather than what encoding
-        # produced before this ran.
-        output_str = re.sub(f'"{mark}(.*?){mark}"', r"\1", output_str)
-        body = (output_str + "\n").encode()
+        body = (_json_text(reply.body) + "\n").encode()
         fields = ("Content-Type: application/json",)
         await self._write(
             self._frame(reply.status, body, fields, close=close), on_worker=True
@@ -1300,7 +1268,7 @@ class RpcConnection:
         body = b""
         if refusal.body is not None:
             fields = ("Content-Type: application/json",)
-            text = json.dumps(refusal.body, separators=(",", ":"), ensure_ascii=False)
+            text = _json_text(refusal.body, ensure_ascii=False)
             body = (text + "\n").encode()
         await self._write(
             self._frame(refusal.status, body, fields, close=self._shutting_down()),

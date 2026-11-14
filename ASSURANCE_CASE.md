@@ -184,9 +184,9 @@ no defence against them.
 **The caller and the RPC surface.** `src/btclib_node/rpc/` is where a
 local caller's request crosses in. `RpcConnection` bounds what it will
 read before decoding anything — `MAX_HEADER_BYTES` and `MAX_BODY_BYTES`
-in `rpc/connection.py` — and a body `json.loads` cannot parse answers
-`bitcoind`'s own `PARSE_ERROR` rather than closing the socket with
-nothing said. Before that decoding, `RpcConnection.run` checks the
+in `rpc/connection.py` — and a body `rpc/jsonrpc.py`'s `decode` refuses
+answers `bitcoind`'s own `PARSE_ERROR` rather than closing the socket
+with nothing said. Before that decoding, `RpcConnection.run` checks the
 request's credential against `rpc/auth.py`'s `RpcAuth` and answers one
 it does not accept with a 401, so no handler sees a request from a
 caller without an accepted credential; once the body is decoded,

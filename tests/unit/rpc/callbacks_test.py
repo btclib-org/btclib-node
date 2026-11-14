@@ -148,9 +148,9 @@ from btclib_node.rpc.callbacks import (
 # aliased: pytest collects a module-level `test*` as a test, and this
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
-from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
+from btclib_node.rpc.jsonrpc import RawJSON
 from tests import (
     ambiguous_tx,
     build_block,

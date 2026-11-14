@@ -4,16 +4,24 @@
 
 """What `decode` refuses as JSON, and what `get_real` refuses as a double.
 
+An integer past CPython's digit limit is decoded, and its text kept.
+
 Overflow and the constants are held to bitcoind, the release
 `integration-bitcoind.yml` pins, by `tests/integration/json_double_test.py`.
 Underflow follows Core's Linux release, as `get_real`'s docstring says why.
 """
 
+import sys
+
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 
 from btclib_node.rpc.errors import RpcError
-from btclib_node.rpc.jsonrpc import decode, get_real
+from btclib_node.rpc.jsonrpc import LongInteger, decode, get_real
+
+# ISS 2456: past CPython's digit limit, the length measured on the
+# `bitcoind` `integration-bitcoind.yml` pins
+_PAST_DIGIT_LIMIT = "9" * 5000
 
 
 @pytest.mark.parametrize(
@@ -68,3 +76,37 @@ def test_a_constant_json_has_not_is_a_parse_error(text: str, shape: str) -> None
     """Core's `UniValue::read` refuses them wherever they stand."""
     with pytest.raises(ValueError, match=text):
         decode(shape.format(text).encode())
+
+
+@pytest.mark.parametrize("sign", ["", "-"], ids=["positive", "negative"])
+def test_an_integer_past_the_digit_limit_is_a_long_integer(sign: str) -> None:
+    """ISS 2456: infinite, refused as a double, and its text kept."""
+    text = sign + _PAST_DIGIT_LIMIT
+    (value,) = decode(f"[{text}]".encode())
+    assert isinstance(value, LongInteger)
+    assert value.text == text
+    assert value == float(f"{sign}inf")
+    with pytest.raises(RpcError) as raised:
+        get_real(value)
+    assert raised.value.message == "JSON double out of range"
+
+
+def test_an_integer_at_the_digit_limit_is_an_int() -> None:
+    """The control: `int` reads an integer as long as the limit."""
+    (value,) = decode(f"[{'9' * sys.get_int_max_str_digits()}]".encode())
+    assert type(value) is int
+
+
+@pytest.mark.parametrize(
+    ("after", "refusal"),
+    [
+        ("NaN", "NaN"),
+        ('"\\ud800"', "surrogates not allowed"),
+        ("", "Illegal trailing comma"),
+    ],
+    ids=["constant", "surrogate", "syntax"],
+)
+def test_a_long_integer_hides_no_refusal_after_it(after: str, refusal: str) -> None:
+    """What follows the integer is refused as it is in a body without one."""
+    with pytest.raises(ValueError, match=refusal):
+        decode(f"[{_PAST_DIGIT_LIMIT},{after}]".encode())

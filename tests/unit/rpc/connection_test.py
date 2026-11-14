@@ -46,12 +46,19 @@ from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
     JSONEncoder,
-    RawJSON,
     RequestHead,
     RpcConnection,
+    _json_text,
     parse_request_head,
 )
-from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
+from btclib_node.rpc.jsonrpc import (
+    NO_CONTENT,
+    OK,
+    HttpReply,
+    JsonRpcRequest,
+    RawJSON,
+    decode,
+)
 from btclib_node.rpc.manager import RpcManager
 from tests import RPCAUTH, RPCAUTH_LINE
 from tests.secret_free import assert_secret_free
@@ -875,8 +882,8 @@ def test_a_raw_json_value_with_no_mark_supplied_is_refused_like_any_other_object
 ):
     """A RawJSON reaching a JSONEncoder built with no mark= is refused.
 
-    Only `RpcConnection.async_send` is meant to construct `JSONEncoder`
-    with a `mark=`; a `RawJSON` reaching one built without it
+    Only `_json_text` is meant to construct `JSONEncoder` with a
+    `mark=`; a `RawJSON` reaching one built without it
     (`json.dumps`'s own default `cls=` use) has no placeholder to
     become, so it is refused the same as any other object `json` does
     not know how to encode.
@@ -1816,6 +1823,17 @@ def test_an_id_naming_a_key_twice_is_written_back_whole() -> None:
     request_id = decode(b'{"a":1,"a":2}')
     data = sent(HttpReply(OK, {"result": 0, "error": None, "id": request_id}))
     assert data.endswith(b'"id":{"a":1,"a":2}}\n')
+
+
+def test_an_id_past_the_digit_limit_is_written_back_as_read() -> None:
+    """ISS 2456: as `bitcoind` writes it, at any depth."""
+    digits = "9" * 5000
+    deep = "[" * 2000 + f"-{digits}" + "]" * 2000
+    request_id = f'[{digits},{{"a":-{digits},"a":{digits}}},{deep},"x"]'
+    request = JsonRpcRequest()
+    request.parse(decode(f'{{"id":{request_id},"method":"x"}}'.encode()))
+    expected = f'{{"result":0,"error":null,"id":{request_id}}}'
+    assert _json_text(request.reply(0)) == expected
 
 
 def test_a_request_under_wallet_is_dispatched() -> None:
