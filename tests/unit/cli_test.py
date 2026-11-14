@@ -4757,6 +4757,71 @@ def test_main_a_refusal_after_the_lock_logs_the_maxconnections_warning(
     assert log_text.index(f"[warning] {warning}") < log_text.index("[error]")
 
 
+# ISS 2457: what `bitcoind` v32.1.0 printed on stderr for each start below
+_EXCEPTION_BLOCK = (
+    "\n\n************************\n"
+    "EXCEPTION: St13runtime_error       \n"
+    "JSON integer out of range       \n"
+    "bitcoin in AppInit()       \n\n"
+)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        '{"maxconnections": 9223372036854775808}',
+        '{"maxconnections": 2147483648}',
+        '{"rpcmaxconnections": 1.5}',
+    ],
+    ids=["int64", "int", "fraction"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_integer_out_of_range_prints_core_s_exception_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], settings: str
+) -> None:
+    """ISS 2457: `PrintExceptionContinue`'s block, not `InitError`'s line.
+
+    Measured on `bitcoind` v32.1.0 with each in `regtest/settings.json`
+    and `-regtest -listen=0 -server=0`: exit `1`, nothing on stdout, this
+    block on stderr, and no log, the throw coming before
+    `init::StartLogging`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == _EXCEPTION_BLOCK
+    assert not captured.out
+    assert not (tmp_path / "regtest" / "history.log").exists()
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_integer_out_of_range_after_the_lock_logs_the_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2457: `PrintExceptionContinue` logs the block as a warning.
+
+    Measured on `bitcoind` v32.1.0 with `{"bantime": 9223372036854775808}`,
+    which `AppInitMain` reads after `init::StartLogging`: this block on
+    stderr, and its `debug.log` holds it after `[warning]`. `history.log`
+    escapes the block's newlines, as `log._escape` describes.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"bantime": 9223372036854775808}', encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == _EXCEPTION_BLOCK
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = _EXCEPTION_BLOCK.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

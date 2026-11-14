@@ -40,6 +40,7 @@ __all__ = [
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
+    "JsonIntegerOutOfRangeError",
     "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
@@ -420,6 +421,21 @@ class DirectoryLockError(RuntimeError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class JsonIntegerOutOfRangeError(ValueError):
+    """A start refused as `UniValue::getInt` refuses a `settings.json` number.
+
+    `getInt` throws a `std::runtime_error` (`src/univalue/include/univalue.h`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `AppInit` catches it
+    and hands it to `PrintExceptionContinue` rather than to `InitError`
+    (`src/bitcoind.cpp`, same sha), and `cli.main` prints it as that
+    function does. Raised by `cli._get_int` and by `Config.__init__`.
+    """
+
+    def __init__(self) -> None:
+        """Carry `getInt`'s own message."""
+        super().__init__("JSON integer out of range")
 
 
 class RpcCredentialRefusedError(ValueError):

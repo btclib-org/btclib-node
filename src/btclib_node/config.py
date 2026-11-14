@@ -51,7 +51,11 @@ from btclib_node.constants import (
     MAX_TIP_AGE,
     default_data_dir,
 )
-from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.exceptions import (
+    InvalidChainTypeError,
+    JsonIntegerOutOfRangeError,
+    UnknownChainError,
+)
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
 from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
 from btclib_node.rpc.auth import (
@@ -437,8 +441,7 @@ def _cap_max_connections(max_connections: int) -> tuple[int, str]:
     and logs. The warning is `""` where nothing is capped.
     """
     if not -(2**31) <= max_connections < 2**31:
-        err_msg = "JSON integer out of range"
-        raise ValueError(err_msg)
+        raise JsonIntegerOutOfRangeError
     if max_connections < 0:
         # Core's own wording, fatal there too
         err_msg = "-maxconnections must be greater or equal than zero"
@@ -465,8 +468,7 @@ def _refuse_rpcmaxconnections(rpcmaxconnections: float) -> int:
         not isinstance(rpcmaxconnections, int)
         or not -(2**31) <= rpcmaxconnections < 2**31
     ):
-        err_msg = "JSON integer out of range"
-        raise ValueError(err_msg)
+        raise JsonIntegerOutOfRangeError
     if rpcmaxconnections < 1:
         err_msg = (
             "-rpcmaxconnections must be greater than zero. "
