@@ -555,7 +555,17 @@ def _atoi(text: str) -> int:
     match = _ATOI_DIGITS.match(digits)
     if match is None:
         return 0
-    return min(max(int(match.group()), _INT64_MIN), _INT64_MAX)
+    number = match.group()
+    negative = number.startswith("-")
+    magnitude = number[1:] if negative else number
+    magnitude = magnitude.lstrip("0") or "0"
+    limit = str(-_INT64_MIN if negative else _INT64_MAX)
+    if len(magnitude) > len(limit) or (
+        len(magnitude) == len(limit) and magnitude > limit
+    ):
+        return _INT64_MIN if negative else _INT64_MAX
+    value = int(magnitude)
+    return -value if negative else value
 
 
 def _long_poll_id(node: Node, long_poll_id: object) -> tuple[bytes, int]:
