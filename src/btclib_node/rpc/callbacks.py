@@ -3080,8 +3080,8 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
     """
     entry = mempool.entry(wtxid)
     return {
-        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         # btclib-org/btclib-node#1757
         "vsize_adjusted": entry.vsize,
         "vsize": entry.vsize,
@@ -3627,8 +3627,8 @@ def get_raw_transaction(
             "The genesis block coinbase is not considered an ordinary "
             "transaction and cannot be retrieved",
         )
-    # `skip_type_check` (src/rpc/rawtransaction.cpp:275, at
-    # bitcoin/bitcoin@f0de87f040), so the type of
+    # `skip_type_check` (src/rpc/rawtransaction.cpp:275,
+    # at bitcoin/bitcoin@f0de87f040), so the type of
     # this argument is read here, after the genesis exception, as
     # `ParseVerbosity` reads it (`_parse_verbosity`)
     verbosity = _parse_verbosity(params, 1, default=0)

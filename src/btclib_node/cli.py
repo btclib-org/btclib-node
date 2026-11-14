@@ -903,8 +903,8 @@ _OPTIONS: dict[str, _Option] = {
         _DEBUG_TEST_TITLE,
         debug_only=True,
     ),
-    # Core's registration (`src/chainparamsbase.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
+    # Core's registration (`src/chainparamsbase.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
     # parameter included
     "testactivationheight": _Option(
         "=name@height.",

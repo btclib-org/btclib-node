@@ -106,8 +106,8 @@ _REF_LINE = 6
 _REVIEW = f"""\
       extra-prompt: |
         Read the diff.
-      # Bitcoin Core's source for the review to read, at
-      # bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+      # Bitcoin Core's source for the review to read,
+      # at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
       # `integration-bitcoind.yml` pins.
       bitcoin-core-ref: {_REF}
 """

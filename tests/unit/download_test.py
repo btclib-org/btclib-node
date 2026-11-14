@@ -880,8 +880,8 @@ def test_a_queued_announcement_is_sent_once_its_own_schedule_is_due() -> None:
     assert hashes_of(second) == [a_hash(2)]
 
 
-# Core's `token_bucket_*` cases (`src/test/util_tests.cpp`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag), as `_TokenBucket` ports them
+# Core's `token_bucket_*` cases (`src/test/util_tests.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), as `_TokenBucket` ports them
 
 
 def test_a_token_bucket_starts_at_most_full() -> None:

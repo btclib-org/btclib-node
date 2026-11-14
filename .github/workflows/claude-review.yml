@@ -137,8 +137,8 @@ jobs:
         ${{ github.event.pull_request.base.ref }}`. Then read the
         difference with `git diff
         origin/${{ github.event.pull_request.base.ref }} -- <path>`.
-      # Bitcoin Core's source for the review to read, at
-      # bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+      # Bitcoin Core's source for the review to read,
+      # at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
       # `integration-bitcoind.yml` pins and CONTRIBUTING.md's *Following
       # Bitcoin Core* follows. Written in that form, the citation is read
       # by the core-citation-pin hook, whose docstring says what it holds

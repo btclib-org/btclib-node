@@ -280,8 +280,8 @@ class Mempool:
         # refusing a second spender is what keeps one wtxid per outpoint.
         # btclib-org/btclib-node#1244
         self.outpoint_spender: dict[tuple[bytes, int], bytes] = {}
-        # txid -> Core's `mapDeltas` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the fee delta
+        # txid -> Core's `mapDeltas` (`src/txmempool.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the fee delta
         # `prioritisetransaction` added, kept whether or not the
         # transaction is held, never zero. `modified_fee` is its reader.
         # btclib-org/btclib-node#1502
@@ -305,8 +305,8 @@ class Mempool:
         # btclib-org/btclib-node#294
         self.bytesize_limit: int = 300 * 1000**2  # 300vMB
         # Core's own external-tracking counter,
-        # `CTxMemPool::m_sequence_number` (`src/txmempool.h:200-202`, at
-        # bitcoin/bitcoin@f0de87f040): "incremented once every time a
+        # `CTxMemPool::m_sequence_number` (`src/txmempool.h:200-202`,
+        # at bitcoin/bitcoin@f0de87f040): "incremented once every time a
         # transaction is added or removed from the mempool for any reason".
         # `getrawmempool`'s `mempool_sequence` is a read of this value
         # (`GetSequence`, `src/txmempool.h:598-600`), not itself a bump.
@@ -320,8 +320,8 @@ class Mempool:
         # events, and what keeps every later answer at Core's own N+1 after
         # N add/remove events rather than N.
         self.sequence: int = 1
-        # Core's `nTransactionsUpdated` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), which a
+        # Core's `nTransactionsUpdated` (`src/txmempool.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which a
         # `getblocktemplate` long poll waits on: one per transaction added
         # or removed, as `sequence`, and one per block connected or
         # disconnected, through `add_transactions_updated`. Core counts
@@ -329,8 +329,8 @@ class Mempool:
         # here genesis is seeded at every start, so this starts at 0, as
         # Core's does after a restart.
         self.transactions_updated: int = 0
-        # Core's `m_load_tried` (`src/txmempool.h`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): whether the load of
+        # Core's `m_load_tried` (`src/txmempool.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): whether the load of
         # `mempool.dat` at start ended without a stop. `Node` writes the
         # file at shutdown only then, so a node stopped while loading
         # keeps the file it was reading. btclib-org/btclib-node#1746
@@ -348,8 +348,8 @@ class Mempool:
         self._block_since_last_rolling_fee_bump: bool = False
 
         # Core's `m_lazy_recent_rejects`, a `CRollingBloomFilter{120'000,
-        # 0.000'001}` (`src/node/txdownloadman_impl.h`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the wtxids
+        # 0.000'001}` (`src/node/txdownloadman_impl.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the wtxids
         # `mark_rejected` recorded, so a resubmission is not verified
         # again. Like Core's, it drops a transaction never refused up to
         # once in a million queries.

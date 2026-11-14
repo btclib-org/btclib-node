@@ -563,6 +563,14 @@ repos:
         entry: |-
           #\W*sourcery\W+skip\b(?!:[^#;\w]*\w)|#\W*sourcery\W+skip:[^#]*(?<![\w-])(?:default|refactoring|suggestion|comment)(?![\w-])
         types: [python]
+      # CONTRIBUTING.md's *Following Bitcoin Core*, its paragraph on how a
+      # citation is written, is the rule: a comment line starting with the
+      # sha is the shape it refuses (btclib-org/btclib-node#2209)
+      - id: core-citation-comment-wrap
+        name: a Core citation in a comment keeps at on the sha line
+        language: pygrep
+        entry: '^[ \t]*#[ \t]*bitcoin/bitcoin@'
+        types: [python]
   # a bitcoind pin and a release-pinned Core citation are two places
   # that have to move together, and nothing else here reads either --
   # `pinned-rev` above checks the shape of a pre-commit rev, not a

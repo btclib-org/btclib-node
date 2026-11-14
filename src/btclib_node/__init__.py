@@ -109,8 +109,8 @@ STOP_TIMEOUT = 30
 # interrupts nothing, so the handler never runs, and only the handler
 # stops the node (btclib-org/btclib-node#1274). Core's main thread waits
 # on a pipe its handler writes from whichever thread it ran on
-# (`SignalInterrupt::wait`, `src/util/signalinterrupt.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a bounded wait is how Python
+# (`SignalInterrupt::wait`, `src/util/signalinterrupt.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a bounded wait is how Python
 # gets the same.
 SIGNAL_POLL_SECONDS = 0.5
 
@@ -571,8 +571,8 @@ class Node(threading.Thread):
             self.data_dir, self.chain, self.logger, wipe=reindex
         )
         self._opened.callback(self.chainstate.close)
-        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        # Core's `coins_error_cb` (`src/init.cpp:1466-1470`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
         self.chainstate.utxo_index.read_error_callback = self._coins_read_error
         if reindex:
             self.block_db.wipe_undo()
@@ -683,8 +683,8 @@ class Node(threading.Thread):
         self.best_block_time = block_time(tip)
         self.download_manager = DownloadManager(self, self.logger)
         # Core's own `LoadChainTip` calling `CheckForkWarningConditions`
-        # once the chainstate is loaded (`src/validation.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex`'s own
+        # once the chainstate is loaded (`src/validation.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex`'s own
         # `best_invalid` is already backfilled by the `init_from_db` call
         # `Chainstate.__init__` above made, so a condition already true
         # when this node last stopped is raised again rather than
@@ -1118,8 +1118,8 @@ class Node(threading.Thread):
             # Core's `~BanMan` dumps the list one last time
             self.p2p_manager.ban_man.dump()
             # Core's `Shutdown` writes the mempool once the peers are gone,
-            # before the fee estimates and the chainstate (`src/init.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only where
+            # before the fee estimates and the chainstate (`src/init.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only where
             # the load at start ended without a stop, so a node stopped
             # while loading keeps the file it was reading
             if self.mempool.load_tried and self.config.persist_mempool:

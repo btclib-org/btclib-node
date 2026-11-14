@@ -439,8 +439,8 @@ def node(tmp_path: Path) -> Iterator[Node]:
 # How many times `bitcoind` is asked in all where it gave fewer answers
 # than this node, or than the count its case expects. Past a closing
 # reply, Core reads a request only within a window, which a slow runner
-# can make it miss (btclib-org/btclib-node#2304; `src/httpserver.cpp` at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag). Its socket thread waits up
+# can make it miss (btclib-org/btclib-node#2304; `src/httpserver.cpp`
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Its socket thread waits up
 # to `SELECT_TIMEOUT` (`_SELECT_TIMEOUT` here) in `WaitMany` (:1069), a
 # wait that started before the reply was sent, and receives a request
 # written once the reply is read only before that wait ends. The

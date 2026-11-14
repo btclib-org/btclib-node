@@ -98,8 +98,8 @@ __all__ = [
 # (btclib-org/btclib-node#1245), and the one this node tells a peer about
 # in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
-# Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): 100 sat/kvB, the default of
+# Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): 100 sat/kvB, the default of
 # `-incrementalrelayfee`. Core keeps it apart from the floor above, the two
 # merely sharing a value.
 DEFAULT_INCREMENTAL_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
@@ -127,8 +127,8 @@ DEFAULT_TX_SEND_RATE = 14
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most RPC clients connected at once.
 DEFAULT_MAX_HTTP_CONNECTIONS = 16
-# Core's own `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most `-addnode` peers
+# Core's own `MAX_ADDNODE_CONNECTIONS` (`src/net.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most `-addnode` peers
 # connected at once, outside `-maxconnections`.
 MAX_ADDNODE_CONNECTIONS = 8
 # The descriptors Core reserves ahead of any connection: `MIN_CORE_FDS`
@@ -942,8 +942,8 @@ class Config:
     addnode: tuple[tuple[str, int], ...]
     # `-addnode`, each as given but for an empty one (`addnode_empty`
     # below): Core's own `m_added_node_params`
-    # (`connOptions.m_added_nodes`, `src/init.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), dialled alongside the
+    # (`connOptions.m_added_nodes`, `src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), dialled alongside the
     # ordinary draw and compared, as text, against a drawn address by
     # `AddedNodesContain` (`src/net.cpp`, same sha) -- both
     # `P2pManager._open_added_peers` and `_added_node` read this, not
@@ -951,8 +951,8 @@ class Config:
     # it at runtime (btclib-org/btclib-node#1350).
     addnode_args: tuple[str, ...]
     # How many `-addnode` values are empty once `TrimStringView` has
-    # trimmed them: Core skips each (`src/init.cpp:2196-2203`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `addnode` and
+    # trimmed them: Core skips each (`src/init.cpp:2196-2203`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `addnode` and
     # `addnode_args` above hold none, and `P2pManager.run` logs Core's
     # warning once for each.
     addnode_empty: int
@@ -983,8 +983,8 @@ class Config:
     listen: bool
     # Core's own `-bind` values, as given: `cli` refuses a malformed one
     # and `parse_bind` reads each. With any, `P2pManager` binds those
-    # and not every interface (`bind_on_any`, `src/init.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag). Core refuses one beside
+    # and not every interface (`bind_on_any`, `src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Core refuses one beside
     # `-listen=0`.
     bind: tuple[str, ...]
     # Core's own `-whitebind` values, as given: `cli` refuses a malformed
@@ -1021,14 +1021,14 @@ class Config:
     # advertised in `version` and whether a BIP157 request is answered
     # rather than refused (`p2p.connection.local_services`,
     # `p2p.callbacks._filter_range` and `.get_cfcheckpt`). Core also
-    # requires `-blockfilterindex=basic` (`src/init.cpp:1022-1028`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) and refuses
+    # requires `-blockfilterindex=basic` (`src/init.cpp:1022-1028`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) and refuses
     # `-peerblockfilters` without it; this node keeps the basic filter
     # index unconditionally (`chainstate.filter_index.FilterIndex`), so
     # that refusal never applies here.
     peerblockfilters: bool
-    # Core's own `-v2transport`, `DEFAULT_V2_TRANSPORT` (`src/net.h`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) true: whether this node
+    # Core's own `-v2transport`, `DEFAULT_V2_TRANSPORT` (`src/net.h`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) true: whether this node
     # speaks BIP324 and says so with `NODE_P2P_V2`
     # (`p2p.connection.local_services`).
     v2transport: bool
@@ -1058,8 +1058,8 @@ class Config:
     # Core's own `-txsendrate`: the transactions a second this node
     # announces to its inbound peers, which `DownloadManager`'s
     # announcement buckets refill by. `cli` clamps it to 1 to 1000, as
-    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    # `ApplyArgsManOptions` does (`src/node/peerman_args.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     tx_send_rate: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040)
