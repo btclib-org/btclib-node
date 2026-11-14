@@ -571,13 +571,13 @@ repos:
   # invoked with a bare `python3` rather than through uv.
   #
   # `always_run: true`, and no `files:`: the script itself reads every
-  # file `git` tracks (btclib-org/btclib-node#1014), so a `files:` list
-  # naming only the sites known today would leave a citation added to a
-  # new file uncaught on the commit that adds it -- the same enumeration
-  # trap the script's own docstring argues against, one layer up. A pin
-  # bump always touches the workflow file this hook would have to name
-  # regardless, so a list buys nothing; the same reasoning is
-  # check-changelog's above.
+  # file `git` tracks but those its docstring excludes
+  # (btclib-org/btclib-node#1014), so a `files:` list naming only the
+  # sites known today would leave a citation added to a new file uncaught
+  # on the commit that adds it -- the same enumeration trap the script's
+  # own docstring argues against, one layer up. A pin bump always touches
+  # the workflow file this hook would have to name regardless, so a list
+  # buys nothing; the same reasoning is check-changelog's above.
   - repo: local
     hooks:
       - id: core-citation-pin

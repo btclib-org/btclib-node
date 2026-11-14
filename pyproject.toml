@@ -1216,9 +1216,13 @@ convention = "pep257"
 notice-rgx = "^(#![^\\n]*\\n)?# Copyright \\(c\\) The btclib developers\\n# Distributed under the MIT software license, see the accompanying\\n# LICENSE file or https://opensource\\.org/license/mit for the full text\\."
 
 [tool.codespell]
-# "clear" alone, where codespell's default is "clear,rare": with "rare"
-# added it reports only `readded` and `readd`, names this tree writes on
-# purpose, and "clear" alone reports nothing.
+# "clear" alone, where codespell's default is "clear,rare": "rare"
+# reports only `readded` and `readd`, names this tree writes on purpose.
+# This lists what "rare" reports, run from the root with `rev` set to
+# the codespell `rev:` of .pre-commit-config.yaml:
+#
+#   git ls-files -z | xargs -0 uvx "codespell@${rev:?}" \
+#     --toml pyproject.toml --builtin rare
 builtin = "clear"
 # the vendored vectors are skipped rather than corrected: a test vector
 # has to stay byte for byte what upstream published, so a typo inside a

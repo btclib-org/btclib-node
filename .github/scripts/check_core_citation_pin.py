@@ -14,13 +14,10 @@ pin, so a bump is a one-line diff that leaves every citation reading a
 bitcoind the suite no longer runs -- the argument is
 btclib-org/btclib-node#856.
 
-A named list of files misses a release-annotated citation written
-outside it, and a bump then leaves that citation stale with this gate
-exiting 0 (btclib-org/btclib-node#1014). So the tree-wide half of this
-reads every file `git` tracks (`git ls-files`, in place of a directory
-walk that would need its own exclude list for `.venv`, `.git` and build
-output) rather than a named few: a release-annotated citation is checked
-wherever it is written, and a citation site gained later needs no entry
+The tree-wide half of this reads every file `git` tracks but those
+excluded below (`git ls-files`, in place of a directory walk that would
+need its own exclude list for `.venv`, `.git` and build output), rather
+than a named few, so that a citation site gained later needs no entry
 added here to be covered.
 
 What stays scoped to `reorg_test.py` alone is its own convention of
@@ -142,7 +139,7 @@ def _pinned_version() -> str:
 
 
 def _tracked_files() -> list[Path]:
-    """Every path `git` tracks, minus this check's own source and test.
+    """Every path `git` tracks, minus `_EXCLUDED_FROM_SCAN`.
 
     `git ls-files` is the file set rather than a directory walk: a walk
     would need its own exclude list for `.venv`, `.git` and build
@@ -205,13 +202,10 @@ def _sha_problems(pinned_version: str) -> list[str]:
 def _tree_problems(pinned_version: str) -> list[str]:
     """Every release-annotated citation, tree-wide.
 
-    Unlike `_sha_problems` above, this does not care which file it is
-    reading or whether the tree already knew to name it: it catches a
-    citation in any file, `rpc/callbacks.py`'s own among them, without
-    anybody adding it to a list (btclib-org/btclib-node#1014). It
-    necessarily re-reads `reorg_test.py` and the workflow too --
-    harmless, since a citation already checked above is still just as
-    much a citation.
+    Unlike `_sha_problems` above, which reads `reorg_test.py` alone, this
+    reads every file `_tracked_files` returns. It necessarily re-reads
+    `reorg_test.py` and the workflow too -- harmless, since a citation
+    already checked above is still just as much a citation.
     """
     problems = []
     for path in _tracked_files():
