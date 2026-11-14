@@ -694,7 +694,7 @@ def test_a_packet_is_refused_over_the_largest_message() -> None:
     assert out is not None
     assert [m.command for m in out if m] == ["big"]
     tester.send(tester.cipher.encrypt(bytes(1 + 12 + 4_000_001))[:LENGTH_LEN])
-    expected = r"^packet contents too large: at most 4000013 bytes expected$"
+    expected = r"^packet too large: at most 4000013 bytes expected$"
     with pytest.raises(V2TransportError, match=expected):
         feed(tester.transport, bytes(tester.to_send))
 
@@ -740,7 +740,7 @@ def test_a_length_past_the_bound_is_refused_without_it() -> None:
         feed(tester.transport, wire)
     decimal = str(int.from_bytes(length, "little"))
     assert_secret_free(refusal.value, [_KEY, length, decimal, wire])
-    expected = "packet contents too large: at most 4000013 bytes expected"
+    expected = "packet too large: at most 4000013 bytes expected"
     assert str(refusal.value) == expected
 
 

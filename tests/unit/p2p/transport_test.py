@@ -165,7 +165,7 @@ def test_a_length_past_the_bound_is_refused_without_its_octets() -> None:
     with pytest.raises(BTClibValueError) as refusal:
         V1Transport(MAGIC).received_bytes(memoryview(header))
     expected = f"at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
-    assert str(refusal.value) == f"invalid payload length: {expected}"
+    assert str(refusal.value) == f"Size too large: {expected}"
     assert list(chained(refusal.value)) == [refusal.value]
     assert_secret_free(refusal.value, [_KEY, fed, str(length)])
 
