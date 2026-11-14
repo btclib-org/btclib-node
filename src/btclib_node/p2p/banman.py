@@ -399,6 +399,13 @@ class _JsonObject(list[tuple[str, Any]]):
         return next((value for k, value in self if k == key), None)
 
 
+def _parse_json_int(text: str) -> int | str:
+    """Keep an integer too long for an int64 out of Python's ``int`` parser."""
+    if len(text.removeprefix("-")) > len(str(_INT64_END)):
+        return text
+    return int(text)
+
+
 def _json_int(entry: _JsonObject, key: str, bits: int) -> int:
     """UniValue's `getInt` of `entry[key]`: an integer within `bits` signed."""
     value = entry.get(key)
@@ -458,7 +465,9 @@ class BanMan:
     def _read(self, path: Path) -> dict[Subnet, BanEntry]:
         """Core's `CBanDB::Read` and `BanMapFromJson`."""
         settings = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_JsonObject
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_JsonObject,
+            parse_int=_parse_json_int,
         )
         if not isinstance(settings, _JsonObject):
             raise _BanlistError(path)
