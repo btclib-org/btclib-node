@@ -542,6 +542,52 @@ def test_an_entry_core_would_drop_is_dropped(tmp_path: Path) -> None:
     ]
 
 
+def test_an_unread_integer_past_python_s_digit_limit_keeps_the_ban(
+    tmp_path: Path,
+) -> None:
+    """Keep an entry with an unread number instead of failing its JSON."""
+    path = tmp_path / "banlist.json"
+    huge = "9" * 5000
+    path.write_text(
+        f'{{"banned_nets": [{{{_ENTRY[1:-1]}, "x": {huge}}}]}}',
+        encoding="utf-8",
+    )
+
+    assert [str(subnet) for subnet, _ in BanMan(path, _LOGGER).banned()] == [
+        "1.2.3.4/32"
+    ]
+
+
+@pytest.mark.parametrize("key", ["version", "ban_created", "banned_until"])
+def test_a_read_integer_past_python_s_digit_limit_is_a_core_style_refusal(
+    tmp_path: Path, key: str
+) -> None:
+    """Fail a read field by name, without CPython's digit-limit text."""
+    path = tmp_path / "banlist.json"
+    log_path = tmp_path / "history.log"
+    huge = "9" * 5000
+    values = {
+        "version": huge if key == "version" else "1",
+        "ban_created": huge if key == "ban_created" else "1",
+        "banned_until": huge if key == "banned_until" else "1800000000",
+    }
+    entry = (
+        f'{{"version": {values["version"]}, '
+        f'"ban_created": {values["ban_created"]}, '
+        f'"banned_until": {values["banned_until"]}, "address": "1.2.3.4"}}'
+    )
+    path.write_text(f'{{"banned_nets": [{entry}]}}', encoding="utf-8")
+    logger = Logger(log_path)
+    try:
+        assert BanMan(path, logger).banned() == []
+    finally:
+        logger.close()
+
+    warning = log_path.read_text(encoding="utf-8")
+    assert key in warning
+    assert "Exceeds the limit" not in warning
+
+
 def test_a_key_twice_in_an_entry_is_read_as_univalue_reads_it(
     tmp_path: Path,
 ) -> None:
