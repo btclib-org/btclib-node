@@ -225,15 +225,13 @@ def test_regtest_alone_has_no_fixed_seed() -> None:
 
 
 def test_each_chain_asks_core_s_dns_seeds() -> None:
-    """ISS 1303: Core's `vSeeds` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    """ISS 1303: Core's `vSeeds` at bitcoin/bitcoin@f0de87f040, the v32.1 tag.
 
     Read from `src/kernel/chainparams.cpp` there, in its order and with
-    its trailing dots, for every chain this package defines. This node
-    follows that tag here until ISS 2368.
+    its trailing dots, for every chain this package defines.
     """
     assert {chain.name: chain.addresses for chain in CHAINS} == {
         "mainnet": [
-            "seed.bitcoin.sipa.be.",
             "dnsseed.bluematt.me.",
             "seed.bitcoin.jonasschnelli.ch.",
             "seed.btc.petertodd.net.",
@@ -245,7 +243,6 @@ def test_each_chain_asks_core_s_dns_seeds() -> None:
         "testnet": [
             "testnet-seed.bitcoin.jonasschnelli.ch.",
             "seed.tbtc.petertodd.net.",
-            "seed.testnet.bitcoin.sprovoost.nl.",
             "testnet-seed.bluematt.me.",
             "seed.testnet.achownodes.xyz.",
         ],

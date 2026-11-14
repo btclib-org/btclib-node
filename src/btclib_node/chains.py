@@ -97,9 +97,9 @@ class Chain:
     name: str
     port: int
     # Core's `vSeeds` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node
-    # follows until ISS 2368), the DNS seeds, in Core's order and with its
-    # trailing dot, which makes each name fully qualified for the resolver
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the DNS seeds, in
+    # Core's order and with its trailing dot, which makes each name fully
+    # qualified for the resolver
     addresses: list[str]
     # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`,
     # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): BIP155 serialized
@@ -245,7 +245,6 @@ class Main(Chain):
         self.name = "mainnet"
         self.port = 8333
         self.addresses = [
-            "seed.bitcoin.sipa.be.",
             "dnsseed.bluematt.me.",
             "seed.bitcoin.jonasschnelli.ch.",
             "seed.btc.petertodd.net.",
@@ -275,7 +274,6 @@ class TestNet(Chain):
         self.addresses = [
             "testnet-seed.bitcoin.jonasschnelli.ch.",
             "seed.tbtc.petertodd.net.",
-            "seed.testnet.bitcoin.sprovoost.nl.",
             "testnet-seed.bluematt.me.",
             "seed.testnet.achownodes.xyz.",
         ]
