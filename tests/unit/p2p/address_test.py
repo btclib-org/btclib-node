@@ -35,6 +35,7 @@ import btclib_node.p2p.address as address_module
 from btclib_node import clock
 from btclib_node.db import KeyValueStore
 from btclib_node.p2p.address import (
+    SEEDS_ASSUMED_SERVICE_FLAGS,
     SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
@@ -727,11 +728,11 @@ _A_FIXED_DNS_STAMP = 1_700_000_000
 def a_seed_answer(ip: str) -> NetworkAddressV2:
     """Build what a DNS seed's answer of `ip` is recorded as, on regtest's port.
 
-    With Core's `SeedsServiceFlags`, as `ThreadDNSAddressSeed` records
+    With Core's `SeedsAssumedServiceFlags`, as `ThreadDNSAddressSeed` records
     it, and `_A_FIXED_DNS_STAMP` above for its timestamp.
     """
     return peer_address(
-        ip, 18444, timestamp=_A_FIXED_DNS_STAMP, services=SEEDS_SERVICE_FLAGS
+        ip, 18444, timestamp=_A_FIXED_DNS_STAMP, services=SEEDS_ASSUMED_SERVICE_FLAGS
     )
 
 
@@ -2401,7 +2402,7 @@ def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
     The first line of Core's `nodes_main.txt` at
     bitcoin/bitcoin@f0de87f040 (the v32.1 tag), a CJDNS address, then an
     IPv4 one on a port of its own, serialized as `generate_seeds.py`
-    serializes them; each gets Core's `SeedsServiceFlags`. The timestamp
+    serializes them; each gets Core's `SeedsAssumedServiceFlags`. The timestamp
     each is also given (issue #1571) is asserted separately below, this
     one pinned at 0 first to isolate the rest of the decode from it.
     """
@@ -2414,7 +2415,11 @@ def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
     assert cjdns.address == bytes.fromhex("fc10efa70ca615480f8c6bb91cc463ae")
     assert cjdns.port == 8333
     assert replace(ipv4, timestamp=0) == peer_address(
-        "1.2.3.4", 9090, services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+        "1.2.3.4",
+        9090,
+        services=ServiceFlags.NODE_NETWORK
+        | ServiceFlags.NODE_WITNESS
+        | ServiceFlags.NODE_P2P_V2,
     )
 
 
