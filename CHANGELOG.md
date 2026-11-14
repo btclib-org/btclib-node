@@ -31,6 +31,105 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.11.14
+
+### The node asks only the DNS seeds Core lists
+
+`Main.addresses` drops `seed.bitcoin.sipa.be.` and `TestNet.addresses` drops
+`seed.testnet.bitcoin.sprovoost.nl.` (closes #2368).
+
+### `submitblock` answers `"inconclusive"` for a new block stored, not tried
+
+That is a new block it stores and does not try to connect, as in Core. The best
+chain is activated before the answer, a reorg included (closes #2419).
+
+### A batch member that is not an object gets a null `id`
+
+Each member is parsed into a request of its own, as Core's master does
+(closes #2186).
+
+### An integer past CPython's digit limit is read as bitcoind reads it
+
+A `settings.json` number, an integer option's value or a port (closes #2386),
+and a JSON-RPC body (closes #2456). `RawJSON` is defined in `rpc.jsonrpc`,
+beside the new `LongInteger`.
+
+### A descriptor key off the curve gets -5
+
+From `generateblock` and `scantxoutset`, where it got -32603, and
+`scantxoutset` writes the key as `...` (closes #2404).
+
+### The payload-length, too-large and decryption refusals print no length read
+
+V1Transport's payload-length refusal (closes #2358) and V2Transport's too-large
+refusal name the bound, and its decryption failure is a fixed text
+(closes #2440).
+
+### A refused magic is printed only where a chain defines it
+
+A network magic (closes #2437), and a v1 magic V2Transport reads (closes #2439).
+
+### Each inactivity drop logs Core's `-debug=net` line
+
+`P2pManager._inactivity_check` follows `CConnman::InactivityCheck`
+(closes #2369).
+
+### The tests stop racing the node
+
+The second RPC connection to register (closes #2401), and the node's clock held
+over both deterministic builds (closes #2372). `callbacks.py` cites the
+bitcoind test by its node id (closes #2411).
+
+### `AGENTS.md` and `CONTRIBUTING.md` follow the standard
+
+`AGENTS.md` points at `REVIEWING.md` (issue btclib-org/.github#2009).
+`CONTRIBUTING.md` lists its workflows in a table (closes #2434), and carries
+section 14's RootFileLinks part (issue btclib-org/.github#2166).
+
+### The documents and the configuration tell no history
+
+A passage that told what a setting or a workflow used to be keeps what is true
+now (closes #2383).
+
+### `CONTRIBUTING.md` leaves the checkout layout to the contributor
+
+Its *Worktrees* section goes, and `AGENTS.md` gives a worktree per task as an
+example for an agent (issue btclib-org/.github#2263).
+
+### `CONTRIBUTING.md`'s gates and docs blocks stop on a failure
+
+A failed suite or hook run (issue btclib-org/.github#2188), and a failed build
+or checker checkout (issue btclib-org/.github#2015).
+
+### `REPOSITORY.md` records the standing bypass
+
+The main-self-merge ruleset holds it (issue btclib-org/.github#2212).
+
+### `fuzz.yml` and `sourcery.yml` take .github's text
+
+`fuzz.yml` states when it runs (issue btclib-org/.github#1927), and
+`sourcery.yml` takes .github's concurrency comment
+(issue btclib-org/.github#2190).
+
+### prettier leaves `.pre-commit-config.yaml` to pre-commit.ci
+
+`.prettierignore` names it (issue btclib-org/.github#2038).
+
+### The bestpractices.dev answers move
+
+They reach v2026.11.12 (closes #2414), `static_analysis_fixed` is answered with
+no alert open (issue #2427), and a save nobody can make is recorded as owed
+(issue btclib-org/.github#2205).
+
+### The dev tools move
+
+coverage in the dev-tooling group (#2422), and soupsieve (closes #2445).
+
+### The version is 2026.11.14
+
+`pyproject.toml` declares `2026.11.14` in place of the `2026.12` placeholder
+that #2426 set.
+
 ## v2026.11.12
 
 ### btclib and bip32-descriptors 2026.11.12 are required
