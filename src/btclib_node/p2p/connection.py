@@ -1064,7 +1064,7 @@ class Connection:
                 # btclib-org/btclib-node#438
                 try:
                     data = await self.loop.sock_recv(self.client, 65536)
-                except OSError:
+                except OSError as e:
                     # A peer that reset the connection rather than
                     # closing it gracefully -- `ConnectionResetError`,
                     # `ConnectionAbortedError` -- is `sock_recv` raising
@@ -1083,8 +1083,17 @@ class Connection:
                     # that a POSIX pair, backed by the kernel rather
                     # than a real TCP loopback, never sends
                     # (btclib-org/btclib-node#430).
+                    self.node.logger.log_debug(
+                        "net",
+                        "socket recv error, disconnecting peer=%d: %s",
+                        self.id,
+                        e,
+                    )
                     return self.stop(cancel_task=False)
                 if not data:
+                    self.node.logger.log_debug(
+                        "net", "socket closed, disconnecting peer=%d", self.id
+                    )
                     return self.stop(cancel_task=False)
                 self.stats.bytes_recv += len(data)
                 try:

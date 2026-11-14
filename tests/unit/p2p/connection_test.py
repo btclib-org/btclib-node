@@ -908,6 +908,23 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
     assert not discouraged_of(connection)
 
 
+def test_a_peer_that_hangs_up_is_logged_in_net() -> None:
+    """A hangup writes Core's `net` line naming the peer, as Core's does."""
+    entries, record = debug_recorder()
+
+    async def drive() -> None:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        # inbound, so that no `version` goes out and logs its own `net` line
+        connection = a_running_connection(loop, ours, inbound=True, log_debug=record)
+        theirs.close()
+        await connection.run()
+
+    asyncio.run(drive())
+    assert entries == [("net", "socket closed, disconnecting peer=0")]
+
+
 def test_a_reset_connection_is_dropped_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -950,6 +967,28 @@ def test_a_reset_connection_is_dropped_not_raised(
     assert left_alone
     # a reset connection is not one that broke the protocol either: #283
     assert not discouraged_of(connection)
+
+
+def test_a_reset_peer_is_logged_in_net(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A receive error writes Core's `net` line with the error."""
+    entries, record = debug_recorder()
+
+    async def drive() -> None:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        # inbound, so that no `version` goes out and logs its own `net` line
+        connection = a_running_connection(loop, ours, inbound=True, log_debug=record)
+
+        async def reset(sock: socket.socket, nbytes: int) -> bytes:
+            raise ConnectionResetError("reset")
+
+        monkeypatch.setattr(loop, "sock_recv", reset)
+        await connection.run()
+        theirs.close()
+
+    asyncio.run(drive())
+    assert entries == [("net", "socket recv error, disconnecting peer=0: reset")]
 
 
 def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:
@@ -2333,7 +2372,8 @@ def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:
     """The control: the same bytes with the fallback leave the transport v1."""
     connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=True)
     assert connection.transport.get_info().transport_type is TransportProtocolType.V1
-    assert entries == []
+    # the peer then hung up, which is the one `net` line `run` writes
+    assert entries == [("net", "socket closed, disconnecting peer=0")]
 
 
 def test_the_known_transaction_record_is_sized_as_core_s() -> None:
