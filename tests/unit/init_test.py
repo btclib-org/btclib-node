@@ -2354,7 +2354,7 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
 ) -> None:
     """`run`'s loop must not reach `_step_chain` once a pass has set the flag.
 
-    `rpc.callbacks._validate_extending_tip` sets `terminate_flag` and
+    `rpc.callbacks._activate_and_answer` sets `terminate_flag` and
     re-raises where `update_chain`'s own trial does not swallow the
     exception -- but `rpc.main._execute` still turns that into
     `INTERNAL_ERROR` before it ever reaches this loop, so the flag,
@@ -2371,7 +2371,7 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
     `update_chain`'s own mid-fork loop already refuses to touch a block
     once `terminate_flag` reads set (`main.py`'s own comment above that
     check), which is a second, narrower guard and not the one under test
-    here. `rpc.callbacks._validate_extending_tip` imports `update_chain`
+    here. `rpc.callbacks._activate_and_answer` imports `update_chain`
     under a name of its own, so patching this module's copy leaves the
     first, fault-triggering call untouched and only counts a second one
     reached through `_step_chain`.

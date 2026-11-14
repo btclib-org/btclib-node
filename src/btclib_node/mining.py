@@ -594,7 +594,7 @@ def accept_block(node: Node, block: Block) -> str | None:
     block stored on its branch, as in Core.
 
     A failure that is not a verdict on the block stops `Node.run`, as
-    `rpc.callbacks._validate_extending_tip` argues.
+    `rpc.callbacks._activate_and_answer` argues.
     """
     try:
         assert_valid_block(block, node.chain)

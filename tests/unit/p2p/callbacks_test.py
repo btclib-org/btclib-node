@@ -7428,7 +7428,7 @@ def test_a_getblocks_whose_activation_fails_stops_the_node(
 ) -> None:
     """ISS 1385: a failure activating the best chain stops `Node`, unswallowed.
 
-    The shape `rpc.callbacks._validate_extending_tip` gives its
+    The shape `rpc.callbacks._activate_and_answer` gives its
     `update_chain` call: `terminate_flag` is set first, then the error is
     raised.
     """

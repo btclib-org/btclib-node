@@ -1861,7 +1861,7 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     missing-patch `ChainstateInconsistencyError` or a block it refuses,
     both before anything is disconnected, or one `apply_rev_block`
     raises -- is answered the way
-    `rpc.callbacks._validate_extending_tip` already answers
+    `rpc.callbacks._activate_and_answer` already answers
     `submit_block`'s own fatal case: `node.terminate_flag` set, then
     left to propagate. What that propagation actually reaches is
     `rpc.main`'s own dispatcher (`_execute`), which

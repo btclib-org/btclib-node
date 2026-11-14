@@ -1141,7 +1141,7 @@ class Node(threading.Thread):
             if self._drain_message_queues() and not chain_changed:
                 time.sleep(IDLE_SLEEP_SECONDS)
             # `_drain_message_queues` can itself set `terminate_flag`
-            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # mid-pass -- `rpc.callbacks._activate_and_answer`, run from
             # inside `handle_rpc`, does exactly that on an exception
             # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
             # than letting propagate -- and this loop must not run

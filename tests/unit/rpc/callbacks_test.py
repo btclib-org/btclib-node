@@ -7814,15 +7814,14 @@ def test_submit_block_offers_the_block_to_new_pow_valid_block(
     assert offered == [chain[1].header.hash]
 
 
-def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
+def test_submit_block_stores_a_block_of_less_work_than_the_tip_as_inconclusive(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A valid block extending a known block that is not the tip answers `None`.
+    """A valid block on a branch lighter than the tip answers `"inconclusive"`.
 
-    Its own parent is indexed already (genesis), so this never reaches
-    `prev-blk-not-found`; not extending the active chain's own tip, it
-    also never reaches `_validate_extending_tip`, and is merely stored --
-    the active chain itself does not move.
+    Its parent is indexed (genesis), so this never reaches
+    `prev-blk-not-found`. It does not outrank the tip, so nothing
+    connects it and the active chain does not move.
     """
     node = regtest_node()
     chain = generate_random_chain(2, node.chain.genesis.hash)
@@ -7831,10 +7830,155 @@ def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
 
     result = submit_block(node, _CONN, [fork.serialize(check_validity=False).hex()])
 
-    assert result is None
+    assert result == "inconclusive"
     block_info = node.chainstate.block_index.get_block_info(fork.header.hash)
     assert block_info.downloaded
     assert node.block_db.get_block(fork.header.hash) is not None
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_answers_inconclusive_for_a_block_tying_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2419: a block of the tip's work is stored, `"inconclusive"`.
+
+    Measured against the bitcoind `integration-bitcoind.yml` pins, on
+    regtest: a second block at the tip's height, on the tip's parent,
+    answers `"inconclusive"`, and the tip stays the block received first.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+
+    result = submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    assert result == "inconclusive"
+    block_index = node.chainstate.block_index
+    assert block_index.get_block_info(rival.header.hash).downloaded
+    assert block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_reorgs_onto_a_heavier_branch_before_it_answers(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2419: a block that makes its branch heavier is connected, `None`.
+
+    Core's `ProcessNewBlock` runs `ActivateBestChain` before
+    `submitblock` answers, so the reorg is done when the answer arrives.
+    Measured against the bitcoind `integration-bitcoind.yml` pins, on
+    regtest: the child of a block tying the tip answers `null`, and is
+    the tip right after.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    heavier = build_block(
+        rival.header.hash, [generate_coinbase(value=1, height=3)], height=3
+    )
+    submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    result = submit_block(node, _CONN, [heavier.serialize(check_validity=False).hex()])
+
+    assert result is None
+    assert node.chainstate.block_index.active_chain[-2:] == [
+        rival.header.hash,
+        heavier.header.hash,
+    ]
+
+
+def test_submit_block_answers_why_a_heavier_branch_does_not_connect(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block refused while its branch is tried answers the reason.
+
+    `ConnectBlock` runs on it, and `submitblock` answers the reason that
+    `BlockChecked` carries, as for a block extending the tip.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    # a coinbase claiming one satoshi more than the subsidy
+    greedy = build_block(
+        rival.header.hash, [generate_coinbase(value=50 * 10**8 + 1, height=3)], height=3
+    )
+    submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    result = submit_block(node, _CONN, [greedy.serialize(check_validity=False).hex()])
+
+    assert result == "bad-cb-amount"
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_answers_none_for_a_block_connected_before_its_child_fails(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block passing the trial answers `None`, though its child fails.
+
+    The rival's header is known, and its child, refused at connection,
+    is stored first. The rival then makes the branch heavier than the
+    tip: Core's `ConnectTip` connects it, sends a valid `BlockChecked`,
+    then refuses the child and goes back to the old tip. Measured against
+    the bitcoind `integration-bitcoind.yml` pins, on regtest: `null` for
+    the rival.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    greedy = build_block(
+        rival.header.hash, [generate_coinbase(value=50 * 10**8 + 1, height=3)], height=3
+    )
+    submit_header(node, _CONN, [rival.header.serialize().hex()])
+    raw = greedy.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) == "inconclusive"
+
+    result = submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    assert result is None
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == chain[1].header.hash
+    assert block_index.get_block_info(greedy.header.hash).status == BlockStatus.invalid
+
+
+def test_submit_block_answers_inconclusive_for_a_child_of_a_refused_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block above the one a step refuses is never connected.
+
+    A tie refused at connection is stored as `"inconclusive"`. Its child
+    makes the branch heavier, the trial refuses the tie, and the child
+    stays unchecked, as in Core. Measured against the bitcoind
+    `integration-bitcoind.yml` pins, on regtest: `"inconclusive"` for
+    both.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    greedy = build_block(
+        chain[0].header.hash,
+        [generate_coinbase(value=50 * 10**8 + 1, height=2)],
+        height=2,
+    )
+    child = build_block(
+        greedy.header.hash, [generate_coinbase(value=1, height=3)], height=3
+    )
+    raw = greedy.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) == "inconclusive"
+
+    result = submit_block(node, _CONN, [child.serialize(check_validity=False).hex()])
+
+    assert result == "inconclusive"
     assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
 
 
