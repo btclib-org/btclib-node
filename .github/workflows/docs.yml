@@ -24,19 +24,19 @@ on:
     # ready_for_review, so a pull request marked ready gets the run the
     # draft condition in reusable-docs.yml withheld while it was a draft.
     # closed too, though the job below declines the real work on it: a
-    # merge or a close is neither a push nor a synchronize, so a run
-    # this pull request's own concurrency group is still holding
-    # survives either unless the closed event lands in that same group
-    # -- which this type is what makes it do, cancel-in-progress below
-    # turning the landing into the cancellation. That was meant to be
-    # *this* pull request's own group and nothing else's: github.ref for
-    # a closed, merged pull request resolves to the base branch's ref
-    # rather than refs/pull/N/merge, so grouping by github.ref alone put
-    # the closed run in the push trigger's own group instead, which
-    # would cancel the run building the actual merge commit's
-    # documentation moments after every merge. The concurrency block
-    # below groups a pull_request run by the pull request's own number
-    # instead, which cannot equal any push's github.ref under any action
+    # merge or a close is neither a push nor a synchronize, so a run this
+    # pull request's own concurrency group is still holding survives
+    # either unless the closed event lands in that same group -- which
+    # this type is what makes it do, cancel-in-progress below turning the
+    # landing into the cancellation. The group is *this* pull request's
+    # own and nothing else's: github.ref for a closed, merged pull request
+    # resolves to the base branch's ref rather than refs/pull/N/merge, so
+    # grouping by github.ref alone would put the closed run in the push
+    # trigger's own group, cancelling the run building the actual merge
+    # commit's documentation moments after every merge. The concurrency
+    # block below groups a pull_request run by the pull request's own
+    # number instead, which cannot equal any push's github.ref under any
+    # action
     types: [opened, reopened, synchronize, ready_for_review, closed]
   # allows release.yml to reuse this gate, so a tag push cannot publish
   # a version whose documentation does not build

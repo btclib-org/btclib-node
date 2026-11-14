@@ -12,7 +12,7 @@ name: fuzz
 # surface today -- each harness's own docstring is where its own share
 # of it is stated; fuzz_process_message.py's own is where issue #698,
 # the parser reached only behind a `Node`, a `P2pManager` and a
-# `Connection` rather than a bare buffer, is closed.
+# `Connection` rather than a bare buffer, is fuzzed.
 #
 # BIP61's `reject` is not among them: no handler here reads it, as none
 # in Core does (issue #1255).
@@ -121,18 +121,16 @@ jobs:
       # nothing here carries a corpus between runs, which is the trade
       # the header states.
       #
-      # -max_total_time is the arm, and the budget it divides is the
-      # job's rather than each harness's: the 600 seconds this job
-      # carried when it fuzzed one harness is what the whole loop still
-      # spends, so this step's own share of the job's 30-minute ceiling
-      # neither grows with a harness added nor shrinks with one
-      # retired. -timeout is what a single input may take before it
-      # counts as a hang, which is the finding a parser reading a length
-      # prefix off the wire is most likely to produce; -artifact_prefix,
-      # one per harness, is what puts a crashing input where the upload
-      # below looks for it, under a name that says which harness found
-      # it, rather than in the working directory or overwriting another
-      # harness's own crash of the same libFuzzer-chosen name.
+      # -max_total_time is the arm: each harness the loop names gets
+      # -max_total_time=200, so the loop's total, inside the job's
+      # 30-minute ceiling, follows the harnesses it names. -timeout is
+      # what a single input may take before it counts as a hang, which
+      # is the finding a parser reading a length prefix off the wire is
+      # most likely to produce; -artifact_prefix, one per harness, is
+      # what puts a crashing input where the upload below looks for it,
+      # under a name that says which harness found it, rather than in
+      # the working directory or overwriting another harness's own crash
+      # of the same libFuzzer-chosen name.
       - name: Fuzz
         run: |
           mkdir -p crashes

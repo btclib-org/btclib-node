@@ -73,9 +73,9 @@ source_suffix = [".rst", ".md"]
 # btclib is mapped alongside python rather than left to the entries
 # below: this tree's own public surface carries a btclib type in nearly
 # every signature it exports, and btclib publishes its own inventory.
-# bitcoin-core-rpc joins it for the same reason, since issue #801's row
-# 8: rpc/errors.py imports RPCErrorCode from it directly now, and the
-# package publishes its own inventory the same way btclib does
+# bitcoin-core-rpc joins it for the same reason: rpc/errors.py imports
+# RPCErrorCode from it directly (issue #801), and the package publishes
+# its own inventory the same way btclib does
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", (None, "_inventories/python.inv")),
     "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
@@ -152,26 +152,10 @@ intersphinx_cache_limit = 0
 #   but nested inside `Iterable[BlockHeader]`, and Iterable is what that
 #   file imports under TYPE_CHECKING: one guarded name inside a
 #   subscript is enough to keep autodoc from resolving the whole
-#   annotation, BlockHeader included. __annotationlib_name_1__ is the
-#   same defect once more, surfacing as Python 3.14's own placeholder
-#   for a name a *compound* annotation could not resolve, rather than as
-#   that name itself. __annotationlib_name_2__ is the same placeholder a
-#   second time, over a different compound annotation: main.py's own
-#   parent_lookup returns `Callable[[BlockHeader], BlockHeader]`, and
-#   block_db/__init__.py's own BlockDB.prune_up_to takes a
-#   `hash_at_height: Callable[[int], bytes]` -- Callable itself is what
-#   each file imports under TYPE_CHECKING, so the whole subscript is
-#   unresolved regardless of BlockHeader already being granted its own
-#   entry above. The numbering restarts in each signature, and
-#   config.py's own Config.__init__ takes one number per parameter typed
-#   `Sequence[str]`, Sequence being what that file imports under
-#   TYPE_CHECKING: nine such parameters now that config_args is one of
-#   them, restarting at __annotationlib_name_1__ for that signature and
-#   reaching __annotationlib_name_9__ there. log.py's own
-#   open_history_log restarts the same way over its own three --
-#   log_path's Path, log_warnings, config_args -- reaching only
-#   __annotationlib_name_3__, already covered by Config's own entries
-#   above
+#   annotation, BlockHeader included. Where such a compound annotation
+#   cannot be evaluated, Python 3.14 renders terms of it as
+#   placeholders, __annotationlib_name_N__, numbered from 1 within each
+#   signature: the entries below cover each number a signature reaches
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -243,11 +227,10 @@ exclude_patterns: list[str] = []
 html_theme = "furo"
 
 # no html_static_path: this project overrides no stylesheet and ships no
-# image, so the "_static" the sphinx template declares was a directory that
-# has never existed, and sphinx warns about it on every build. That warning
-# was harmless while nothing read it and is a failure now that
-# .readthedocs.yaml builds with -W. Re-add the setting with the directory,
-# not before it
+# image, so the "_static" the sphinx template declares names a directory
+# that does not exist, and sphinx warns about it on every build, a
+# failure under the -W .readthedocs.yaml builds with. Add the setting
+# with the directory, not before it
 
 
 # -- Links out of the included root markdown files ----------------------------

@@ -21,7 +21,7 @@ name: release
 #
 # What else this does not call, unlike a sibling repository's own
 # release.yml: the two platform sentinels beside the test workflow --
-# os-macos.yml and os-ubuntu.yml -- gate no commit and no merge today
+# os-macos.yml and os-ubuntu.yml -- gate no commit and no merge
 # (os-macos.yml's header has why: a platform row earns a place before a
 # review only where waiting for it costs less than the review does;
 # test.yml's own header says what each sentinel adds and what its own
@@ -94,10 +94,7 @@ jobs:
   # The checkout, the previous-tag resolution and the griffe comparison
   # are btclib-org/.github's: reusable-public-api.yml, called at a tagged commit
   # (section 10 of the organization's standard). What stays here is the
-  # package name; the --exclude 'v0.1.0' this job used to pass to git describe
-  # excluded a tag no longer in the candidate set (btclib-org/.github#105,
-  # btclib-org/btclib-node#553) and the called workflow does not carry it
-  # (btclib-org/.github#35)
+  # package name, the called workflow's one input (btclib-org/.github#35)
   public-api:
     uses: btclib-org/.github/.github/workflows/reusable-public-api.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
@@ -197,10 +194,8 @@ jobs:
     # comment says so -- but not for its result: that
     # job's own comment calls it deliberately not a merge gate, and
     # `needs` without `always()` gates on every listed job regardless, a
-    # skipped or failed job counting the same as one that never ran.
-    # btclib-org/btclib#1461 is where this exact shape blocked
-    # publish-testpypi from ever starting, on the first cycle to run
-    # public-api against a real breaking change
+    # skipped or failed job counting the same as one that never ran
+    # (btclib-org/btclib#1461)
     needs: [build, public-api, audit, test, lint, docs, integration-bitcoind]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
@@ -285,13 +280,13 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
-  # what RELEASING.md used to ask for by hand: the sentinel on what the
-  # index serves, against the version this run just published. It waits
-  # for the file to be served before installing, so it cannot pass by
-  # testing the previous release, and it runs beside github-release
-  # rather than before it -- a release announcing files that do not
-  # install is worse than a release announced a minute later, but the
-  # announcement is not what makes them installable
+  # the sentinel on what the index serves, against the version this run
+  # just published. It waits for the file to be served before
+  # installing, so it cannot pass by testing the previous release, and
+  # it runs beside github-release rather than before it -- a release
+  # announcing files that do not install is worse than a release
+  # announced a minute later, but the announcement is not what makes
+  # them installable
   published:
     name: published
     needs: publish-pypi
@@ -299,11 +294,9 @@ jobs:
     # designed failure, but does not carry this job with it: a bare
     # needs: here still reads back through publish-pypi's own needs:,
     # public-api two hops away skipping this job even though its one
-    # listed dependency succeeded -- measured on a sibling repository's
-    # own copy of this file (btclib-org/btclib#1470), where the sentinel
-    # never ran on the tag that followed btclib-org/btclib#1461's own
-    # fix to publish-pypi itself. Guarded against here from this job's
-    # first day rather than after it recurs
+    # listed dependency succeeded, as measured on a sibling repository's
+    # own copy of this file (btclib-org/btclib#1470). The condition below
+    # guards against it
     if: always() && needs.publish-pypi.result == 'success'
     uses: $/.github/workflows/pypi-install.yml
     with:

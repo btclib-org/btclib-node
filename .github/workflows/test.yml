@@ -11,8 +11,8 @@ name: test
 # suite passing rather than on the floor above: the floor is a claim
 # about the one image this paragraph opens on, and this cell asks a
 # different question -- whether the suite runs at all on a platform
-# nothing here exercised before -- rather than extending that claim to
-# a second image (issue #430).
+# no other cell exercises -- rather than extending that claim to a
+# second image (issue #430).
 #
 # The organization's own design keeps a gate to one image and one
 # interpreter, at the ceiling the plan puts on the organization's
@@ -25,80 +25,71 @@ name: test
 # version the package newly claims to support. Section 10's own
 # "exactly" is what makes those two conditions rather than a
 # description. A platform row leaves a tree's entry where a gate cell
-# asks the whole of what that tree's sentinel asked -- and section 10
+# asks the whole of what that tree's sentinel asks -- and section 10
 # names this tree on that ground, `btclib-node` being out of the
 # `os-windows` entry because the `windows` job below gates a
 # `windows-latest` cell at the interpreter `.python-version` pins, which
-# is the whole of what the sentinel ran. That cell gates on the suite
+# is the whole of what the sentinel runs. That cell gates on the suite
 # passing and not on the coverage floor, which is what section 10 asks
 # of it. So the Windows row here is sanctioned rather than merely
-# unreviewed, and this tree owes no `os-windows.yml` back
+# unreviewed, and this tree owes no `os-windows.yml`
 # (btclib-org/.github#618, btclib-org/btclib-node#735). Every cell above
 # runs as a parallel job rather than in sequence, so each one's cost is
 # one more job at the ceiling and no extra wait, against a review that
 # takes longer than any of them does regardless -- and for this row
-# specifically, a platform with no history here has no regressions yet,
-# only defects, which a week's sentinel wait would leave unnoticed for a
-# week rather than caught at the pull request that introduced them
+# specifically, a defect a week's sentinel wait would leave unnoticed
+# for a week is caught at the pull request that introduces it
 # (issue #430). `os-macos.yml`'s own header states the trade for the row
 # it keeps out of this file.
 #
 # `3.14t`, that same interpreter's free-threaded build, runs beside it
-# in the `free-threaded` job below but does not gate. Issue #387 put
-# this row in the merge gate rather than a weekly sentinel, on
-# `os-macos.yml`'s own rule for a platform row -- a place in the gate
-# only where waiting for it costs less than the review does -- because
-# two cells running as parallel jobs cost one more slot at the ceiling
-# and no extra wait. That rule cannot be evaluated once the row cannot
-# install at all: `rocksdict`, this tree's own store since issue #641,
-# has never published a `cp314t` wheel or an sdist, on any of its
-# releases (issue #723), so `uv run` on the free-threaded interpreter
-# fails at environment sync, before a single test collects -- a wait
-# with no bound to compare against a review, rather than a short one.
-# Building `rocksdict` from its own repository instead was considered
-# and rejected: it is a Rust crate over `rust-rocksdb`/`librocksdb-sys`,
-# which compiles RocksDB's own C++ source, so this job would need a
-# Rust toolchain and a full native RocksDB build, from nothing, on
-# every run, to keep one report-only cell green -- the opposite of the
-# wheel-only design `db.py`'s own docstring argues for this dependency.
-# The pin does not move for any of this: `3.14t` was never a second
-# interpreter the package claims to support, it is the one it already
-# claims, run a second time with the GIL off, and whether this tree's
-# own code passes the suite that way was answered once already, at the
-# same 100% floor, in issue #387's own comment -- worth asking again
-# the day the row can install, which is when `free-threaded` can
-# rejoin `test-passed`'s own `needs:` below. That sentence used to
-# name issue #723's own closing as the moment, which it was not:
-# #723 was closed by taking this cell *out* of `needs:` (PR #727),
-# the row still does not install, and a rejoining tied to an issue
-# already closed is a promise this file cannot keep (issue #747).
-# Until it does install, the cell stays a job of this file, run on
-# every pull request, rather than a weekly sentinel of its own,
-# because what decides that in section 10 of the organization's
-# standard is the clock and not the trigger: a job that fails at
-# environment sync is over in seconds, where the ten minutes of
-# exploration `fuzz.yml`'s own header declines to spend on a pull
-# request are the sentinel's own work -- and the day the row installs
-# again, it is this job, already on every pull request, that says so.
+# in the `free-threaded` job below but does not gate. `os-macos.yml`'s
+# own rule for a platform row -- a place in the gate only where waiting
+# for it costs less than the review does -- would put it in the gate,
+# two cells running as parallel jobs costing one more slot at the
+# ceiling and no extra wait (issue #387). That rule cannot be evaluated
+# while the row cannot install at all: `rocksdict`, this tree's own
+# store, publishes no `cp314t` wheel and no sdist (issue #723), so
+# `uv run` on the free-threaded interpreter fails at environment sync,
+# before a single test collects -- a wait with no bound to compare
+# against a review, rather than a short one. Building `rocksdict` from
+# its own repository instead is the alternative set aside: it is a Rust
+# crate over `rust-rocksdb`/`librocksdb-sys`, which compiles RocksDB's
+# own C++ source, so this job would need a Rust toolchain and a full
+# native RocksDB build, from nothing, on every run, to keep one
+# report-only cell green -- the opposite of the wheel-only design
+# `db.py`'s own docstring argues for this dependency. The pin does not
+# move for any of this: `3.14t` is not a second interpreter the package
+# claims to support, it is the one it already claims, run a second time
+# with the GIL off. Whether this tree's own code passes the suite that
+# way, at the same 100% floor, is asked the day the row can install,
+# which is when `free-threaded` joins `test-passed`'s own `needs:`
+# below. Until it installs, the cell stays a job of this file, run on
+# every pull request, rather than a weekly sentinel of its own, because
+# what decides that in section 10 of the organization's standard is the
+# clock and not the trigger: a job that fails at environment sync is
+# over in seconds, where the ten minutes of exploration `fuzz.yml`'s own
+# header declines to spend on a pull request are the sentinel's own work
+# -- and the day the row installs, it is this job, already on every pull
+# request, that says so.
 #
 # **It says so without reddening the run.** A workflow run's own
-# conclusion aggregates every job in it, `needs:` or not, so this
-# cell's expected failure concluded each push to `main` `failure`
-# while the gate was green -- and that saturation is how issue #737's
-# red `windows-latest` went unreported through eight consecutive
-# pushes, a second red reason changing nothing a reader could see. The
-# job's steps below branch on the sync instead: the two known states
-# are quiet, and the two that are news -- an installed wheel that
-# hands the GIL back, and a suite that genuinely fails free-threaded --
-# fail the job and colour the run (issue #747, issue #746).
+# conclusion aggregates every job in it, `needs:` or not, so a failure
+# this cell expects would conclude each push to `main` `failure` while
+# the gate is green, and a second red reason, such as a red
+# `windows-latest`, would change nothing a reader could see
+# (issue #737). The job's steps below branch on the sync instead: the
+# two known states are quiet, and the two that are news -- an installed
+# wheel that hands the GIL back, and a suite that genuinely fails
+# free-threaded -- fail the job and colour the run
+# (issue #747, issue #746).
 #
 # What the design puts beside this file is a platform sentinel each for
 # what stays out of the gate: `os-macos.yml` runs this suite on Darwin,
 # and `os-ubuntu.yml` on aarch64 Linux beside the image this job uses.
-# Each header says what its own image adds. Windows had a third,
-# `os-windows.yml`, whose runs priced the cell above before it existed;
-# that cell now runs what the sentinel ran, so the sentinel is gone
-# rather than kept beside a gate cell duplicating it (issue #430).
+# Each header says what its own image adds. Windows has no sentinel of
+# its own: the `windows` job below gates the cell one would run
+# (issue #430).
 
 on:
   push:
@@ -334,13 +325,11 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.14t"
-      # in a step of its own, and tolerated, so that the one state this
-      # cell has been in since issue #723 -- no `cp314t` wheel to
-      # install -- stops concluding the whole run `failure` while the
-      # gate below is green. That saturation is not cosmetic: it is
-      # how issue #737's own red `windows-latest` went unreported
-      # through eight consecutive pushes, there being nothing left for
-      # a second red reason to change (issue #747)
+      # in a step of its own, and tolerated, so that this cell's state
+      # while there is no `cp314t` wheel to install does not conclude
+      # the whole run `failure` while the gate below is green. This
+      # file's header says why a red run hides a second red reason
+      # (issue #747)
       - name: Can the free-threaded environment install at all?
         id: sync
         continue-on-error: true
@@ -382,11 +371,11 @@ jobs:
               )
           print("the GIL is off: this cell measures what it claims to")
           '
-      # coverage stays on, matching the `coverage` job above: issue
-      # #387's own measurement found no per-build difference in what
+      # coverage stays on, matching the `coverage` job above: the
+      # measurement in issue #387 shows no per-build difference in what
       # the floor requires, so this cell's own environment-sync failure
-      # is the whole of what distinguishes it from that job today, not
-      # a weaker check written around it
+      # is the whole of what distinguishes it from that job, not a
+      # weaker check written around it
       - name: Run the suite under coverage
         if: steps.sync.outcome == 'success'
         run: >
@@ -527,13 +516,8 @@ jobs:
       # for it, since nothing before `publish-pypi` in release.yml
       # otherwise reads the built wheel's own metadata rather than
       # pyproject.toml's.
-      # This was `--no-deps`, metadata-only, from the day this job first
-      # landed until issue #381 closed: PyPI carried no release with
-      # `btclib.p2p.negotiation`, which `src/btclib_node/download.py`
-      # imports unconditionally, so no floor this table could declare
-      # would let an ordinary install resolve, and the fuller form below
-      # would have failed on every run for a reason no floor bump here
-      # could fix. #381's own "Done when" is what this step now clears
+      # A full install and not `--no-deps`: a metadata-only install
+      # resolves nothing, so it would not catch such a floor (issue #381)
       #
       # The install is unpinned on purpose. It runs in this job, on the
       # files the build job signed where release.yml set `use-signed-dist`,
@@ -572,12 +556,6 @@ jobs:
   # required_status_checks rule. REPOSITORY.md's *Required checks on
   # main* is where that is read back off both endpoints, and is the one
   # place it is stated: no list of them is repeated here.
-  # This comment said the opposite until issue #749 -- that nothing
-  # required a status check and the classic protection was empty, citing
-  # btclib-org/.github#88. That was true when it was written and stopped
-  # being true with nothing to notice, btclib-org/.github#88 being
-  # the issue that records the state moving rather than one that
-  # holds it still
   test-passed:
     # the name and not the id is what a required-check rule matches, in
     # classic protection here and in a ruleset alike, and it carries
@@ -634,12 +612,11 @@ jobs:
       # and a skip that follows from one -- still arrives here as
       # "failure"
       #
-      # This step used to decide with a denylist, one `case` comparison
-      # over a space-joined `needs.*.result`: its blindness was passing
-      # any result this file did not anticipate, the empty string
-      # included -- not word splitting, which that single string
-      # comparison never did (btclib-org/btclib#1454's own title:
-      # "shell loop passes vacuously").
+      # An allowlist and not a denylist: a denylist, one `case`
+      # comparison over a space-joined `needs.*.result`, passes any
+      # result this file does not anticipate, the empty string included
+      # (btclib-org/btclib#1454's own title: "shell loop passes
+      # vacuously").
       #
       # The allowlist decides one field at a time, and word splitting
       # does not hand it every field: a trailing empty one is dropped

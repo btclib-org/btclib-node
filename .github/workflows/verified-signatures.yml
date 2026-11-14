@@ -1,8 +1,8 @@
 ---
 name: verified-signatures
 
-# Every commit pushed to main is verified on the forge, which is what
-# replaces the required_signatures rule the ruleset no longer carries
+# Every commit pushed to main is verified on the forge, in place of a
+# required_signatures rule, which the ruleset does not carry
 # (btclib-org/.github#1738). The job, its range and its checks are
 # btclib-org/.github's reusable-verified-signatures.yml; what is this
 # tree's is the trigger.

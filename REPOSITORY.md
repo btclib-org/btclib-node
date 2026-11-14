@@ -71,16 +71,16 @@ The others contribute no name of their own instead: each of `docs.yml`,
 `lint.yml`, `integration-bitcoind.yml` and `sourcery.yml` is a whole body
 that calls a reusable workflow of `btclib-org/.github`'s, so the context
 joins the calling job's id to the called job's own name. `docs.yml`'s
-`docs` job calls `reusable-docs.yml`, whose own job is still named
+`docs` job calls `reusable-docs.yml`, whose own job is named
 `Build the documentation`, so together they produce
 `docs / Build the documentation`; `lint.yml`'s `lint` job calls
-`reusable-lint.yml` the same way, whose own job is still named
+`reusable-lint.yml` the same way, whose own job is named
 `Lint and type-check`, producing `lint / Lint and type-check`
 (issue btclib-org/.github#35), and whose `Dependency review` and
 `Sign-off` jobs produce `lint / Dependency review` and `lint / Sign-off`;
 `integration-bitcoind.yml`'s `regtest`
 job calls `reusable-integration-bitcoind.yml` the same way, whose own
-job is still named `Regtest against Bitcoin Core`, producing
+job is named `Regtest against Bitcoin Core`, producing
 `regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196);
 `sourcery.yml`'s `sourcery` job calls `reusable-sourcery.yml` the same
 way, whose own job is named `Sourcery`, producing `sourcery / Sourcery`.
@@ -125,11 +125,7 @@ that PATCH stops being required, silently. `checks` and not `contexts`,
 and a JSON body and not `-f`: `contexts` has no field for an app, so a
 PATCH sending it replaces a list bound to the Actions app with the same
 names bound to nothing, and `-f` sends `app_id` as a string, which the
-endpoint refuses (section 11 of the organization's standard). This
-section carried the `contexts` form, with `-F strict=true` and one `-f`
-per name, from btclib-org/btclib-node#264 until
-btclib-org/btclib-node#657; btclib-org/btclib-node#453 is where a PATCH
-was first run here rather than only documented.
+endpoint refuses (section 11 of the organization's standard).
 
 Re-run the first command above to confirm the checks still hold, each
 with its `app_id` — its answer, not this paragraph, is what is true
@@ -293,7 +289,7 @@ gh api repos/btclib-org/btclib-node \
 ```
 
 Squash is the only method, and `main-self-merge` names it too, so the
-constraint holds even if this repository setting is flipped back.
+constraint holds even if this repository setting is flipped.
 
 `COMMIT_OR_PR_TITLE` is the subject — the pull request title with its
 number, or the subject of the single commit where a branch has one, which
@@ -419,8 +415,8 @@ the caller leaves off is not quietly dropped: the run is refused before
 any job of it starts, `release.yml`'s own jobs included
 (btclib-org/btclib-secp256k1#281). `pull-requests: read` is in the
 caller's list for that reason, and `test.yml`'s own `changes` job names
-a block for the same reason now: `reusable-changes.yml`'s `changes` job
-is what declares it, where `test.yml`'s local job of that name used to.
+a block for the same reason: it calls `reusable-changes.yml`, whose
+`changes` job declares it.
 
 The cap bounds what the called workflow declares rather than standing in
 for it: a job over there with no block of its own is granted `test.yml`'s
@@ -497,9 +493,9 @@ gh api repos/btclib-org/btclib-node/private-vulnerability-reporting
 this repository's Security tab opens an advisory only the maintainers
 see. `SECURITY.md` states the call above rather than the answer, the
 route being a setting and not a file — true of every repository whether
-or not it keeps a policy of its own, this one now doing so as a tier-1
-repository. `.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability
-entry links straight to that advisory form.
+or not it keeps a policy of its own, as this tier-1 repository does.
+`.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability entry links
+straight to that advisory form.
 
 ### The Dependabot alert counts are a changing world, not a decision
 
@@ -590,31 +586,23 @@ rows this repository gates instead of sweeping, and that file's own
 header carries the argument for each rather than this section repeating
 it: every cell runs as a parallel job, so each one past the first costs
 one more slot at the ceiling and no additional wait, against a review
-that costs more than the wait regardless. Windows had a weekly sentinel
-of its own, `os-windows.yml`, whose runs priced this trade before the
-cell existed; the cell now runs what the sentinel ran, so the sentinel
-is gone rather than kept beside a gate cell duplicating it
+that costs more than the wait regardless. Windows has no weekly sentinel
+of its own: the gating `windows-latest` cell runs what one would run
 ([issue #430](https://github.com/btclib-org/btclib-node/issues/430)).
 
-`3.14t`, the interpreter axis's own second cell, is the row that trade
-stopped covering: it still runs, in `test.yml`'s `free-threaded` job,
-at the same cost as any other cell, but no longer gates, because
-`rocksdict` -- this tree's own store -- has never published a wheel or
-an sdist for it on any release
+`3.14t`, the interpreter axis's own second cell, runs in `test.yml`'s
+`free-threaded` job, at the same cost as any other cell, and does not
+gate. `rocksdict`, this tree's own store, publishes no wheel and no
+sdist for it
 ([issue #723](https://github.com/btclib-org/btclib-node/issues/723)),
-so there is no wait left to weigh against a review, only a job that
-cannot install.
-[Issue #387](https://github.com/btclib-org/btclib-node/issues/387) is
-where that row entered the gate on this section's own rule; #723 is
-where it left again on the same rule, unmet rather than repealed, and
-where it goes back in once a wheel exists.
+so the job cannot install, and there is no wait to weigh against a
+review. The cell joins the gate, on this section's own rule, once a
+wheel exists.
 
-Gating a cell inside `test.yml` cost no change to the ruleset: *Required
-checks on main* above names `test.yml`'s aggregate job, not any cell by
-name, so the `windows` job reached that aggregate's own `needs:` by
-being added to the workflow, the same way `3.14t` did for issue #387 --
-and the same way taking `3.14t` back out needed no ruleset change
-either, for issue #723. Re-run that section's own first command to
+Gating a cell inside `test.yml` takes no change to the ruleset:
+*Required checks on main* above names `test.yml`'s aggregate job, not
+any cell, so a job gates by being in that aggregate's `needs:` and stops
+gating by leaving it. Re-run that section's own first command to
 confirm the required checks still hold; its answer, not this paragraph,
 is what is true today.
 
@@ -658,12 +646,8 @@ approve their own deployment.
 
 ### What has already been published is a changing world, not a decision
 
-**What the pair has published**, read back rather than recalled — which
-is this file's own contract, and is what the bullet removed from *What
-is not configured, and why* stopped doing: it recorded a `v0.1.0` tag
-and a release page that were deleted on 2026-08-23, four days before
-this line was written, on the decision closing btclib-org/.github#105
-(btclib-org/btclib-node#553):
+**What the pair has published**, read back rather than recalled, which
+is this file's own contract:
 
 ```shell
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
@@ -756,12 +740,12 @@ done
   # 0
   ```
 
-- **A release tag now has a URL of its own.** The dashboard carries an
+- **A release tag has a URL of its own.** The dashboard carries an
   automation rule matching the three siblings' -- Match: SemVer
-  versions, Version type: Tag, Action: Activate version -- added by the
-  maintainer directly on Read the Docs' own side (issue #596), an
-  action no `gh api` call in this file takes. Nor does one read the rule
-  back afterwards: the automation-rules endpoint answers `404`
+  versions, Version type: Tag, Action: Activate version -- kept on Read
+  the Docs' own side (issue #596), which no `gh api` call in this file
+  writes. Nor does one read the rule back: the automation-rules endpoint
+  answers `404`
   unauthenticated for every project on the dashboard, `btclib-secp256k1`'s
   own rule included, so the `404` is the absence of a token this file
   does not carry rather than the absence of a rule:
@@ -776,14 +760,11 @@ done
   ```
 
   Read the Docs evaluates a rule when it creates or updates a version
-  from a webhook event, not against a version that already exists, which
-  is why `v2026.8.27` -- tagged before the rule was added -- needed the
-  maintainer's own second action to activate by hand rather than
-  following from the rule. What the versions call above reads back is
-  that effect rather than the rule itself: `v2026.8.27` reports
-  `True True` beside `stable`, and `v2026.9.4` -- the newer tag -- now
-  answers the same pair too, read again at 2026-09-21T22:52:12Z after
-  the earlier reading here had gone stale by one tag.
+  from a webhook event, not against a version that already exists, so a
+  tag older than the rule is activated by hand. What the versions call
+  above reads back is the rule's effect rather than the rule itself:
+  `v2026.9.4`, a tag newer than the rule, reports `True True` beside
+  `stable`, read at 2026-09-21T22:52:12Z.
 - **The repository's `.homepage` is its page on btclib.org, not this
   site**, read back from the endpoint rather than from `pyproject.toml`'s
   own copy of it (issue btclib-org/.github#1974):

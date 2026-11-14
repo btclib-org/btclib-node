@@ -22,12 +22,10 @@ name: deps-oldest
 # pyproject.toml's own header over [dependency-groups] is where the
 # bound every entry there carries is argued (#761).
 #
-# This also discharges issue #958: this job's own pytest step used to
-# run with no argument, under this tree's `addopts` and its 100%
-# `fail_under`, where the family passes `--no-cov` to a sentinel cell
-# that runs the suite (section 10). The called workflow's own pytest
-# step passes `--no-cov` unconditionally, so this caller cannot reproduce
-# the departure
+# The called workflow's own pytest step passes `--no-cov`
+# unconditionally, as the family does for a sentinel cell that runs the
+# suite (section 10), so this job's run is not held to this tree's 100%
+# `fail_under` (issue #958)
 
 on:
   schedule:

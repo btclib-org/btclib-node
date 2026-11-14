@@ -534,11 +534,8 @@ standard](https://github.com/btclib-org/.github/blob/main/README.md)
 measures a repository's tier from that file and `pyproject.toml` alone,
 so this tree is tier 1 — the decision
 [ISS btclib-org/btclib-node#286](https://github.com/btclib-org/btclib-node/issues/286)
-records, superseding the tier-2 state
-[PR btclib-org/btclib-node#171](https://github.com/btclib-org/btclib-node/pull/171)
-had landed one day before that issue was filed. `RELEASING.md` and
-`RELEASE_NOTES.md` are the two files section 2 gives a tier-1 repository
-that #171 had removed, back under this section's own heading.
+records. `RELEASING.md` and `RELEASE_NOTES.md` are the two files
+section 2 gives a tier-1 repository, and this tree keeps both.
 
 It publishes to PyPI. The `pypi` and `testpypi` pair of
 `RELEASING.md`'s *One-time setup* is what uploads —
@@ -555,16 +552,8 @@ curl -s https://pypi.org/pypi/btclib-node/json |
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
 ```
 
-A lightweight `v0.1.0` from 2023, with a release page and no artifact
-on it, was deleted with its release on 2026-08-23, on the maintainer's
-decision closing btclib-org/.github#105: a ref with no object of its
-own has nothing on it to sign, and a repository that published nothing
-had no release the tag was the record of. This section went on
-describing it for four days afterwards (btclib-org/btclib-node#553),
-which is what a deletion decided in another repository's issue costs
-when nobody carries it into the files that mention it. `CHANGELOG.md`
-starts where the record starts rather than where a tag does, for the
-reason its own introduction gives.
+`CHANGELOG.md` starts where the record starts rather than where a tag
+does, for the reason its own introduction gives.
 
 A tag is cut with `git tag -s`. `tag-integrity` does not check the tag's
 own signature: `REPOSITORY.md` has what it refuses and the call that
