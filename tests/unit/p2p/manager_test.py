@@ -76,7 +76,12 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
-from btclib_node.p2p.connection import AddrKnown, Connection, local_services
+from btclib_node.p2p.connection import (
+    AddrKnown,
+    Connection,
+    PeerStats,
+    local_services,
+)
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import (
@@ -89,6 +94,7 @@ from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
+from btclib_node.p2p.transport import TransportInfo, TransportProtocolType
 from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 from btclib_node.rpc.callbacks import add_connection
@@ -140,7 +146,8 @@ def a_conn(
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
-    `reconnect_v1` is what its transport answers `should_reconnect_v1`.
+    `reconnect_v1` is what its transport answers `should_reconnect_v1`,
+    and its `stats` count an octet each way, a peer heard from and sent to.
 
     `send_ping` on this double records a ping and stamps `ping_start`,
     and `ping_sent` too unless `protocol` is `BIP0031_VERSION` or below,
@@ -186,7 +193,11 @@ def a_conn(
         addr_fetch=addr_fetch,
         permissions=permissions,
         addr_name=addr_name,
-        transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
+        transport=SimpleNamespace(
+            should_reconnect_v1=lambda: reconnect_v1,
+            get_info=lambda: TransportInfo(TransportProtocolType.V1),
+        ),
+        stats=PeerStats(bytes_sent=1, bytes_recv=1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
         next_addr_send=0.0,
@@ -1179,6 +1190,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         inbound = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
         addr_relay_enabled = False
+        stats = PeerStats(bytes_sent=1, bytes_recv=1)
 
         @property
         def ping_sent(self) -> float:
@@ -1253,6 +1265,203 @@ def test_a_connected_peer_outlives_the_handshake_timeout(
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert conn.id in manager.connections
+
+
+# A mock time the drops below are timed against, so the seconds each line
+# prints are exact
+DROP_TIME = 2_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("fields", "line"),
+    [
+        (
+            {"last_send": DROP_TIME - 1300.75},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"last_receive": DROP_TIME - 1300.75},
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"pause_send": True, "pause_send_since": DROP_TIME - 1300.75},
+            "send buffer full for 1300s, disconnecting peer=1",
+        ),
+        (
+            {"ping_sent": DROP_TIME - 1300.5},
+            "ping timeout: 1300.500000s, disconnecting peer=1",
+        ),
+        (
+            {"last_send": DROP_TIME - 1300, "ping_sent": DROP_TIME - 1300},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"last_send": DROP_TIME - 1300, "last_receive": DROP_TIME - 1300},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {
+                "last_receive": DROP_TIME - 1300,
+                "pause_send": True,
+                "pause_send_since": DROP_TIME - 1300,
+            },
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"stats": PeerStats()},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+    ],
+    ids=[
+        "sending",
+        "receive",
+        "paused",
+        "ping",
+        "sending-and-ping",
+        "sending-and-receive",
+        "receive-and-paused",
+        "no-octets",
+    ],
+)
+def test_each_inactivity_drop_logs_cores_net_line(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    fields: dict[str, Any],
+    line: str,
+) -> None:
+    """ISS 2369: `_keep_alive` logs Core's `-debug=net` line for each drop.
+
+    `CConnman::InactivityCheck` and `MaybeSendPing` (`src/net.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag): whole seconds, cut, for the first three, and `%f` for the
+    `pong`. Where two checks hold, the line is the one Core checks first,
+    and a send is checked before a `pong`. A connected peer that has no
+    octet either way is dropped too, as Core drops one.
+    """
+    clock_module.set_mock_time(DROP_TIME)
+    conn = a_conn(
+        1,
+        last_receive=DROP_TIME,
+        last_send=DROP_TIME,
+        ping_start=DROP_TIME,
+        connected_time=DROP_TIME - 3600,
+    )
+    for name, value in fields.items():
+        setattr(conn, name, value)
+    manager = a_manager([conn])
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    asyncio.run(one_pass(manager))
+    assert 1 not in manager.connections
+    assert logged == [("net", line)]
+
+
+@pytest.mark.parametrize(
+    ("stats", "transport_type", "fields", "line"),
+    [
+        (
+            PeerStats(),
+            TransportProtocolType.V1,
+            {},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(),
+            TransportProtocolType.V1,
+            {"last_send": DROP_TIME - 1300},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_sent=1),
+            TransportProtocolType.V1,
+            {},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_recv=1),
+            TransportProtocolType.DETECTING,
+            {},
+            (
+                "socket no message in first 60 seconds, never sent to peer,"
+                " disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.V1,
+            {"last_receive": DROP_TIME - 1300},
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.V1,
+            {},
+            "version handshake timeout, disconnecting peer=1",
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.DETECTING,
+            {},
+            "V2 handshake timeout, disconnecting peer=1",
+        ),
+    ],
+    ids=[
+        "silent",
+        "silent-and-sending",
+        "never-heard",
+        "never-sent",
+        "receive",
+        "version",
+        "v2",
+    ],
+)
+def test_each_handshake_drop_logs_cores_net_line(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stats: PeerStats,
+    transport_type: TransportProtocolType,
+    fields: dict[str, Any],
+    line: str,
+) -> None:
+    """ISS 2369: a pending connection's drop logs Core's `-debug=net` line.
+
+    `CConnman::InactivityCheck` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order: no octet
+    either way first, then the timeouts, then the handshake itself, `V2`
+    while the transport is still `DETECTING`.
+    """
+    clock_module.set_mock_time(DROP_TIME)
+    conn = a_conn(
+        1,
+        status=P2pConnStatus.Open,
+        last_receive=DROP_TIME,
+        last_send=DROP_TIME,
+        connected_time=DROP_TIME - PEER_CONNECT_TIMEOUT - 1,
+    )
+    conn.stats = stats
+    conn.transport.get_info = lambda: TransportInfo(transport_type)
+    for name, value in fields.items():
+        setattr(conn, name, value)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    asyncio.run(one_pass(manager))
+    assert not manager.pending_connections
+    assert logged == [("net", line)]
 
 
 async def _dial_call_count_over(manager: P2pManager, real_seconds: float) -> int:

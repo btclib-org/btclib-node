@@ -4,6 +4,9 @@
 
 """Two real nodes complete a handshake, and a node refuses one with itself."""
 
+import re
+import socket
+from contextlib import closing
 from typing import TYPE_CHECKING, override
 
 import pytest
@@ -14,8 +17,10 @@ from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.main import update_chain
+from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.connection import Connection
 from tests import (
+    LogLines,
     WaitTimeoutError,
     generate_random_chain,
     get_random_port,
@@ -249,3 +254,29 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         assert not node.p2p_manager.connections
     finally:
         node.stop()
+
+
+def test_a_silent_peer_is_dropped_with_cores_net_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2369: a peer that sends nothing is dropped, and the log says why.
+
+    The `-debug=net` line of Core's `InactivityCheck` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) for a socket that connects
+    and sends nothing. The connect timeout is shortened to a second, as
+    Core's `-peertimeout=1` shortens it.
+    """
+    monkeypatch.setattr(manager_module, "_PEER_CONNECT_TIMEOUT", 1)
+    pattern = re.compile(
+        r"socket no message in first 1 seconds, never received from peer,"
+        r" never sent to peer, disconnecting peer=\d+"
+    )
+    with node_context(tmp_path, allow_rpc=False) as node:
+        wait_until_listening(node.p2p_manager)
+        lines = LogLines()
+        node.logger.addHandler(lines)
+        with closing(
+            socket.create_connection(("127.0.0.1", node.p2p_port), timeout=20)
+        ):
+            wait_until(lambda: any(map(pattern.fullmatch, lines.messages)))
+        wait_until(lambda: not node.p2p_manager.pending_connections)
