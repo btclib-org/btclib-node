@@ -8,16 +8,24 @@ An integer past CPython's digit limit is decoded, and its text kept.
 
 Overflow and the constants are held to bitcoind, the release
 `integration-bitcoind.yml` pins, by `tests/integration/json_double_test.py`.
+Nesting is held to it by `tests/integration/json_depth_test.py`.
 Underflow follows Core's Linux release, as `get_real`'s docstring says why.
 """
 
+import json
 import sys
+import tracemalloc
+from typing import TYPE_CHECKING
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import MAX_JSON_DEPTH
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.jsonrpc import LongInteger, decode, get_real
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ISS 2456: past CPython's digit limit, the length measured on the
 # `bitcoind` `integration-bitcoind.yml` pins
@@ -110,3 +118,49 @@ def test_a_long_integer_hides_no_refusal_after_it(after: str, refusal: str) -> N
     """What follows the integer is refused as it is in a body without one."""
     with pytest.raises(ValueError, match=refusal):
         decode(f"[{_PAST_DIGIT_LIMIT},{after}]".encode())
+
+
+def _arrays(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+def _objects(depth: int) -> str:
+    return '{"a":' * (depth - 1) + "{}" + "}" * (depth - 1)
+
+
+@pytest.mark.parametrize("shape", [_arrays, _objects])
+def test_a_body_as_deep_as_core_reads_is_decoded(shape: Callable[[int], str]) -> None:
+    """ISS 2468: `MAX_JSON_DEPTH` containers open at once are read."""
+    text = shape(MAX_JSON_DEPTH)
+    assert decode(text.encode()) == json.loads(text)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH + 1, 100_000])
+@pytest.mark.parametrize("shape", [_arrays, _objects])
+def test_a_body_deeper_than_core_reads_is_a_parse_error(
+    shape: Callable[[int], str], depth: int, encoding: str
+) -> None:
+    """ISS 2468: refused at any depth, as `UniValue::read` refuses it."""
+    with pytest.raises(ValueError, match="arrays and objects open"):
+        decode(shape(depth).encode(encoding))
+
+
+def test_a_bracket_in_a_string_is_not_counted() -> None:
+    """Brackets after an escaped quote are still inside the string."""
+    text = '["\\"' + "[{" * MAX_JSON_DEPTH + '"]'
+    assert decode(text.encode()) == json.loads(text)
+
+
+def test_the_depth_count_holds_no_state_for_each_escape() -> None:
+    """Memory stays within a few times the body, however many escapes."""
+    brackets = "[" * (MAX_JSON_DEPTH + 1)
+    escapes = "\\\\" * 100_000
+    body = f'{{"method":"x","y":"{brackets}","x":"{escapes}"}}'.encode()
+    tracemalloc.start()
+    try:
+        decode(body)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * len(body)

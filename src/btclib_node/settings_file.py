@@ -37,7 +37,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from btclib_node.constants import CLIENT_NAME
+from btclib_node.constants import CLIENT_NAME, MAX_JSON_DEPTH
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -58,10 +58,6 @@ SETTINGS_FILENAME = "settings.json"
 
 # `SETTINGS_WARN_MSG_KEY` (`src/common/settings.cpp`)
 _WARNING_KEY = "_warning_"
-
-# `MAX_JSON_DEPTH` (`src/univalue/lib/univalue_read.cpp`): the most arrays
-# and objects open at once
-_MAX_DEPTH = 512
 
 _WHITESPACE = " \t\n\r"
 _DIGITS = "0123456789"
@@ -357,7 +353,7 @@ def _parse(text: str) -> Json:  # noqa: C901, PLR0912 -- the one state machine
             raise _InvalidJsonError
         elif kind in {"{", "["}:
             stack.append(_Open(is_object=kind == "{"))
-            if len(stack) > _MAX_DEPTH + 1:
+            if len(stack) > MAX_JSON_DEPTH + 1:
                 raise _InvalidJsonError
             expect = _NAME_OR_END if kind == "{" else _ELEMENT
             continue

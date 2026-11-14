@@ -27,6 +27,7 @@ __all__ = [
     "DEFAULT_MAXSENDBUFFER",
     "DEFAULT_MEMPOOL_EXPIRY_HOURS",
     "DIR_MODE",
+    "MAX_JSON_DEPTH",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -56,6 +57,11 @@ DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
 # Windows gets 0777, as Core does: since Python 3.13 a 0700 there is a
 # protected ACL where Core's directories inherit the parent's.
 DIR_MODE = 0o777 if sys.platform == "win32" else 0o700
+
+# Core's `MAX_JSON_DEPTH` (`src/univalue/lib/univalue_read.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most arrays and
+# objects open at once in a JSON text `UniValue::read` accepts.
+MAX_JSON_DEPTH = 512
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):

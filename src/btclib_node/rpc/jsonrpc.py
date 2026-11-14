@@ -16,11 +16,14 @@ request with no `id` is a notification, run and answered with no body.
 
 import json
 import math
+import re
 from functools import partial
+from itertools import accumulate
 from typing import Any, NamedTuple, NoReturn, Self, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import MAX_JSON_DEPTH
 from btclib_node.rpc.errors import RpcError
 
 __all__ = [
@@ -169,6 +172,31 @@ def get_real(value: float) -> float:
     return real
 
 
+# A JSON string. The closing quote is optional, so a string left open
+# takes the rest of the text in one match: `json.loads` stops at its
+# opening quote, and a pattern needing the quote would try again from each
+# later one. The quantifiers are possessive, so that `re` keeps no state
+# to backtrack to for each escape.
+_STRING = re.compile(r'"[^"\\]*+(?:\\.[^"\\]*+)*+"?', re.DOTALL)
+_NOT_A_BRACKET = re.compile(r"[^\[\]{}]+")
+_NESTING = {"[": 1, "{": 1, "]": -1, "}": -1}
+
+
+def _refuse_past_max_depth(text: str) -> None:
+    """Raise `ValueError` where more than `MAX_JSON_DEPTH` containers are open.
+
+    The containers are arrays and objects, and a bracket in a string
+    is not one.
+    """
+    if text.count("[") + text.count("{") <= MAX_JSON_DEPTH:
+        return
+    brackets = _NOT_A_BRACKET.sub("", _STRING.sub("", text))
+    depths = accumulate(map(_NESTING.__getitem__, brackets))
+    if max(depths, default=0) > MAX_JSON_DEPTH:
+        message = f"more than {MAX_JSON_DEPTH} arrays and objects open"
+        raise ValueError(message)
+
+
 def _no_constant(name: str) -> NoReturn:
     """Refuse `NaN`, `Infinity` and `-Infinity`, which JSON does not have."""
     raise ValueError(name)
@@ -188,9 +216,20 @@ def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     (`src/univalue/include/univalue_utffilter.h`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag), and `HTTPReq_JSONRPC`
     answers the whole body as a parse error.
+
+    It also raises where more than `MAX_JSON_DEPTH` arrays and objects
+    are open at once, which `UniValue::read` refuses
+    (`src/univalue/lib/univalue_read.cpp`, same sha). It counts them
+    before `json.loads` reads the text: `json.loads` raises
+    `RecursionError`, which is not a `ValueError`, on a text nested
+    deeper than the stack holds.
     """
+    # decoded as `json.loads` decodes bytes, so the depth is counted on
+    # the text it reads
+    text = body.decode(json.detect_encoding(body), "surrogatepass")
+    _refuse_past_max_depth(text)
     read = partial(
-        json.loads, body, object_pairs_hook=JsonObject, parse_constant=_no_constant
+        json.loads, text, object_pairs_hook=JsonObject, parse_constant=_no_constant
     )
     try:
         # with `json`'s own `int`: a `parse_int` slows a body of many integers
@@ -401,8 +440,7 @@ def transform_named_arguments(
 def _written(value: object) -> object:
     """Return `value` with each `LongInteger` in it a `RawJSON` of its text.
 
-    A loop rather than a recursion, as in `decode`: `json.loads` reads
-    arrays nested deeper than Python's recursion limit.
+    A loop rather than a recursion, as in `decode`.
     """
     containers: list[list[Any] | JsonObject] = []
     pending = [value]
