@@ -657,18 +657,25 @@ class FeeEstimator:
             stats.clear_current(height)
         for stats in self._all_stats():
             stats.update_moving_averages()
-        counted = sum(self._process_block_tx(height, tx) for tx in removed)
+        txs = list(removed)
+        counted = sum(self._process_block_tx(height, tx) for tx in txs)
         if self.first_recorded_height == 0 and counted > 0:
             self.first_recorded_height = height
+        # Core's line, `block_policy_estimator.cpp:713-715` at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag
         self.logger.log_debug(
             "estimatefee",
-            "Blockpolicy estimates updated by %d block txs, since last block %d of "
-            "%d tracked, mempool map size %d, max target %d",
+            "Blockpolicy estimates updated by %d of %d block txs, since last block "
+            "%d of %d tracked, mempool map size %d, max target %d from %s",
             counted,
+            len(txs),
             self.tracked_txs,
             self.tracked_txs + self.untracked_txs,
             len(self.mempool_txs),
             self._max_usable_estimate(),
+            "historical"
+            if self._historical_block_span() > self._block_span()
+            else "current",
         )
         self.tracked_txs = 0
         self.untracked_txs = 0
