@@ -1866,6 +1866,35 @@ def test_an_id_past_the_digit_limit_is_written_back_as_read() -> None:
     assert _json_text(request.reply(0)) == expected
 
 
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "1.50",
+        "1e2",
+        "-0.0",
+        "-0",
+        "1E400",
+        '[1.50,{"a":-0,"a":1e2},[[1E-400]]]',
+        f"[{'9' * 5000},-0,1.50]",
+    ],
+    ids=[
+        "fraction",
+        "exponent",
+        "minus-zero-fraction",
+        "minus-zero",
+        "overflow",
+        "nested",
+        "long",
+    ],
+)
+def test_a_number_in_an_id_is_written_back_as_read(request_id: str) -> None:
+    """ISS 2469: as `bitcoind` writes it, at any depth."""
+    request = JsonRpcRequest()
+    request.parse(decode(f'{{"id":{request_id},"method":"x"}}'.encode()))
+    expected = f'{{"result":0,"error":null,"id":{request_id}}}'
+    assert _json_text(request.reply(0)) == expected
+
+
 def test_a_request_under_wallet_is_dispatched() -> None:
     """A `POST` under `/wallet/` is dispatched like one to `/`, as in Core."""
     data = request(b"Content-Length: %d\r\n" % len(BODY), target=b"/wallet/w")
