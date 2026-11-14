@@ -4931,6 +4931,26 @@ def test_a_height_past_the_tip_is_refused() -> None:
     assert raised.value.message == "Block height out of range"
 
 
+@pytest.mark.parametrize(
+    ("height", "code", "message"),
+    [
+        (-(2**31), RPCErrorCode.INVALID_PARAMETER, "Block height out of range"),
+        (2**31 - 1, RPCErrorCode.INVALID_PARAMETER, "Block height out of range"),
+        (-(2**31) - 1, RPCErrorCode.MISC_ERROR, "JSON integer out of range"),
+        (2**31, RPCErrorCode.MISC_ERROR, "JSON integer out of range"),
+    ],
+)
+def test_get_block_hash_reads_height_as_a_32_bit_int(
+    height: int, code: RPCErrorCode, message: str
+) -> None:
+    """ISS 2470: Core reads the height as an `int` before the chain lookup."""
+    node = a_chain_index_node([b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [height])
+    assert raised.value.code == code
+    assert raised.value.message == message
+
+
 def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
     """`getblockhash`'s height of any wrong JSON type is named, not faulted.
 

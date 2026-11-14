@@ -519,6 +519,12 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # at bitcoin/bitcoin@f0de87f040)
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
 
+    if not -(2**31) <= height < 2**31:
+        # `getInt<int>()` reads the height before the chain lookup, so a
+        # value outside a 32-bit `int` is the generic integer refusal
+        # even though it is also outside the active chain.
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+
     if height < 0 or height >= len(active_chain):
         # src/rpc/blockchain.cpp:629-631: one check either direction,
         # and the same message both ways -- height < 0 is what used to
