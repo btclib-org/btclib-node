@@ -164,14 +164,22 @@ def test_a_template_is_the_block_core_assembles(node: Node) -> None:
 
 
 def test_the_coinbase_commits_to_the_height_past_sixteen(node: Node) -> None:
-    """A height above 16 is pushed as a number; `lock_time` is `height - 1`."""
-    mine(node, 17)
+    """Core v32.1 adds OP_0 up to height 16 only; lock_time is height - 1."""
+    mine(node, 15)
 
-    block = create_new_block(node, SCRIPT).block
+    block16 = create_new_block(node, SCRIPT).block
+    assert block16.transactions[0].vin[0].script_sig == bip34_commitment(16) + b"\x00"
+    assert block16.transactions[0].lock_time == 15
+    assert check_block_validity(node, block16, check_merkle_root=True) is None
+    mined16 = mine_template(node, block16)
+    assert mined16.transactions[0].vin[0].script_sig == bip34_commitment(16) + b"\x00"
 
-    assert block.transactions[0].vin[0].script_sig == bip34_commitment(18) + b"\x00"
-    assert block.transactions[0].lock_time == 17
-    assert check_block_validity(node, block, check_merkle_root=True) is None
+    block17 = create_new_block(node, SCRIPT).block
+    assert block17.transactions[0].vin[0].script_sig == bip34_commitment(17)
+    assert block17.transactions[0].lock_time == 16
+    assert check_block_validity(node, block17, check_merkle_root=True) is None
+    mined17 = mine_template(node, block17)
+    assert mined17.transactions[0].vin[0].script_sig == bip34_commitment(17)
 
 
 def test_the_reserved_value_is_written_once_segwit_is_active(
