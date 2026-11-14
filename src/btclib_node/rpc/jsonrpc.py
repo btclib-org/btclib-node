@@ -177,20 +177,28 @@ def _no_constant(name: str) -> NoReturn:
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     r"""Decode a request body, each object a `JsonObject`.
 
+    The body is read as UTF-8 only. A byte order mark, UTF-16 and UTF-32
+    are refused as Core refuses them (`UniValue::read` takes the bytes
+    as plain text, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), where
+    `json.loads` of bytes would detect the encoding and read them.
+
     Raises `ValueError` where `json.loads` does, except on an integer
     past the interpreter's digit limit, which it reads as a
     `LongInteger`. It also raises where the text holds `NaN`, `Infinity`
     or `-Infinity`, which `json.loads` reads and Core's `UniValue::read`
     does not, and where a string or an object key holds a lone
     surrogate. `json.loads` reads `"\ud800"` with no low surrogate after
-    it, and a UTF-8 encoding of one, as a one-character string. Core's
-    `JSONUTF8StringFilter` refuses both
+    it as a one-character string. Core's `JSONUTF8StringFilter` refuses
+    both that and a UTF-8 encoding of one
     (`src/univalue/include/univalue_utffilter.h`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag), and `HTTPReq_JSONRPC`
-    answers the whole body as a parse error.
+    answers the whole body as a parse error. A UTF-8 encoding of a lone
+    surrogate is refused at the decode step, and an escaped one by the
+    walk below.
     """
+    text = body.decode("utf-8")
     read = partial(
-        json.loads, body, object_pairs_hook=JsonObject, parse_constant=_no_constant
+        json.loads, text, object_pairs_hook=JsonObject, parse_constant=_no_constant
     )
     try:
         # with `json`'s own `int`: a `parse_int` slows a body of many integers
