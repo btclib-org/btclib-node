@@ -61,9 +61,9 @@ _ADDRESS = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
 _H160 = "ab" * 20
 _H256 = "cd" * 32
 
-# btclib-wallet's review cases: a multisig whose key at one index is the
-# other's at the next, so its origin is the first index's, and a leaf at
-# two depths of a taproot tree
+# a multisig whose key at one index is the other's at the next, so its
+# origin is the first index's, and a leaf at two depths of a taproot
+# tree
 _RANGED_MULTI = f"wsh(multi(1,[aaaaaaaa/5]{_TPUB}/0/*,[bbbbbbbb/7]{_TPUB}/0/1))"
 _TWO_DEPTHS = f"tr({_TPUB}/9/1,{{pk({_TPUB}/0/1),{{pk({_TPUB}/0/1),pk({_TPUB}/1/1)}}}})"
 # each path's key is the other's under another origin: the first path's wins

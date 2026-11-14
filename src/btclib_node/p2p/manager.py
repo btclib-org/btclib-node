@@ -667,7 +667,7 @@ class P2pManager(threading.Thread):
         # `seed_node_timer = NodeClock::now()`, set when
         # `ThreadOpenConnections` -- the dial loop -- starts, not at
         # construction, the same reasoning `_dial_start` is re-anchored
-        # there for (btclib-org/btclib-node#1192, review round 2).
+        # there for (btclib-org/btclib-node#1192).
         self._seednode_addr_fetch_due = False
         self._next_seednode_at = 0.0
         # Core's `start`, reset when `manage_connections` begins.
@@ -721,12 +721,12 @@ class P2pManager(threading.Thread):
         self.connections: dict[int, Connection] = {}
         # A connection accepted or dialled but not yet past `verack`,
         # kept out of `connections` so that nothing iterating it -- the
-        # two sends #114 gated, ping housekeeping, `stop_all` -- can
-        # reach a peer the handshake has not cleared to speak the rest
-        # of the protocol to: btclib-org/btclib-node#131.
-        # `promote_connection` is the only way out of this dict, and
-        # `callbacks.verack` is the only caller, right where
-        # `P2pConnStatus.Connected` is set.
+        # two sends of btclib-org/btclib-node#114, ping housekeeping,
+        # `stop_all` -- can reach a peer the handshake has not cleared
+        # to speak the rest of the protocol to:
+        # btclib-org/btclib-node#131. `promote_connection` is the only
+        # way out of this dict, and `callbacks.verack` is the only
+        # caller, right where `P2pConnStatus.Connected` is set.
         self.pending_connections: dict[int, Connection] = {}
         # `promote_connection` pops from `pending_connections` and then
         # writes into `connections` -- two statements, not one -- and
@@ -773,17 +773,17 @@ class P2pManager(threading.Thread):
         self._reconnections: deque[_Reconnection] = deque()
         self._retrying: list[_Reconnection] = []
         self._reconnections_lock = threading.Lock()
-        # (command, payload, connection id, weight, receive time) --
-        # the weight, Core's `CNetMessage::GetMemoryUsage`, is what
+        # (command, payload, connection id, weight, receive time) -- the
+        # weight, Core's `CNetMessage::GetMemoryUsage`, is what
         # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
         # off `queued_recv_bytes`, `Connection.recv_flood_size`'s own
-        # comment (`p2p/connection.py`) arguing why. `handshake_messages` is
-        # drained whole every pass of `Node`'s own loop rather than
-        # sharing `messages`'s own log2-scaled share
-        # (btclib-org/btclib-node#462), and now paces its own reads
-        # against the same bound `messages` does: the earlier scoping
-        # away from it answered how long a backlog persists, not how
-        # large one pass's own backlog could grow before draining it.
+        # comment (`p2p/connection.py`) arguing why.
+        # `handshake_messages` is drained whole every pass of `Node`'s
+        # own loop rather than sharing `messages`'s own log2-scaled
+        # share (btclib-org/btclib-node#462), and paces its own reads
+        # against the same bound `messages` does: what that bound
+        # answers is how large one pass's own backlog can grow before
+        # draining it, not how long a backlog persists.
         # btclib-org/btclib-node#482
         #
         # Appended only from this manager's own event-loop thread --
@@ -922,14 +922,11 @@ class P2pManager(threading.Thread):
         # `server`'s own accept queue, one per listening socket, kept
         # here rather than only local to `server`'s own frame so the two
         # `manager_test.py` tests naming btclib-org/btclib-node#386 can
-        # land a connection into the live queue directly -- the seam a
-        # bare `await loop.sock_accept` gave their own predecessors
-        # before that fix, and gives `_accept_loop` again below
-        # (btclib-org/btclib-node#430): what changed is what fills the
-        # queue, a task rather than a reader callback, kept behind this
-        # same queue so `server`'s own consumption of it is unaffected.
-        # Nothing in this class reads it outside `server` and
-        # `_accept_loop`.
+        # land a connection into the live queue directly. What fills it
+        # is `_accept_loop` below, a task rather than a reader callback
+        # (btclib-org/btclib-node#430), and `server` consumes it the
+        # same whichever fills it. Nothing in this class reads it
+        # outside `server` and `_accept_loop`.
         self._accept_queues: dict[
             socket.socket,
             asyncio.Queue[
@@ -1663,8 +1660,8 @@ class P2pManager(threading.Thread):
         once per already-resolved address -- a caller reaching for one
         specific peer it already holds as a `NetworkAddressV2`, a test
         connecting two nodes among them -- so a dial lost here has
-        nothing behind it to try again, and used to vanish with nothing
-        in `debug.log` naming it (issue #1020). A caller holding a host
+        nothing behind it to try again, and would vanish with nothing in
+        `debug.log` naming it (issue #1020). A caller holding a host
         rather than a resolved address, `-connect`/`-addnode`'s own
         redial among them, wants `async_connect_host` instead
         (btclib-org/btclib-node#1264).
@@ -2307,20 +2304,20 @@ class P2pManager(threading.Thread):
     def _is_held(self, node_str: str, by_address: set[str], by_name: set[str]) -> bool:
         """Whether `node_str` is already held, Core's own literal/name split.
 
-        `GetAddedNodeInfo` (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
-        the v32.1 tag) runs `LookupNumeric` on the spec first: where it
-        answers a valid `CService` -- `node_str` names an address,
-        `_numeric_endpoint`'s own question -- the spec is matched
-        against `mapConnected`, every held connection's own resolved
-        address, whatever route opened it. Otherwise the spec is a name,
-        matched against `mapConnectedByName`, `addr_name` alone. A
-        literal-IP spec is never held by `addr_name` alone, an
-        `-addnode=1.2.3.4` no longer recognizing a connection this node
-        holds to `1.2.3.4` under a `-connect`- or `onetry`-given
-        `addr_name` of its own -- `btclib-org/btclib-node#1493`'s own
-        regression, `addr_name` for the first time able to differ from
-        `_numeric_endpoint`'s own endpoint once a spec's own port survives
-        onto it (btclib-org/btclib-node#1498).
+        `GetAddedNodeInfo` (`src/net.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs `LookupNumeric`
+        on the spec first: where it answers a valid `CService` --
+        `node_str` names an address, `_numeric_endpoint`'s own question
+        -- the spec is matched against `mapConnected`, every held
+        connection's own resolved address, whatever route opened it.
+        Otherwise the spec is a name, matched against
+        `mapConnectedByName`, `addr_name` alone. A literal-IP spec is
+        never matched by `addr_name` alone: `addr_name` can differ from
+        `_numeric_endpoint`'s own endpoint once a spec's own port
+        survives onto it, and an `-addnode=1.2.3.4` would then not
+        recognize a connection this node holds to `1.2.3.4` under a
+        `-connect`- or `onetry`-given `addr_name` of its own
+        (btclib-org/btclib-node#1493, btclib-org/btclib-node#1498).
         """
         endpoint = self._numeric_endpoint(node_str)
         if endpoint is not None:
@@ -2368,11 +2365,10 @@ class P2pManager(threading.Thread):
         manager and the loop actually starting (store loading, and
         anything else `Node.__init__` does first) must not let
         `_next_seednode_at` expire before the loop's own first pass ever
-        runs: that let a call to `_maybe_add_seednode` below queue a
-        `-seednode` value immediately on that first pass even with
+        runs: that would let a call to `_maybe_add_seednode` below queue
+        a `-seednode` value immediately on that first pass even with
         `peer_db` already holding something, which is the "wait" branch
-        the drip-feed exists to take (btclib-org/btclib-node#1192,
-        review round 2).
+        the drip-feed exists to take (btclib-org/btclib-node#1192).
         """
         self._dial_start = clock.now()
         # Anchored at the same instant as `_dial_start`, not backdated:
@@ -2385,7 +2381,7 @@ class P2pManager(threading.Thread):
         # v32.1 tag). So this (re)start's first pass waits
         # `_AUTOMATIC_DIAL_INTERVAL` too, the same as every pass after
         # it -- no shortcut for a loop armed a while after this manager
-        # was built (btclib-org/btclib-node#1379, review round 2).
+        # was built (btclib-org/btclib-node#1379).
         self._last_dial_pass = time.monotonic()
         # Core's own `add_addr_fetch`'s initial value: the first
         # `-seednode` is queued as soon as this pass starts where
@@ -2873,10 +2869,10 @@ class P2pManager(threading.Thread):
         Compared as text, as Core compares `ToStringAddr` and
         `ToStringAddrPort`: a value without a port names the host on
         every port, and one with a port names that endpoint alone.
-        `_added_peers_lock` is taken for the one read, `_ADDED_NODES_BOUND`
-        applied to its current size rather than one fixed at startup,
-        since `add_added_peer`/`remove_added_peer` grow and shrink it at
-        runtime now (btclib-org/btclib-node#1350).
+        `_added_peers_lock` is taken for the one read,
+        `_ADDED_NODES_BOUND` applied to its current size rather than one
+        fixed at startup, since `add_added_peer`/`remove_added_peer`
+        grow and shrink it at runtime (btclib-org/btclib-node#1350).
         """
         with self._added_peers_lock:
             added = tuple(self._added_peers)
@@ -3188,12 +3184,11 @@ class P2pManager(threading.Thread):
         (btclib-org/btclib-node#1284).
 
         Wrapped in its own `try`: `_open_addr_fetches`' own future, the
-        caller below, is never
-        awaited by anything (`run`, below), so an unguarded raise here
-        would end that standing loop for the rest of this node's life
-        rather than only this one addr-fetch pass -- `manage_connections`'s
-        own pinging and eviction run on a loop of their own since
-        #1366 and are no longer at stake here.
+        caller below, is never awaited by anything (`run`, below), so an
+        unguarded raise here would end that standing loop for the rest
+        of this node's life rather than only this one addr-fetch pass --
+        `manage_connections`'s own pinging and eviction run on a loop of
+        their own (#1366) and are not at stake here.
         """
         if not self._addr_fetches:
             return
@@ -3632,14 +3627,14 @@ class P2pManager(threading.Thread):
         by handing it a socket that only duck-types `.accept()`, without
         a live listener.
 
-        `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
-        internally on both loop families this node runs on (a selector
-        loop's own reader callback, a Windows Proactor loop's overlapped
-        `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
-        ordinary way, a peer resetting the connection between the kernel
-        reporting it readable and the accept reaching it -- which is what
-        the `except OSError` below answers exactly as `server`'s own
-        former reader callback used to.
+        `loop.sock_accept` retries a
+        `BlockingIOError`/`InterruptedError` internally on both loop
+        families this node runs on (a selector loop's own reader
+        callback, a Windows Proactor loop's overlapped `AcceptEx`) and
+        raises anything else -- `ECONNABORTED` being the ordinary way, a
+        peer resetting the connection between the kernel reporting it
+        readable and the accept reaching it -- which is what the `except
+        OSError` below answers.
 
         Where no descriptor is left, each failure is logged at info, as
         Core logs it, and the accept tried again `_ACCEPT_RETRY_DELAY`
@@ -3779,39 +3774,36 @@ class P2pManager(threading.Thread):
         """
         with server_socket:
             # The queue is what keeps a shutdown from discarding an
-            # already-accepted socket reaching `server`'s own consumption
-            # below: an item lands in its deque through `put_nowait`, a
-            # plain call rather than an await, so nothing this
-            # coroutine's own suspension on `accepted.get()` is cancelled
-            # out of can ever lose an item already there -- the `finally`
-            # closes whatever is left in it on whichever pass reaches
-            # this task. That half of btclib-org/btclib-node#386 still
-            # holds exactly as it did.
+            # already-accepted socket reaching `server`'s own
+            # consumption below: an item lands in its deque through
+            # `put_nowait`, a plain call rather than an await, so
+            # nothing this coroutine's own suspension on
+            # `accepted.get()` is cancelled out of can ever lose an item
+            # already there -- the `finally` closes whatever is left in
+            # it on whichever pass reaches this task
+            # (btclib-org/btclib-node#386).
             #
-            # What no longer holds is the other half, for `_accept_loop`
-            # itself: `loop.add_reader`, which #386 chose over
-            # `loop.sock_accept` because the reader callback it registers
-            # is never itself a `Task.cancel` target, is not implemented
-            # by Windows' own default Proactor loop
-            # (btclib-org/btclib-node#430) -- so accepting there has to
-            # go back through a task awaiting `loop.sock_accept`, and
-            # that task is reachable by `stop`'s own blanket sweep over
-            # `asyncio.all_tasks` exactly as #312's shielded task was:
-            # `Task.cancel` cannot cancel a future that is already done,
-            # so a cancel landing in the narrow window between the
-            # kernel resolving one `sock_accept` and `_accept_loop`'s own
-            # next step still throws `CancelledError` in regardless,
-            # before that socket ever reaches `put_nowait`. CPython's own
-            # reference counting is what bounds the cost of that window
-            # rather than eliminating it: nothing else holds the
-            # discarded socket once its frame unwinds, so it is closed by
-            # its own `__del__` -- a `ResourceWarning`, not a leaked
-            # descriptor -- in place of the graceful close `finally`
-            # gives every item that did reach the queue. A peer that
-            # dials in that exact instant of shutdown loses the
-            # connection it just opened; nothing during ordinary
-            # operation reaches this window at all, `_accept_loop` never
-            # otherwise stopping.
+            # `_accept_loop` itself has no such protection:
+            # `loop.add_reader`, whose reader callback is never itself a
+            # `Task.cancel` target, is not implemented by Windows' own
+            # default Proactor loop (btclib-org/btclib-node#430) -- so
+            # accepting goes through a task awaiting `loop.sock_accept`,
+            # and that task is reachable by `stop`'s own blanket sweep
+            # over `asyncio.all_tasks` (#312): `Task.cancel` cannot
+            # cancel a future that is already done, so a cancel landing
+            # in the narrow window between the kernel resolving one
+            # `sock_accept` and `_accept_loop`'s own next step still
+            # throws `CancelledError` in regardless, before that socket
+            # ever reaches `put_nowait`. CPython's own reference
+            # counting is what bounds the cost of that window rather
+            # than eliminating it: nothing else holds the discarded
+            # socket once its frame unwinds, so it is closed by its own
+            # `__del__` -- a `ResourceWarning`, not a leaked descriptor
+            # -- in place of the graceful close `finally` gives every
+            # item that did reach the queue. A peer that dials in that
+            # exact instant of shutdown loses the connection it just
+            # opened; nothing during ordinary operation reaches this
+            # window at all, `_accept_loop` never otherwise stopping.
             accepted: asyncio.Queue[
                 tuple[socket.socket, tuple[str, int] | tuple[str, int, int, int]]
             ] = asyncio.Queue()
@@ -3928,18 +3920,19 @@ class P2pManager(threading.Thread):
     def _report_server_failure(self, future: Future[None]) -> None:
         """Log what `server`'s own scheduled task ends on, loudly.
 
-        `run` below schedules `server` through `run_coroutine_threadsafe`
-        and never awaits the `concurrent.futures.Future` it returns --
-        deliberately, `server` running for this manager's whole lifetime
-        rather than returning -- so an exception it raises before ever
-        reaching its own accept loop would otherwise surface only
-        through asyncio's own "Task exception was never retrieved"
-        warning: timed to whenever the garbage collector reaches that
-        future rather than to the failure itself, and written to the
-        `asyncio` logger rather than this node's own.
-        `btclib-org/btclib-node#88` fixed the identical shape for `_bind`
-        by making the bind synchronous instead, which `server` cannot be,
-        it being this manager's own listener for as long as it runs.
+        `run` below schedules `server` through
+        `run_coroutine_threadsafe` and never awaits the
+        `concurrent.futures.Future` it returns -- deliberately, `server`
+        running for this manager's whole lifetime rather than returning
+        -- so an exception it raises before ever reaching its own accept
+        loop would otherwise surface only through asyncio's own "Task
+        exception was never retrieved" warning: timed to whenever the
+        garbage collector reaches that future rather than to the failure
+        itself, and written to the `asyncio` logger rather than this
+        node's own. `_bind` avoids the same shape by binding
+        synchronously (`btclib-org/btclib-node#88`), which `server`
+        cannot do, it being this manager's own listener for as long as
+        it runs.
 
         `stop`'s own sweep ending this task on purpose is not logged, in
         two different ways depending on how the cancellation actually
@@ -4067,16 +4060,16 @@ class P2pManager(threading.Thread):
         # Core's `StopNodes` finalizes every node it still holds
         for conn in tuple(self.connections.values()):
             self._finalize(conn)
-        # `stop_handle.cancel()` is what makes every `run_until_complete`
-        # below safe, on any loop this method could possibly be handed --
-        # not one more guard clause alongside `self.ident` and `pending`,
-        # which is what #368 and #362 each tried and #380 and #377 each
-        # found a gap in. The `call_soon_threadsafe` above only
-        # *schedules* `loop.stop`; it is delivered -- `self._stopping`
-        # set, so `run_forever` returns after its current pass -- only
-        # once something actually drives this loop's `run_forever` far
-        # enough to reach it. Three things can happen by the time `join`
-        # above returns:
+        # `stop_handle.cancel()` is what makes every
+        # `run_until_complete` below safe, on any loop this method could
+        # possibly be handed -- not one more guard clause alongside
+        # `self.ident` and `pending`: guard clauses alone leave gaps
+        # (#362, #368, #377, #380). The `call_soon_threadsafe` above
+        # only *schedules* `loop.stop`; it is delivered --
+        # `self._stopping` set, so `run_forever` returns after its
+        # current pass -- only once something actually drives this
+        # loop's `run_forever` far enough to reach it. Three things can
+        # happen by the time `join` above returns:
         #
         # - This manager's own thread was running `run_forever` (the
         #   ordinary case) and delivered it there, exiting on its own.
@@ -4112,21 +4105,22 @@ class P2pManager(threading.Thread):
         stop_handle.cancel()
         # Only after join(), not before: `run()` above has now returned,
         # so nothing but this thread can still be adding to
-        # `self.connections`/`self.pending_connections` -- `create_connection`
-        # is only ever reached from a coroutine on this manager's own
-        # loop, and `promote_connection` and `remove_connection`, which
-        # `Node`'s thread also reaches (the latter through the
-        # `disconnectnode` RPC), cannot race a `stop()` that same thread
-        # is itself blocked inside. A sweep taken before join()
-        # closed whatever it snapshotted correctly but could still miss
-        # a connection `server()`'s own accept loop created in the
-        # window between `loop.stop` merely being scheduled above and
-        # actually being delivered -- accepted, given a task, and never
-        # swept, since nothing before join() ever looked again. Such a
-        # task reaches only the cancellation below, which cannot close
-        # `Connection.client` for it: `Task.cancel()` called before a
-        # task has run even once skips the coroutine entirely, `run()`'s
-        # own `finally` included (btclib-org/btclib-node#312).
+        # `self.connections`/`self.pending_connections` --
+        # `create_connection` is only ever reached from a coroutine on
+        # this manager's own loop, and `promote_connection` and
+        # `remove_connection`, which `Node`'s thread also reaches (the
+        # latter through the `disconnectnode` RPC), cannot race a
+        # `stop()` that same thread is itself blocked inside. A sweep
+        # taken before join() would close whatever it snapshotted
+        # correctly but could still miss a connection `server()`'s own
+        # accept loop created in the window between `loop.stop` merely
+        # being scheduled above and actually being delivered --
+        # accepted, given a task, and never swept, since nothing before
+        # join() would look again. Such a task reaches only the
+        # cancellation below, which cannot close `Connection.client` for
+        # it: `Task.cancel()` called before a task has run even once
+        # skips the coroutine entirely, `run()`'s own `finally` included
+        # (btclib-org/btclib-node#312).
         #
         # And a pass of each is not enough, because `run_until_complete`
         # runs the loop: a task this pass has not cancelled yet goes on
@@ -4162,32 +4156,25 @@ class P2pManager(threading.Thread):
             pending = asyncio.all_tasks(self.loop)
             if not pending:
                 break
-            # No step of the loop first here, unlike an earlier version
-            # of this method: that step existed only to let a task
-            # sitting on an already-resolved future -- `server`'s own
-            # former `accept` task -- return normally into
-            # `create_connection` before a direct cancel discarded it,
-            # `Task.cancel` on a task whose own awaited future is
+            # No step of the loop first here. Such a step would let a
+            # task sitting on an already-resolved future return normally
+            # into `create_connection` before a direct cancel discarded
+            # it, `Task.cancel` on a task whose own awaited future is
             # already done forcing `CancelledError` in on its next step
             # regardless of what the future already held
-            # (btclib-org/btclib-node#312, for a cancel arriving through
-            # `server`'s own shield; btclib-org/btclib-node#353 and this
-            # loop's own former blanket sweep, for one reaching that task
-            # directly). `server` no longer has such a task to protect:
-            # what it accepts sits in a queue instead, and `server`'s own
-            # consumption of that queue is immune to that discard
-            # regardless of when the cancel below reaches it
-            # (btclib-org/btclib-node#386). `_accept_loop`'s own
-            # production side of the same queue is not -- `server`'s own
-            # docstring has the reason and the bound on what it costs
-            # (btclib-org/btclib-node#430). `stop_handle.cancel()` above
-            # already closed the other reason an earlier version of this
-            # step existed, a `RuntimeError` this loop could raise
+            # (btclib-org/btclib-node#312, btclib-org/btclib-node#353).
+            # `server` has no such task to protect: what it accepts sits
+            # in a queue, and `server`'s own consumption of that queue
+            # is immune to that discard regardless of when the cancel
+            # below reaches it (btclib-org/btclib-node#386).
+            # `_accept_loop`'s own production side of the same queue is
+            # not -- `server`'s own comment has the reason and the bound
+            # on what it costs (btclib-org/btclib-node#430). Nor is the
+            # step needed against a `RuntimeError` this loop could raise
             # running `pending`'s own already-scheduled tasks on a loop
             # whose `run_forever` never delivered this method's own
-            # `loop.stop` (btclib-org/btclib-node#377,
-            # btclib-org/btclib-node#380) -- so neither of the two
-            # reasons this step used to answer still applies.
+            # `loop.stop`: `stop_handle.cancel()` above prevents that
+            # (btclib-org/btclib-node#377, btclib-org/btclib-node#380).
             #
             # every one of them before the loop is allowed to run again,
             # rather than cancelling and draining one at a time, which is

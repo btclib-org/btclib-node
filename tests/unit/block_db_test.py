@@ -168,13 +168,13 @@ def test_a_write_from_another_thread_cannot_land_inside_get_blocks_seek_and_read
     read's own seek and its read moves the position out from under it.
     `get_block` is paused right there -- after its own seek, before its
     own read -- and a second thread is given that whole window to call
-    `add_block` in. Before `_lock` existed, that window was enough: the
-    second thread's write ran unimpeded, moved the file position to its
-    own end, and the first thread's `read` came back with nothing at
-    that offset, exactly the `BTClibValueError: invalid decoded length:
-    0 instead of 80` the issue measured. The lock now held across every
-    public method makes the second thread's own call block until this
-    one is done instead.
+    `add_block` in. Without `_lock`, that window is enough: the second
+    thread's write runs unimpeded, moves the file position to its own
+    end, and the first thread's `read` comes back with nothing at that
+    offset, exactly the `BTClibValueError: invalid decoded length: 0
+    instead of 80` the issue measured. The lock held across every public
+    method makes the second thread's own call block until this one is
+    done instead.
     """
     block_db = a_db(None)
     first, second = generate_random_chain(2, RegTest().genesis.hash)
@@ -304,9 +304,9 @@ def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
 ) -> None:
     """A patch lands in its own block's `.rev` file, not the open one."""
     # the first block's own patch is written only after the block file
-    # has rolled over to a second one: were the rev file still named for
-    # whichever block file happens to be open (btclib-org/btclib-node#116),
-    # this patch would land in 000002.rev rather than its own block's
+    # has rolled over to a second one: were the rev file named for
+    # whichever block file is open (btclib-org/btclib-node#116), this
+    # patch would land in 000002.rev rather than its own block's
     # 000001.rev
     block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
@@ -397,9 +397,9 @@ def test_finalize_refuses_a_patch_for_a_block_never_stored(
 
 def test_a_filename_past_ten_characters_survives_the_wire() -> None:
     """An eleven-character filename round-trips through the wire format."""
-    # ten octets was a fixed width assumed for `{index:06d}.blk`; past
-    # the millionth file the name is eleven characters
-    # (btclib-org/btclib-node#78)
+    # a fixed width of ten octets would hold `{index:06d}.blk` only up
+    # to the 999,999th file; from the millionth, `1000000.blk`, the name
+    # is eleven characters (btclib-org/btclib-node#78)
     location = BlockLocation("1000000.blk", 5, 10)
     assert BlockLocation.deserialize(location.serialize()) == location
 

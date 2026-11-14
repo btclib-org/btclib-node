@@ -652,16 +652,17 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.address = address
         node.p2p_manager.peer_db.add_active_address(address)
 
-    # relay_tx, which is the attribute Connection defines: the name this
-    # wrote before was one letter different, so what the peer asked for
-    # landed on an attribute nothing reads and the connection's own flag
-    # stayed true for its whole life. is_relay_requested and not relay
-    # because an absent flag means true, which is BIP37's default and
-    # Core's. A block-relay-only connection or a feeler relays no
-    # transaction whatever the peer asked for: Core's `VERSION` handler
-    # builds no `TxRelay` for either (`net_processing.cpp`,
-    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is announced
-    # to it and a `getdata` of its for a transaction goes unanswered.
+    # relay_tx, which is the attribute Connection defines: a name one
+    # letter different would put what the peer asked for on an attribute
+    # nothing reads, and leave the connection's own flag true for its
+    # whole life. is_relay_requested and not relay because an absent
+    # flag means true, which is BIP37's default and Core's. A
+    # block-relay-only connection or a feeler relays no transaction
+    # whatever the peer asked for: Core's `VERSION` handler builds no
+    # `TxRelay` for either (`net_processing.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is
+    # announced to it and a `getdata` of its for a transaction goes
+    # unanswered.
     conn.relay_tx = (
         version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
     )
@@ -1216,7 +1217,7 @@ def _store_gossip(
     # port aside -- from the batch's flat two-hour penalty,
     # `add_addresses`' own default; `add_addresses`'s own docstring is
     # where the port is argued out of the comparison
-    # (btclib-org/btclib-node#1380, review round 2).
+    # (btclib-org/btclib-node#1380).
     manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
         node.logger.log_debug("net", "addrfetch connection completed, peer=%s", conn.id)
@@ -1229,8 +1230,8 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # less. Stored on the connection, the same shape relay_tx above
     # already is; read by DownloadManager.tx_download, through
     # Mempool.meets_fee_rate, against the fee
-    # main.verify_mempool_acceptance now hands back and Mempool keeps
-    # per transaction. btclib-org/btclib-node#260
+    # main.verify_mempool_acceptance hands back and Mempool keeps per
+    # transaction. btclib-org/btclib-node#260
     #
     # Core assigns a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
@@ -2446,16 +2447,14 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
     # Unchecked, as Core's own `CBlockHeader` read checks nothing:
     # btclib's `BlockHeader.assert_valid` refuses a time before genesis,
-    # which Core leaves to `ContextualCheckBlockHeader`'s `time-too-old`,
-    # a `Misbehaving`, and that alone is reason enough to keep this
-    # unchecked. It used to also refuse a version of zero or below on
-    # its own, where Core leaves that to the same function's
-    # `bad-version` -- fixed
-    # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
-    # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The count
-    # and the transaction counts are bounded either way, and
-    # `add_headers` checks the work and both of Core's own contextual
-    # refusals.
+    # which Core leaves to `ContextualCheckBlockHeader`'s
+    # `time-too-old`, a `Misbehaving`, and that alone is reason enough
+    # to keep this unchecked. It accepts a version of zero or below,
+    # which Core leaves to the same function's `bad-version`
+    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    # btclib-org/btclib-node#1511). The count and the transaction counts
+    # are bounded either way, and `add_headers` checks the work and both
+    # of Core's own contextual refusals.
     headers: Sequence[BlockHeader] = Headers.parse(
         _fields(msg), check_validity=False
     ).headers

@@ -109,8 +109,8 @@ def a_connection(
             v2transport=False,
             v1transport=True,
         ),
-        # what `own_version` now carries as `start_height`: 0, matching
-        # a fresh `Node`'s own initial value before `main._finalize_fork`
+        # what `own_version` carries as `start_height`: 0, matching a
+        # fresh `Node`'s own initial value before `main._finalize_fork`
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
         best_height=0,
         logger=SimpleNamespace(
@@ -422,7 +422,7 @@ def test_own_version_announces_the_name_and_the_installed_version() -> None:
     """The `version` on the wire carries `/btclib:<installed version>/`.
 
     Read back off the framed octets `_send` is handed, not off
-    `_USER_AGENT`: what #580 reported is what a peer received, and a
+    `_USER_AGENT`: what a peer receives is what #580 is about, and a
     constant asserted against itself answers for nothing between the
     two.
     """
@@ -447,7 +447,7 @@ def test_own_version_announces_the_name_and_the_installed_version() -> None:
 
 
 def test_own_version_carries_this_nodes_own_best_height() -> None:
-    """`start_height` on the wire is `manager.node.best_height` (closes #722).
+    """`start_height` on the wire is `manager.node.best_height` (issue #722).
 
     Core's own `PushNodeVersion` (`net_processing.cpp:1671`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) fills `my_height` from
@@ -1042,29 +1042,30 @@ def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
 ) -> None:
     """`stop`, called off the loop's thread, does not crash a live reader.
 
-    btclib-org/btclib-node#518: `self.client.close()` used to run
-    directly on whichever thread called `stop`, and `stop`'s own comment
-    names callers on both -- `handle_p2p`, `handle_p2p_handshake` and
-    every callback that drops a peer for cause, on `Node`'s thread;
-    `_prune_stale_connections` through `remove_connection`, on
-    `P2pManager`'s, which is the loop's own. The race is therefore the
-    ordering rather than the thread, and both halves of it are covered:
-    this test calls `stop` from off the loop, the one after it from
-    the loop's own thread. Closing the fd, while `run`'s own `sock_recv` still
-    had a reader registered for it, raced `BaseSelectorEventLoop`'s
-    bookkeeping: `_sock_read_done`'s later `remove_reader` found a writer
-    also registered -- `Connection._send`'s own `sock_sendall`, for a
-    peer not draining its send queue -- and took `_selector.modify`
-    rather than `unregister`, and `modify` re-registers a fd that
-    `KqueueSelector.unregister` alone would have tolerated closed.
-    Reproduced here with a real second thread running the loop, the
-    shape `P2pManager` itself runs in, and `stop` called from the thread
-    running the test -- the caller not the loop's own. No custom exception
-    handler is installed on the loop: the raise this guards against is
-    from inside an asyncio callback, which the loop's own default
-    handler logs rather than propagates, so `caplog` on that logger's
-    own `ERROR` is what would have caught it, not an assertion on a
-    value this test would otherwise have to fabricate a branch to reach.
+    btclib-org/btclib-node#518: `stop` schedules `_close` rather than
+    running `self.client.close()` directly on whichever thread calls it,
+    and `stop`'s own comment names callers on both -- `handle_p2p`,
+    `handle_p2p_handshake` and every callback that drops a peer for
+    cause, on `Node`'s thread; `_prune_stale_connections` through
+    `remove_connection`, on `P2pManager`'s, which is the loop's own. The
+    race is therefore the ordering rather than the thread, and both
+    halves of it are covered: this test calls `stop` from off the loop,
+    the one after it from the loop's own thread. Closing the fd while
+    `run`'s own `sock_recv` still has a reader registered for it races
+    `BaseSelectorEventLoop`'s bookkeeping: `_sock_read_done`'s later
+    `remove_reader` finds a writer also registered --
+    `Connection._send`'s own `sock_sendall`, for a peer not draining its
+    send queue -- and takes `_selector.modify` rather than `unregister`,
+    and `modify` re-registers a fd that `KqueueSelector.unregister`
+    alone would tolerate closed. Reproduced here with a real second
+    thread running the loop, the shape `P2pManager` itself runs in, and
+    `stop` called from the thread running the test -- the caller not the
+    loop's own. No custom exception handler is installed on the loop:
+    the raise this guards against is from inside an asyncio callback,
+    which the loop's own default handler logs rather than propagates, so
+    `caplog` on that logger's own `ERROR` is what would have caught it,
+    not an assertion on a value this test would otherwise have to
+    fabricate a branch to reach.
     """
     caplog.set_level(logging.ERROR, logger="asyncio")
     loop = asyncio.new_event_loop()
@@ -1109,20 +1110,21 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
     is a coroutine `P2pManager.run` schedules onto its own loop, so that
     whole path runs on the loop's thread. Nothing about the ordering
     changes there -- closing the fd before the reader is removed is what
-    raced, not which thread did it -- so the fix is scheduling `_close`
-    rather than which thread scheduled it, and this is the half the test
-    above cannot reach: `call_soon_threadsafe` from off the loop is
-    already how a call arrives from another thread, where here `stop`
-    itself runs inside the loop and schedules onto the loop it is on.
+    races, not which thread does it -- so what matters is scheduling
+    `_close` rather than which thread schedules it, and this is the half
+    the test above cannot reach: `call_soon_threadsafe` from off the
+    loop is already how a call arrives from another thread, where here
+    `stop` itself runs inside the loop and schedules onto the loop it is
+    on.
 
-    What this catches is the synchronous close, which is what `stop`
-    did before the fix. Measured: removing `_close`'s own
-    `remove_reader`/`remove_writer` while leaving the scheduling in
-    place leaves this test green -- `_sock_read_done` gets its
-    `remove_reader` in before the scheduled `_close` runs, so there is
-    no closed fd for `modify` to re-register. The test above fails on
-    that narrower mutation and this one does not, which is the whole
-    reason both are here rather than either alone.
+    What this catches is a synchronous close in `stop`. Measured:
+    removing `_close`'s own `remove_reader`/`remove_writer` while
+    leaving the scheduling in place leaves this test green --
+    `_sock_read_done` gets its `remove_reader` in before the scheduled
+    `_close` runs, so there is no closed fd for `modify` to re-register.
+    The test above fails on that narrower mutation and this one does
+    not, which is the whole reason both are here rather than either
+    alone.
     """
     caplog.set_level(logging.ERROR, logger="asyncio")
     loop = asyncio.new_event_loop()
@@ -1600,10 +1602,10 @@ def test_a_message_written_is_counted_and_one_that_failed_is_not() -> None:
 def test_parse_messages_weighs_a_handshake_message_too() -> None:
     """A `handshake_messages`-bound item adds its own weight too.
 
-    `handshake_messages` is still drained whole every pass of `Node`'s
-    own loop (`_drain_message_queues`) rather than sharing `messages`'s
-    own log2-scaled share, but shares this connection's own recv-bound
-    pacing with it since btclib-org/btclib-node#482.
+    `handshake_messages` is drained whole every pass of `Node`'s own
+    loop (`_drain_message_queues`) rather than sharing `messages`'s own
+    log2-scaled share, but shares this connection's own recv-bound
+    pacing with it (btclib-org/btclib-node#482).
     """
     connection, _ = a_connection()
     with connection.client:

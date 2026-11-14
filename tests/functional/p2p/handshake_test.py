@@ -68,16 +68,16 @@ class _RecordingPendingConnections(dict[int, Connection]):
 
     `pending_connections` itself rises and falls -- a connection is
     added and then promoted or dropped out of it -- so polling its own
-    live length past a peak is exactly the race issue #1020's own
-    poison harness reproduced deterministically: a sample can land
-    before the peak and the next after it, and the predicate is then
-    never true again, at any bound, while the connection underneath it
-    was made and torn down correctly the whole time.
+    live length past a peak is a race, one issue #1020's own poison
+    harness reproduces deterministically: a sample can land before the
+    peak and the next after it, and the predicate is then never true
+    again, at any bound, while the connection underneath it was made and
+    torn down correctly the whole time.
     `tests/functional/p2p/pruning_test.py`'s own `_RecordingDeque` is
     the same idea for a queue that drains; this is a dict that empties
-    the same way. `created` only ever grows, recording each
-    connection's own `inbound` the moment it is added, so waiting on
-    its length is monotone and cannot be walked past.
+    the same way. `created` only ever grows, recording each connection's
+    own `inbound` the moment it is added, so waiting on its length is
+    monotone and cannot be walked past.
     """
 
     def __init__(self) -> None:
@@ -119,7 +119,7 @@ def test_simple_connection(tmp_path: Path) -> None:
 
 
 def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> None:
-    """A node past genesis carries its own real height (closes #722).
+    """A node past genesis carries its own real height (issue #722).
 
     `best_block_time` follows the tip too, from genesis's once loaded,
     and a restart loads the tip's again, as Core's init `SetBestBlock`

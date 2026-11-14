@@ -1029,12 +1029,12 @@ def _finalize_fork_and_prune(
     _prune_chain(node)
 
 
-# update_chain's own trial marks, taken before a trial starts: should_flush
-# may have left utxo_index and filter_index each holding an earlier,
-# already-succeeded trial's own staged changes, unflushed, and a rollback
-# on failure must undo only what this trial itself stages --
-# UtxoIndex.trial_mark's own docstring argues why a blanket wipe is no
-# longer safe once staging survives more than one trial
+# update_chain's own trial marks, taken before a trial starts:
+# should_flush may have left utxo_index and filter_index each holding an
+# earlier, already-succeeded trial's own staged changes, unflushed, and
+# a rollback on failure must undo only what this trial itself stages --
+# UtxoIndex.trial_mark's own docstring argues why a blanket wipe is not
+# safe once staging survives more than one trial
 # (btclib-org/btclib-node#586).
 def _pre_trial_marks(
     utxo_index: UtxoIndex, filter_index: FilterIndex
@@ -1515,13 +1515,13 @@ def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> Non
 
     `Node.load`'s own comment beside `last_rejected_block` says who
     reads it: a rejection test, asserting the rule that refused a block
-    rather than only that one did. `_resolve_trial_exception`'s own
-    call below is this function's only caller, and reaches it only once
+    rather than only that one did. `_resolve_trial_exception`'s own call
+    below is this function's only caller, and reaches it only once
     `isinstance(exc, _CONTENT_FAILURE)` already holds, which never
-    happens before the to_add loop's own iteration has set
-    `failed_hash` -- so unlike before btclib-org/btclib-node#623, there
-    is no longer a raise this can be reached on where `failed_hash` is
-    still `None`, and nothing here has to guard against one.
+    happens before the to_add loop's own iteration has set `failed_hash`
+    -- so no raise reaches this where `failed_hash` is still `None`
+    (btclib-org/btclib-node#623), and nothing here has to guard against
+    one.
     """
     node.last_rejected_block = (failed_hash, exc)
 
@@ -1564,35 +1564,35 @@ def _resolve_trial_exception(
 ) -> None:
     """Record `exc` against `failed_hash`, or re-raise it -- never both.
 
-    A function of its own and not the `if`/`else` inline in `update_chain`'s
-    own except -- ruff's own `too-many-branches`/`complex-structure`
-    already count a branch gained there against a ceiling that call is
-    already at. `isinstance(exc, _CONTENT_FAILURE)` is the to_add loop's
-    own exceptions, argued where `_CONTENT_FAILURE` is declared, and is
-    the only case this records and swallows; `cast` and not a runtime
-    check narrows `failed_hash` for that call, because the to_add
-    loop's own iteration always sets it before raising one of those
-    three, the same invariant `_record_rejection`'s own docstring
-    argues. The to_remove loop above `update_chain`'s own trial never
-    raises one of those three -- `apply_rev_block` raises only
+    A function of its own and not the `if`/`else` inline in
+    `update_chain`'s own except -- ruff's own
+    `too-many-branches`/`complex-structure` already count a branch
+    gained there against a ceiling that call is already at.
+    `isinstance(exc, _CONTENT_FAILURE)` is the to_add loop's own
+    exceptions, argued where `_CONTENT_FAILURE` is declared, and is the
+    only case this records and swallows; `cast` and not a runtime check
+    narrows `failed_hash` for that call, because the to_add loop's own
+    iteration always sets it before raising one of those three, the same
+    invariant `_record_rejection`'s own docstring argues. The to_remove
+    loop above `update_chain`'s own trial never raises one of those
+    three -- `apply_rev_block` raises only
     `ChainstateInconsistencyError` or a storage failure -- so
     `failed_hash is None` here always falls to `raise exc` below, same
     as any other non-content failure from the to_add loop: undoing an
     already-connected block failing is this node's own bookkeeping,
-    never a verdict on a new block, so nothing here would ever have
-    recorded a rejection for it, but the raise itself no longer stops
-    there either. Core's own equivalent -- `DisconnectTip` returning
-    false is fatal one level up, in `ActivateBestChainStep`
-    (`src/validation.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag) --
-    stops rather than keeps trying on top of storage it just proved
-    inconsistent, the same conclusion already drawn above
-    `to_add`/`to_remove` themselves for a read failure at the same
-    citation. `raise exc` and not a bare `raise`: this is not itself an
-    except block, so a bare `raise` here has no currently-handled
-    exception of its own to reach for -- `exc` already carries the
-    traceback `update_chain`'s own except caught it with, and raising
-    it explicitly extends that same traceback rather than starting a
-    new one.
+    never a verdict on a new block, so nothing here records a rejection
+    for it, and the raise goes on past this function. Core's own
+    equivalent -- `DisconnectTip` returning false is fatal one level up,
+    in `ActivateBestChainStep` (`src/validation.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- stops rather than
+    keeps trying on top of storage it just proved inconsistent, the same
+    conclusion already drawn above `to_add`/`to_remove` themselves for a
+    read failure at the same citation. `raise exc` and not a bare
+    `raise`: this is not itself an except block, so a bare `raise` here
+    has no currently-handled exception of its own to reach for -- `exc`
+    already carries the traceback `update_chain`'s own except caught it
+    with, and raising it explicitly extends that same traceback rather
+    than starting a new one.
     """
     if isinstance(exc, _CONTENT_FAILURE):
         _record_rejection(node, cast("bytes", failed_hash), exc)
@@ -2281,8 +2281,7 @@ def _pre_checks(
     # seeds it with the genesis at index 0), so its own length already
     # is the tip's height plus one -- a further "+ 1" here would answer
     # one block past the real next height, and be wrong by exactly one
-    # block for the coinbase maturity check, which is what surfaced it
-    # (btclib-org/btclib-node#569)
+    # block for the coinbase maturity check (btclib-org/btclib-node#569)
     spend_height = len(block_index.active_chain)
 
     tip_hash = block_index.active_chain[-1]

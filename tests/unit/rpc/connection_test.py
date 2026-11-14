@@ -276,7 +276,7 @@ def test_a_request_with_no_body_is_refused() -> None:
     its own `Connection: close`, so the refusal's own reply closing is
     what this asserts rather than an idle wait for a next request this
     test never sends -- the parse-error branch honours `Connection` the
-    same as any other reply now (issue #640, `test_several_malformed_
+    same as any other reply (issue #640, `test_several_malformed_
     bodies_over_one_kept_alive_connection_are_each_answered` below is
     the keep-alive half of this).
     """
@@ -301,16 +301,15 @@ def test_a_body_that_is_not_json_is_refused() -> None:
 def test_a_zero_header_request_leaves_the_next_ones_bytes_intact() -> None:
     r"""A request with no header fields trims `self.buffer` by what it consumed.
 
-    Review round 1: `RequestHead.serialize()` used to insert a `\r\n`
-    between `request_line` and `fields` unconditionally, fabricating
-    two octets nothing in the wire carried whenever a request had no
-    header fields at all -- `head.partition(b"\r\n")` (inside
-    `parse_request_head`) then returns an empty separator, `fields`
-    empty. `run` trimmed `self.buffer` by that fabricated length,
-    eating the first two bytes of whatever followed: a second,
-    pipelined request on a kept-alive connection. `request()`'s own
-    helper always injects `Host: x`, which is why nothing else in this
-    file exercises the zero-field case.
+    `RequestHead.serialize()` inserting a `\r\n` between `request_line`
+    and `fields` unconditionally would fabricate two octets nothing in
+    the wire carries whenever a request has no header fields at all --
+    `head.partition(b"\r\n")` (inside `parse_request_head`) then returns
+    an empty separator, `fields` empty. `run` trimming `self.buffer` by
+    that fabricated length would eat the first two bytes of whatever
+    follows: a second, pipelined request on a kept-alive connection.
+    `request()`'s own helper always injects `Host: x`, which is why
+    nothing else in this file exercises the zero-field case.
     """
 
     async def main() -> tuple[bytes, bytes]:
@@ -363,12 +362,12 @@ def test_a_body_shorter_than_its_length_is_waited_for() -> None:
 def test_a_stalled_read_is_refused_once_idle_timeout_elapses() -> None:
     """A client that never completes a request is refused once idle.
 
-    ISS 437: with no deadline at all, this coroutine hung on `sock_recv`
-    for as long as the node ran instead of ever reaching either outcome
+    ISS 437: with no deadline, this coroutine would wait on `sock_recv`
+    for as long as the node runs instead of ever reaching either outcome
     above. `idle_timeout` is lowered here, well below the external
     `timeout` `drive` itself waits on, so the assertion is that `run`
-    gives up **on its own** -- `outcome == "returned"`, not `"waiting"` --
-    rather than that `drive`'s own `asyncio.wait_for` gave up on it.
+    gives up **on its own** -- `outcome == "returned"`, not `"waiting"`
+    -- rather than that `drive`'s own `asyncio.wait_for` gave up on it.
     """
     outcome, messages, closed = drive(
         [b"POST / HTTP/1.1\r\nHost: x\r\n"], timeout=1.0, idle_timeout=0.05
@@ -823,13 +822,13 @@ def test_several_malformed_bodies_over_one_kept_alive_connection_are_each_answer
 ):
     """A kept-alive connection answers a run of malformed bodies, staying open.
 
-    `run`'s own `ValueError` branch used to force-close regardless of
-    `Connection`: scheduling that reply the way `send` already
-    schedules a dispatched one, instead of awaiting it inline, is what
-    keeps a run of malformed bodies from growing this coroutine's own
-    call stack by one frame each, and what lets each answer honour
-    keep-alive instead of always closing (issue #640), matching Core's
-    own `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
+    `run`'s own `ValueError` branch does not force-close regardless of
+    `Connection`: scheduling that reply the way `send` schedules a
+    dispatched one, instead of awaiting it inline, is what keeps a run
+    of malformed bodies from growing this coroutine's own call stack by
+    one frame each, and what lets each answer honour keep-alive instead
+    of always closing (issue #640), matching Core's own
+    `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
 
@@ -957,13 +956,13 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
 def test_a_connection_carries_no_task_handle_for_close_to_cancel() -> None:
     """A connection holds no `task` attribute of its own, past construction.
 
-    An earlier version did (`self.task`), set once at accept and never
-    again, so `close` cancelling it did nothing for any request after a
-    kept-alive connection's first (issue #714) -- `RpcManager.stop`'s
-    own `asyncio.all_tasks(self.loop)` sweep is what actually cancels
+    One set once at accept and never again would make `close` cancelling
+    it do nothing for any request after a kept-alive connection's first
+    (issue #714) -- `RpcManager.stop`'s own
+    `asyncio.all_tasks(self.loop)` sweep is what actually cancels
     whatever is live, run before `close` is ever called, which is what
-    `close`'s own docstring argues rather than a handle this class
-    would have to keep current across every request to make good on.
+    `close`'s own docstring argues rather than a handle this class would
+    have to keep current across every request to make good on.
     """
     ours, theirs = socket.socketpair()
     try:
@@ -1095,16 +1094,16 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     `_PyTime_AsMilliseconds(timeout, _PyTime_ROUND_TIMEOUT)`
     (`Python/parking_lot.c:95-133`, the call at `:130`, the conversion
     at `:105`) -- not `WaitForSingleObject`, and not the legacy
-    `Python/thread_nt.h` path `_thread.Lock` no longer uses in 3.14.
-    What remains is the gap between that millisecond count and the
+    `Python/thread_nt.h` path, which `_thread.Lock` does not use in
+    3.14. What remains is the gap between that millisecond count and the
     clock the OS actually satisfies the wait against: the kernel's own
-    interrupt-time tick, which `_WINDOWS_TIMER_TICK`'s own comment
-    above cites Microsoft's documentation for. A 2000ms wait is
-    satisfied once that tick clock reaches "start tick + 2000ms", up to
-    one tick before 2000ms have elapsed on the QPC-backed clock
-    `time.monotonic()` reads, so `_WINDOWS_TIMER_TICK` is the slack
-    this bound needs -- small next to the two-second wait it guards, so
-    a regression that actually shortens the wait still fails loudly.
+    interrupt-time tick, which `_WINDOWS_TIMER_TICK`'s own comment above
+    cites Microsoft's documentation for. A 2000ms wait is satisfied once
+    that tick clock reaches "start tick + 2000ms", up to one tick before
+    2000ms have elapsed on the QPC-backed clock `time.monotonic()`
+    reads, so `_WINDOWS_TIMER_TICK` is the slack this bound needs --
+    small next to the two-second wait it guards, so a regression that
+    actually shortens the wait still fails loudly.
     """
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
@@ -1909,10 +1908,10 @@ def test_a_reply_to_a_socket_closed_under_it_is_dropped_not_raised(
     """A reply whose socket closed while it was queued leaves no exception.
 
     Issue #1079: `run` schedules a parse error's reply as a task of its
-    own, and closing `ours` before that task runs used to fail its
-    `sock_sendall` with `EBADF`, left on a task nothing awaits. The
-    connection is let go of either way, whether or not it was to be
-    kept alive.
+    own, and closing `ours` before that task runs fails its
+    `sock_sendall` with `EBADF`, which must not be left on a task
+    nothing awaits. The connection is let go of either way, whether or
+    not it was to be kept alive.
     """
 
     async def main() -> bool:

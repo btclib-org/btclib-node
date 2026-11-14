@@ -315,11 +315,10 @@ def test_handle_p2p_handshake_weighs_the_message_off_the_connections_own_queued_
 ) -> None:
     """The popped handshake item's own size is subtracted too.
 
-    `handshake_messages` now shares `recv_flood_size`
-    (`p2p/connection.py`) with `messages`, so what a connection has
-    queued there and not yet had `handle_p2p_handshake` look at counts
-    the same way `handle_p2p`'s own weighing already does.
-    btclib-org/btclib-node#482
+    `handshake_messages` shares `recv_flood_size` (`p2p/connection.py`)
+    with `messages`, so what a connection has queued there and not yet
+    had `handle_p2p_handshake` look at counts the same way
+    `handle_p2p`'s own weighing already does. btclib-org/btclib-node#482
     """
     monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
     node, stopped = make_node(
@@ -1139,11 +1138,11 @@ def test_resume_getdata_discourages_the_peer_on_a_btclib_exception(
 # what actually observes it, the same way `log_test.py` already proves
 # `Logger` itself against a file rather than against `caplog`.
 #
-# Proven against a mutation, run and reverted by hand rather than
-# argued from the diff: reducing `handle_p2p_handshake`'s own site back
-# to the shared `node.logger.exception("Exception occurred")` this issue
-# opened against makes `test_handle_p2p_handshake_log_line_...` below
-# fail, both lines in the file it reads back becoming the same one.
+# Proven against a mutation rather than argued: reducing
+# `handle_p2p_handshake`'s own site to the shared
+# `node.logger.exception("Exception occurred")` makes
+# `test_handle_p2p_handshake_log_line_...` below fail, both lines in the
+# file it reads back becoming the same one.
 
 
 def test_handle_p2p_handshake_log_line_distinguishes_the_verdict(

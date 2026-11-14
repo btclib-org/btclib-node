@@ -192,12 +192,11 @@ _MIN_CORE_FDS = _MIN_LEVELDB_FDS + _NUM_FDS_MESSAGE_CAPTURE
 # shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
 # reason.
 DEFAULT_CHAIN = Main()
-# Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`,
-# at bitcoin/bitcoin@f0de87f040, the v32.1 tag) in seconds, which is what
-# `-maxtipage`'s own default is measured in: `constants.py`'s `MAX_TIP_AGE`
-# is the same span as a `timedelta`, for `update_ibd_status`'s own
-# unoverridden default before this option existed, and is read here
-# rather than restated.
+# Core's own `DEFAULT_MAX_TIP_AGE`
+# (`src/kernel/chainstatemanager_opts.h`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag) in seconds, which is what `-maxtipage`'s own default is
+# measured in: `constants.py`'s `MAX_TIP_AGE` is the same span as a
+# `timedelta`, and is read here rather than restated.
 DEFAULT_MAX_TIP_AGE = int(MAX_TIP_AGE.total_seconds())
 
 
@@ -1119,26 +1118,25 @@ class Config:
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
-    # not `data_dir`'s business, `rpc_host` is not `debug`'s, and nesting
-    # them into sub-objects would only move each still-independent knob
-    # behind one more name for every caller, all of which already read
-    # this constructor by keyword (`grep -rn "Config(" tests/
-    # src/btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
-    # count this object's whole purpose is to be flat, not a shape it
-    # backed into. Keyword-only throughout (issue #341's own FBT round)
-    # for the same reason: `allow_p2p`/`allow_rpc`/`pruned`/`debug` are
-    # what that round's own findings are, but every other parameter here
-    # is already keyword at every call site the grep above found, so
-    # making only the booleans keyword-only would leave the same
-    # constructor answering `Config("regtest")` for one parameter and
-    # refusing it for the next -- which also drops PLR0917 (too many
-    # positional arguments) below to zero, keyword-only meaning there
-    # is no longer a positional count to measure. PLR0915 (too many
-    # statements) measures the same flatness from the body's side: one
-    # assignment per independent setting, which is what grows with every
-    # field this object carries rather than a body that wants splitting.
-    # Sourcery's low-code-quality reads the same length, and is skipped
-    # for the same reason.
+    # not `data_dir`'s business, `rpc_host` is not `debug`'s, and
+    # nesting them into sub-objects would only move each
+    # still-independent knob behind one more name for every caller, all
+    # of which already read this constructor by keyword (`grep -rn
+    # "Config(" tests/ src/btclib_node/` finds no positional call).
+    # PLR0913/PLR0917 measure a count this object's whole purpose is to
+    # be flat, not a shape it backed into. Keyword-only throughout
+    # (issue #341) for the same reason: ruff's FBT rules ask it of
+    # `allow_p2p`/`allow_rpc`/`pruned`/`debug`, and every other
+    # parameter here is already keyword at every call site the grep
+    # above found, so making only the booleans keyword-only would leave
+    # the same constructor answering `Config("regtest")` for one
+    # parameter and refusing it for the next. Keyword-only also leaves
+    # PLR0917 (too many positional arguments) nothing to count. PLR0915
+    # (too many statements) measures the same flatness from the body's
+    # side: one assignment per independent setting, which is what grows
+    # with every field this object carries rather than a body that wants
+    # splitting. Sourcery's low-code-quality reads the same length, and
+    # is skipped for the same reason.
     def __init__(  # noqa: PLR0913, PLR0915  # sourcery skip: low-code-quality
         self,
         *,

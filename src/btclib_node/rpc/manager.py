@@ -327,14 +327,11 @@ class RpcManager(threading.Thread):
         # `server`'s own accept queue, kept here rather than only local
         # to `server`'s own frame so the two `manager_test.py` tests
         # naming btclib-org/btclib-node#391 can land a connection into
-        # the live queue directly -- the seam a bare `await
-        # loop.sock_accept` gave their own predecessors before that fix,
-        # and gives `_accept_loop` again below
-        # (btclib-org/btclib-node#430): what changed is what fills the
-        # queue, a task rather than a reader callback, kept behind this
-        # same queue so `server`'s own consumption of it is unaffected.
-        # Nothing in this class reads it outside `server` and
-        # `_accept_loop`.
+        # the live queue directly. What fills it is `_accept_loop`
+        # below, a task rather than a reader callback
+        # (btclib-org/btclib-node#430), and `server` consumes it the
+        # same whichever fills it. Nothing in this class reads it
+        # outside `server` and `_accept_loop`.
         self._accept_queue: (
             asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
         ) = None
@@ -750,18 +747,19 @@ class RpcManager(threading.Thread):
     def _report_server_failure(self, future: Future[None]) -> None:
         """Log what `server`'s own scheduled task ends on, loudly.
 
-        `run` below schedules `server` through `run_coroutine_threadsafe`
-        and never awaits the `concurrent.futures.Future` it returns --
-        deliberately, `server` running for this manager's whole lifetime
-        rather than returning -- so an exception it raises before ever
-        reaching its own accept loop would otherwise surface only
-        through asyncio's own "Task exception was never retrieved"
-        warning: timed to whenever the garbage collector reaches that
-        future rather than to the failure itself, and written to the
-        `asyncio` logger rather than this node's own.
-        `btclib-org/btclib-node#88` fixed the identical shape for `_bind`
-        by making the bind synchronous instead, which `server` cannot be,
-        it being this manager's own listener for as long as it runs.
+        `run` below schedules `server` through
+        `run_coroutine_threadsafe` and never awaits the
+        `concurrent.futures.Future` it returns -- deliberately, `server`
+        running for this manager's whole lifetime rather than returning
+        -- so an exception it raises before ever reaching its own accept
+        loop would otherwise surface only through asyncio's own "Task
+        exception was never retrieved" warning: timed to whenever the
+        garbage collector reaches that future rather than to the failure
+        itself, and written to the `asyncio` logger rather than this
+        node's own. `_bind` avoids the same shape by binding
+        synchronously (`btclib-org/btclib-node#88`), which `server`
+        cannot do, it being this manager's own listener for as long as
+        it runs.
 
         `stop`'s own sweep ending this task on purpose is not logged, in
         two different ways depending on how the cancellation actually
@@ -955,20 +953,20 @@ class RpcManager(threading.Thread):
         # `Node.stop` already waits on itself with `self.join`. Guarded
         # on `is_alive`, since `Node.run` calls this unconditionally --
         # a node with `rpc_port` unset never calls `start`, and `join`
-        # on a thread that was never started raises. See
-        # `P2pManager.stop` for the same fix, applied there first.
+        # on a thread that was never started raises. `P2pManager.stop`
+        # does the same.
         if self.is_alive():
             self.join()
-        # `stop_handle.cancel()` is what makes every `run_until_complete`
-        # below safe, on any loop this method could possibly be handed --
-        # not one more guard clause alongside `self.ident` and `pending`,
-        # which is what #362 tried and #380 and #377 each found a gap
-        # in. The `call_soon_threadsafe` above only *schedules*
-        # `loop.stop`; it is delivered -- `self._stopping` set, so
-        # `run_forever` returns after its current pass -- only once
-        # something actually drives this loop's `run_forever` far enough
-        # to reach it. Three things can happen by the time `join` above
-        # returns:
+        # `stop_handle.cancel()` is what makes every
+        # `run_until_complete` below safe, on any loop this method could
+        # possibly be handed -- not one more guard clause alongside
+        # `self.ident` and `pending`: guard clauses alone leave gaps
+        # (#362, #377, #380). The `call_soon_threadsafe` above only
+        # *schedules* `loop.stop`; it is delivered -- `self._stopping`
+        # set, so `run_forever` returns after its current pass -- only
+        # once something actually drives this loop's `run_forever` far
+        # enough to reach it. Three things can happen by the time `join`
+        # above returns:
         #
         # - This manager's own thread was running `run_forever` (the
         #   ordinary case) and delivered it there, exiting on its own.

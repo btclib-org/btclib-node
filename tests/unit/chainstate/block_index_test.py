@@ -421,13 +421,8 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
     """Search `header.nonce` upward until it meets `pow_limit_bits`, in place.
 
-    The nonce is searched in place rather than by `brute_force_nonce`.
-    Before btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
-    btclib-org/btclib#2309), `brute_force_nonce`'s own copy would refuse
-    a version of zero or below before ever searching, which a block's
-    own header reaches `add_headers` with unchecked; that refusal is
-    gone now (btclib-org/btclib-node#1511), but this helper's own
-    unbounded retry and in-place mutation are kept regardless of it.
+    The nonce is searched in place rather than by `brute_force_nonce`:
+    this helper's own retry is unbounded, and it mutates `header`.
     Shared rather than inlined at each caller: a regtest target is met
     about every other nonce, so the retry branch below is a coin flip on
     any one call, and every caller of `a_mined_header` across this file
@@ -511,10 +506,8 @@ def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
     """ISS 1262: below BIP34's height Core takes a version of zero.
 
     `BlockInfo.serialize` and `deserialize` round-trip this header with
-    no bypass needed for it: btclib's `BlockHeader.assert_valid` used to
-    refuse one on its own regardless of height, which is why the index
-    used to store and read it back unchecked, fixed at btclib 2026.9.29
-    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    no bypass needed for it: btclib's `BlockHeader.assert_valid` accepts
+    it (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
     btclib-org/btclib-node#1511).
     """
     params = replace(
@@ -697,9 +690,9 @@ def test_generate_block_candidates_2(
     `generate_block_candidates` counts every header of the 2000-header
     chain: every one of them is still `valid_header`, never explicitly
     set to anything else here, and `generate_block_candidates` admits
-    that status same as it always has -- `valid` is the status its own
-    docstring argues admitting too, untouched by this test, since
-    nothing here is ever set to it.
+    that status -- `valid` is the status its own docstring argues
+    admitting too, untouched by this test, since nothing here is ever
+    set to it.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -1105,12 +1098,11 @@ def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(
 ) -> None:
     """get_first_candidate skips a branch downloaded only at its own tip.
 
-    get_first_candidate used to ask only whether a candidate's own tip
-    had arrived: a branch with a downloaded tip but an undownloaded
-    block behind it passed that check and update_chain then stalled on
-    the hole every pass, leaving nothing else able to connect --
-    btclib-org/btclib-node#121. The complete one-header branch here is
-    what it returns instead.
+    Asking only whether a candidate's own tip has arrived would pass a
+    branch with a downloaded tip but an undownloaded block behind it,
+    and update_chain would then stall on the hole every pass, leaving
+    nothing else able to connect -- btclib-org/btclib-node#121. The
+    complete one-header branch here is what it returns instead.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -1653,14 +1645,15 @@ def test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize(
 ) -> None:
     """A write-through invalidate on a staged hash must survive the next flush.
 
-    `stage_status` stages a hash in `pending` without writing it. If
-    `invalidate` (through `set_status`) then targeted that same hash --
+    `stage_status` stages a hash in `pending` without writing it. Where
+    `invalidate` (through `set_status`) then targets that same hash --
     reachable in `main.update_chain` through a chain-tip flip-flop, or
     through an I/O fault in `block_db.add_rev_block` or
     `filter_index.add_connected_block` that has nothing to do with the
-    block's own content -- writing straight through used to leave
-    `pending` holding a stale entry that the next `finalize` wrote back
-    over the invalidation, undoing it silently. btclib-org/btclib-node#586.
+    block's own content -- writing straight through would leave
+    `pending` holding a stale entry that the next `finalize` writes back
+    over the invalidation, undoing it silently.
+    btclib-org/btclib-node#586.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -1687,15 +1680,15 @@ def test_set_downloaded_after_stage_status_is_not_undone_by_a_later_finalize(
     """`set_downloaded` on a staged hash survives the next flush.
 
     Reachable from `main.prune_up_to_height`: `_finalize_fork`'s own
-    to_add loop stages every hash a fork connects through `stage_status`,
-    before that fork's own `finalize` ever runs, and `to_add` is not
-    bounded by `MIN_BLOCKS_TO_KEEP` anywhere -- a fork longer than the
-    retained depth stages a hash `prune_up_to_height`, run once at the
-    end of that same `update_chain` call, then clears the flag on.
-    Writing straight through would leave `pending` holding a stale
-    `downloaded=True` entry that the next `finalize` writes back over
-    the clear, undoing it silently -- the same shape
-    btclib-org/btclib-node#586 fixed for `set_status`.
+    to_add loop stages every hash a fork connects through
+    `stage_status`, before that fork's own `finalize` ever runs, and
+    `to_add` is not bounded by `MIN_BLOCKS_TO_KEEP` anywhere -- a fork
+    longer than the retained depth stages a hash `prune_up_to_height`,
+    run once at the end of that same `update_chain` call, then clears
+    the flag on. Writing straight through would leave `pending` holding
+    a stale `downloaded=True` entry that the next `finalize` writes back
+    over the clear, undoing it silently -- the shape `set_status` avoids
+    by deferring a pending entry's write (btclib-org/btclib-node#586).
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index

@@ -105,10 +105,10 @@ class UtxoIndex:
     `removed_utxos` and `updated_utxo_set` hold what a batch of
     `add_block`/`apply_rev_block` calls has changed since the last
     `finalize`; the module docstring above is where `add_block`'s own
-    return value is argued. The staging now survives more than one
-    block -- `should_flush` is what tells a caller it is time to stop
-    piling more of it on and write, and `db.py`'s docstring is where
-    what a crash before that costs is decided.
+    return value is argued. The staging survives more than one block --
+    `should_flush` is what tells a caller it is time to stop piling more
+    of it on and write, and `db.py`'s docstring is where what a crash
+    before that costs is decided.
 
     That survival is what makes `rollback` unable to stay a blanket
     wipe: a trial `main.update_chain` rolls back may run against
@@ -455,9 +455,9 @@ class UtxoIndex:
         what keeps `removed_utxos` and `updated_utxo_set` disjoint
         rather than leaving a recreated outpoint staged in both at once
         (`_bip30_violation`'s own docstring is where that invariant is
-        used, and btclib-org/btclib-node#586 is where staging it in
-        both broke a later `apply_rev_block` on a coin that was
-        legitimately unspent).
+        used: an outpoint staged in both would break a later
+        `apply_rev_block` on a coin that is legitimately unspent,
+        btclib-org/btclib-node#586).
 
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `main._validate_block`
@@ -574,47 +574,46 @@ class UtxoIndex:
         both `removed_utxos` and `updated_utxo_set` at once -- still
         "removed" as far as a later `add_block` call's own guard is
         concerned, even though this call just made it spendable again.
-        Staging now survives across trials (this outpoint can sit
-        restored for up to `_FLUSH_BOUND` entries' worth of blocks
-        before `finalize` clears both dicts), so a stale flag here is no
-        longer erased by the next trial boundary the way the old,
-        per-trial `finalize` used to erase it -- it stays wrong until a
-        legitimate later spend of the same output hits `add_block`'s
-        `"prevout already spent in this batch"` guard and gets rejected
-        as a double spend, invalidating that block and, through
-        `update_header_index` -> `BlockIndex.invalidate`, everything
-        built on it. Independently of that, the same stale flag hides a
-        genuine BIP30 duplicate too: `_bip30_violation` reads
-        `removed_utxos` first and answers "no violation" on a hit, so a
-        block recreating the restored outpoint -- still unspent once
-        this call has put it back -- would connect instead of being
-        refused `bad-txns-BIP30` (btclib-org/btclib-node#586).
+        Staging survives across trials (this outpoint can sit restored
+        for up to `_FLUSH_BOUND` entries' worth of blocks before
+        `finalize` clears both dicts), so no trial boundary erases a
+        stale flag here -- it stays wrong until a legitimate later spend
+        of the same output hits `add_block`'s `"prevout already spent in
+        this batch"` guard and gets rejected as a double spend,
+        invalidating that block and, through `update_header_index` ->
+        `BlockIndex.invalidate`, everything built on it. Independently
+        of that, the same stale flag hides a genuine BIP30 duplicate
+        too: `_bip30_violation` reads `removed_utxos` first and answers
+        "no violation" on a hit, so a block recreating the restored
+        outpoint -- still unspent once this call has put it back --
+        would connect instead of being refused `bad-txns-BIP30`
+        (btclib-org/btclib-node#586).
 
-        `coin_stats` moves the opposite way `add_block` moved it for
-        the same coin: `to_add` restores a prevout that block spent, so
-        it is inserted back into the commitment; `to_remove` drops an
+        `coin_stats` moves the opposite way `add_block` moved it for the
+        same coin: `to_add` restores a prevout that block spent, so it
+        is inserted back into the commitment; `to_remove` drops an
         output that block created, so it is removed from it -- both
         skipped for a coin that is both `coin.is_coinbase` and named by
         `is_bip30_unspendable`, matching `add_block`'s own gate, which
-        withholds only the coinbase creation loop
-        (`skip_coinbase_hash`, `add_block`'s own docstring) and never an
-        ordinary transaction sharing the same block. `is_coinbase`
-        alone is what `is_bip30_unspendable` cannot answer for: it
-        checks only the coin's own height and the block's hash, so
-        without this condition every non-coinbase output *of the exempt
-        block itself* -- stamped with the same height by `add_block` --
-        would be wrongly withheld here on undo despite having been
-        correctly hashed in on the way in, leaving `coin_stats`
-        permanently off after a reorg through that block. Matches
+        withholds only the coinbase creation loop (`skip_coinbase_hash`,
+        `add_block`'s own docstring) and never an ordinary transaction
+        sharing the same block. `is_coinbase` alone is what
+        `is_bip30_unspendable` cannot answer for: it checks only the
+        coin's own height and the block's hash, so without this
+        condition every non-coinbase output *of the exempt block itself*
+        -- stamped with the same height by `add_block` -- would be
+        wrongly withheld here on undo despite having been correctly
+        hashed in on the way in, leaving `coin_stats` permanently off
+        after a reorg through that block. Matches
         `CoinStatsIndex::CustomAppend`'s own `is_coinbase &&
-        IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`,
-        at bitcoin/bitcoin@f0de87f040), which gates on exactly the same
-        conjunction rather than the hash/height pair alone.
-        `to_remove` parses the stored `Coin` for this alone where the
-        rest of this loop only ever needed to know the record existed.
-        A parse failure here stops the node through `_parse_stored`, as
-        `_stored_prevout`'s does: the fault is this node's own corrupted
-        record, never a caller's content (btclib-org/btclib-node#620,
+        IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`, at
+        bitcoin/bitcoin@f0de87f040), which gates on exactly the same
+        conjunction rather than the hash/height pair alone. `to_remove`
+        parses the stored `Coin` for this alone, where the rest of this
+        loop needs only to know the record exists. A parse failure here
+        stops the node through `_parse_stored`, as `_stored_prevout`'s
+        does: the fault is this node's own corrupted record, never a
+        caller's content (btclib-org/btclib-node#620,
         btclib-org/btclib-node#631, btclib-org/btclib-node#636).
         """
         for out_point, coin in rev_block.to_add:
@@ -654,9 +653,9 @@ class UtxoIndex:
         state in, before falling to the store: a coin several blocks'
         own worth of staging have created or already taken is real
         regardless of whether `finalize` has written it out yet, and a
-        caller reading `self.db` directly -- `main.verify_mempool_acceptance`
-        used to -- would miss exactly what staying staged across more
-        than one block (btclib-org/btclib-node#586) makes ordinary.
+        caller reading `self.db` directly would miss exactly what
+        staying staged across more than one block
+        (btclib-org/btclib-node#586) makes ordinary.
         """
         if prevout_bytes in self.updated_utxo_set:
             return self.updated_utxo_set[prevout_bytes]

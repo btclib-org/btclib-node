@@ -451,11 +451,9 @@ def test_a_header_that_is_not_well_formed_is_refused() -> None:
     """`brute_force_nonce` propagates btclib's own validation error.
 
     `version` past the four-byte signed range, one over `0x7FFFFFFF`, is
-    what btclib's own `BlockHeader.assert_valid` refuses since it started
-    matching Core's `CBlockHeader::nVersion`, an `int32_t` that accepts
-    zero and negative values as well formed (btclib 2026.9.29,
-    btclib-org/btclib-node#1508); `0` used to be the refused value here
-    and is not anymore.
+    what btclib's own `BlockHeader.assert_valid` refuses, matching
+    Core's `CBlockHeader::nVersion`, an `int32_t` that accepts zero and
+    negative values as well formed (btclib-org/btclib-node#1508).
     """
     header = BlockHeader(
         version=0x80000000,
@@ -502,10 +500,10 @@ def test_a_generated_block_chain_links_and_its_roots_match() -> None:
     """`generate_random_chain` links its blocks and each root matches."""
     chain = generate_random_chain(3, RegTest().genesis.hash)
     for block in chain:
-        # btclib's, not a second implementation of it written here: the
-        # one this used to carry hashed the transactions *with* their
-        # witnesses, which is not what a merkle root is over and passed
-        # only because nothing built here has a witness
+        # btclib's, not a second implementation of it written here: one
+        # hashing the transactions *with* their witnesses is not what a
+        # merkle root is over, and would pass only because nothing built
+        # here has a witness
         root, _ = merkle_root_and_mutated_from_transactions(block.transactions)
         assert block.header.merkle_root == root
     assert chain[0].header.previous_block_hash == RegTest().genesis.hash
