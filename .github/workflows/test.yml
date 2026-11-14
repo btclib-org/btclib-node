@@ -99,24 +99,6 @@ on:
     # pull request produces. main keeps a trigger of its own because a
     # merge creates a commit no pull request tested
     branches: [main]
-    # a commit that only edits prose would otherwise run the suite. The
-    # changes job below asks the same question on the pull_request side,
-    # where this list must not be repeated: "test: every job passed" is
-    # the name main's protection requires, and a required check that
-    # produces no run at all blocks the merge instead of passing it.
-    # What that job exempts is exempt here: the root prose, and the
-    # detect-secrets baseline, which is a lint hook's input and nothing
-    # the suite reads. The two are not the same expression and do not
-    # have to be -- this one is broader by a lowercase root `.md`, which
-    # the job's `^[A-Z][A-Z_]*\.md$` does not exempt. The containment
-    # runs one way only: every file that job exempts is exempt here too,
-    # so no pull request is skipped here that a push would have tested.
-    # What the gap costs is the other side of it -- a lowercase root
-    # `.md` landing on main gets no run afterwards, having changed
-    # nothing the suite reads
-    paths-ignore:
-      - "*.md"
-      - ".secrets.*baseline"
   pull_request:
     # ready_for_review, so a pull request marked ready gets the run the
     # draft condition below withheld while it was a draft: the default

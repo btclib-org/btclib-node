@@ -384,6 +384,13 @@ over the whole suite is a claim about, so it is not held to one —
 narrowing a run is added. `--cov-fail-under` asked for explicitly still
 applies.
 
+Beyond that floor, new or changed functionality must come with tests of
+its own, added or updated in the same pull request, and a fix must come
+with a test that fails without the fix.
+
+Coverage shows that a line ran, not that anything checked what it did,
+and a test that passes without the fix proves nothing about it.
+
 The tests marked `slow` are skipped by a run without `--run-slow`, and
 `tests/README.md`'s *Slow tests* says why. To run them, and only them:
 
@@ -439,8 +446,7 @@ until that sweep runs, at most a week.
 
 A `when` cell leaves out a `pull_request` trigger that `paths:` filters.
 Such a workflow also runs on a pull request that changes a file its
-`paths:` names. The `test` row's push to main also leaves out what its
-`paths-ignore:` names.
+`paths:` names.
 
 `lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
 is no second list of tools and versions to keep in step; its invocation
