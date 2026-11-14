@@ -244,8 +244,8 @@ def get_blockchain_info(
     `get_best_block_hash` above (src/rpc/blockchain.cpp:1459, same sha) --
     both already the display byte order Core's own `GetHex()` answers,
     `BlockHeader.hash` (btclib) being the reversed hash rather than the
-    wire's own, confirmed against a real `bitcoind`'s identical expression
-    at `tests/integration/bitcoind_test.py:66`.
+    wire's own, confirmed against a real `bitcoind`'s identical expression in
+    `tests/integration/bitcoind_test.py::test_node_syncs_from_a_real_bitcoind`.
 
     `bits` is the tip header's own compact target, `header.bits`, hex
     (Core's `strprintf("%08x", tip.nBits)`, src/rpc/blockchain.cpp:1460,
