@@ -285,9 +285,10 @@ _CHAIN_SECTION = {
 # rather than `mainnet`/`testnet`, predating this module and not
 # renamed for it.
 # `LocaleIndependentAtoi`: what `TrimStringView` trims by default, and
-# the integer `std::from_chars` reads at the start of what is left
+# the integer `std::from_chars` reads at the start of what is left, its
+# sign and its leading zeros matched apart from the digits that count
 _TRIMMED = " \f\n\r\t\v"
-_LEADING_INTEGER = re.compile(r"-?[0-9]+")
+_LEADING_INTEGER = re.compile(r"(-?)0*([0-9]+)")
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 _INT_MIN = -(2**31)
 _INT_MAX = 2**31 - 1
@@ -1650,7 +1651,9 @@ def _atoi64(text: str) -> int:
     (and `+-` is `0`), then `std::from_chars` reads the ASCII digits it
     starts with, an optional `-` ahead of them, ignoring whatever
     follows. No digit is `0`, and a value past the `int64_t` range is
-    that range's end on its side.
+    that range's end on its side, however many digits it has: `int`,
+    which refuses a text past CPython's digit limit, zeros counted,
+    reads none longer than the range's widest end and no leading zero.
     """
     trimmed = text.strip(_TRIMMED)
     if trimmed.startswith("+"):
@@ -1660,7 +1663,10 @@ def _atoi64(text: str) -> int:
     match = _LEADING_INTEGER.match(trimmed)
     if match is None:
         return 0
-    return max(_INT64_MIN, min(_INT64_MAX, int(match.group())))
+    sign, digits = match.groups()
+    if len(digits) > len(str(_INT64_MAX)):
+        return _INT64_MIN if sign else _INT64_MAX
+    return max(_INT64_MIN, min(_INT64_MAX, int(sign + digits)))
 
 
 def _get_int(settings: _Settings, name: str) -> int | None:
@@ -1668,14 +1674,21 @@ def _get_int(settings: _Settings, name: str) -> int | None:
 
     `0` negated and `1` doubly so, and a string `_atoi64`, as
     `SettingTo<int64_t>` reads it (`src/common/args.cpp`, at
-    bitcoin/bitcoin@f0de87f040).
+    bitcoin/bitcoin@f0de87f040). A number is `UniValue::getInt`'s
+    (`src/univalue/include/univalue.h:143-152`, same sha): "JSON integer
+    out of range" where it is no integer or past the range. A JSON
+    number has no leading zero, so an integer longer than
+    `-9223372036854775808` is past the range. A number that long is
+    refused before `int`, which refuses a text past CPython's digit limit
+    with a message of its own.
     """
     value = _get_setting(settings, name)
     if value is None or isinstance(value, bool):
         return None if value is None else int(value)
     if isinstance(value, Number):
         if (
-            not _LEADING_INTEGER.fullmatch(value)
+            len(value) > len(str(_INT64_MIN))
+            or not _LEADING_INTEGER.fullmatch(value)
             or not _INT64_MIN <= int(value) <= _INT64_MAX
         ):
             err_msg = "JSON integer out of range"
@@ -1791,15 +1804,23 @@ def _get_port(settings: _Settings, name: str) -> int | None:
 
     `CheckHostPortOptions` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040):
     anything but the digits of a number from 1 to 65535 is refused, `0`
-    -- which a negation reads as -- included.
+    -- which a negation reads as -- included. Leading zeros are read, as
+    `std::from_chars` reads them, and dropped before `int`, which refuses
+    a text past CPython's digit limit, zeros counted.
     """
     value = _get_arg(settings, name)
     if value is None:
         return None
-    if not value.isascii() or not value.isdigit() or not 0 < int(value) <= _MAX_PORT:
+    digits = value.lstrip("0")
+    if (
+        not value.isascii()
+        or not value.isdigit()
+        or len(digits) > len(str(_MAX_PORT))
+        or not 0 < int(digits or "0") <= _MAX_PORT
+    ):
         err_msg = f"Invalid port specified in -{name}: '{value}'"
         raise ValueError(err_msg)
-    return int(value)
+    return int(digits)
 
 
 def _is_negated(settings: _Settings, name: str) -> bool:
