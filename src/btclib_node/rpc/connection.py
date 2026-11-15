@@ -190,8 +190,16 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _json_text(body: object, *, ensure_ascii: bool = True) -> str:
-    """Encode `body` as one line of JSON, each `RawJSON` as its own text."""
+def _json_text(body: object) -> str:
+    r"""Encode `body` as one line of JSON, each `RawJSON` as its own text.
+
+    Each string is written as Core's `json_escape` writes it
+    (`src/univalue/lib/univalue_write.cpp` and the `escapes` table of
+    `src/univalue/include/univalue_escapes.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): a control character, `"`, `\` and DEL as an escape,
+    and every other character as itself. `json.dumps` with `ensure_ascii`
+    off writes the same escapes for the same characters, DEL excepted.
+    """
     # A fresh token per call, not a fixed word: RawJSON's own
     # docstring has why -- a legitimate string value containing a
     # guessable mark once, unpaired, corrupts a fixed-word
@@ -201,13 +209,27 @@ def _json_text(body: object, *, ensure_ascii: bool = True) -> str:
     text = json.dumps(
         body,
         separators=(",", ":"),
-        ensure_ascii=ensure_ascii,
+        ensure_ascii=False,
         cls=JSONEncoder,
         mark=mark,
     )
+    # outside a string `json.dumps` writes no DEL, and a `RawJSON` holds
+    # a number
+    text = text.replace("\x7f", "\\u007f")
     # RawJSON's own placeholder, quotes and all, unquoted to the
     # exact text it carries
     return re.sub(f'"{mark}(.*?){mark}"', r"\1", text)
+
+
+def _json_body(body: object) -> bytes:
+    """Return `body` as `_json_text` writes it, and a line end, in UTF-8.
+
+    A lone surrogate is written as the byte `surrogateescape` decoded it
+    from. A setting read from the command line or a configuration file
+    holds one where its bytes are not UTF-8, and Core's `json_escape`
+    writes those bytes as they are.
+    """
+    return (_json_text(body) + "\n").encode("utf-8", "surrogateescape")
 
 
 # `HTTPStatusReasonString` (`src/rpc/protocol.h`, at bitcoin/bitcoin@f0de87f040,
@@ -1209,7 +1231,7 @@ class RpcConnection:
     async def async_send(self, reply: HttpReply, *, close: bool = False) -> None:
         """Write `reply` back as one JSON-RPC HTTP reply.
 
-        Encodes it as `_json_text` does, and frames the result as `_frame`
+        Encodes it as `_json_body` does, and frames the result as `_frame`
         does, which also decides what happens once the reply is on the
         wire: `client` closes, or this reads another request off the same
         socket (issue #640). A reply with no body is `rpc.jsonrpc.NO_CONTENT`,
@@ -1221,7 +1243,7 @@ class RpcConnection:
                 self._frame(reply.status, b"", close=close), on_worker=True
             )
             return
-        body = (_json_text(reply.body) + "\n").encode()
+        body = _json_body(reply.body)
         fields = ("Content-Type: application/json",)
         await self._write(
             self._frame(reply.status, body, fields, close=close), on_worker=True
@@ -1267,8 +1289,7 @@ class RpcConnection:
         body = b""
         if refusal.body is not None:
             fields = ("Content-Type: application/json",)
-            text = _json_text(refusal.body, ensure_ascii=False)
-            body = (text + "\n").encode()
+            body = _json_body(refusal.body)
         await self._write(
             self._frame(refusal.status, body, fields, close=self._shutting_down()),
             on_worker=True,

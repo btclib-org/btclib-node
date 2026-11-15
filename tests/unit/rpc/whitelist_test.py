@@ -282,6 +282,14 @@ CORE_ERRORS = [
             f'"id":{LONG_ID}}}'
         ),
     ),
+    (
+        '{"id":"\u00e9\\u007f\\u0001","method":5}'.encode(),
+        "400 Bad Request",
+        (
+            '{"result":null,"error":{"code":-32600,"message":"Method must be a string"},'
+            '"id":"\u00e9\\u007f\\u0001"}'
+        ),
+    ),
 ]
 CORE_ERROR_IDS = [
     "batch, non-object after an allowed method",
@@ -298,6 +306,7 @@ CORE_ERROR_IDS = [
     "version not supported, no id",
     "no method",
     "id past the digit limit",
+    "id holding a character outside ASCII, DEL and a control character",
 ]
 
 
@@ -388,7 +397,7 @@ def test_what_core_refuses_ahead_of_the_whitelist_is_core_s_reply(
     """`JSONErrorReply`'s status line and JSON body, and nothing queued."""
     reply, messages, warnings = exchange(whitelisted(*PYTEST_ONLY), [request_])
     expected = f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
-    expected += f"Content-Length: {len(body) + 1}\r\nConnection: close\r\n\r\n"
+    expected += f"Content-Length: {len(body.encode()) + 1}\r\nConnection: close\r\n\r\n"
     assert reply == (expected + body + "\n").encode()
     assert not messages
     assert not warnings
