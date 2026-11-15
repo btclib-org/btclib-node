@@ -224,14 +224,18 @@ argument that is not an option, quote the value whole too
 v32.1 tag). This node keeps Core's other words. A value that stands where a
 name belongs, as a chain, a logging category or a P2P permission, is quoted
 as a name is above, as in `Unknown chain <52 characters>.` Any other value
-is written `'...'`, or `...` where Core's sentence puts it in parentheses,
-as in `Invalid minimum work specified (...), must be up to 64 hex digits`
-and `Command line contains unexpected token '...', see btclib-node -h for a
-list of options.` Such a value of an option that takes several is also named
-by its position, as an `-rpcallowip` value is: `Cannot resolve -bind
-address: '...' (value 2 of -bind)`. A `-whitebind` address that resolves and
-names no port is quoted, as Core quotes it: what resolves is a numeric, onion
-or I2P address, which a key's usual encodings are not.
+but a path is written `'...'`, or `...` where Core's sentence puts it in
+parentheses, as in `Invalid minimum work specified (...), must be up to 64
+hex digits` and `Command line contains unexpected token '...', see
+btclib-node -h for a list of options.` Such a value of an option that takes
+several is also named by its position, as an `-rpcallowip` value is: `Cannot
+resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind` address that
+resolves and names no port is quoted, as Core quotes it: what resolves is a
+numeric, onion or I2P address, which a key's usual encodings are not.
+
+A path is quoted whole, a key given in its place included, as a `-datadir`,
+`-blocksdir`, `-conf` or `includeconf` value is: `Specified data directory
+"/srv/btc" does not exist.` (btclib-org/btclib-node#2533).
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
