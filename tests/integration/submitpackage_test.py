@@ -126,7 +126,10 @@ class Ctx:
         if ours is not None:
             expected = theirs
             if theirs[0] == "error":
-                package = params[0] if isinstance(params, list) and params else []
+                if isinstance(params, dict):
+                    package = params.get("package")
+                else:
+                    package = params[0] if params else None
                 transactions = package if isinstance(package, list) else []
                 expected = (*theirs[:2], departed(theirs[2], transactions))
             assert ours == expected, (method, params)
@@ -269,6 +272,8 @@ def refusals(ctx: Ctx) -> None:
         ctx.agree("submitpackage", params)
     ctx.agree("submitpackage", {"package": [_hex(tx)], "maxfeerate": 0.1})
     ctx.agree("submitpackage", {"package": [_hex(tx)], "foo": 1})
+    ctx.agree("submitpackage", {"package": ["zz"]})
+    ctx.agree("submitpackage", {"package": [_hex(tx), "zz"], "maxfeerate": "x"})
     ctx.agree("submitpackage", [[_hex(tx)], None, None])
     ours, theirs = ctx.ask("help", ["submitpackage"])
     # `help` here answers without the newline that ends Core's text
