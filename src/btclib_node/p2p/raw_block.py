@@ -136,9 +136,10 @@ def _missing(size: int) -> BTClibValueError:
 def _assert_ends_at(i: int, size: int) -> None:
     """Refuse a walk of the block that ends at `i` and not at its `size`.
 
-    `i` sums the length fields the walk read, which may be key octets, so
-    the refusal names `size` and not `i` (section 7 of the organization's
-    standard, *A refusal carries no secret*).
+    `i` is the offset where the walk ended. Every length field the walk
+    read moves it, and those fields may be key octets, so the refusal
+    names `size` and not `i` (section 7 of the organization's standard,
+    *A refusal carries no secret*).
     """
     if i > size:
         raise _missing(size)
