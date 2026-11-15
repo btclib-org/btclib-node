@@ -128,6 +128,25 @@ def _is_segwit(raw: bytes, i: int) -> bool:
     return marker == _SEGWIT_MARKER
 
 
+def _missing(size: int) -> BTClibValueError:
+    """Return the refusal of a block of `size` octets that ends too soon."""
+    return BTClibValueError(f"not enough binary data for the block of {size} octets")
+
+
+def _assert_ends_at(i: int, size: int) -> None:
+    """Refuse a walk of the block that ends at `i` and not at its `size`.
+
+    `i` sums the length fields the walk read, which may be key octets, so
+    the refusal names `size` and not `i` (section 7 of the organization's
+    standard, *A refusal carries no secret*).
+    """
+    if i > size:
+        raise _missing(size)
+    if i < size:
+        err_msg = f"octets left over in the block of {size} octets"
+        raise BTClibValueError(err_msg)
+
+
 def _scan(raw: bytes, *, strip: bool) -> bytes:
     """Walk the block `raw`, and return it without its witnesses if `strip`.
 
@@ -169,11 +188,8 @@ def _scan(raw: bytes, *, strip: bool) -> bytes:
                     run = i
             i += _UINT32_SIZE
     except IndexError as e:
-        err_msg = "not enough binary data for the block"
-        raise BTClibValueError(err_msg) from e
-    if i != size:
-        err_msg = f"{i} octets in the block, not {size}"
-        raise BTClibValueError(err_msg)
+        raise _missing(size) from e
+    _assert_ends_at(i, size)
     if not strip:
         return raw
     parts.append(raw[run:])
