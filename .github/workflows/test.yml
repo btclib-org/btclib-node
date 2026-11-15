@@ -144,23 +144,30 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs: the subject is the commit, which a newer one
-# supersedes. Named literally rather than through github.workflow, which
-# in a called workflow is the caller's name -- release.yml calls both
-# this and lint.yml, and with that expression the two would share a
-# group and cancel each other. By the pull request's own number rather
-# than by github.ref, which for a closed, merged pull request resolves
-# to the base branch's ref and would put that run in the push trigger's
-# group. The suffix is a second, independent problem with github.ref:
-# inside a called workflow that context is the caller's ref, so a
-# rehearsal -- a workflow_dispatch of release.yml on a branch -- would
-# otherwise compute the very group a push to that branch computes, and
-# one run would cancel the other. release.yml passes a suffix of its
-# own, which keeps the release path out of the branch groups
+# cancel a pull request's superseded runs: the subject is the commit,
+# which a newer one supersedes. Named literally rather than through
+# github.workflow, which in a called workflow is the caller's name --
+# release.yml calls both this and lint.yml, and with that expression the
+# two would share a group and cancel each other. By the pull request's
+# own number rather than by github.ref, which for a closed, merged pull
+# request resolves to the base branch's ref: that is the group of a
+# dispatch on main, which the closed pull request's run would cancel.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
+# The suffix is a second, independent problem with github.ref: inside a
+# called workflow that context is the caller's ref, so a rehearsal -- a
+# workflow_dispatch of release.yml on a branch -- would otherwise
+# compute the very group a dispatch of this workflow on that branch
+# computes, and one run would cancel the other. release.yml passes a
+# suffix of its own, which keeps the release path out of the branch
+# groups
 concurrency:
   group: >-
-    test-${{ github.event.pull_request.number || github.ref
-    }}${{ inputs.concurrency-suffix }}
+    test-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:
@@ -552,9 +559,10 @@ jobs:
     # skipped check reports "skipped", which branch protection counts as
     # satisfied. The gate has to run to be able to fail.
     # not always() either: a cancellation of this run itself -- the
-    # concurrency group superseding it with a newer push -- would reach
-    # this job and fail it, turning a cancellation the newer run already
-    # speaks for into a red required check with no defect behind it.
+    # concurrency group superseding it with a newer push to its pull
+    # request -- would reach this job and fail it, turning a
+    # cancellation the newer run already speaks for into a red required
+    # check with no defect behind it.
     # !cancelled() lets this job be skipped there instead, which
     # satisfies the check as any other skip does, while a single needed
     # job cancelled on its own still fails below.

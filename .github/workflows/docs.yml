@@ -59,18 +59,22 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs on the same branch/PR.
+# cancel a pull request's superseded runs.
 # github.event.pull_request.number, not github.ref alone, is what a
 # pull_request run of any action groups by, so a closed run cannot
 # resolve to the same group as a push to main -- the pull_request
-# trigger's own comment above has the reasoning. A push carries no
-# pull_request context, so github.ref is still what groups it, unchanged.
+# trigger's own comment above has the reasoning.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
 # The suffix is what keeps a release call out of the branch groups: see
 # test.yml's own concurrency block for the fuller reasoning
 concurrency:
   group: >-
-    docs-${{ github.event.pull_request.number || github.ref
-    }}${{ inputs.concurrency-suffix }}
+    docs-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:
