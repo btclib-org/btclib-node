@@ -2866,6 +2866,19 @@ def _check_bind(
         seen.add(key)
 
 
+def _rpcservertimeout(settings: _Settings, *, server: bool | None) -> int:
+    """Return `-rpcservertimeout` as `InitHTTPServer` reads it, in seconds.
+
+    `AppInitMain` reaches the HTTP server only under `-server`, so a
+    value in `settings.json` is ignored when the HTTP server is off
+    (issue #2500), including one `GetIntArg` would refuse.
+    """
+    if server is False:
+        return int(IDLE_TIMEOUT)
+    value = _get_int(settings, "rpcservertimeout")
+    return int(IDLE_TIMEOUT) if value is None else value
+
+
 # low-code-quality skipped: Core's `AppInitMain` checks, kept in its order
 def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quality
     """Refuse what Core refuses after its lock, and return the `Config`.
@@ -2956,9 +2969,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
     # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
     # v32.1 tag)
-    rpcservertimeout = _get_int(settings, "rpcservertimeout")
-    if rpcservertimeout is None:
-        rpcservertimeout = int(IDLE_TIMEOUT)
+    rpcservertimeout = _rpcservertimeout(settings, server=server)
 
     return Config(
         chain=before.chain,

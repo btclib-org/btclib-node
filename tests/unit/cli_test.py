@@ -1134,6 +1134,41 @@ def test_build_config_reads_rpcservertimeout(
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
 
+@pytest.mark.parametrize(
+    "number",
+    ["5", "9223372036854775808", "1.5", "9" * 5000],
+    ids=["valid", "int64", "fraction", "digits"],
+)
+def test_build_config_skips_rpcservertimeout_when_server_is_off(
+    tmp_path: Path, number: str
+) -> None:
+    """ISS 2500: `-server=0` does not read `-rpcservertimeout`, as Core does.
+
+    `InitHTTPServer` is the only reader, and it is not reached with the
+    HTTP server off, so a value in `settings.json` -- including one
+    `GetIntArg` would refuse -- must not change the start.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"rpcservertimeout": {number}}}', encoding="utf-8"
+    )
+    config = _build(tmp_path, "-regtest", "-server=0")
+    assert config.rpc_port is None
+    assert config.rpcservertimeout == 30
+
+
+def test_build_config_reads_rpcservertimeout_when_server_is_on(
+    tmp_path: Path,
+) -> None:
+    """ISS 2500: with `-server` set, an out-of-range number is still refused."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcservertimeout": 9223372036854775808}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        _build(tmp_path, "-regtest")
+
+
 def test_help_names_rpcservertimeout_under_debug_alone() -> None:
     """`-rpcservertimeout` is `DEBUG_ONLY` in Core, as `-regtest` is."""
     message = " ".join(cli._help_message(show_debug=True).split())
