@@ -538,11 +538,17 @@ class RejectedMessageError(BTClibValueError):
     `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
     checksum that does not match the payload, or a command
     `IsMessageTypeValid` refuses. `size` is the message's own octets,
-    header included, which the stream has been moved past.
+    header included, which the stream has been moved past and the caller
+    counts as received.
+
+    The text names no size: on V1 the size holds the length field the
+    peer wrote, and on V2 the length it decrypted, which section 7 of the
+    organization's standard, *A refusal carries no secret*, keeps out of
+    a refusal's text.
     """
 
     def __init__(self, size: int) -> None:
-        super().__init__(f"message of {size} bytes rejected")
+        super().__init__("message rejected")
         self.size = size
 
 

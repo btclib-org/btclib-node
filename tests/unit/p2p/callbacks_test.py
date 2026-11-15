@@ -186,6 +186,7 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.secret_free import assert_secret_free, chained
 from tests.unit.download_test import a_conn, a_hash, make_manager, only
 from tests.unit.download_test import a_version as a_services_version
 from tests.unit.main_test import a_dusty_spend, locked_spend
@@ -1933,11 +1934,32 @@ def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
     v32.1 tag; btclib-org/btclib-node#1223).
     """
     peer = a_peer(requested_hb_cmpctblocks=False)
-    with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field: 2"):
+    with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field"):
         sendcmpct(a_handshake_node(), b"\x02" + (2).to_bytes(8, "little"), peer)
     assert not peer.requested_hb_cmpctblocks
     with pytest.raises(MisbehavingError):
         sendcmpct(a_handshake_node(), b"\x02" + (1).to_bytes(8, "little"), peer)
+
+
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("28c462a995a1734856dab92d95c87ad8cc43fef4a09a047506d2c9319935e107")
+
+
+def test_a_sendcmpct_announce_octet_is_refused_without_its_value() -> None:
+    """The refusal is Core's text, which prints no value.
+
+    `assert_secret_free` looks for pieces whose length `WINDOW` gives, so
+    the octet fed, in decimal and in hex, is looked for as a secret of its
+    own. It is not fed as bytes: the `repr` of a printable octet is one
+    character, which a clean text can hold.
+    """
+    fed = _KEY[:1]
+    assert fed[0] > 1
+    with pytest.raises(MisbehavingError) as refusal:
+        sendcmpct(a_handshake_node(), fed + (2).to_bytes(8, "little"), a_peer())
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, str(fed[0]), fed.hex()])
+    assert str(refusal.value) == "invalid sendcmpct announce field"
 
 
 def test_a_sendcmpct_of_another_version_is_ignored() -> None:
@@ -3570,6 +3592,25 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     assert orphan.header.hash not in index.infos
 
 
+def test_a_block_with_an_unknown_parent_is_refused_without_the_parent() -> None:
+    """The refusal names neither the parent the peer wrote nor a hash over it.
+
+    The block's hash is taken over the parent field, so it is looked for
+    too, in both byte orders.
+    """
+    (orphan,) = generate_random_chain(1, _KEY)
+    node = a_data_node(block_index=FakeBlockIndex({}, accepts_headers=False))
+    payload = BlockMsg(orphan, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    with pytest.raises(MisbehavingError) as refusal:
+        block_callback(node, payload, a_peer())
+    block_hash = orphan.header.hash
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, block_hash, block_hash[::-1]])
+    assert str(refusal.value) == "prev-blk-not-found"
+
+
 def a_block_payload(block: Block) -> bytes:
     """Serialize `block` as a `block` message, witnesses included."""
     return BlockMsg(block, include_witness=True, check_validity=False).serialize(
@@ -3661,6 +3702,35 @@ def test_a_mutated_body_is_refused_before_its_header_is_indexed(
         block_callback(node, a_block_payload(forged), a_peer())
     assert honest.header.hash not in node.chainstate.block_index.header_dict
     node.chainstate.close()
+
+
+def test_a_mutated_block_is_refused_without_a_hash_over_its_merkle_root(
+    tmp_path: Path,
+) -> None:
+    """The refusal is Core's text, with no hash of the block.
+
+    No proof of work is asked before it, so the merkle root is the key's
+    octets, and the block's hash over them is looked for too, in both byte
+    orders.
+    """
+    node = a_chainstate_node(tmp_path)
+    (honest,) = generate_random_chain(1, RegTest().genesis.hash)
+    header = BlockHeader(
+        version=honest.header.version,
+        previous_block_hash=honest.header.previous_block_hash,
+        merkle_root=_KEY,
+        time=honest.header.time,
+        bits=honest.header.bits,
+        nonce=honest.header.nonce,
+        check_validity=False,
+    )
+    forged = Block(header, honest.transactions, check_validity=False)
+    with pytest.raises(MisbehavingError) as refusal:
+        block_callback(node, a_block_payload(forged), a_peer())
+    node.chainstate.close()
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, header.hash, header.hash[::-1]])
+    assert str(refusal.value) == "mutated block"
 
 
 @pytest.mark.usefixtures("activations")
@@ -6593,6 +6663,62 @@ def logged_lines(node: Any) -> list[str]:
     return lines
 
 
+def _stop(height: int) -> bytes:
+    """Return the stop hash `a_filters_node` gives `height`, as sent."""
+    return height.to_bytes(32, "big")[::-1]
+
+
+_START = _KEY[:1] + bytes(3)
+_FILTER_REFUSALS = [
+    pytest.param(
+        _KEY[:1] + bytes(4) + _stop(1),
+        "peer requested unsupported block filter type, peer=0",
+        [str(_KEY[0]), _KEY[:1].hex()],
+        id="filter-type",
+    ),
+    pytest.param(
+        bytes(5) + _KEY,
+        "peer requested invalid block hash, peer=0",
+        [_KEY[::-1]],
+        id="stop-hash",
+    ),
+    pytest.param(
+        bytes(1) + _KEY[:4] + _stop(2),
+        "peer sent invalid getcfilters/getcfheaders with start height above "
+        "stop height 2, peer=0",
+        [_KEY[:4], str(int.from_bytes(_KEY[:4], "little"))],
+        id="start-height",
+    ),
+    pytest.param(
+        bytes(1) + _START + _stop(_KEY[0] + 1000),
+        "peer requested too many cfilters/cfheaders: at most 1000, peer=0",
+        [str(_KEY[0]), str(1001)],
+        id="too-many",
+    ),
+]
+
+
+@pytest.mark.parametrize(("payload", "expected", "fed"), _FILTER_REFUSALS)
+def test_a_bip157_refusal_logs_no_field_the_peer_chose(
+    payload: bytes, expected: str, fed: list[str | bytes]
+) -> None:
+    """Each `net` line names the check, never the octets the peer sent.
+
+    `assert_secret_free` reads an exception, so each line is put in one.
+    Each field fed is looked for in the spellings the line could print it
+    in, a one-octet field not as bytes, whose `repr` can be a character of
+    any text.
+    """
+    node = a_filters_node(length=_KEY[0] + 1001)
+    lines = logged_lines(node)
+    peer = a_peer()
+    get_cfilters(node, payload, peer)
+    assert peer.stopped == [True]
+    (line,) = lines
+    assert_secret_free(ValueError(line), [_KEY, *fed])
+    assert line == expected
+
+
 def without(get: Any, missing: bytes) -> Any:
     """Answer as `get` does, except `None` for `missing`."""
     return lambda h: None if h == missing else get(h)
@@ -7292,7 +7418,7 @@ def test_a_vector_past_cores_bound_is_misbehaving(
     that does not parse.
     """
     payload = var_int.serialize(bound + 1) + entry * (bound + 1)
-    with pytest.raises(MisbehavingError, match=f"message size = {bound + 1}"):
+    with pytest.raises(MisbehavingError, match="message size past its bound"):
         callback(a_data_node(), payload, a_peer())
     assert _parsed_at_the_bound(callback, bound, entry)
 
@@ -7329,11 +7455,27 @@ def test_a_headers_count_past_the_bound_is_misbehaving_on_its_own() -> None:
     No header follows it, and it is still `Misbehaving`; the bound
     itself is the control, left to btclib's parse of the missing headers.
     """
-    with pytest.raises(MisbehavingError, match="headers message size = 2001"):
+    with pytest.raises(MisbehavingError, match="headers message size past its bound"):
         headers(a_data_node(), var_int.serialize(MAX_HEADERS_RESULTS + 1), a_peer())
     with pytest.raises(BTClibValueError) as refused:
         headers(a_data_node(), var_int.serialize(MAX_HEADERS_RESULTS), a_peer())
     assert not isinstance(refused.value, MisbehavingError)
+
+
+def test_a_count_past_the_bound_is_refused_without_its_octets() -> None:
+    """The refusal names the message, never the count the peer wrote.
+
+    A `headers` count needs no entry behind it, so the octets of a
+    CompactSize, up to the largest btclib reads, can be the key's. The
+    count, in decimal, is looked for as a secret of its own.
+    """
+    fed = _KEY[:3] + bytes(1)
+    count = int.from_bytes(fed, "little")
+    with pytest.raises(MisbehavingError) as refusal:
+        headers(a_data_node(), b"\xfe" + fed, a_peer())
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, fed, str(count)])
+    assert str(refusal.value) == "headers message size past its bound"
 
 
 @pytest.mark.parametrize(
