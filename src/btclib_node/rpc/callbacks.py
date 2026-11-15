@@ -109,7 +109,7 @@ from btclib_node.rpc.errors import (
 )
 from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject, RawJSON, get_real
+from btclib_node.rpc.jsonrpc import JsonObject, NegativeZero, RawJSON, get_real
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -2163,6 +2163,19 @@ def _integer(value: object, low: int, high: int) -> int:
     return value
 
 
+def _unsigned_integer(value: object, high: int) -> int:
+    """Read a JSON number as an unsigned `getInt` does, from 0 to `high`.
+
+    `UniValue::getInt` reads the number's text with `std::from_chars`
+    (`src/univalue/include/univalue.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), which refuses a minus sign for an unsigned type, so
+    `-0` is refused as `-1` is.
+    """
+    if isinstance(value, NegativeZero):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return _integer(value, 0, high)
+
+
 def _address_text(address: NetworkAddressV2) -> str:
     """Return `CNetAddr::ToStringAddr` of `address`."""
     if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
@@ -2254,7 +2267,7 @@ def add_peer_address(
     if mismatches:
         raise type_errors(*mismatches)
     tried = bool_param(params, 2, name="tried", default=False)
-    port = _integer(params[1], 0, _MAX_PORT)
+    port = _unsigned_integer(params[1], _MAX_PORT)
     host = lookup_host(params[0])
     if host is None:
         raise RpcError(RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Invalid IP address")
@@ -2911,14 +2924,13 @@ def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
         raise type_errors(*mismatches)
     txid = parse_hash_v("txid", txid_param)
     # `UniValue::getInt<uint32_t>()` (`src/univalue/include/univalue.h
-    # :142-153`): a non-integral number, or one outside uint32_t's own
-    # range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
+    # :142-153`): a non-integral number, `-0`, or one outside uint32_t's
+    # own range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
     # same message `get_block_hash`'s own float check above answers,
     # and not `RPC_TYPE_ERROR`, the type check having already passed.
-    if isinstance(n_param, float) or not 0 <= n_param < 2**32:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    n = _unsigned_integer(n_param, 2**32 - 1)
     include_mempool = bool_param(params, 2, name="include_mempool", default=True)
-    return txid, n_param, include_mempool
+    return txid, n, include_mempool
 
 
 def _mempool_spends(node: Node, txid: bytes, out_point_bytes: bytes) -> bool:

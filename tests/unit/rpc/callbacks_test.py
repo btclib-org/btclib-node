@@ -150,7 +150,7 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import RawJSON
+from btclib_node.rpc.jsonrpc import NegativeZero, RawJSON
 from tests import (
     ambiguous_tx,
     build_block,
@@ -2107,11 +2107,14 @@ def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
     assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
-@pytest.mark.parametrize("n", [-1, 2**32, 1.5])
+@pytest.mark.parametrize("n", [-1, 2**32, 1.5, NegativeZero()])
 def test_get_tx_out_refuses_n_out_of_uint32_range(
     regtest_node: Callable[..., Node], n: float
 ) -> None:
-    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`."""
+    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`.
+
+    `-0` included, which `from_chars` refuses for an unsigned type (ISS 2491).
+    """
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, [(b"\x11" * 32).hex(), n])
