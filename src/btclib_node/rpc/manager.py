@@ -41,7 +41,12 @@ from contextlib import suppress
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, override
 
-from btclib_node.config import lookup_service, service_text, split_host_port
+from btclib_node.config import (
+    invalid_port_message,
+    lookup_service,
+    service_text,
+    split_host_port,
+)
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.p2p.address import ip_and_port
@@ -513,13 +518,13 @@ class RpcManager(threading.Thread):
                 return [(host, port) for host in _LOOPBACK_HOSTS]
             return [(config.rpc_host, port)]
         endpoints: list[tuple[str, int]] = []
-        for value in config.rpcbind:
+        for position, value in enumerate(config.rpcbind, 1):
             try:
                 endpoint: tuple[str, int] | None = split_host_port(value, port)
             except ValueError:
                 endpoint = None
             if endpoint is None:
-                self.logger.error("Invalid port specified in -rpcbind: '%s'", value)
+                self.logger.error("%s", invalid_port_message("rpcbind", position))
                 return []
             endpoints.append(endpoint)
         return endpoints

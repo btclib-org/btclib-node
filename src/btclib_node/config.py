@@ -87,6 +87,7 @@ __all__ = [
     "default_onion_bind",
     "get_path_arg",
     "has_valid_port",
+    "invalid_port_message",
     "listen_port",
     "lookup_host_port",
     "lookup_service",
@@ -287,6 +288,17 @@ def has_valid_port(spec: str) -> bool:
     where it is false.
     """
     return _split(spec, 0)[2]
+
+
+def invalid_port_message(name: str, position: int) -> str:
+    """Return the refusal of value `position` of `-name`, whose port is invalid.
+
+    Core's `InvalidPortErrMsg` (`src/common/messages.cpp:150`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), with `'...'` for the value,
+    which may be a key, and `position`, its place among the option's values,
+    counted from 1 (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    return f"Invalid port specified in -{name}: '...' (value {position} of -{name})"
 
 
 def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:

@@ -221,6 +221,7 @@ from btclib_node.config import (
     default_onion_bind,
     get_path_arg,
     has_valid_port,
+    invalid_port_message,
     listen_port,
     lookup_service,
     parse_bind,
@@ -2922,8 +2923,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
     # tag; `RpcManager` binds the second beside `-rpcallowip`, as
     # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does. The
-    # refusal is `_get_port`'s, the value named by its place among the
-    # option's values, counted from 1
+    # refusal is `invalid_port_message`'s
     bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
     whitebind = _get_args(settings, "whitebind")
@@ -2935,11 +2935,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         for position, value in enumerate(values, 1):
             head, tagged, _ = value.rpartition("=")
             if not has_valid_port(head if tagged and name == "bind" else value):
-                err_msg = (
-                    f"Invalid port specified in -{name}: '...' "
-                    f"(value {position} of -{name})"
-                )
-                raise ValueError(err_msg)
+                raise ValueError(invalid_port_message(name, position))
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"),
