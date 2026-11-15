@@ -204,6 +204,19 @@ that `testmempoolaccept` or `submitpackage` cannot decode is named by its
 index, in the words of Core's `combinerawtransaction`: `TX decode failed
 for tx 1. Make sure the tx has at least one input.`
 
+Core's start-up refusals of an `-rpccookieperms` and an `-rpcallowip` value
+quote the value whole, a key given by mistake in its place included
+(`InitRPCAuthentication` in `src/httprpc.cpp:260` and `InitHTTPAllowList`
+in `src/httpserver.cpp:103`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+This node keeps Core's other words. An `-rpccookieperms` value stands where
+a mode's name belongs, so it is quoted as the paragraph above quotes a
+name, as in `Invalid -rpccookieperms=<52 characters>; must be one of
+'owner', 'group', or 'all'.` An `-rpcallowip` value stands where a subnet
+belongs, so the refusal writes `'...'` in its place and names the value by
+its position among the `-rpcallowip` values, counted from 1 in the order
+Core's `GetArgs` lists them: `Invalid -rpcallowip subnet specification:
+'...' (value 3 of -rpcallowip). Valid values are ...`.
+
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
 `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This

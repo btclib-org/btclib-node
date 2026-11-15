@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import quoted_name
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.errors import RpcError, json_type_name
 from btclib_node.rpc.jsonrpc import JsonRpcRequest, error_status
@@ -130,15 +131,24 @@ def cookie_perms(value: str) -> int:
 
     `owner` is 0600, `group` 0640 and `all` 0644; anything else raises
     `ValueError` with Core's own message, fatal there too.
+
+    Core quotes the value whole (`src/httprpc.cpp:260`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this quotes it through
+    `quoted_name`: a value given where a mode's name belongs may be a key.
+    Section 7 of the organization's standard, *A refusal carries no
+    secret*, wins over Core here (SECURITY.md, "Where this node departs
+    from Bitcoin Core").
     """
-    try:
-        return _COOKIE_PERMS[value]
-    except KeyError:
+    # `get` and not `[]`: the refusal's context would be a `KeyError` holding
+    # the value
+    mode = _COOKIE_PERMS.get(value)
+    if mode is None:
         err_msg = (
-            f"Invalid -rpccookieperms={value}; must be one of 'owner', 'group', "
-            "or 'all'."
+            f"Invalid -rpccookieperms={quoted_name(value)}; must be one of "
+            "'owner', 'group', or 'all'."
         )
-        raise ValueError(err_msg) from None
+        raise ValueError(err_msg)
+    return mode
 
 
 def parse_whitelist(values: Sequence[str]) -> dict[bytes, frozenset[str]]:
