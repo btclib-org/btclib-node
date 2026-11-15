@@ -109,7 +109,13 @@ from btclib_node.rpc.errors import (
 )
 from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject, RawJSON, get_real
+from btclib_node.rpc.jsonrpc import (
+    JsonNumber,
+    JsonObject,
+    NegativeZero,
+    RawJSON,
+    get_real,
+)
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -2163,6 +2169,19 @@ def _integer(value: object, low: int, high: int) -> int:
     return value
 
 
+def _unsigned_integer(value: object, high: int) -> int:
+    """Read a JSON number as an unsigned `getInt` does, from 0 to `high`.
+
+    `UniValue::getInt` reads the number's text with `std::from_chars`
+    (`src/univalue/include/univalue.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), which refuses a minus sign for an unsigned type, so
+    `-0` is refused as `-1` is.
+    """
+    if isinstance(value, NegativeZero):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return _integer(value, 0, high)
+
+
 def _address_text(address: NetworkAddressV2) -> str:
     """Return `CNetAddr::ToStringAddr` of `address`."""
     if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
@@ -2254,7 +2273,7 @@ def add_peer_address(
     if mismatches:
         raise type_errors(*mismatches)
     tried = bool_param(params, 2, name="tried", default=False)
-    port = _integer(params[1], 0, _MAX_PORT)
+    port = _unsigned_integer(params[1], _MAX_PORT)
     host = lookup_host(params[0])
     if host is None:
         raise RpcError(RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Invalid IP address")
@@ -2911,14 +2930,13 @@ def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
         raise type_errors(*mismatches)
     txid = parse_hash_v("txid", txid_param)
     # `UniValue::getInt<uint32_t>()` (`src/univalue/include/univalue.h
-    # :142-153`): a non-integral number, or one outside uint32_t's own
-    # range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
+    # :142-153`): a non-integral number, `-0`, or one outside uint32_t's
+    # own range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
     # same message `get_block_hash`'s own float check above answers,
     # and not `RPC_TYPE_ERROR`, the type check having already passed.
-    if isinstance(n_param, float) or not 0 <= n_param < 2**32:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    n = _unsigned_integer(n_param, 2**32 - 1)
     include_mempool = bool_param(params, 2, name="include_mempool", default=True)
-    return txid, n_param, include_mempool
+    return txid, n, include_mempool
 
 
 def _mempool_spends(node: Node, txid: bytes, out_point_bytes: bytes) -> bool:
@@ -3923,7 +3941,8 @@ def _parse_fixed_point(text: str, decimals: int) -> int | None:
     )
     if not 0 <= exponent < _FIXED_POINT_DIGITS:
         return None
-    amount: int = int(mantissa or "0") * 10**exponent
+    # without its leading zeros, which `int` counts against its digit limit
+    amount: int = int(mantissa.lstrip("0") or "0") * 10**exponent
     if amount > _FIXED_POINT_BOUND:
         return None
     return -amount if text.startswith("-") else amount
@@ -3944,6 +3963,12 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     `_parse_fixed_point` refuses, and "Amount out of range" for one that
     it reads but that falls outside `MoneyRange`, 0 through `MAX_MONEY`.
 
+    Core parses a number's text, `value.getValStr()`, so a number that
+    `decode` kept the text of, a `JsonNumber` or a `NegativeZero`, is
+    parsed from that text. A `float` drops the digits a double cannot
+    hold: `1.00000000000000000001` reads as `1.0`. Core refuses the
+    original text as "Invalid amount".
+
     `btclib.amount.valid_btc_amount` folds Core's two messages into the
     one `BTClibValueError` it always raises, and reads its text with
     `Decimal`, which is why this does not call it.
@@ -3953,7 +3978,8 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     value = params[position]
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise RpcError(RPCErrorCode.TYPE_ERROR, _AMOUNT_NOT_NUMBER_OR_STRING)
-    amount = _parse_fixed_point(str(value), _BTC_DECIMALS)
+    text = value.text if isinstance(value, JsonNumber | NegativeZero) else str(value)
+    amount = _parse_fixed_point(text, _BTC_DECIMALS)
     if amount is None:
         raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
     if not 0 <= amount <= _MAX_MONEY:

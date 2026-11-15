@@ -150,7 +150,7 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import RawJSON
+from btclib_node.rpc.jsonrpc import NegativeZero, RawJSON, decode
 from tests import (
     ambiguous_tx,
     build_block,
@@ -2107,11 +2107,14 @@ def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
     assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
-@pytest.mark.parametrize("n", [-1, 2**32, 1.5])
+@pytest.mark.parametrize("n", [-1, 2**32, 1.5, NegativeZero()])
 def test_get_tx_out_refuses_n_out_of_uint32_range(
     regtest_node: Callable[..., Node], n: float
 ) -> None:
-    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`."""
+    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`.
+
+    `-0` included, which `from_chars` refuses for an unsigned type (ISS 2491).
+    """
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, [(b"\x11" * 32).hex(), n])
@@ -9491,6 +9494,36 @@ def test_an_amount_string_core_refuses_is_invalid_amount(text: str) -> None:
 def test_an_amount_core_reads_is_read(value: object, amount: int) -> None:
     """The control for the refusals above: the grammar still reads these."""
     assert cb._amount_param([value], 0, name="maxfeerate", default=0) == amount
+
+
+@pytest.mark.parametrize("text", ["1.00000000000000000001", "0.10000000000000000001"])
+def test_an_amount_number_is_parsed_from_its_text(text: str) -> None:
+    """ISS 2494: Core parses the text, which a `float` reads as 1.0 and 0.1."""
+    with pytest.raises(RpcError) as raised:
+        cb._amount_param(decode(f"[{text}]".encode()), 0, name="maxfeerate", default=0)
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+@pytest.mark.parametrize(
+    ("text", "amount"),
+    [
+        ("1.50", 150_000_000),
+        ("1e-8", 1),
+        ("-0", 0),
+        ("0.0", 0),
+        pytest.param(f"0.{'0' * 5000}1e5001", 100_000_000, id="leading-zeros"),
+    ],
+)
+def test_an_amount_number_core_reads_is_read_from_its_text(
+    text: str, amount: int
+) -> None:
+    """ISS 2494: the control for the refusals above.
+
+    Leading zeros past `int`'s digit limit are read, as Core reads them.
+    """
+    params = decode(f"[{text}]".encode())
+    assert cb._amount_param(params, 0, name="maxfeerate", default=0) == amount
 
 
 @pytest.mark.parametrize("text", ["-1", "-0.00000001", "21000000.00000001"])
