@@ -109,7 +109,13 @@ from btclib_node.rpc.errors import (
 )
 from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject, NegativeZero, RawJSON, get_real
+from btclib_node.rpc.jsonrpc import (
+    JsonNumber,
+    JsonObject,
+    NegativeZero,
+    RawJSON,
+    get_real,
+)
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -3935,7 +3941,8 @@ def _parse_fixed_point(text: str, decimals: int) -> int | None:
     )
     if not 0 <= exponent < _FIXED_POINT_DIGITS:
         return None
-    amount: int = int(mantissa or "0") * 10**exponent
+    # without its leading zeros, which `int` counts against its digit limit
+    amount: int = int(mantissa.lstrip("0") or "0") * 10**exponent
     if amount > _FIXED_POINT_BOUND:
         return None
     return -amount if text.startswith("-") else amount
@@ -3956,6 +3963,12 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     `_parse_fixed_point` refuses, and "Amount out of range" for one that
     it reads but that falls outside `MoneyRange`, 0 through `MAX_MONEY`.
 
+    Core parses a number's text, `value.getValStr()`, so a number that
+    `decode` kept the text of, a `JsonNumber` or a `NegativeZero`, is
+    parsed from that text. A `float` drops the digits a double cannot
+    hold: `1.00000000000000000001` reads as `1.0`. Core refuses the
+    original text as "Invalid amount".
+
     `btclib.amount.valid_btc_amount` folds Core's two messages into the
     one `BTClibValueError` it always raises, and reads its text with
     `Decimal`, which is why this does not call it.
@@ -3965,7 +3978,8 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     value = params[position]
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise RpcError(RPCErrorCode.TYPE_ERROR, _AMOUNT_NOT_NUMBER_OR_STRING)
-    amount = _parse_fixed_point(str(value), _BTC_DECIMALS)
+    text = value.text if isinstance(value, JsonNumber | NegativeZero) else str(value)
+    amount = _parse_fixed_point(text, _BTC_DECIMALS)
     if amount is None:
         raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
     if not 0 <= amount <= _MAX_MONEY:
