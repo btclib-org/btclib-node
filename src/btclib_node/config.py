@@ -86,6 +86,7 @@ __all__ = [
     "WhitebindAddress",
     "default_onion_bind",
     "get_path_arg",
+    "has_valid_port",
     "listen_port",
     "lookup_host_port",
     "lookup_service",
@@ -267,12 +268,25 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's own
     default P2P port this way. This is for a caller whose option Core
     checks at init, `-rpcbind`; a peer spec is `lookup_host_port`'s.
+
+    The refusal gives `spec` by its length: a spec that names no valid
+    port may be a key.
     """
     host, port, valid = _split(spec, default_port)
     if not valid:
-        err_msg = f"{spec!r} names an invalid port"
+        err_msg = f"a host and port of {len(spec)} characters names an invalid port"
         raise ValueError(err_msg)
     return host, port
+
+
+def has_valid_port(spec: str) -> bool:
+    """Return Core's `SplitHostPort` of "host[:port]": no port, or a valid one.
+
+    `CheckHostPortOptions` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) refuses a `-bind`, `-rpcbind` or `-whitebind` value
+    where it is false.
+    """
+    return _split(spec, 0)[2]
 
 
 def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:
@@ -337,7 +351,7 @@ def default_onion_bind(default_port: int) -> BindAddress:
     return BindAddress(IPv4Address("127.0.0.1"), onion_port(default_port), onion=True)
 
 
-def parse_bind(arg: str, default_port: int) -> BindAddress:
+def parse_bind(arg: str, default_port: int, *, position: int) -> BindAddress:
     """Return the address `-bind=<arg>` names, as `InitBinds`' caller reads it.
 
     Core's warning for a bad port (`BadPortWarning`, same sha) is not
@@ -347,7 +361,12 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
     v32.1 tag) looks a numeric address up, at `default_port` where the
     value names none; one tagged `=onion` takes `onion_port` instead, and
     any other tag resolves nothing. Raises `ValueError` in Core's words
-    where the address is none.
+    where the address is none, with `'...'` for `arg` and `position`, its
+    place among the `-bind` values counted from 1.
+
+    Core's `ResolveErrMsg` quotes `arg` (`src/common/messages.cpp:145`,
+    same sha), and a value that names no address may be a key
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     head, equals, tag = arg.rpartition("=")
     onion = bool(equals) and tag == "onion"
@@ -357,7 +376,7 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
         port = onion_port(default_port) if onion else default_port
         service = lookup_service(head if equals else arg, port)
     if service is None:
-        err_msg = f"Cannot resolve -bind address: '{arg}'"
+        err_msg = f"Cannot resolve -bind address: '...' (value {position} of -bind)"
         raise ValueError(err_msg)
     return BindAddress(*service, onion)
 
@@ -371,17 +390,25 @@ class WhitebindAddress:
     flags: NetPermissionFlags
 
 
-def parse_whitebind(arg: str) -> WhitebindAddress:
+def parse_whitebind(arg: str, *, position: int) -> WhitebindAddress:
     """Return the address and permissions `-whitebind=<arg>` names.
 
     `NetWhitebindPermissions::TryParse` (`src/net_permissions.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): a numeric address, which
-    has to name a port. Raises `ValueError` in Core's words.
+    has to name a port. Raises `ValueError` in Core's words, with `'...'`
+    for an address that resolves to nothing and `position`, the value's
+    place among the `-whitebind` values counted from 1, as `parse_bind`
+    does and for its reason (`src/net_permissions.cpp:114`, same sha).
+    The refusal of an address that resolves but names no port quotes it,
+    as Core does (SECURITY.md, "Where this node departs from Bitcoin Core",
+    says why).
     """
-    flags, spec = parse_whitebind_permissions(arg)
+    flags, spec = parse_whitebind_permissions(arg, position=position)
     service = lookup_service(spec, 0)
     if service is None:
-        err_msg = f"Cannot resolve -whitebind address: '{spec}'"
+        err_msg = (
+            f"Cannot resolve -whitebind address: '...' (value {position} of -whitebind)"
+        )
         raise ValueError(err_msg)
     if service[1] == 0:
         err_msg = f"Need to specify a port with -whitebind: '{spec}'"
@@ -405,9 +432,9 @@ def listen_port(
         service = lookup_service(value, 0)
         if service is not None and service[1] != 0:
             return service[1]
-    for value in whitebind:
+    for position, value in enumerate(whitebind, 1):
         try:
-            address = parse_whitebind(value)
+            address = parse_whitebind(value, position=position)
         except ValueError:
             continue
         if NetPermissionFlags.NO_BAN not in address.flags:

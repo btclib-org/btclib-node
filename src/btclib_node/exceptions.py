@@ -33,6 +33,7 @@ from typing import ClassVar
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.constants import quoted_name
 
 __all__ = [
     "BlockScriptVerifyError",
@@ -454,10 +455,14 @@ class RpcCredentialRefusedError(ValueError):
 
 
 class UnknownChainError(ValueError):
-    """`Config`'s own `chain` string names no chain this tree knows."""
+    """`Config`'s own `chain` string names no chain this tree knows.
+
+    The string stands where a chain's name belongs, so it is quoted
+    through `quoted_name`: a longer one may be a key.
+    """
 
     def __init__(self, chain: str) -> None:
-        super().__init__(f"unknown chain: {chain!r}")
+        super().__init__(f"unknown chain: {quoted_name(chain)!r}")
 
 
 class InvalidChainTypeError(TypeError):

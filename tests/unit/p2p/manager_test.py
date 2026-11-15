@@ -118,7 +118,9 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.secret_free import assert_secret_free
 from tests.unit.rolling_bloom_test import a_small_filter
+from tests.unit.rpc import LEAK_WIF
 
 
 def a_conn(
@@ -2547,7 +2549,9 @@ def test_a_manager_whose_bind_names_nothing_ends_like_a_failed_bind(
     manager = a_manager(bind=["localhost"])
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert manager.bind_error == "Cannot resolve -bind address: 'localhost'"
+    assert (
+        manager.bind_error == "Cannot resolve -bind address: '...' (value 1 of -bind)"
+    )
 
 
 def test_run_with_bind_listens_where_asked_and_discovers_nothing(
@@ -2739,7 +2743,22 @@ def test_a_manager_whose_externalip_names_nothing_ends_like_a_failed_bind(
     manager = a_manager(externalip=[value], listen=listen)
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert manager.bind_error == f"Cannot resolve -externalip address: '{value}'"
+    assert manager.bind_error == (
+        "Cannot resolve -externalip address: '...' (value 1 of -externalip)"
+    )
+
+
+def test_a_key_given_as_an_externalip_is_not_in_the_refusal(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2521: Core's `ResolveErrMsg` quotes it; this names its place."""
+    manager = a_manager(externalip=["1.2.3.4", LEAK_WIF], listen=False)
+    with pytest.raises(ValueError, match="-externalip") as raised:
+        manager._add_externalip()
+    assert str(raised.value) == (
+        "Cannot resolve -externalip address: '...' (value 2 of -externalip)"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_run_records_externalip_and_discovers_nothing_else(

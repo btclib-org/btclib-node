@@ -38,8 +38,9 @@ there), and `allow_p2p` (the P2P listener is always requested;
 (`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040,
 the v32.1 tag), and `libevent` with Core's warning that it does nothing.
 It refuses any other with Core's own "Unsupported logging category"
-message (`SetLoggingCategories`, `src/init/common.cpp`), and `0` or
-`none` discards the categories before it. Each debug line is written under
+message (`SetLoggingCategories`, `src/init/common.cpp`), the category
+quoted as `_resolve_debug` says, and `0` or `none` discards the
+categories before it. Each debug line is written under
 Core's category for it (`Logger.log_debug`), and `-debug` with no
 category, `1` or `all` selects every one. `-debugexclude=<category>` takes
 a category out after `-debug`'s, refused the same way.
@@ -219,12 +220,12 @@ from btclib_node.config import (
     WhitebindAddress,
     default_onion_bind,
     get_path_arg,
+    has_valid_port,
     listen_port,
     lookup_service,
     parse_bind,
     parse_whitebind,
     service_text,
-    split_host_port,
 )
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
@@ -1802,6 +1803,10 @@ def _get_port(settings: _Settings, name: str) -> int | None:
     -- which a negation reads as -- included. Leading zeros are read, as
     `std::from_chars` reads them, and dropped before `int`, which refuses
     a text past CPython's digit limit, zeros counted.
+
+    The refusal is Core's `InvalidPortErrMsg` (`src/common/messages.cpp:150`,
+    same sha) with `'...'` for the value, which may be a key (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     value = _get_arg(settings, name)
     if value is None:
@@ -1813,7 +1818,7 @@ def _get_port(settings: _Settings, name: str) -> int | None:
         or len(digits) > len(str(_MAX_PORT))
         or not 0 < int(digits or "0") <= _MAX_PORT
     ):
-        err_msg = f"Invalid port specified in -{name}: '{value}'"
+        err_msg = f"Invalid port specified in -{name}: '...'"
         raise ValueError(err_msg)
     return int(digits)
 
@@ -1899,12 +1904,16 @@ def _resolve_chain_name(settings: _Settings) -> str:
 
     `GetChainType`'s refusal (`src/common/args.cpp`, at
     bitcoin/bitcoin@f0de87f040), asked once the files are read: Core's
-    own `strprintf("Unknown chain %s.", ...)`, the name written in as
-    given rather than quoted (btclib-org/btclib-node#1311).
+    own `strprintf("Unknown chain %s.", ...)`, the name written in bare
+    rather than in quotes (btclib-org/btclib-node#1311). Core writes the
+    name whole (`src/common/args.cpp:914`, same sha), and this writes it
+    through `quoted_name`, since a longer one may be a key (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     chain_name = _chain_arg(settings)
     if chain_name.startswith(_UNKNOWN_CHAIN):
-        err_msg = f"Unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)}."
+        shown = quoted_name(chain_name.removeprefix(_UNKNOWN_CHAIN))
+        err_msg = f"Unknown chain {shown}."
         raise ValueError(err_msg)
     return chain_name
 
@@ -1946,6 +1955,11 @@ def _resolve_debug(
     refused the same way for a category Core does not know; `all`
     excludes every one. `libevent`, in either, selects nothing and
     appends `GetLogCategory`'s warning to `settings.debug_warnings`.
+
+    Core writes the category whole (`src/init/common.cpp:93` and `:100`,
+    same sha), and this writes it through `quoted_name`, since a longer
+    one may be a key (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     categories = _get_args(settings, "debug")
     discard = [i for i, category in enumerate(categories) if category in _DEBUG_NONE]
@@ -1954,7 +1968,7 @@ def _resolve_debug(
         if category == _DEPRECATED_CATEGORY:
             _warn_deprecated_category(settings)
         elif category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
-            err_msg = f"Unsupported logging category -debug={category}."
+            err_msg = f"Unsupported logging category -debug={quoted_name(category)}."
             raise ValueError(err_msg)
     enabled = [category for category in enabled if category != _DEPRECATED_CATEGORY]
     excluded: set[str] = set()
@@ -1966,7 +1980,8 @@ def _resolve_debug(
         elif category == _DEPRECATED_CATEGORY:
             _warn_deprecated_category(settings)
         else:
-            err_msg = f"Unsupported logging category -debugexclude={category}."
+            shown = quoted_name(category)
+            err_msg = f"Unsupported logging category -debugexclude={shown}."
             raise ValueError(err_msg)
     if any(category in _DEBUG_ALL for category in enabled):
         return True, frozenset(), frozenset(excluded)
@@ -2014,22 +2029,28 @@ def _get_activation_heights(settings: _Settings) -> dict[str, int]:
     `ToIntegral<int32_t>`'s, refused below zero and from `INT_MAX` up,
     and the name before it is a key of `BURIED_DEPLOYMENTS`. A later
     value for the same name wins.
+
+    Core's refusals write the value whole (`src/chainparams.cpp:31`, `:37`
+    and `:44`, same sha). These write `...` in its place, since it may be
+    a key, and name it by its place among the `-testactivationheight`
+    values, counted from 1 (SECURITY.md, "Where this node departs from
+    Bitcoin Core").
     """
     heights: dict[str, int] = {}
-    for arg in _get_args(settings, "testactivationheight"):
+    for position, arg in enumerate(_get_args(settings, "testactivationheight"), 1):
         name, found, value = arg.partition("@")
+        where = f"-testactivationheight=name@height (value {position} of "
+        where += "-testactivationheight)."
         if not found:
-            err_msg = f"Invalid format ({arg}) for -testactivationheight=name@height."
+            err_msg = f"Invalid format (...) for {where}"
             raise ValueError(err_msg)
         match = _ACTIVATION_HEIGHT.fullmatch(value)
         # `-0` is zero, and any other negative refused
         if match is None or (match[1] and int(match[2])) or int(match[2]) >= _INT_MAX:
-            err_msg = (
-                f"Invalid height value ({arg}) for -testactivationheight=name@height."
-            )
+            err_msg = f"Invalid height value (...) for {where}"
             raise ValueError(err_msg)
         if name not in BURIED_DEPLOYMENTS:
-            err_msg = f"Invalid name ({arg}) for -testactivationheight=name@height."
+            err_msg = f"Invalid name (...) for {where}"
             raise ValueError(err_msg)
         heights[name] = int(match[2])
     return heights
@@ -2248,8 +2269,10 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
     at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
-    through `_parse_hex_uint256`, refused in Core's own words. A `None`
-    return is `Config.__init__`'s own to default, to the chain's own
+    through `_parse_hex_uint256`, refused in Core's own words, `...` in
+    place of the value, which may be a key (`:37`, same sha; SECURITY.md,
+    "Where this node departs from Bitcoin Core"). A `None` return is
+    `Config.__init__`'s own to default, to the chain's own
     `minimum_chain_work` -- which chain that is is not decided until
     then.
     """
@@ -2259,7 +2282,7 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
     work = _parse_hex_uint256(value)
     if work is None:
         err_msg = (
-            f"Invalid minimum work specified ({value}), must be up to "
+            "Invalid minimum work specified (...), must be up to "
             f"{_MIN_WORK_HEX_DIGITS} hex digits"
         )
         raise ValueError(err_msg)
@@ -2271,11 +2294,12 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
     at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
-    through `_parse_hex_uint256`, refused in Core's own words. Zero --
-    `0`, `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all",
-    and is `None` here, as is a value not given, until Core's default
-    per network is read (btclib-org/btclib-node#1576, a later pull
-    request).
+    through `_parse_hex_uint256`, refused in Core's own words, `...` in
+    place of the value, which may be a key (`:45`, same sha; SECURITY.md,
+    "Where this node departs from Bitcoin Core"). Zero -- `0`,
+    `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all", and
+    is `None` here, as is a value not given, until Core's default per
+    network is read (btclib-org/btclib-node#1576, a later pull request).
     """
     value = _get_arg(settings, "assumevalid")
     if value is None:
@@ -2283,7 +2307,7 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
     block_hash = _parse_hex_uint256(value)
     if block_hash is None:
         err_msg = (
-            f"Invalid assumevalid block hash specified ({value}), must be up "
+            "Invalid assumevalid block hash specified (...), must be up "
             f"to {_MIN_WORK_HEX_DIGITS} hex digits (or 0 to disable)"
         )
         raise ValueError(err_msg)
@@ -2306,15 +2330,17 @@ def _get_feerate(settings: _Settings, name: str) -> FeeRate | None:
     """Return `-name` as a rate, `None` where it is not given.
 
     BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s words
-    (`src/common/messages.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag); a negation reads as `0`.
+    (`src/common/messages.cpp:160`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), `'...'` in place of the value, which may be a key
+    (SECURITY.md, "Where this node departs from Bitcoin Core"); a negation
+    reads as `0`.
     """
     value = _get_arg(settings, name)
     if value is None:
         return None
     amount = _parse_money(value)
     if amount is None:
-        err_msg = f"Invalid amount for -{name}=<amount>: '{value}'"
+        err_msg = f"Invalid amount for -{name}=<amount>: '...'"
         raise ValueError(err_msg)
     return FeeRate(sats_per_kvbyte=amount)
 
@@ -2512,8 +2538,12 @@ def _read_settings(
     _resolve_chain_name(settings)
 
     if token is not None:
+        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
+        # quotes the argument, which may be a key (SECURITY.md, "Where this
+        # node departs from Bitcoin Core")
         err_msg = (
-            f"Command line contains unexpected token '{token}', "
+            "Command line contains unexpected token '...', "
             "see btclib-node -h for a list of options."
         )
         raise ValueError(err_msg)
@@ -2794,12 +2824,20 @@ def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
     value is looked up at `-port`, names allowed (`-dns`'s default), and
     refused where nothing answers or the address is not valid. The port
     is `GetListenPort`'s, which `listen_port` reads.
+
+    The refusal is Core's `ResolveErrMsg` (`src/common/messages.cpp:145`,
+    same sha) with `'...'` for the value, which may be a key, and the
+    value named by its place among `values`, counted from 1 (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     resolved: list[str] = []
-    for value in values:
+    for position, value in enumerate(values, 1):
         service = lookup_service(value, default_port, allow_lookup=True)
         if service is None or not is_valid_host(service[0]):
-            err_msg = f"Cannot resolve -externalip address: '{value}'"
+            err_msg = (
+                "Cannot resolve -externalip address: '...' "
+                f"(value {position} of -externalip)"
+            )
             raise ValueError(err_msg)
         resolved.append(service_text(*service))
     return resolved
@@ -2835,12 +2873,15 @@ def _check_bind(
     neither is, `-port` being ignored otherwise.
     """
     parsed = []
-    for value in values:
-        address = parse_bind(value, default_port)
+    for position, value in enumerate(values, 1):
+        address = parse_bind(value, default_port, position=position)
         if not address.onion:
             _warn_bad_port("-bind", address.port)
         parsed.append(address)
-    whitebound = [parse_whitebind(value) for value in whitebind]
+    whitebound = [
+        parse_whitebind(value, position=position)
+        for position, value in enumerate(whitebind, 1)
+    ]
     if not values and not whitebind and port is not None:
         _warn_bad_port("-port", port)
     ordered: list[BindAddress | WhitebindAddress] = [
@@ -2880,7 +2921,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
     # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
     # tag; `RpcManager` binds the second beside `-rpcallowip`, as
-    # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does
+    # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does. The
+    # refusal is `_get_port`'s, the value named by its place among the
+    # option's values, counted from 1
     bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
     whitebind = _get_args(settings, "whitebind")
@@ -2889,13 +2932,14 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         ("rpcbind", rpcbind),
         ("whitebind", whitebind),
     ):
-        for value in values:
+        for position, value in enumerate(values, 1):
             head, tagged, _ = value.rpartition("=")
-            try:
-                split_host_port(head if tagged and name == "bind" else value, 0)
-            except ValueError:
-                err_msg = f"Invalid port specified in -{name}: '{value}'"
-                raise ValueError(err_msg) from None
+            if not has_valid_port(head if tagged and name == "bind" else value):
+                err_msg = (
+                    f"Invalid port specified in -{name}: '...' "
+                    f"(value {position} of -{name})"
+                )
+                raise ValueError(err_msg)
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"),
