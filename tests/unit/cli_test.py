@@ -4385,9 +4385,8 @@ def test_a_key_given_as_an_option_s_value_is_not_in_the_refusal(
 ) -> None:
     """ISS 2521: a WIF where Core's refusal quotes the value is not quoted.
 
-    Each on regtest but `-chain`'s, which `-regtest` would refuse first. A
-    name is given by its length, any other value is `'...'` or `...`, and
-    a value of an option that takes several is named by its position.
+    A name is given by its length, any other value is `'...'` or `...`,
+    and a value of an option that takes several is named by its position.
     `getaddrinfo` answers nothing, so `-externalip`'s lookup asks no DNS.
     """
     monkeypatch.setattr(socket, "getaddrinfo", lambda *_, **__: [])
