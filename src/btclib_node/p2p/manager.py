@@ -3446,12 +3446,16 @@ class P2pManager(threading.Thread):
         resolved it, and kept even on a network this node does not reach
         (bitcoin/bitcoin@8c87e32bd3): here an onion or I2P address. An
         address `AddLocal` refuses is skipped without a word, there as
-        here.
+        here. A value nothing resolves is refused as `cli` refuses it, in
+        `_resolve_externalip`.
         """
-        for value in self.externalip:
+        for position, value in enumerate(self.externalip, 1):
             service = lookup_service(value, self._listen_port())
             if service is None or not is_valid_host(service[0]):
-                err_msg = f"Cannot resolve -externalip address: '{value}'"
+                err_msg = (
+                    "Cannot resolve -externalip address: '...' "
+                    f"(value {position} of -externalip)"
+                )
                 raise ValueError(err_msg)
             self._add_local(*service, LOCAL_MANUAL, add_even_if_unreachable=True)
 
@@ -3487,10 +3491,16 @@ class P2pManager(threading.Thread):
         if not (self.bind or self.whitebind):
             return True
         port = cast("int", self.port)
-        binds = (parse_bind(value, port) for value in self.bind)
+        binds = (
+            parse_bind(value, port, position=position)
+            for position, value in enumerate(self.bind, 1)
+        )
         hosts = [
             *(address.host for address in binds if not address.onion),
-            *(parse_whitebind(value).host for value in self.whitebind),
+            *(
+                parse_whitebind(value, position=position).host
+                for position, value in enumerate(self.whitebind, 1)
+            ),
         ]
         return any(
             not isinstance(host, SpecialAddress) and not any(host.packed)
@@ -3552,12 +3562,18 @@ class P2pManager(threading.Thread):
         """
         port = cast("int", self.port)
         binds = sorted(
-            (parse_bind(value, port) for value in self.bind),
+            (
+                parse_bind(value, port, position=position)
+                for position, value in enumerate(self.bind, 1)
+            ),
             key=lambda address: address.onion,
         )
         addresses: list[BindAddress | WhitebindAddress] = [
             *(address for address in binds if not address.onion),
-            *(parse_whitebind(value) for value in self.whitebind),
+            *(
+                parse_whitebind(value, position=position)
+                for position, value in enumerate(self.whitebind, 1)
+            ),
             *(address for address in binds if address.onion),
         ]
         if not self.bind:

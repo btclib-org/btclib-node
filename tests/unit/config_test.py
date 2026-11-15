@@ -31,6 +31,7 @@ from btclib_node.config import (
     Config,
     default_onion_bind,
     get_path_arg,
+    has_valid_port,
     listen_port,
     lookup_host_port,
     lookup_service,
@@ -43,6 +44,8 @@ from btclib_node.config import (
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -58,8 +61,16 @@ def test_chain_selection() -> None:
     assert Config(chain="testnet4") == Config(chain=TestNet4())
     with pytest.raises(TypeError, match="chain must be a Chain or str"):
         Config(chain=None)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="unknown chain"):
+    with pytest.raises(ValueError, match=r"^unknown chain: 'wrongchain'$"):
         Config(chain="wrongchain")
+
+
+def test_a_key_given_as_the_chain_is_given_by_its_length() -> None:
+    """ISS 2521: a chain's name longer than a name may be a key."""
+    with pytest.raises(ValueError, match="unknown chain") as raised:
+        Config(chain=LEAK_WIF)
+    assert str(raised.value) == f"unknown chain: '<{len(LEAK_WIF)} characters>'"
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_data_dir() -> None:
@@ -299,7 +310,7 @@ def test_parse_bind_reads_an_address_port_and_tag(
     arg: str, expected: BindAddress
 ) -> None:
     """ISS 1257: `-port` is the default; an `=onion` one is that plus one."""
-    assert parse_bind(arg, 8333) == expected
+    assert parse_bind(arg, 8333, position=1) == expected
 
 
 @pytest.mark.parametrize(
@@ -310,7 +321,7 @@ def test_the_onion_port_is_the_next_one_in_sixteen_bits(
 ) -> None:
     """ISS 1666: `AppInitMain` holds `port + 1` in a `uint16_t`."""
     assert onion_port(port) == expected
-    assert parse_bind("127.0.0.1=onion", port).port == expected
+    assert parse_bind("127.0.0.1=onion", port, position=1).port == expected
 
 
 def test_the_default_onion_bind_is_the_loopback_one_port_up() -> None:
@@ -325,9 +336,18 @@ def test_the_default_onion_bind_is_the_loopback_one_port_up() -> None:
 )
 def test_parse_bind_refuses_what_lookup_does_not_find(arg: str) -> None:
     """ISS 1257: `Lookup` without DNS; any tag but `onion` is no address."""
-    message = f"Cannot resolve -bind address: '{arg}'"
+    message = re.escape("Cannot resolve -bind address: '...' (value 2 of -bind)")
     with pytest.raises(ValueError, match=f"^{message}$"):
-        parse_bind(arg, 8333)
+        parse_bind(arg, 8333, position=2)
+
+
+@pytest.mark.parametrize("tag", ["", "=onion"])
+def test_a_key_given_as_a_bind_address_is_not_in_the_refusal(tag: str) -> None:
+    """ISS 2521: Core's `ResolveErrMsg` quotes it; this writes `'...'`."""
+    with pytest.raises(ValueError, match="Cannot resolve") as raised:
+        parse_bind(LEAK_WIF + tag, 8333, position=3)
+    assert str(raised.value) == "Cannot resolve -bind address: '...' (value 3 of -bind)"
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_lookup_service_reads_an_address_and_a_port() -> None:
@@ -549,6 +569,34 @@ def test_split_host_port_rejects_a_non_numeric_port() -> None:
     """A port that does not parse as an integer raises."""
     with pytest.raises(ValueError, match="invalid port"):
         split_host_port("127.0.0.1:notaport", 8333)
+
+
+def test_split_host_port_gives_a_spec_it_refuses_by_its_length() -> None:
+    """ISS 2521: a key given as the port is not in the refusal."""
+    spec = f"127.0.0.1:{LEAK_WIF}"
+    with pytest.raises(ValueError, match="invalid port") as raised:
+        split_host_port(spec, 8333)
+    assert str(raised.value) == (
+        f"a host and port of {len(spec)} characters names an invalid port"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+@pytest.mark.parametrize(
+    ("spec", "valid"),
+    [
+        ("127.0.0.1", True),
+        ("127.0.0.1:9000", True),
+        ("[::1]:9000", True),
+        ("::1", True),
+        ("127.0.0.1:0", False),
+        ("127.0.0.1:notaport", False),
+        ("127.0.0.1:70000", False),
+    ],
+)
+def test_has_valid_port_is_split_host_port_s_answer(spec: str, *, valid: bool) -> None:
+    """ISS 2521: `SplitHostPort`'s answer, which `CheckHostPortOptions` asks."""
+    assert has_valid_port(spec) is valid
 
 
 def test_split_host_port_rejects_port_zero() -> None:
@@ -1181,7 +1229,7 @@ def test_parse_whitebind_reads_permissions_an_address_and_a_port(
     arg: str, host: str, port: int, names: list[str]
 ) -> None:
     """ISS 1625: `NetWhitebindPermissions::TryParse`."""
-    parsed = parse_whitebind(arg)
+    parsed = parse_whitebind(arg, position=1)
     assert (str(parsed.host), parsed.port) == (host, port)
     assert permission_names(parsed.flags) == names
 
@@ -1191,20 +1239,57 @@ def test_parse_whitebind_reads_permissions_an_address_and_a_port(
     [
         ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
         ("noban@[::1]", "Need to specify a port with -whitebind: '[::1]'"),
-        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
-        ("999.1.1.1:5", "Cannot resolve -whitebind address: '999.1.1.1:5'"),
+        (
+            "localhost:7",
+            "Cannot resolve -whitebind address: '...' (value 2 of -whitebind)",
+        ),
+        (
+            "999.1.1.1:5",
+            "Cannot resolve -whitebind address: '...' (value 2 of -whitebind)",
+        ),
         (
             "out@127.0.0.1:7",
             'whitebind may only be used for incoming connections ("out" was passed)',
         ),
         ("bogus@127.0.0.1:7", "Invalid P2P permission: 'bogus'"),
-        ("in@127.0.0.1:7", "Only direction was set, no permissions: 'in@127.0.0.1:7'"),
+        (
+            "in@127.0.0.1:7",
+            "Only direction was set, no permissions: '...' (value 2 of -whitebind)",
+        ),
     ],
 )
 def test_parse_whitebind_refuses_in_core_s_words(arg: str, message: str) -> None:
-    """ISS 1625: the texts are those of `bitcoind`."""
+    """ISS 1625, ISS 2521: `bitcoind`'s texts, `'...'` for a value it quotes."""
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-        parse_whitebind(arg)
+        parse_whitebind(arg, position=2)
+
+
+@pytest.mark.parametrize(
+    ("arg", "message"),
+    [
+        (LEAK_WIF, "Cannot resolve -whitebind address: '...' (value 1 of -whitebind)"),
+        (
+            f"noban@{LEAK_WIF}:7",
+            "Cannot resolve -whitebind address: '...' (value 1 of -whitebind)",
+        ),
+        (
+            f"in@{LEAK_WIF}",
+            "Only direction was set, no permissions: '...' (value 1 of -whitebind)",
+        ),
+        (
+            f"{LEAK_WIF}@127.0.0.1:7",
+            f"Invalid P2P permission: '<{len(LEAK_WIF)} characters>'",
+        ),
+    ],
+)
+def test_a_key_given_in_a_whitebind_value_is_not_in_the_refusal(
+    arg: str, message: str
+) -> None:
+    """ISS 2521: Core quotes the address, the value or the permission."""
+    with pytest.raises(ValueError, match=r"-whitebind|P2P permission") as raised:
+        parse_whitebind(arg, position=1)
+    assert str(raised.value) == message
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_listen_port_takes_the_first_whitebind_that_grants_no_noban() -> None:

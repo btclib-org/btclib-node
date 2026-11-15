@@ -41,6 +41,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -789,9 +790,15 @@ def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
 def test_build_config_an_rpcbind_port_int_would_read_is_refused(
     tmp_path: Path, port: str
 ) -> None:
-    """`CheckHostPortOptions`' refusal, as `bitcoind` words each."""
+    """`CheckHostPortOptions`' refusal, as `bitcoind` words each.
+
+    `'...'` and the value's position stand where `bitcoind` quotes it
+    (ISS 2521).
+    """
     value = f"127.0.0.1:{port}"
-    expected = re.escape(f"Invalid port specified in -rpcbind: '{value}'")
+    expected = re.escape(
+        "Invalid port specified in -rpcbind: '...' (value 1 of -rpcbind)"
+    )
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, "-regtest", f"-rpcbind={value}")
 
@@ -918,10 +925,12 @@ def test_parse_parameters_leaves_a_value_out_of_a_refusal(
 def test_build_config_refuses_an_argument_that_is_not_an_option(
     tmp_path: Path, argv: list[str]
 ) -> None:
-    """ISS 1136: `ParseArgs`'s own "unexpected token", no parsing prefix."""
-    token = next(arg for arg in argv if not arg.startswith("-"))
+    """ISS 1136: `ParseArgs`'s own "unexpected token", no parsing prefix.
+
+    `'...'` stands where `bitcoind` quotes the token (ISS 2521).
+    """
     message = (
-        f"Command line contains unexpected token '{token}', "
+        "Command line contains unexpected token '...', "
         "see btclib-node -h for a list of options."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
@@ -1494,15 +1503,15 @@ def test_build_config_a_network_only_value_given_on_the_command_line_too(
 @pytest.mark.parametrize(
     ("argv", "conf", "message"),
     [
-        (["-noport"], "", "Invalid port specified in -port: '0'"),
-        (["-port"], "", "Invalid port specified in -port: ''"),
-        (["-port=+80"], "", "Invalid port specified in -port: '+80'"),
-        (["-rpcport=65536"], "", "Invalid port specified in -rpcport: '65536'"),
-        ([], "regtest=1\nnoport=1\n", "Invalid port specified in -port: '0'"),
+        (["-noport"], "", "Invalid port specified in -port: '...'"),
+        (["-port"], "", "Invalid port specified in -port: '...'"),
+        (["-port=+80"], "", "Invalid port specified in -port: '...'"),
+        (["-rpcport=65536"], "", "Invalid port specified in -rpcport: '...'"),
+        ([], "regtest=1\nnoport=1\n", "Invalid port specified in -port: '...'"),
         (
             [f"-port={_PAST_DIGIT_LIMIT}"],
             "",
-            f"Invalid port specified in -port: '{_PAST_DIGIT_LIMIT}'",
+            "Invalid port specified in -port: '...'",
         ),
     ],
     ids=[
@@ -1519,7 +1528,8 @@ def test_build_config_refuses_a_port_as_check_host_port_options(
 ) -> None:
     """Each message as `bitcoind` printed it for the same argument.
 
-    A negation in the default section reaches a network-only option off
+    `'...'` stands where `bitcoind` quotes the value (ISS 2521). A
+    negation in the default section reaches a network-only option off
     `main` too, `GetSetting`'s own exception to skipping that section.
     """
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
@@ -2315,9 +2325,10 @@ def test_build_config_minrelaytxfee_that_is_no_amount_is_refused(
     """`AmountErrMsg`'s words, as `bitcoind` refuses each at start.
 
     `1.5.3` and a NUL were not run against `bitcoind`, whose `ParseMoney`
-    stops at the second `.` and refuses a string holding a NUL.
+    stops at the second `.` and refuses a string holding a NUL. `'...'`
+    stands where `bitcoind` quotes the value (ISS 2521).
     """
-    expected = re.escape(f"Invalid amount for -minrelaytxfee=<amount>: '{value}'")
+    expected = re.escape("Invalid amount for -minrelaytxfee=<amount>: '...'")
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, "-regtest", f"-minrelaytxfee={value}")
 
@@ -2363,8 +2374,8 @@ def test_build_config_a_relay_feerate_is_read_in_btc_per_kvb(
 def test_build_config_a_relay_feerate_that_is_no_amount_is_refused(
     tmp_path: Path, option: str
 ) -> None:
-    """`AmountErrMsg`'s words, naming the option."""
-    expected = re.escape(f"Invalid amount for -{option}=<amount>: 'abc'")
+    """`AmountErrMsg`'s words, naming the option, `'...'` for the value."""
+    expected = re.escape(f"Invalid amount for -{option}=<amount>: '...'")
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, "-regtest", f"-{option}=abc")
 
@@ -2569,7 +2580,7 @@ def test_build_config_minimumchainwork_uppercase_0x_is_not_a_prefix(
     a hex digit, and nothing strips it first.
     """
     expected = re.escape(
-        "Invalid minimum work specified (0X10), must be up to 64 hex digits"
+        "Invalid minimum work specified (...), must be up to 64 hex digits"
     )
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, "-regtest", "-minimumchainwork=0X10")
@@ -2585,9 +2596,9 @@ def test_build_config_minimumchainwork_negated_reads_as_zero(tmp_path: Path) -> 
 def test_build_config_minimumchainwork_that_is_not_valid_hex_is_refused(
     tmp_path: Path, value: str
 ) -> None:
-    """Core's own words: refused past 64 hex digits, or on a non-hex one."""
+    """Core's own words, `...` for the value: past 64 hex digits, or non-hex."""
     expected = re.escape(
-        f"Invalid minimum work specified ({value}), must be up to 64 hex digits"
+        "Invalid minimum work specified (...), must be up to 64 hex digits"
     )
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, "-regtest", f"-minimumchainwork={value}")
@@ -2670,10 +2681,18 @@ def test_build_config_testactivationheight_unset_keeps_the_shared_row(
 def test_build_config_testactivationheight_refuses_what_core_refuses(
     tmp_path: Path, value: str, refusal: str
 ) -> None:
-    """`HandleDeploymentArgs`'s refusals, in Core's words."""
-    expected = re.escape(f"{refusal} ({value}) for -testactivationheight=name@height.")
+    """`HandleDeploymentArgs`'s refusals, in Core's words, `...` for a value."""
+    expected = re.escape(
+        f"{refusal} (...) for -testactivationheight=name@height (value 2 of "
+        "-testactivationheight)."
+    )
     with pytest.raises(ValueError, match=f"^{expected}$"):
-        _build(tmp_path, "-regtest", f"-testactivationheight={value}")
+        _build(
+            tmp_path,
+            "-regtest",
+            "-testactivationheight=csv@1",
+            f"-testactivationheight={value}",
+        )
 
 
 def test_build_config_testactivationheight_is_refused_before_the_help(
@@ -2749,9 +2768,9 @@ def test_build_config_assumevalid_zero_is_off(tmp_path: Path, arg: str) -> None:
 def test_build_config_assumevalid_that_is_not_valid_hex_is_refused(
     tmp_path: Path, value: str
 ) -> None:
-    """Core's own words, refused past 64 hex digits or on a non-hex one."""
+    """Core's own words, `...` for the value: past 64 hex digits, or non-hex."""
     expected = re.escape(
-        f"Invalid assumevalid block hash specified ({value}), must be up to "
+        "Invalid assumevalid block hash specified (...), must be up to "
         "64 hex digits (or 0 to disable)"
     )
     with pytest.raises(ValueError, match=f"^{expected}$"):
@@ -3502,12 +3521,16 @@ def test_build_config_every_rpcbind_value_is_checked() -> None:
 
     bitcoind refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
     "Invalid port specified in -rpcbind: '1.2.3.4:0'": the first value
-    is checked, not only the last.
+    is checked, not only the last. Here it is named by its position
+    (ISS 2521).
     """
+    argv = ["-regtest", "-rpcbind=127.0.0.1", "-rpcbind=1.2.3.4:0"]
+    message = "Invalid port specified in -rpcbind: '...' (value 2 of -rpcbind)"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(argv)
     argv = ["-regtest", "-rpcbind=1.2.3.4:0", "-rpcbind=127.0.0.1"]
-    with pytest.raises(
-        ValueError, match=re.escape("Invalid port specified in -rpcbind: '1.2.3.4:0'")
-    ):
+    message = "Invalid port specified in -rpcbind: '...' (value 1 of -rpcbind)"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(argv)
 
 
@@ -3734,7 +3757,7 @@ def test_build_config_bind_beside_listen_0_is_refused() -> None:
 @pytest.mark.parametrize("tag", ["", "=onion"])
 def test_build_config_a_bind_with_no_port_is_refused(value: str, tag: str) -> None:
     """ISS 1257: `CheckHostPortOptions` reads the value without its tag."""
-    message = f"Invalid port specified in -bind: '{value}{tag}'"
+    message = "Invalid port specified in -bind: '...' (value 1 of -bind)"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(["-regtest", f"-bind={value}{tag}"])
 
@@ -3742,7 +3765,7 @@ def test_build_config_a_bind_with_no_port_is_refused(value: str, tag: str) -> No
 @pytest.mark.parametrize("value", ["localhost", "1.2.3.4=tor", "", "=onion"])
 def test_build_config_a_bind_that_is_no_numeric_address_is_refused(value: str) -> None:
     """ISS 1257: `Lookup(addr, port, fAllowLookup=false)` answers nothing."""
-    message = f"Cannot resolve -bind address: '{value}'"
+    message = "Cannot resolve -bind address: '...' (value 1 of -bind)"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(["-regtest", f"-bind={value}"])
 
@@ -3795,7 +3818,7 @@ def test_build_config_whitebind_does_not_overrule_listen_0() -> None:
 )
 def test_build_config_a_whitebind_with_a_bad_port_is_refused(value: str) -> None:
     """ISS 1625: `CheckHostPortOptions` reads the value with its permissions."""
-    message = f"Invalid port specified in -whitebind: '{value}'"
+    message = "Invalid port specified in -whitebind: '...' (value 1 of -whitebind)"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(["-regtest", f"-whitebind={value}"])
 
@@ -3804,7 +3827,10 @@ def test_build_config_a_whitebind_with_a_bad_port_is_refused(value: str) -> None
     ("value", "message"),
     [
         ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
-        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
+        (
+            "localhost:7",
+            "Cannot resolve -whitebind address: '...' (value 1 of -whitebind)",
+        ),
         (
             "out@127.0.0.1:7",
             'whitebind may only be used for incoming connections ("out" was passed)',
@@ -3935,7 +3961,7 @@ def test_build_config_externalip_looks_a_name_up(
 )
 def test_build_config_an_invalid_externalip_is_refused(value: str) -> None:
     """ISS 1445: `Lookup` finds it, `CNetAddr::IsValid` refuses it."""
-    message = f"Cannot resolve -externalip address: '{value}'"
+    message = "Cannot resolve -externalip address: '...' (value 1 of -externalip)"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(["-regtest", f"-externalip={value}"])
 
@@ -3943,9 +3969,9 @@ def test_build_config_an_invalid_externalip_is_refused(value: str) -> None:
 def test_build_config_an_externalip_that_resolves_to_nothing_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1445: Core's `ResolveErrMsg`, naming the value as given."""
+    """ISS 1445: Core's `ResolveErrMsg`, naming the value by its position."""
     monkeypatch.setattr(socket, "getaddrinfo", lambda *_, **__: [])
-    message = "Cannot resolve -externalip address: 'nowhere.invalid'"
+    message = "Cannot resolve -externalip address: '...' (value 1 of -externalip)"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         cli.build_config(["-regtest", "-externalip=nowhere.invalid"])
 
@@ -4248,11 +4274,11 @@ def test_main_these_options_are_refused_before_a_held_directory(
         ),
         (
             ["-rpcbind=1.2.3.4:0"],
-            "Invalid port specified in -rpcbind: '1.2.3.4:0'",
+            "Invalid port specified in -rpcbind: '...' (value 1 of -rpcbind)",
         ),
         (
             ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
-            "Invalid port specified in -rpcport: '0'",
+            "Invalid port specified in -rpcport: '...'",
         ),
     ],
     ids=[
@@ -4268,12 +4294,107 @@ def test_build_config_refuses_in_core_order(
 ) -> None:
     """Two refusals in one command line: the one `bitcoind` names first.
 
-    Each measured on `bitcoind`.
+    Each measured on `bitcoind`, which quotes a value where these write
+    `'...'` (ISS 2521).
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
     expected = re.escape(refusal.format(x=tmp_path))
     with pytest.raises(ValueError, match=f"^{expected}$"):
         cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+
+
+_HEIGHT = "for -testactivationheight=name@height (value {} of -testactivationheight)."
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["-regtest", "-port={}"], "Invalid port specified in -port: '...'"),
+        (["-regtest", "-rpcport={}"], "Invalid port specified in -rpcport: '...'"),
+        (
+            ["-bind=1.2.3.4", "-bind=1.2.3.4:{}"],
+            "Invalid port specified in -bind: '...' (value 2 of -bind)",
+        ),
+        (
+            ["-rpcbind=1.2.3.4:{}"],
+            "Invalid port specified in -rpcbind: '...' (value 1 of -rpcbind)",
+        ),
+        (
+            ["-whitebind=1.2.3.4:{}"],
+            "Invalid port specified in -whitebind: '...' (value 1 of -whitebind)",
+        ),
+        (
+            ["-regtest", "-bind={}"],
+            "Cannot resolve -bind address: '...' (value 1 of -bind)",
+        ),
+        (
+            ["-whitebind={}"],
+            "Cannot resolve -whitebind address: '...' (value 1 of -whitebind)",
+        ),
+        (
+            ["-externalip={}"],
+            "Cannot resolve -externalip address: '...' (value 1 of -externalip)",
+        ),
+        (["-chain={}"], f"Unknown chain <{len(LEAK_WIF)} characters>."),
+        (
+            ["-debug={}"],
+            f"Unsupported logging category -debug=<{len(LEAK_WIF)} characters>.",
+        ),
+        (
+            ["-debugexclude={}"],
+            f"Unsupported logging category -debugexclude=<{len(LEAK_WIF)} characters>.",
+        ),
+        (
+            ["-regtest", "-testactivationheight={}"],
+            f"Invalid format (...) {_HEIGHT.format(1)}",
+        ),
+        (
+            ["-testactivationheight=csv@1", "-testactivationheight=segwit@{}"],
+            f"Invalid height value (...) {_HEIGHT.format(2)}",
+        ),
+        (
+            ["-regtest", "-testactivationheight={}@1"],
+            f"Invalid name (...) {_HEIGHT.format(1)}",
+        ),
+        (
+            ["-minimumchainwork={}"],
+            "Invalid minimum work specified (...), must be up to 64 hex digits",
+        ),
+        (
+            ["-assumevalid={}"],
+            (
+                "Invalid assumevalid block hash specified (...), must be up to 64 "
+                "hex digits (or 0 to disable)"
+            ),
+        ),
+        (
+            ["-regtest", "-minrelaytxfee={}"],
+            "Invalid amount for -minrelaytxfee=<amount>: '...'",
+        ),
+        (
+            ["{}"],
+            (
+                "Command line contains unexpected token '...', see btclib-node -h "
+                "for a list of options."
+            ),
+        ),
+    ],
+)
+def test_a_key_given_as_an_option_s_value_is_not_in_the_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], message: str
+) -> None:
+    """ISS 2521: a WIF where Core's refusal quotes the value is not quoted.
+
+    A name is given by its length, any other value is `'...'` or `...`,
+    and a value of an option that takes several is named by its position.
+    `getaddrinfo` answers nothing, so `-externalip`'s lookup asks no DNS.
+    """
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_, **__: [])
+    args = [arg.format(LEAK_WIF) for arg in argv]
+    with pytest.raises(ValueError, match=r"\S") as raised:
+        _build(tmp_path, *args)
+    assert str(raised.value) == message
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_main_releases_its_lock_once_the_node_holds_its_own(
@@ -4532,7 +4653,7 @@ def test_main_a_bad_argument_exits_one_with_a_message(
             "-notaflag",
             "Error parsing command line arguments: Invalid parameter -notaflag",
         ),
-        ("-port=abc", "Invalid port specified in -port: 'abc'"),
+        ("-port=abc", "Invalid port specified in -port: '...'"),
     ],
 )
 @pytest.mark.usefixtures("no_node")
@@ -4563,9 +4684,9 @@ def test_main_a_refusal_after_the_lock_reaches_history_log(
     with pytest.raises(SystemExit) as excinfo:
         cli.main([f"-datadir={tmp_path}", "-port=abc"])
     assert excinfo.value.code == 1
-    assert capsys.readouterr().err == "Error: Invalid port specified in -port: 'abc'\n"
+    assert capsys.readouterr().err == "Error: Invalid port specified in -port: '...'\n"
     log_text = (tmp_path / "mainnet" / "history.log").read_text(encoding="utf-8")
-    assert "[error] Invalid port specified in -port: 'abc'" in log_text
+    assert "[error] Invalid port specified in -port: '...'" in log_text
 
 
 @pytest.mark.parametrize(
@@ -4751,7 +4872,7 @@ def test_main_a_refusal_after_the_lock_logs_the_maxconnections_warning(
     assert excinfo.value.code == 1
     warning = "Reducing -maxconnections from 5000 to 2000."
     assert capsys.readouterr().err == (
-        f"Warning: {warning}\nError: Invalid port specified in -port: 'abc'\n"
+        f"Warning: {warning}\nError: Invalid port specified in -port: '...'\n"
     )
     log_text = (tmp_path / "mainnet" / "history.log").read_text(encoding="utf-8")
     assert log_text.index(f"[warning] {warning}") < log_text.index("[error]")

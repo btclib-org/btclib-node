@@ -48,6 +48,7 @@ from tests import (
     LOOPBACKS,
     RPCAUTH,
     RPCAUTH_LINE,
+    LogLines,
     bindable,
     cookie_path,
     get_random_port,
@@ -56,6 +57,8 @@ from tests import (
     wait_until_listening,
     warnings_into,
 )
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Buffer, Coroutine, Iterator, Mapping
@@ -745,9 +748,32 @@ def test_an_rpcbind_port_core_refuses_binds_nothing(
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
     assert errors == [
-        ("Invalid port specified in -rpcbind: '%s'", "127.0.0.1:0"),
+        ("%s", "Invalid port specified in -rpcbind: '...' (value 2 of -rpcbind)"),
         ("Unable to bind any endpoint for RPC server",),
     ]
+
+
+def test_a_key_given_as_an_rpcbind_port_is_not_in_the_log(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2521: a WIF in place of the port is logged as `'...'`.
+
+    The value is named by its position, as `cli`'s refusal of it is.
+    """
+    manager = a_manager(
+        get_random_port(),
+        rpcbind=(f"127.0.0.1:{LEAK_WIF}",),
+        rpcallowip=("127.0.0.1",),
+    )
+    lines = LogLines()
+    manager.logger.addHandler(lines)
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert lines.messages[-2:] == [
+        "Invalid port specified in -rpcbind: '...' (value 1 of -rpcbind)",
+        "Unable to bind any endpoint for RPC server",
+    ]
+    assert_secret_free(ValueError(*lines.messages), [LEAK_WIF])
 
 
 def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
