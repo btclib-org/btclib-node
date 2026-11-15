@@ -763,6 +763,29 @@ def test_a_packet_that_does_not_authenticate_is_refused_without_its_length() -> 
     assert str(refusal.value) == "packet decryption failure"
 
 
+def test_a_rejected_message_is_refused_without_its_size() -> None:
+    """The text names no size; `size` keeps it, for the caller to count.
+
+    The contents' length is made a key's octets, looked for with the
+    decimal of that length and of the size. `size` is the one attribute
+    allowed to hold it, so it is checked and then taken off before the
+    search.
+    """
+    tester = handshaken()
+    length = _KEY[:2] + bytes(1)
+    contents = bytes([len(MESSAGE_IDS)]) + bytes(int.from_bytes(length, "little") - 1)
+    tester.send_packet(contents)
+    feed(tester.transport, bytes(tester.to_send))
+    assert tester.transport.received_message_complete()
+    with pytest.raises(RejectedMessageError) as refusal:
+        tester.transport.get_received_message()
+    size = len(contents) + EXPANSION
+    assert refusal.value.size == size
+    del refusal.value.size
+    assert_secret_free(refusal.value, [_KEY, length, str(len(contents)), str(size)])
+    assert str(refusal.value) == "message rejected"
+
+
 @pytest.mark.parametrize(
     ("initiating", "sent", "received", "expected"),
     [

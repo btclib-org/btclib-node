@@ -323,11 +323,14 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
 
     Core's `ProcessMessage` calls `Misbehaving` for an `addr`, `addrv2`,
     `inv`, `getdata` or `headers` holding more entries than its bound
-    allows, with the message this raises. A `count` of zero raises
-    nothing, `_count_past` answering zero within the bound.
+    allows. Core's message goes on to print the count, and this one does
+    not: the count is octets the peer wrote, which section 7 of the
+    organization's standard, *A refusal carries no secret*, keeps out of
+    a refusal. A `count` of zero raises nothing, `_count_past` answering
+    zero within the bound.
     """
     if count:
-        err_msg = f"{msg_type} message size = {count}"
+        err_msg = f"{msg_type} message size past its bound"
         raise MisbehavingError(err_msg)
 
 
@@ -870,7 +873,10 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError(err_msg)
     announce = msg[0]
     if announce > 1:
-        err_msg = f"invalid sendcmpct announce field: {announce}"
+        # Core's text, which prints no value: the octet is the peer's, and
+        # section 7 of the organization's standard, *A refusal carries no
+        # secret*, lets a refusal print no byte of what it refuses
+        err_msg = "invalid sendcmpct announce field"
         raise MisbehavingError(err_msg)
     if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
         return
@@ -1665,7 +1671,6 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
 
 def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
     """Refuse what Core refuses of a `block` before its header is indexed."""
-    block_hash = block.header.hash
     block_index = node.chainstate.block_index
     # Core's `BLOCK` arm refuses a mutated body before the header is
     # looked at, once the parent is known, and punishes the peer without
@@ -1676,7 +1681,11 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
         parent.index + 1 >= node.chain.consensus.segwit_height
     )
     if parent is not None and is_block_mutated(block, check_witness_root=segwit):
-        err_msg = f"mutated block {block_hash.hex()}"
+        # Core's text, with no hash: no proof of work is asked yet, so the
+        # merkle root is 32 octets the peer chose, and the block's hash
+        # would confirm a guess at them (section 7 of the organization's
+        # standard, *A refusal carries no secret*)
+        err_msg = "mutated block"
         raise MisbehavingError(err_msg)
     _check_block(node, block, conn, via_compact_block=False)
 
@@ -1831,10 +1840,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
             node.logger.error("AcceptBlock FAILED (%s)", e)  # noqa: TRY400
             return
         if tip is None:
-            err_msg = (
-                f"block {block_hash.hex()} has prev block not found: "
-                f"{block.header.previous_block_hash.hex()}"
-            )
+            # Core's reject reason, where its debug line prints the block's
+            # hash and the parent's: the parent field is 32 octets the peer
+            # chose, and the block's hash, taken over them, would confirm a
+            # guess at them (section 7 of the organization's standard, *A
+            # refusal carries no secret*)
+            err_msg = "prev-blk-not-found"
             raise MisbehavingError(err_msg)
     _accept_block(node, block, conn, requested=requested, via_compact_block=False)
 
@@ -2939,15 +2950,15 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
 ) -> int | None:
     """Validate a BIP157 filter request, answering the stop block's height.
 
-    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3518-3565`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): each of the four
-    checks below disconnects the peer rather than answering silently,
-    logging the line Core logs for it (ISS 1477). A fifth check of
-    Core's, the filter index for a supported type not existing, is not
-    one of these -- it is this node's own configuration rather than a
-    fault the peer caused, and every type `node.config.peerblockfilters`
-    lets through here has an index, so it never reaches this function at
-    all.
+    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3518-3565`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): each of the four checks
+    below disconnects the peer rather than answering silently, logging the
+    line Core logs for it, less the fields the peer chose (ISS 1477). A
+    fifth check of Core's, the filter index for a supported type not
+    existing, is not one of these -- it is this node's own configuration
+    rather than a fault the peer caused, and every type
+    `node.config.peerblockfilters` lets through here has an index, so it
+    never reaches this function at all.
 
     `not node.config.peerblockfilters` joins the first count rather than
     opening a fifth: Core's own `PrepareBlockFilterRequest` folds
@@ -2963,11 +2974,11 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     `PrepareBlockFilterRequest` calls it at (ISS 1476).
     """
     if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
+        # Core's line goes on to print the type octet the peer chose,
+        # which section 7 of the organization's standard, *A refusal
+        # carries no secret*, keeps out of a log line
         node.logger.log_debug(
-            "net",
-            "peer requested unsupported block filter type: %s, peer=%s",
-            int(filter_type),
-            conn.id,
+            "net", "peer requested unsupported block filter type, peer=%s", conn.id
         )
         conn.stop()
         return None
@@ -2975,11 +2986,11 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     if stop_hash not in block_index.header_dict or not _block_request_allowed(
         node, stop_hash
     ):
+        # Core's line goes on to print the stop hash, 32 octets the peer
+        # chose where this node does not know them, which section 7 keeps
+        # out of a log line
         node.logger.log_debug(
-            "net",
-            "peer requested invalid block hash: %s, peer=%s",
-            stop_hash.hex(),
-            conn.id,
+            "net", "peer requested invalid block hash, peer=%s", conn.id
         )
         conn.stop()
         return None
@@ -2990,11 +3001,13 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # always parsed, so a negative start cannot arrive; `get_cfcheckpt`'s
     # own `start_height` is always zero, so this never trips for it.
     if start_height > stop_height:
+        # Core's line also prints the start height, four octets the peer
+        # chose, which section 7 keeps out of a log line; the stop
+        # height is this node's
         node.logger.log_debug(
             "net",
             "peer sent invalid getcfilters/getcfheaders with start height "
-            "%d and stop height %d, peer=%s",
-            start_height,
+            "above stop height %d, peer=%s",
             stop_height,
             conn.id,
         )
@@ -3005,10 +3018,12 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # (`_NO_HEIGHT_DIFF_LIMIT` above). Strictly, so a range whose ends
     # differ by exactly the bound is one block too many.
     if stop_height - start_height >= max_height_diff:
+        # Core's line also prints how many were asked for, from which the
+        # start height the peer chose is read back, which section 7 keeps
+        # out of a log line
         node.logger.log_debug(
             "net",
-            "peer requested too many cfilters/cfheaders: %d / %d, peer=%s",
-            stop_height - start_height + 1,
+            "peer requested too many cfilters/cfheaders: at most %d, peer=%s",
             max_height_diff,
             conn.id,
         )
