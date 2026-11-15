@@ -57,6 +57,7 @@ from tests import (
     worker_ports,
 )
 from tests.functional.p2p import ScriptedPeer
+from tests.integration import departed
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -632,3 +633,84 @@ def test_a_scripted_peer_whose_connection_is_reset_counts_as_dropped() -> None:
         finally:
             peer._socket.close()
     assert peer.dropped.is_set()
+
+
+_MAKE_SURE = "Make sure the tx has at least one input."
+
+
+@pytest.mark.parametrize(
+    ("theirs", "transactions", "ours"),
+    [
+        (
+            "txid must be of length 64 (not 2, for 'aa')",
+            (),
+            "txid must be of length 64 (not 2, for '...')",
+        ),
+        (
+            "parameter 1 must be hexadecimal string (not 'zz')",
+            (),
+            "parameter 1 must be hexadecimal string (not '...')",
+        ),
+        # an apostrophe in the caller's string
+        (
+            "hash must be of length 64 (not 5, for 'ab'cd')",
+            (),
+            "hash must be of length 64 (not 5, for '...')",
+        ),
+        (
+            "hash must be hexadecimal string (not 'ab')cd')",
+            (),
+            "hash must be hexadecimal string (not '...')",
+        ),
+        # a caller's string that is itself one of the refusals
+        (
+            (
+                "txid must be of length 64 (not 44, for "
+                "'x must be hexadecimal string (not 'zz')')"
+            ),
+            (),
+            "txid must be of length 64 (not 44, for '...')",
+        ),
+        (
+            (
+                "txid must be hexadecimal string (not "
+                "'x must be of length 64 (not 2, for 'aa')')"
+            ),
+            (),
+            "txid must be hexadecimal string (not '...')",
+        ),
+        (
+            f"TX decode failed: zz {_MAKE_SURE}",
+            ("00", "zz"),
+            f"TX decode failed for tx 1. {_MAKE_SURE}",
+        ),
+        (
+            f"TX decode failed:  {_MAKE_SURE}",
+            ("",),
+            f"TX decode failed for tx 0. {_MAKE_SURE}",
+        ),
+        # a transaction whose text is a hash refusal, or ends in Core's words
+        (
+            f"TX decode failed: txid must be hexadecimal string (not 'zz') {_MAKE_SURE}",
+            ("00", "txid must be hexadecimal string (not 'zz')"),
+            f"TX decode failed for tx 1. {_MAKE_SURE}",
+        ),
+        (
+            f"TX decode failed: a {_MAKE_SURE} {_MAKE_SURE}",
+            (f"a {_MAKE_SURE}",),
+            f"TX decode failed for tx 0. {_MAKE_SURE}",
+        ),
+        # bitcoind's own words, where this node does not depart from them
+        (
+            f"TX decode failed for tx 2. {_MAKE_SURE}",
+            (),
+            f"TX decode failed for tx 2. {_MAKE_SURE}",
+        ),
+        ("Block not found", (), "Block not found"),
+    ],
+)
+def test_departed_reads_each_refusal_whole(
+    theirs: str, transactions: tuple[str, ...], ours: str
+) -> None:
+    """The caller's string, whatever it holds, never changes the reading."""
+    assert departed(theirs, transactions) == ours

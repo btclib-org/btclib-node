@@ -5,7 +5,8 @@
 """`prioritisetransaction` and `getprioritisedtransactions` against bitcoind's.
 
 Each call is answered by this node and by a real bitcoind, and the answers
-are held equal: the refusals with their codes and words, and the list of
+are held equal: the refusals with their codes and words, `departed`'s where
+this node departs from them, and the list of
 deltas with its order. A second test holds a diamond of transactions in both
 mempools and compares their fees after each delta and after a block.
 """
@@ -25,6 +26,7 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
+from tests.integration import departed
 from tests.integration.reorg_test import a_chain, submit
 
 if TYPE_CHECKING:
@@ -84,6 +86,11 @@ def _answer(call: Callable[[str, list[Any]], Any], method: str, params: Any) -> 
         return ("error", error.code, error.args[0].split(": ", 1)[1])
 
 
+def _departed(answer: Any) -> Any:
+    """Return what this node answers where bitcoind answers `answer`."""
+    return answer if answer[0] != "error" else (*answer[:2], departed(answer[2]))
+
+
 def test_prioritisetransaction_answers_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
@@ -127,7 +134,7 @@ def test_prioritisetransaction_answers_as_bitcoind_does(
         for method, params in calls:
             ours = _answer(client.call, method, params)
             theirs = _answer(bitcoind.rpc, method, params)
-            assert ours == theirs, (method, params)
+            assert ours == _departed(theirs), (method, params)
         listed = _answer(client.call, "getprioritisedtransactions", [])[1]
         assert list(listed) == list(
             _answer(bitcoind.rpc, "getprioritisedtransactions", [])[1]

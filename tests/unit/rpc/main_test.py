@@ -32,6 +32,8 @@ from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.main import get_connection, handle_rpc, resume_rpc
 from tests import LogLines, generate_random_chain, generate_random_transaction
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -617,6 +619,27 @@ def test_a_named_params_refusal_is_invalid_parameter(
                 "id": 1,
             },
         )
+
+
+def test_a_key_as_a_parameter_name_is_refused_without_quoting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2514: a name longer than a parameter's is given by its length."""
+    key = LEAK_WIF.encode()
+    shown = f"<{len(LEAK_WIF)} characters>"
+    for params, message in (
+        (
+            b'{"%s":1,"%s":2}' % (key, key),
+            f"Parameter {shown} specified multiple times",
+        ),
+        (b'{"a":1,"%s":2}' % key, f"Unknown named parameter {shown}"),
+    ):
+        seen, answer = _named(
+            monkeypatch, b'{"id":1,"method":"named","params":%s}' % params
+        )
+        assert not seen
+        assert answer.body["error"] == error(RPCErrorCode.INVALID_PARAMETER, message)
+        assert_secret_free(ValueError(answer.body), [LEAK_WIF])
 
 
 def test_named_params_to_a_method_there_is_not_are_not_read() -> None:

@@ -31,6 +31,7 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.integration import departed
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -222,7 +223,7 @@ _REFUSED: list[list[Any]] = [
 
 
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
-    """Each has bitcoind's code and message."""
+    """Each has bitcoind's code and message, `departed`'s where this departs."""
     bitcoind, node = both
     client = rpc_client(node)
     for params in _REFUSED:
@@ -231,9 +232,8 @@ def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
         with pytest.raises(RpcError) as ours:
             client.call("dumptxoutset", params)
         assert ours.value.code == theirs.value.code, params
-        assert (
-            str(ours.value.args[0]).split(": ", 1)[1]
-            == str(theirs.value.args[0]).split(": ", 1)[1]
+        assert str(ours.value.args[0]).split(": ", 1)[1] == departed(
+            str(theirs.value.args[0]).split(": ", 1)[1]
         ), params
 
 

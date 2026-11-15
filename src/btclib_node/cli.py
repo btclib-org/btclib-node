@@ -231,8 +231,10 @@ from btclib_node.constants import (
     DEFAULT_MAXSENDBUFFER,
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
     DIR_MODE,
+    MAX_QUOTED_NAME,
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
+    quoted_name,
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
@@ -373,9 +375,6 @@ _TITLES = (
 
 # `ParseArgs`'s own prefix on a `ParseParameters` refusal.
 _PARSE_ERROR = "Error parsing command line arguments: "
-# The longest name a refusal quotes: section 7 of the organization's
-# standard, *A refusal carries no secret*.
-_MAX_QUOTED_NAME = 16
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).
 _MAX_PORT = 0xFFFF
@@ -1160,12 +1159,10 @@ def _quoted_line(line: str) -> str:
     `ParseParameters` (`src/common/args.cpp`) quote the whole line or
     argument. This tree departs on purpose: the refusal reaches stderr and
     logs, and the line may hold a password (ASSURANCE_CASE.md, "Common
-    implementation weaknesses"). `_name_of` is quoted only where it has at
-    most `_MAX_QUOTED_NAME` characters, too short for a key; any other is
-    given by its length.
+    implementation weaknesses"). `_name_of` is quoted as
+    `constants.quoted_name` quotes a name.
     """
-    name = _name_of(line)
-    return name if len(name) <= _MAX_QUOTED_NAME else f"<{len(name)} characters>"
+    return quoted_name(_name_of(line))
 
 
 def _config_options(
@@ -1211,7 +1208,7 @@ def _config_options(
             shown = _quoted_line(line)
             err_msg = f"parse error on line {lineno}: {shown}"
             # the hint repeats the name, which is quoted only when short
-            if line.startswith("no") and len(_name_of(line)) <= _MAX_QUOTED_NAME:
+            if line.startswith("no") and len(_name_of(line)) <= MAX_QUOTED_NAME:
                 err_msg += (
                     ", if you intended to specify a negated option, use "
                     f"{shown}=1 instead"

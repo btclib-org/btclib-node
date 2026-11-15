@@ -51,6 +51,7 @@ from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     NUMERIC_CLIENT_VERSION,
     USER_AGENT,
+    quoted_name,
 )
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
@@ -99,6 +100,7 @@ from btclib_node.rpc.errors import (
     bool_mismatch,
     bool_param,
     check_object,
+    decode_failed_for,
     is_hex,
     json_type_name,
     parse_hash_v,
@@ -1400,9 +1402,13 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     block_index = node.chainstate.block_index
     parent = header.previous_block_hash
     if parent not in block_index.header_dict:
+        # `...` where Core writes the parent's hash (`src/rpc/mining.cpp:1165`,
+        # same tag): those are the caller's bytes, no header this index
+        # holds, and may be a key's (SECURITY.md, "Where this node departs
+        # from Bitcoin Core"; section 7 of the organization's standard, *A
+        # refusal carries no secret*)
         raise RpcError(
-            RPCErrorCode.VERIFY_ERROR,
-            f"Must submit previous header ({parent.hex()}) first",
+            RPCErrorCode.VERIFY_ERROR, "Must submit previous header (...) first"
         )
     try:
         block_index.add_headers([header])
@@ -2196,9 +2202,13 @@ def get_node_addresses(
     if len(params) > 1 and params[1] is not None:
         network = _NETWORK_NAMES.get(params[1].lower())
         if network is None:
+            # Core quotes the name whole (`src/rpc/net.cpp:1011`, same tag);
+            # this quotes it through `quoted_name` (SECURITY.md, "Where this
+            # node departs from Bitcoin Core"; section 7 of the
+            # organization's standard, *A refusal carries no secret*)
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER,
-                f"Network not recognized: {params[1]}",
+                f"Network not recognized: {quoted_name(params[1])}",
             )
     manager = node.p2p_manager
     return [
@@ -2617,7 +2627,12 @@ def get_tx_out_set_info(
     if mismatches:
         raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
-        err_msg = f"'{hash_type}' is not a valid hash_type"
+        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+        # Core"; section 7 of the organization's standard, *A refusal
+        # carries no secret*)
+        err_msg = f"'{quoted_name(hash_type)}' is not a valid hash_type"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
 
     if len(params) > 1 and params[1] is not None:
@@ -3680,9 +3695,13 @@ def _decode_hex_tx(rawtx: str, *, iswitness: bool | None = True) -> Tx:
     need it. Answering a well-formed but structurally invalid
     transaction with "TX decode failed" would part from Core
     (btclib-org/btclib-node#1375).
+
+    The refusal of a string that is not hex gives its length alone: a key
+    passed in its place is not hex either (section 7 of the organization's
+    standard, *A refusal carries no secret*).
     """
     if not is_hex(rawtx):
-        err_msg = f"invalid hex string: {rawtx!r}"
+        err_msg = f"invalid hex string of {len(rawtx)} characters"
         raise BTClibValueError(err_msg)
     return _decode_tx(bytes.fromhex(rawtx), iswitness=iswitness)
 
@@ -4055,7 +4074,7 @@ def test_mempool_accept(
     # btclib-org/btclib-node#1371
     max_raw_tx_fee_rate = _parse_max_fee_rate(params, 1)
     txs: list[Tx] = []
-    for rawtx in rawtxs:
+    for index, rawtx in enumerate(rawtxs):
         if not isinstance(rawtx, str):
             # the accessor's own message, unwrapped: an array's elements
             # are not among what the argument type check reads
@@ -4070,10 +4089,9 @@ def test_mempool_accept(
             # `BTClibException`, `send_raw_transaction`'s own clause below:
             # a script shorter than its declared length raises
             # `BTClibRuntimeError`, not `BTClibValueError`
-            err_msg = (
-                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
-            )
-            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+            raise RpcError(
+                RPCErrorCode.DESERIALIZATION_ERROR, decode_failed_for(index)
+            ) from error
     return _test_accept_results(node, txs, max_raw_tx_fee_rate)
 
 

@@ -38,7 +38,12 @@ from btclib_node.main import (
     pre_verify_subpackage,
 )
 from btclib_node.rpc.connection import btc_amount
-from btclib_node.rpc.errors import RpcError, json_type_name, type_error
+from btclib_node.rpc.errors import (
+    RpcError,
+    decode_failed_for,
+    json_type_name,
+    type_error,
+)
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.tx_check import check_transaction_reason
 
@@ -171,7 +176,7 @@ def _read(params: list[Any]) -> _Call:
         params, 2, name="maxburnamount", default=_DEFAULT_MAX_BURN_AMOUNT
     )
     txs: list[Tx] = []
-    for raw_tx in raw_txs:
+    for index, raw_tx in enumerate(raw_txs):
         if not isinstance(raw_tx, str):
             err_msg = (
                 f"JSON value of type {json_type_name(raw_tx)} is not of expected "
@@ -181,10 +186,9 @@ def _read(params: list[Any]) -> _Call:
         try:
             tx = _decode_hex_tx(raw_tx)
         except BTClibException as error:
-            err_msg = (
-                f"TX decode failed: {raw_tx} Make sure the tx has at least one input."
-            )
-            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+            raise RpcError(
+                RPCErrorCode.DESERIALIZATION_ERROR, decode_failed_for(index)
+            ) from error
         if _exceeds_max_burn(tx, max_burn_amount):
             raise RpcError(RPCErrorCode.VERIFY_ERROR, _MAX_BURN_EXCEEDED_REASON)
         txs.append(tx)

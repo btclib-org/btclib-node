@@ -401,9 +401,9 @@ and what counters each.
   `cli.py`'s `_quoted_line` quotes a configuration line or key, a section
   name, a command-line argument or a `settings.json` name up to the first
   sensitive option's name and the first `=`, and only where that has at
-  most `_MAX_QUOTED_NAME` characters; a longer one is given by its length.
-  Refusals, warnings and logs quote them this way, the refusal of a line
-  that fails to parse among them. `settings_file.py`'s `read_settings`
+  most `constants.MAX_QUOTED_NAME` characters; a longer one is given by its
+  length. Refusals, warnings and logs quote them this way, the refusal of a
+  line that fails to parse among them. `settings_file.py`'s `read_settings`
   takes it as `quote` for a key named twice. The settings log writes a
   `settings.json` value only where its name is a known option that is not
   sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
