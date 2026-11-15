@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_MEMPOOL_EXPIRY_HOURS",
     "DIR_MODE",
     "MAX_JSON_DEPTH",
+    "MAX_QUOTED_NAME",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -40,6 +41,7 @@ __all__ = [
     "default_data_dir",
     "numeric_version",
     "quoted",
+    "quoted_name",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
@@ -169,6 +171,25 @@ CLIENT_BUGREPORT = "https://github.com/btclib-org/btclib-node/issues"
 def quoted(text: str) -> str:
     """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
     return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
+
+
+# The longest name a refusal quotes: section 7 of the organization's
+# standard, *A refusal carries no secret*.
+MAX_QUOTED_NAME = 16
+
+
+def quoted_name(name: str) -> str:
+    """Return `name` where it is short enough to quote, else its length.
+
+    A name of at most `MAX_QUOTED_NAME` characters is too short for a key;
+    a longer one may be a key passed in its place. Where Bitcoin Core
+    quotes such a name whole, as an RPC's network or an option's key, a
+    refusal that quotes it through this departs from Core (SECURITY.md,
+    "Where this node departs from Bitcoin Core"): section 7 of the
+    organization's standard, *A refusal carries no secret*, wins over Core
+    there.
+    """
+    return name if len(name) <= MAX_QUOTED_NAME else f"<{len(name)} characters>"
 
 
 # Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`

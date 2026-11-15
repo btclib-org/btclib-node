@@ -23,7 +23,7 @@ from typing import Any, NamedTuple, NoReturn, Self, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.constants import MAX_JSON_DEPTH
+from btclib_node.constants import MAX_JSON_DEPTH, quoted_name
 from btclib_node.rpc.errors import RpcError
 
 __all__ = [
@@ -444,11 +444,17 @@ def transform_named_arguments(
     matches Core's: `bitcoind`, the release `integration-bitcoind.yml` pins,
     on macOS names the last of them in the request's own order for some sets
     of keys and not for others. The last is the one named here.
+
+    A key named twice, and a key no position names, are quoted through
+    `quoted_name`, where Core quotes them whole (`src/rpc/server.cpp:757`
+    and `:843`, same tag): SECURITY.md, "Where this node departs from
+    Bitcoin Core", and section 7 of the organization's standard, *A refusal
+    carries no secret*.
     """
     args_in: dict[str, Any] = {}
     for key, value in params.items():
         if key in args_in:
-            message = f"Parameter {key} specified multiple times"
+            message = f"Parameter {quoted_name(key)} specified multiple times"
             raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
         args_in[key] = value
     out: list[Any] = []
@@ -478,7 +484,7 @@ def transform_named_arguments(
             raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
         out = positional + out[len(positional) :]
     if args_in:
-        message = f"Unknown named parameter {next(reversed(args_in))}"
+        message = f"Unknown named parameter {quoted_name(next(reversed(args_in)))}"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
     return out
 

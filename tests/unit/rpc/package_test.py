@@ -48,6 +48,7 @@ from tests import (
     anyone_can_spend_script_sig,
     generate_random_chain,
 )
+from tests.secret_free import assert_secret_free
 from tests.unit.main_test import (
     FEE,
     a_child_spending_the_dust,
@@ -62,6 +63,7 @@ from tests.unit.main_test import (
     with_script_sig,
     with_two_outputs,
 )
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -430,9 +432,23 @@ def test_the_arguments_are_refused_in_core_s_order(node: Node) -> None:
     undecoded = refused([[raw, "zz"]], node)
     assert undecoded.code == RPCErrorCode.DESERIALIZATION_ERROR
     assert undecoded.message == (
-        "TX decode failed: zz Make sure the tx has at least one input."
+        "TX decode failed for tx 1. Make sure the tx has at least one input."
     )
     assert node.mempool.size == 0
+
+
+@pytest.mark.parametrize("raw_tx", [LEAK_WIF, LEAK_HEX])
+def test_a_key_that_does_not_decode_is_refused_without_quoting_it(
+    node: Node, raw_tx: str
+) -> None:
+    """ISS 2514: a key passed as a transaction is named by its index alone."""
+    raw = hexes(funded_spends(node, 1))[0]
+    undecoded = refused([[raw, raw_tx]], node)
+    assert undecoded.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert undecoded.message == (
+        "TX decode failed for tx 1. Make sure the tx has at least one input."
+    )
+    assert_secret_free(undecoded, [raw_tx])
 
 
 def test_a_burn_over_the_limit_is_refused_before_anything_is_taken(node: Node) -> None:

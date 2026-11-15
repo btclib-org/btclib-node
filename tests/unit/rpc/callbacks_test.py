@@ -160,7 +160,9 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.secret_free import assert_secret_free
 from tests.unit.main_test import a_dusty_spend, connect, locked_spend, spend
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1704,6 +1706,18 @@ def test_tx_out_set_info_refuses_an_unknown_hash_type_by_name() -> None:
     assert raised.value.message == "'not_a_real_type' is not a valid hash_type"
 
 
+def test_tx_out_set_info_refuses_a_key_as_hash_type_without_quoting_it() -> None:
+    """ISS 2514: a `hash_type` longer than a name is given by its length."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, [LEAK_WIF])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        f"'<{len(LEAK_WIF)} characters>' is not a valid hash_type"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
 def test_tx_out_set_info_hash_type_of_the_wrong_json_type_is_named() -> None:
     """A non-string `hash_type` is named the way `type_error` names it."""
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
@@ -2072,7 +2086,7 @@ def test_get_tx_out_refuses_a_non_hexadecimal_txid(
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{not_hex}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
@@ -2090,7 +2104,7 @@ def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, ["aabb", 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
 @pytest.mark.parametrize("n", [-1, 2**32, 1.5])
@@ -2475,13 +2489,16 @@ def test_a_txid_of_the_wrong_json_type_is_named() -> None:
     )
 
 
-def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getrawtransaction`'s txid that fails to decode as hex is echoed back."""
+def test_a_txid_that_is_not_a_hash_is_refused_without_quoting_it() -> None:
+    """ISS 2514: a key passed as `getrawtransaction`'s txid is not quoted."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
-        get_raw_transaction(node, _CONN, ["zz"])
+        get_raw_transaction(node, _CONN, [LEAK_WIF])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == (
+        f"parameter 1 must be of length 64 (not {len(LEAK_WIF)}, for '...')"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
@@ -2495,9 +2512,7 @@ def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == "parameter 1 must be of length 64 (not 4, for 'aabb')"
-    )
+    assert raised.value.message == "parameter 1 must be of length 64 (not 4, for '...')"
 
 
 def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
@@ -2512,13 +2527,16 @@ def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     )
 
 
-def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getrawtransaction`'s blockhash that fails to decode as hex is echoed."""
+def test_a_blockhash_that_is_not_a_hash_is_refused_without_quoting_it() -> None:
+    """ISS 2514: a key as `getrawtransaction`'s blockhash is not quoted."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
-        get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
+        get_raw_transaction(node, _CONN, ["11" * 32, False, LEAK_WIF])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == (
+        f"parameter 3 must be of length 64 (not {len(LEAK_WIF)}, for '...')"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
@@ -2527,9 +2545,7 @@ def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> No
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == "parameter 3 must be of length 64 (not 4, for 'aabb')"
-    )
+    assert raised.value.message == "parameter 3 must be of length 64 (not 4, for '...')"
 
 
 def test_a_null_blockhash_is_the_same_as_none_given() -> None:
@@ -2760,9 +2776,9 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
         mempool_accept(a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]])
 
 
-def decode_failure(rawtx: str) -> str:
-    """Core's own `-22` message for a `rawtx` that does not decode."""
-    return f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+def decode_failure(index: int) -> str:
+    """Return the `-22` message for an undecoded `rawtx` at `index`."""
+    return f"TX decode failed for tx {index}. Make sure the tx has at least one input."
 
 
 def test_an_unparsable_transaction_ends_the_call() -> None:
@@ -2771,11 +2787,54 @@ def test_an_unparsable_transaction_ends_the_call() -> None:
     `bitcoind` on regtest: `testmempoolaccept '["zz","00"]'` is `-22`
     "TX decode failed: zz Make sure the tx has at least one input.", for
     the whole call, as this answers it (btclib-org/btclib-node#1329).
+    The message names `zz` by its index, `errors.decode_failed_for`'s
+    departure from Core.
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [["zz", "00"]])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-    assert raised.value.message == decode_failure("zz")
+    assert raised.value.message == decode_failure(0)
+
+
+@pytest.mark.parametrize("rawtx", [LEAK_WIF, LEAK_HEX])
+def test_a_rawtx_that_does_not_decode_is_refused_without_quoting_it(
+    rawtx: str,
+) -> None:
+    """ISS 2514: a key passed as a `rawtx` is named by its index alone.
+
+    A WIF is not hex, and a raw key is hex that decodes as no transaction.
+    """
+    valid = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[valid, rawtx]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure(1)
+    assert_secret_free(raised.value, [rawtx])
+
+
+@pytest.mark.parametrize("rawtx", [LEAK_WIF, LEAK_HEX])
+def test_decode_hex_tx_refuses_a_key_without_quoting_it(rawtx: str) -> None:
+    """ISS 2514: `_decode_hex_tx` and the refusals it chains under quote no key.
+
+    `decoderawtransaction` and `sendrawtransaction` raise its refusal as
+    their cause, which `assert_secret_free` reads too.
+    """
+    with pytest.raises(BTClibValueError) as raised:
+        cb._decode_hex_tx(rawtx)
+    assert_secret_free(raised.value, [rawtx])
+    for call in (cb.decode_raw_transaction, send_raw_transaction):
+        with pytest.raises(RpcError) as refused:
+            call(a_node(), _CONN, [rawtx])
+        assert refused.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert refused.value.__cause__ is not None
+        assert_secret_free(refused.value, [rawtx])
+
+
+def test_decode_hex_tx_gives_a_string_that_is_not_hex_by_its_length() -> None:
+    """The length is what section 7 of the standard lets a refusal print."""
+    with pytest.raises(BTClibValueError) as raised:
+        cb._decode_hex_tx(LEAK_WIF)
+    assert str(raised.value) == f"invalid hex string of {len(LEAK_WIF)} characters"
 
 
 def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
@@ -2888,7 +2947,7 @@ def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [[truncated]])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-    assert raised.value.message == decode_failure(truncated)
+    assert raised.value.message == decode_failure(0)
 
 
 def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
@@ -2908,7 +2967,7 @@ def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
         with pytest.raises(RpcError) as raised:
             mempool_accept(a_node(), _CONN, [[spaced]])
         assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-        assert raised.value.message == decode_failure(spaced)
+        assert raised.value.message == decode_failure(0)
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
@@ -4226,17 +4285,39 @@ def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
     assert raised.value.message == "Block not found"
 
 
-def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getblockheader`'s block hash that fails to decode as hex is echoed."""
+@pytest.mark.parametrize(
+    ("block_hash", "secret", "message"),
+    [
+        (
+            LEAK_WIF,
+            LEAK_WIF,
+            f"hash must be of length 64 (not {len(LEAK_WIF)}, for '...')",
+        ),
+        (
+            f"z{LEAK_HEX[1:]}",
+            LEAK_HEX[1:],
+            "hash must be hexadecimal string (not '...')",
+        ),
+    ],
+)
+def test_a_block_hash_that_is_not_a_hash_is_refused_without_quoting_it(
+    block_hash: str, secret: str, message: str
+) -> None:
+    """ISS 2514: a key passed as `getblockheader`'s hash is not quoted.
+
+    A WIF has the wrong length, and a raw key with a character that is not
+    a hex digit has the right one: `parse_hash_v` refuses each.
+    """
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
         "Node",
         SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
     with pytest.raises(RpcError) as raised:
-        get_block_header(node, _CONN, ["zz"])
+        get_block_header(node, _CONN, [block_hash])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == message
+    assert_secret_free(raised.value, [secret])
 
 
 def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
@@ -4293,7 +4374,7 @@ def test_get_block_header_refuses_a_hash_that_is_not_hexadecimal() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [not_hex])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"hash must be hexadecimal string (not '{not_hex}')"
+    assert raised.value.message == "hash must be hexadecimal string (not '...')"
 
 
 def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
@@ -4311,7 +4392,7 @@ def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "hash must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "hash must be of length 64 (not 4, for '...')"
 
 
 def test_two_wrongly_typed_arguments_are_both_named_at_once() -> None:
@@ -6763,10 +6844,7 @@ def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message
-        == f"blockhash must be hexadecimal string (not '{not_hex}')"
-    )
+    assert raised.value.message == "blockhash must be hexadecimal string (not '...')"
 
 
 def test_get_block_refuses_a_blockhash_holding_whitespace(
@@ -6783,9 +6861,7 @@ def test_get_block_refuses_a_blockhash_holding_whitespace(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [spaced, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == f"blockhash must be hexadecimal string (not '{spaced}')"
-    )
+    assert raised.value.message == "blockhash must be hexadecimal string (not '...')"
 
 
 def test_get_block_refuses_a_blockhash_of_the_wrong_length(
@@ -6796,7 +6872,7 @@ def test_get_block_refuses_a_blockhash_of_the_wrong_length(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, ["aabb", 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "blockhash must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "blockhash must be of length 64 (not 4, for '...')"
 
 
 def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
@@ -8474,15 +8550,25 @@ def test_submit_header_refuses_what_does_not_decode(hexdata: str) -> None:
 def test_submit_header_refuses_a_header_whose_parent_is_unknown(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `RPC_VERIFY_ERROR`, naming the parent to submit first."""
+    """Core's own `RPC_VERIFY_ERROR`, with `...` for the parent's hash."""
     node = regtest_node()
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     with pytest.raises(RpcError) as raised:
         submit_header(node, _CONN, [chain[1].serialize().hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
-    assert raised.value.message == (
-        f"Must submit previous header ({chain[0].hash.hex()}) first"
-    )
+    assert raised.value.message == "Must submit previous header (...) first"
+
+
+def test_submit_header_refuses_a_key_as_parent_without_quoting_it(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2514: a parent field holding a key's bytes is not written back."""
+    node = regtest_node()
+    (header,) = generate_random_header_chain(1, bytes.fromhex(LEAK_HEX))
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [header.serialize().hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert_secret_free(raised.value, [bytes.fromhex(LEAK_HEX)])
 
 
 def test_submit_header_indexes_a_header_alone(
@@ -9601,7 +9687,7 @@ def test_get_mempool_entry_a_non_hex_txid_is_invalid_parameter() -> None:
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, ["z" * 64])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{'z' * 64}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_mempool_entry_a_txid_of_the_wrong_length_is_invalid_parameter() -> None:
@@ -9609,7 +9695,7 @@ def test_get_mempool_entry_a_txid_of_the_wrong_length_is_invalid_parameter() -> 
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
 def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> None:
@@ -9618,7 +9704,7 @@ def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> N
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, [spaced])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{spaced}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_mempool_entry_answers_core_s_own_shape() -> None:

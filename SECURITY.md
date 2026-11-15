@@ -186,6 +186,22 @@ place, as in `pk(): Pubkey '...' is invalid`. Where bip32_descriptors
 refuses it, as a `musig()` participant or an x-only key outside `tr()`,
 the refusal names the key by its index alone.
 
+Core's RPC refusals quote what a caller gave where a hash, a hex string or
+a name belongs, a key given by mistake in its place included (`ParseHashV`
+and `ParseHexV` in `src/rpc/util.cpp` among them, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
+`...` where Core writes such a string or its bytes, and keeps Core's other
+words, as in `txid must be of length 64 (not 52, for '...')` and `Must
+submit previous header (...) first`. `generateblock` writes `'...'`, as in
+`Transaction '...' not in mempool.`, since Core's sentence there has no
+quotes around the string. A name, such as a network, a hash type or a
+named parameter, is quoted where it has at most `MAX_QUOTED_NAME`
+characters (`btclib_node/constants.py`) and is given by its length
+otherwise, as in `Network not recognized: <52 characters>`. A transaction
+that `testmempoolaccept` or `submitpackage` cannot decode is named by its
+index, in the words of Core's `combinerawtransaction`: `TX decode failed
+for tx 1. Make sure the tx has at least one input.`
+
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
 `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This

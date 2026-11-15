@@ -6,7 +6,8 @@
 
 Both nodes hold the same chain and are asked the same call, in turn, and
 the answers are held equal key for key, in Core's order: each refusal with
-its code and words, and each shape of `tx-results`. The mempools are held
+its code and words, `departed`'s where this node departs from them, and
+each shape of `tx-results`. The mempools are held
 equal after each call, so a transaction one took in and the other refused
 is found where it happens.
 """
@@ -26,6 +27,7 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
+from tests.integration import departed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -122,8 +124,13 @@ class Ctx:
         """Ask both, assert the answers are alike in value and key order."""
         ours, theirs = self.ask(method, params)
         if ours is not None:
-            assert ours == theirs, (method, params)
-            assert key_order(ours) == key_order(theirs), (method, params)
+            expected = theirs
+            if theirs[0] == "error":
+                package = params[0] if isinstance(params, list) and params else []
+                transactions = package if isinstance(package, list) else []
+                expected = (*theirs[:2], departed(theirs[2], transactions))
+            assert ours == expected, (method, params)
+            assert key_order(ours) == key_order(expected), (method, params)
         return theirs
 
     def send(self, *txs: Tx) -> None:

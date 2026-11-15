@@ -22,7 +22,6 @@ from bitcoin_core_rpc import RPCErrorCode
 from btclib import b58, bms
 from btclib.exceptions import BTClibException
 from btclib.hashes import hash160, sha256
-from btclib.script.script import script_to_asm
 from btclib.script.sig_hash import PrecomputedTxData
 from btclib.script.solver import solver
 from btclib.script.witness import Witness
@@ -30,7 +29,15 @@ from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 
-from btclib_node.rpc.errors import RpcError, is_hex, json_type_name, type_errors
+from btclib_node.constants import quoted_name
+from btclib_node.rpc.errors import (
+    RpcError,
+    decode_failed_for,
+    is_hex,
+    json_type_name,
+    parse_hash_v,
+    type_errors,
+)
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.signing import (
     MAX_MONEY,
@@ -56,7 +63,6 @@ __all__ = [
 ]
 
 _COIN = 100_000_000
-_TXID_HEX_SIZE = 64
 # `getInt<int>()`'s own range
 _INT_RANGE = range(-(2**31), 2**31)
 _SIGHASH_TYPES = {
@@ -184,9 +190,14 @@ def _parse_sighash(value: object) -> int:
         return SIGHASH_DEFAULT
     text = _get_str(value)
     if text not in _SIGHASH_TYPES:
+        # Core quotes the name whole (`src/core_io.cpp:279`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+        # Core"; section 7 of the organization's standard, *A refusal
+        # carries no secret*)
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"'{text}' is not a valid sighash parameter.",
+            f"'{quoted_name(text)}' is not a valid sighash parameter.",
         )
     return _SIGHASH_TYPES[text]
 
@@ -208,22 +219,20 @@ def _find_coin(node: Node, txid: bytes, vout: int) -> TxOut | None:
 
 def _hash_o(prev_out: dict[str, Any], key: str) -> bytes:
     """Core's `ParseHashO`: 32 bytes from 64 hexadecimal digits."""
-    text = _get_str(prev_out.get(key))
-    if len(text) != _TXID_HEX_SIZE:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"{key} must be of length 64 (not {len(text)}, for '{text}')",
-        )
-    return _hex_v(text, key)
+    return parse_hash_v(key, _get_str(prev_out.get(key)))
 
 
 def _hex_v(value: object, name: str) -> bytes:
-    """Core's `ParseHexV`: a value that is no string is an empty one, no hex."""
+    """Core's `ParseHexV`: a value that is no string is an empty one, no hex.
+
+    The refusal writes `...` where Core quotes the string, as
+    `errors.parse_hash_v` does and says why.
+    """
     text = value if isinstance(value, str) else ""
     if not is_hex(text):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"{name} must be hexadecimal string (not '{text}')",
+            f"{name} must be hexadecimal string (not '...')",
         )
     return bytes.fromhex(text)
 
@@ -323,11 +332,16 @@ def _parse_prevouts(
         script_pub_key = _hex_v(prev_out["scriptPubKey"], "scriptPubKey")
         found = coins.get((txid, vout))
         if found is not None and found.script_pub_key.script != script_pub_key:
+            # `...` where Core writes each script's asm
+            # (`src/rpc/rawtransaction_util.cpp:237`, at
+            # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the caller gives
+            # one, and an earlier entry for the same output may have given
+            # the other, so either may be a key's bytes (SECURITY.md, "Where
+            # this node departs from Bitcoin Core"; section 7 of the
+            # organization's standard, *A refusal carries no secret*)
             raise RpcError(
                 RPCErrorCode.DESERIALIZATION_ERROR,
-                "Previous output scriptPubKey mismatch:\n"
-                f"{script_to_asm(found.script_pub_key.script)}\nvs:\n"
-                f"{script_to_asm(script_pub_key)}",
+                "Previous output scriptPubKey mismatch:\n...\nvs:\n...",
             )
         amount = (
             _amount_from_value(prev_out["amount"])
@@ -438,11 +452,7 @@ def _decoded_variants(texts: list[Any]) -> list[Tx]:
     for idx, item in enumerate(texts):
         tx = _parse_hex_tx(_get_str(item))
         if tx is None:
-            raise RpcError(
-                RPCErrorCode.DESERIALIZATION_ERROR,
-                f"TX decode failed for tx {idx}. "
-                "Make sure the tx has at least one input.",
-            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, decode_failed_for(idx))
         variants.append(tx)
     first_id = _stripped_id(variants[0])
     for number, tx in enumerate(variants[1:], start=2):

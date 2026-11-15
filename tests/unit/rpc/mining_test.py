@@ -58,6 +58,7 @@ from tests import (
     generate_random_transaction,
 )
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -539,11 +540,11 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
             [ADDRESS, ["aa"]],
             -22,
             (
-                "Transaction decode failed for aa. "
+                "Transaction decode failed for '...'. "
                 "Make sure the tx has at least one input."
             ),
         ),
-        ([ADDRESS, ["0" * 63 + "1"]], -5, f"Transaction {'0' * 63}1 not in mempool."),
+        ([ADDRESS, ["0" * 63 + "1"]], -5, "Transaction '...' not in mempool."),
         (
             [ADDRESS, [1]],
             -3,
@@ -553,7 +554,7 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
             [ADDRESS, ["zz"]],
             -22,
             (
-                "Transaction decode failed for zz. "
+                "Transaction decode failed for '...'. "
                 "Make sure the tx has at least one input."
             ),
         ),
@@ -562,9 +563,19 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
 def test_generateblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s."""
+    """The codes and messages are `bitcoind`'s, `...` for a string it quotes."""
     assert refusal(lambda: generate_block(node, CONN, params)) == (code, message)
     assert height(node) == 0
+
+
+@pytest.mark.parametrize("text", [LEAK_HEX, LEAK_WIF])
+def test_generateblock_refuses_a_key_as_a_transaction_without_quoting_it(
+    node: Node, text: str
+) -> None:
+    """ISS 2514: a raw key is a txid not in the mempool, a WIF no tx."""
+    with pytest.raises(RpcError) as caught:
+        generate_block(node, CONN, [ADDRESS, [text]])
+    assert_secret_free(caught.value, [text])
 
 
 X_ONLY = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
@@ -1022,26 +1033,26 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
         (
             {"rules": ["segwit"], "longpollid": "x"},
             -8,
-            "longpollid must be of length 64 (not 1, for 'x')",
+            "longpollid must be of length 64 (not 1, for '...')",
         ),
         (
             {"rules": ["segwit"], "longpollid": "zz" * 32},
             -8,
-            f"longpollid must be hexadecimal string (not '{'zz' * 32}')",
+            "longpollid must be hexadecimal string (not '...')",
         ),
         # the first 64 bytes, not characters
         (
             {"rules": ["segwit"], "longpollid": "\u00e9" * 10},
             -8,
-            f"longpollid must be of length 64 (not 20, for '{'\u00e9' * 10}')",
+            "longpollid must be of length 64 (not 20, for '...')",
         ),
         (
             {"rules": ["segwit"], "longpollid": "\u00e9" * 40},
             -8,
-            f"longpollid must be hexadecimal string (not '{'\u00e9' * 32}')",
+            "longpollid must be hexadecimal string (not '...')",
         ),
         # read before the rules, and waited on before them
-        ({"longpollid": "x"}, -8, "longpollid must be of length 64 (not 1, for 'x')"),
+        ({"longpollid": "x"}, -8, "longpollid must be of length 64 (not 1, for '...')"),
         (
             {"longpollid": "00" * 32},
             -8,
@@ -1052,8 +1063,22 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
 def test_getblocktemplate_refuses_what_core_refuses(
     node: Node, request_: dict[str, Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s."""
+    """The codes and messages are `bitcoind`'s, `...` for a string it quotes."""
     assert refusal(lambda: finish_template(node, request_)) == (code, message)
+
+
+@pytest.mark.parametrize(
+    ("long_poll_id", "secret"),
+    [(LEAK_WIF, LEAK_WIF), (f"z{LEAK_HEX[1:]}", LEAK_HEX[1:])],
+)
+def test_a_key_as_longpollid_is_refused_without_quoting_it(
+    node: Node, long_poll_id: str, secret: str
+) -> None:
+    """ISS 2514: too short a `longpollid`, and one not hex, are not quoted."""
+    with pytest.raises(RpcError) as caught:
+        finish_template(node, {"rules": ["segwit"], "longpollid": long_poll_id})
+    assert int(caught.value.code) == -8
+    assert_secret_free(caught.value, [secret])
 
 
 def test_getblocktemplate_needs_its_argument_as_an_object(node: Node) -> None:
@@ -1642,24 +1667,24 @@ def test_the_other_waits_are_served_as_core_names_them() -> None:
         (
             [1, "zz"],
             -8,
-            "current_tip must be of length 64 (not 2, for 'zz')",
+            "current_tip must be of length 64 (not 2, for '...')",
         ),
         (
             [1, f"{ZERO} "],
             -8,
-            f"current_tip must be of length 64 (not 65, for '{ZERO} ')",
+            "current_tip must be of length 64 (not 65, for '...')",
         ),
         (
             [1, "g" * 64],
             -8,
-            f"current_tip must be hexadecimal string (not '{'g' * 64}')",
+            "current_tip must be hexadecimal string (not '...')",
         ),
     ],
 )
 def test_waitfornewblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s, on regtest."""
+    """The codes and messages are `bitcoind`'s on regtest, but for `...`."""
     assert refusal(lambda: wait_for_new_block(node, CONN, params)) == (code, message)
 
 
@@ -1751,11 +1776,11 @@ def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None
                 (2, "timeout", "string", "number"),
             ),
         ),
-        (["aa", -1], -8, "blockhash must be of length 64 (not 2, for 'aa')"),
+        (["aa", -1], -8, "blockhash must be of length 64 (not 2, for '...')"),
         (
             ["g" * 64],
             -8,
-            f"blockhash must be hexadecimal string (not '{'g' * 64}')",
+            "blockhash must be hexadecimal string (not '...')",
         ),
         ([ZERO, 1.5], -1, "JSON integer out of range"),
         ([ZERO, 2**31], -1, "JSON integer out of range"),
@@ -1765,7 +1790,7 @@ def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None
 def test_waitforblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s, on regtest."""
+    """The codes and messages are `bitcoind`'s on regtest, but for `...`."""
     assert refusal(lambda: wait_for_block(node, CONN, params)) == (code, message)
 
 
