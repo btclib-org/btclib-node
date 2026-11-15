@@ -30,19 +30,26 @@ Set through classic branch protection; no ruleset on `main` carries a
 gh api repos/btclib-org/btclib-node/branches/main/protection \
   --jq '.required_status_checks
         | {strict, checks: [.checks[] | {app_id, context}]}'
-# {"checks":[{"app_id":15368,"context":"test: every job passed"},
-#   {"app_id":15368,"context":"docs / Build the documentation"},
-#   {"app_id":15368,"context":"lint / Lint and type-check"},
-#   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
-#   {"app_id":15368,"context":"lint / Dependency review"},
-#   {"app_id":15368,"context":"lint / Sign-off"},
-#   {"app_id":15368,"context":"sourcery / Sourcery"}],
-#   "strict":false}
+```
+
+```json
+{"checks":[{"app_id":15368,"context":"test: every job passed"},
+  {"app_id":15368,"context":"docs / Build the documentation"},
+  {"app_id":15368,"context":"lint / Lint and type-check"},
+  {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
+  {"app_id":15368,"context":"lint / Dependency review"},
+  {"app_id":15368,"context":"lint / Sign-off"},
+  {"app_id":15368,"context":"sourcery / Sourcery"}],
+  "strict":false}
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
-#
 ```
+
+The second call printed nothing.
 
 A red run on any of them blocks the merge. `strict` is `false`: a pull
 request need not be up to date with `main` to merge (section 11 of the
@@ -169,8 +176,11 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
     dismiss: .required_pull_request_reviews.dismiss_stale_reviews,
     signatures: .required_signatures.enabled,
     admins: .enforce_admins.enabled}'
-# {"admins":false,"conversations":true,"deletions":false,"dismiss":true,
-#  "force":false,"linear":true,"reviews":1,"signatures":false}
+```
+
+```json
+{"admins":false,"conversations":true,"deletions":false,"dismiss":true,
+ "force":false,"linear":true,"reviews":1,"signatures":false}
 ```
 
 `enforce_admins: false` is not a relaxation but what makes a merge
@@ -186,13 +196,16 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '{name, target, rules: [.rules[].type],
            bypass: [.bypass_actors[]? | [.actor_id, .bypass_mode]]}'
-# {"bypass":[],"name":"main-integrity","target":"branch",
-#  "rules":["required_linear_history","non_fast_forward","deletion"]}
-# {"bypass":[[3296421,"pull_request"]],"name":"main-self-merge",
-#  "target":"branch",
-#  "rules":["pull_request"]}
-# {"bypass":[],"name":"tag-integrity","target":"tag",
-#  "rules":["required_signatures"]}
+```
+
+```text
+{"bypass":[],"name":"main-integrity","target":"branch",
+ "rules":["required_linear_history","non_fast_forward","deletion"]}
+{"bypass":[[3296421,"pull_request"]],"name":"main-self-merge",
+ "target":"branch",
+ "rules":["pull_request"]}
+{"bypass":[],"name":"tag-integrity","target":"tag",
+ "rules":["required_signatures"]}
 ```
 
 - `main-integrity` — required linear history, no force pushes, no
@@ -234,14 +247,17 @@ catch.
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="pull_request") | .parameters'
-# {"allowed_merge_methods":["squash"],
-#  "dismiss_stale_reviews_on_push":true,
-#  "dismissal_restriction":{"allowed_actors":[],"enabled":false},
-#  "require_code_owner_review":false,
-#  "require_extra_approval_for_unattributed_changes":true,
-#  "require_last_push_approval":false,
-#  "required_approving_review_count":1,
-#  "required_review_thread_resolution":true,"required_reviewers":[]}
+```
+
+```json
+{"allowed_merge_methods":["squash"],
+ "dismiss_stale_reviews_on_push":true,
+ "dismissal_restriction":{"allowed_actors":[],"enabled":false},
+ "require_code_owner_review":false,
+ "require_extra_approval_for_unattributed_changes":true,
+ "require_last_push_approval":false,
+ "required_approving_review_count":1,
+ "required_review_thread_resolution":true,"required_reviewers":[]}
 ```
 
 ## Signed commits
@@ -249,7 +265,10 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
 ```shell
 gh api repos/btclib-org/btclib-node/commits/main \
   --jq '.commit.verification | {verified, reason}'
-# {"reason":"valid","verified":true}
+```
+
+```json
+{"reason":"valid","verified":true}
 ```
 
 No ruleset over `main` carries `required_signatures`, so nothing refuses an
@@ -283,16 +302,19 @@ gh api repos/btclib-org/btclib-node \
          title: .squash_merge_commit_title,
          message: .squash_merge_commit_message,
          old_title: .use_squash_pr_title_as_default}'
-# {"auto":false,"delete_on_merge":true,"merge":false,
-#  "message":"COMMIT_MESSAGES","old_title":false,"rebase":false,
-#  "squash":true,"title":"COMMIT_OR_PR_TITLE"}
+```
+
+```json
+{"auto":false,"delete_on_merge":true,"merge":false,
+ "message":"COMMIT_MESSAGES","old_title":false,"rebase":false,
+ "squash":true,"title":"COMMIT_OR_PR_TITLE"}
 ```
 
 Squash is the only method, and `main-self-merge` names it too, so the
 constraint holds even if this repository setting is flipped.
 
-Auto-merge is off, so no pull request can be armed: the merge is
-explicit.
+Auto-merge is off, [for the reason section 11
+gives](https://github.com/btclib-org/.github#merge-method).
 
 `COMMIT_OR_PR_TITLE` is the subject — the pull request title with its
 number, or the subject of the single commit where a branch has one, which
@@ -316,8 +338,11 @@ gh api repos/btclib-org/btclib-node \
   --jq '{issues: .has_issues, visibility: .visibility,
          default_branch: .default_branch,
          wiki: .has_wiki, projects: .has_projects}'
-# {"default_branch":"main","issues":true,"projects":false,
-#  "visibility":"public","wiki":false}
+```
+
+```json
+{"default_branch":"main","issues":true,"projects":false,
+ "visibility":"public","wiki":false}
 ```
 
 `has_issues` is what `CONTRIBUTING.md`'s *The issue tracker* rests on: an
@@ -335,8 +360,11 @@ records, and the projects board is a per-user view of the same issues.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.topics | join(", ")'
-# bitcoin, bitcoin-node, blockchain, consensus, full-node, p2p, rocksdb,
-# script-interpreter
+```
+
+```text
+bitcoin, bitcoin-node, blockchain, consensus, full-node, p2p, rocksdb,
+script-interpreter
 ```
 
 The topics are `pyproject.toml`'s `keywords`, in the same lowercase
@@ -368,10 +396,19 @@ sequence is not drift.
 
 ```shell
 gh api repos/btclib-org/btclib-node/actions/permissions/workflow
-# {"default_workflow_permissions":"read",
-#  "can_approve_pull_request_reviews":false}
+```
+
+```json
+{"default_workflow_permissions":"read",
+ "can_approve_pull_request_reviews":false}
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/actions/permissions
-# {"enabled":true,"allowed_actions":"all","sha_pinning_required":true}
+```
+
+```json
+{"enabled":true,"allowed_actions":"all","sha_pinning_required":true}
 ```
 
 `read` is what every workflow here starts from, and a job elevates
@@ -443,7 +480,10 @@ with the reason for each. The organization gives the same two answers,
 ```shell
 gh api orgs/btclib-org/actions/permissions \
   --jq '{allowed_actions, sha_pinning_required}'
-# {"allowed_actions":"all","sha_pinning_required":true}
+```
+
+```json
+{"allowed_actions":"all","sha_pinning_required":true}
 ```
 
 **What the repository's own calls cannot say is whether a value is this
@@ -457,9 +497,18 @@ moved.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq .web_commit_signoff_required
-# true
+```
+
+```text
+true
+```
+
+```shell
 gh api orgs/btclib-org --jq .web_commit_signoff_required
-# true
+```
+
+```text
+true
 ```
 
 Set at the organization level, [for the reason section 11
@@ -469,11 +518,14 @@ gives](https://github.com/btclib-org/.github/blob/main/README.md#signatures).
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.security_and_analysis'
-# {"dependabot_security_updates":{"status":"enabled"},
-#  "secret_scanning":{"status":"enabled"},
-#  "secret_scanning_non_provider_patterns":{"status":"disabled"},
-#  "secret_scanning_push_protection":{"status":"enabled"},
-#  "secret_scanning_validity_checks":{"status":"disabled"}}
+```
+
+```json
+{"dependabot_security_updates":{"status":"enabled"},
+ "secret_scanning":{"status":"enabled"},
+ "secret_scanning_non_provider_patterns":{"status":"disabled"},
+ "secret_scanning_push_protection":{"status":"enabled"},
+ "secret_scanning_validity_checks":{"status":"disabled"}}
 ```
 
 Secret scanning, its push protection and Dependabot security updates are
@@ -489,7 +541,10 @@ rather than this file's.
 
 ```shell
 gh api repos/btclib-org/btclib-node/private-vulnerability-reporting
-# {"enabled":true}
+```
+
+```json
+{"enabled":true}
 ```
 
 **Private vulnerability reporting is on**, so *Report a vulnerability* on
@@ -504,23 +559,50 @@ straight to that advisory form.
 
 ```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
-# 27
+```
+
+```text
+27
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts \
   --jq '[.[].dependency.manifest_path] | unique'
-# ["poetry.lock","uv.lock"]
+```
+
+```json
+["poetry.lock","uv.lock"]
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts \
   --jq 'group_by(.dependency.manifest_path)
         | map({(.[0].dependency.manifest_path): length}) | add'
-# {"poetry.lock":26,"uv.lock":1}
+```
+
+```json
+{"poetry.lock":26,"uv.lock":1}
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts \
   --jq 'group_by(.state) | map({(.[0].state): length}) | add'
-# {"dismissed":21,"fixed":6}
+```
+
+```json
+{"dismissed":21,"fixed":6}
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts \
   --jq '.[] | select(.dependency.manifest_path=="uv.lock")
         | [.security_advisory.severity, .dependency.package.name,
            .security_vulnerability.first_patched_version.identifier]
         | @tsv'
-# medium pytest 9.0.3
+```
+
+```text
+medium pytest 9.0.3
 ```
 
 Each of these is a fact about a changing world rather than a setting
@@ -545,8 +627,14 @@ act on, as a finding of its own — none is recorded here to defer to.
 ```shell
 gh api repos/btclib-org/btclib-node/code-scanning/default-setup \
   --jq '{state, languages, query_suite}'
-# {"languages":["actions","python"],"query_suite":"default",
-#  "state":"not-configured"}
+```
+
+```json
+{"languages":["actions","python"],"query_suite":"default",
+ "state":"not-configured"}
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/code-scanning/alerts --jq 'length'
 ```
 
@@ -566,7 +654,10 @@ re-derives it:
 
 ```shell
 gh api orgs/btclib-org --jq '{plan: .plan.name}'
-# {"plan":"free"}
+```
+
+```json
+{"plan":"free"}
 ```
 
 The plan is a fact about a changing world rather than a setting this
@@ -618,23 +709,38 @@ where the call that answers them is.
 ```shell
 env=repos/btclib-org/btclib-node/environments
 gh api "$env" --jq .total_count
-# 2
+```
+
+```text
+2
+```
+
+```shell
 for e in pypi testpypi; do
   gh api "$env/$e" --jq '.name, (.protection_rules[]
     | select(.type=="required_reviewers")
     | "\(.reviewers[].reviewer.login) self_review=\(.prevent_self_review)")'
 done
-# pypi
-# fametrano self_review=false
-# giacomocaironi self_review=false
-# pmazzocchi self_review=false
-# testpypi
-# fametrano self_review=false
-# giacomocaironi self_review=false
-# pmazzocchi self_review=false
+```
+
+```text
+pypi
+fametrano self_review=false
+giacomocaironi self_review=false
+pmazzocchi self_review=false
+testpypi
+fametrano self_review=false
+giacomocaironi self_review=false
+pmazzocchi self_review=false
+```
+
+```shell
 gh api "$env/pypi/deployment-branch-policies" \
   --jq '.branch_policies[] | "\(.name) (\(.type))"'
-# v* (tag)
+```
+
+```text
+v* (tag)
 ```
 
 `publish-pypi` and `publish-testpypi` are the only jobs that carry one
@@ -654,14 +760,29 @@ is this file's own contract:
 
 ```shell
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
-# v2026.9.4
-# v2026.8.27
+```
+
+```text
+v2026.9.4
+v2026.8.27
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/releases \
   --jq '.[] | "\(.tag_name) by \(.author.login), \(.assets|length) assets"'
-# v2026.9.4 by github-actions[bot], 4 assets
-# v2026.8.27 by github-actions[bot], 4 assets
+```
+
+```text
+v2026.9.4 by github-actions[bot], 4 assets
+v2026.8.27 by github-actions[bot], 4 assets
+```
+
+```shell
 curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
-# 200
+```
+
+```text
+200
 ```
 
 Each tag and release is a fact about a changing world rather than a
@@ -701,24 +822,39 @@ settings there, and nothing in the tree records them:
 curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/ \
   | python3 -c 'import json, sys; p = json.load(sys.stdin); \
       print(p["default_branch"], p["default_version"])'
-# main latest
+```
+
+```text
+main latest
+```
+
+```shell
 curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/versions/ \
   | python3 -c 'import json, sys
 for v in json.load(sys.stdin)["results"]:
     if v["type"] == "tag":
         print(v["slug"], v["active"], v["built"])'
-# v2026.9.4 True True
-# v2026.8.27 True True
-# stable True True
+```
+
+```text
+v2026.9.4 True True
+v2026.8.27 True True
+stable True True
+```
+
+```shell
 for v in latest stable v2026.8.27 v2026.9.4; do
   printf '%s ' "$v"
   curl -s -o /dev/null -w '%{http_code}\n' \
     "https://btclib-node.readthedocs.io/en/$v/"
 done
-# latest 200
-# stable 200
-# v2026.8.27 200
-# v2026.9.4 200
+```
+
+```text
+latest 200
+stable 200
+v2026.8.27 200
+v2026.9.4 200
 ```
 
 - **`latest` follows the default branch, which is `main`**, and
@@ -738,9 +874,18 @@ done
   gh api orgs/btclib-org/installations \
     --jq '.installations[] | select(.app_slug == "read-the-docs-community")
           | [.app_slug, .repository_selection]'
-  # ["read-the-docs-community","all"]
+  ```
+
+  ```json
+  ["read-the-docs-community","all"]
+  ```
+
+  ```shell
   gh api repos/btclib-org/btclib-node/hooks --jq 'length'
-  # 0
+  ```
+
+  ```text
+  0
   ```
 
 - **A release tag has a URL of its own.** The dashboard carries an
@@ -758,8 +903,11 @@ done
     curl -s -o /dev/null -w '%{http_code}\n' \
       "https://app.readthedocs.org/api/v3/projects/$slug/automation-rules/"
   done
-  # 404
-  # 404
+  ```
+
+  ```text
+  404
+  404
   ```
 
   Read the Docs evaluates a rule when it creates or updates a version
@@ -774,7 +922,10 @@ done
 
   ```shell
   gh api repos/btclib-org/btclib-node --jq '.homepage'
-  # https://btclib.org/btclib-node/
+  ```
+
+  ```text
+  https://btclib.org/btclib-node/
   ```
 
   `[project.urls] homepage` carries the identical string, and
@@ -816,16 +967,40 @@ for f in allow_forking allow_update_branch has_discussions has_downloads \
          has_pull_requests is_template pull_request_creation_policy; do
   printf '%s %s\n' "$f" "$(printf '%s' "$std" | grep -c -- "$f")"
 done
-# each name, then 0
-printf '%s' "$std" | grep -c '\.archived'
-# 0
-printf '%s' "$std" | grep -c '\.description'
-# 0
-printf '%s' "$std" | grep -c 'default branch'
-# not 0
-printf '%s' "$std" | grep -c '\.homepage'
-# not 0
 ```
+
+```text
+allow_forking 0
+allow_update_branch 0
+has_discussions 0
+has_downloads 0
+has_pull_requests 0
+is_template 0
+pull_request_creation_policy 0
+```
+
+```shell
+printf '%s' "$std" | grep -c '\.archived'
+```
+
+```text
+0
+```
+
+```shell
+printf '%s' "$std" | grep -c '\.description'
+```
+
+```text
+0
+```
+
+```shell
+printf '%s' "$std" | grep -c 'default branch'
+printf '%s' "$std" | grep -c '\.homepage'
+```
+
+Each of these two prints a count other than `0`.
 
 `archived` and `description` are asked with their field spelling, the
 bare words being ordinary prose in that file, and `\.homepage` is the
@@ -848,9 +1023,21 @@ for e in actions/runners keys autolinks properties/values; do
   gh api "repos/btclib-org/btclib-node/$e" \
     --jq 'if type=="array" then length else .total_count end'
 done
-# 0, once per endpoint
+```
+
+```text
+0
+0
+0
+0
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/environments --jq .total_count
-# 2
+```
+
+```text
+2
 ```
 
 The last call is the control: an endpoint of this repository's that
@@ -869,14 +1056,35 @@ has nothing of its own to read back:
 ```shell
 gh api orgs/btclib-org/actions/secrets \
   --jq '.secrets[] | "\(.name) \(.visibility)"'
-# CLAUDE_CODE_OAUTH_TOKEN all
+```
+
+```text
+CLAUDE_CODE_OAUTH_TOKEN all
+```
+
+```shell
 gh api orgs/btclib-org/dependabot/secrets \
   --jq '.secrets[] | "\(.name) \(.visibility)"'
-# CLAUDE_CODE_OAUTH_TOKEN all
+```
+
+```text
+CLAUDE_CODE_OAUTH_TOKEN all
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/actions/secrets --jq '.total_count'
-# 0
+```
+
+```text
+0
+```
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/secrets --jq '.total_count'
-# 0
+```
+
+```text
+0
 ```
 
 The pair is what says the repository's own zeros are inheritance rather
@@ -892,7 +1100,10 @@ store is read too:
 
 ```shell
 gh api repos/btclib-org/btclib-node/actions/variables --jq .total_count
-# 0
+```
+
+```text
+0
 ```
 
 The price of the scope is a silent flip. A change to any of the above

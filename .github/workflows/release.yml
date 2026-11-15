@@ -42,11 +42,10 @@ permissions:
   contents: read
 
 # never two runs of this workflow at once, and never a cancellation: the
-# other workflows cancel a superseded run because their subject is the
-# commit, and a newer commit supersedes the answer. Here the subject is a
-# publication -- a version on an index, an attestation, a release -- so a
-# second run is a second attempt at the same side effects, and cancelling
-# one halfway is how a version reaches PyPI with no release cut for it.
+# subject here is a publication -- a version on an index, an
+# attestation, a release -- so a second run is a second attempt at the
+# same side effects, and cancelling one halfway is how a version
+# reaches PyPI with no release cut for it.
 # Named literally, as everywhere else: github.workflow in a called
 # workflow is the caller's name, and this one calls several --
 # `grep -n 'uses: \$/\.github/workflows/' .github/workflows/release.yml`
