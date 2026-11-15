@@ -204,7 +204,7 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
     In `Mempool.graph` too, each a cluster of its own, which the trickle
     ranks by.
 
-    `tx_download` and `_send_due_announcements` now check
+    `tx_download` and `_send_due_announcements` check
     `Mempool.transactions` membership before queuing or sending an
     announcement (btclib-org/btclib-node#294), so a synthetic wtxid this
     file builds with `a_hash` needs an entry there too, or it is read as
@@ -825,10 +825,10 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule(
     """A first send fires at once; a second waits for the peer's own timer."""
     # a draw as short as the test takes would make the second send due
     monkeypatch.setattr(download_module._rng, "expovariate", lambda _: 1000.0)
-    # the first announcement goes at once, the peer's trickle being
-    # due, but once a new schedule is set, a transaction arriving before
-    # it comes due is queued rather than sent straight away, which is
-    # the change #141 is about
+    # the first announcement goes at once, the peer's trickle being due,
+    # but once a new schedule is set, a transaction arriving before it
+    # comes due is queued rather than sent straight away, which is what
+    # #141 asks for
     other = a_conn(1)
     manager = make_manager([other])
     hold(manager, a_hash(1), a_hash(2))

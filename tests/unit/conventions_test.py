@@ -10,7 +10,7 @@ usable: a repository needs the ones its own prose states, plus the
 public surface, which a repository publishing an importable package has
 regardless. That clause is right, and its price is that an *absent*
 convention test is indistinguishable from a convention this repository
-does not have. Nothing anywhere recorded which of the two it was.
+does not have. Nothing else records which of the two it is.
 
 A filename cannot answer it either, for the reason section 7 gives where
 it says the suites are right not to agree on what to call these tests;

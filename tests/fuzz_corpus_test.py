@@ -15,8 +15,8 @@ What fixes such a crash is a parser that refuses the input, and this
 module asserts the opposite of every file there -- so the regression
 would be red the day it was fixed, and the only way back to green would
 be to delete it. A crash the sentinel finds becomes an ordinary test in
-this suite instead, naming the octets and what the parser is now
-expected to do with them.
+this suite instead, naming the octets and what the parser is expected to
+do with them.
 
 Neither `fuzz/fuzz_*.py` nor a seed is imported: every harness imports
 atheris at module level, and atheris is installed by the `fuzz`
@@ -245,15 +245,13 @@ def test_a_callback_level_refusal_of_fuzz_process_message_is_not_accepted() -> N
 
     `p2p.callbacks.ping` calls `Ping.parse`, which raises
     `BTClibValueError` for a nonce shorter than the eight bytes the wire
-    format carries -- a refusal `handle_p2p`'s own `except` logs and does
-    not discourage the peer for (`main.handle_p2p`, `p2p/main.py`), which
-    `dispatch` used to answer `None` for indistinguishably from genuine
-    acceptance (issue #698's own review, round 1, finding 2), the same
-    `None` a well-formed ping is accepted with. `module._TYPES.index`
-    finds where `ping` sits in the sorted selector rather than the index
-    being hardcoded here, since a command added or removed from
-    `p2p.callbacks` would otherwise silently point this test at a
-    different command instead of failing loudly.
+    format carries -- a refusal `p2p.main._dispatch`'s own `except` logs
+    and does not discourage the peer for, and which `dispatch` answers
+    apart from the `None` a well-formed ping is accepted with (issue
+    #698). `module._TYPES.index` finds where `ping` sits in the sorted
+    selector rather than the index being hardcoded here, since a command
+    added or removed from `p2p.callbacks` would otherwise silently point
+    this test at a different command instead of failing loudly.
     """
     spec = "fuzz.fuzz_process_message:dispatch"
     module = _load_fuzz_module("fuzz.fuzz_process_message")

@@ -324,18 +324,17 @@ class ReimportedMainProcessError(RuntimeError):
     `"MainProcess"` and the active start method is not `fork` -- exactly
     the shape a `Pool` worker's own bootstrap produces
     (`multiprocessing.spawn.import_main_path` re-importing `__main__` to
-    find the target it was asked to run), which is what let
-    `scripts/chains/*.py` build a second `Node` on the same data
-    directory in every worker `Node.worker_pool` spawned before those
-    three scripts guarded their own module body (issue #579). This is
-    the same failure caught one layer up, for every caller rather than
-    only the three this tree ships (issue #589) -- unless the caller
-    passed `Node(..., allow_reimported_main=True)`, which this class
-    never sees raised against, since `Node.__init__` checks that flag
-    before either of the two calls this docstring names. A caller that
-    reaches this exception has not opted in, so the two things the
-    message offers -- a module-body guard, or that same flag -- are
-    both live for it, whichever this actually was.
+    find the target it was asked to run), in which a script whose module
+    body is unguarded builds a second `Node` on the same data directory
+    in every worker `Node.worker_pool` spawns (issue #579). This catches
+    that failure one layer up, for every caller rather than only the
+    scripts this tree ships (issue #589) -- unless the caller passed
+    `Node(..., allow_reimported_main=True)`, which this class never sees
+    raised against, since `Node.__init__` checks that flag before either
+    of the two calls this docstring names. A caller that reaches this
+    exception has not opted in, so the two things the message offers --
+    a module-body guard, or that same flag -- are both live for it,
+    whichever this actually was.
     """
 
     def __init__(self, process_name: str) -> None:
@@ -465,9 +464,9 @@ class InvalidChainTypeError(TypeError):
     """`Config`'s own `chain` is neither a `Chain` nor a `str`.
 
     `TypeError` and not `ValueError`: this is the argument being the
-    wrong *type* entirely, which `TRY004` is what noticed the tree
-    already had a `ValueError` for -- `unknown chain`, `UnknownChainError`
-    above, is the right *type* with the wrong *value*, and stays one.
+    wrong *type* entirely, as ruff's `TRY004` asks -- `unknown chain`,
+    `UnknownChainError` above, is the right *type* with the wrong
+    *value*, and is a `ValueError`.
     """
 
     def __init__(self, chain: object) -> None:
@@ -539,11 +538,17 @@ class RejectedMessageError(BTClibValueError):
     `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
     checksum that does not match the payload, or a command
     `IsMessageTypeValid` refuses. `size` is the message's own octets,
-    header included, which the stream has been moved past.
+    header included, which the stream has been moved past and the caller
+    counts as received.
+
+    The text names no size: on V1 the size holds the length field the
+    peer wrote, and on V2 the length it decrypted, which section 7 of the
+    organization's standard, *A refusal carries no secret*, keeps out of
+    a refusal's text.
     """
 
     def __init__(self, size: int) -> None:
-        super().__init__(f"message of {size} bytes rejected")
+        super().__init__("message rejected")
         self.size = size
 
 

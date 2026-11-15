@@ -739,12 +739,12 @@ def test_a_lone_stop_waits_for_its_reply() -> None:
 def test_a_refused_stop_in_a_batch_does_not_stop_the_node() -> None:
     """A batch member refusing `stop` does not run `node.stop()` (ISS 1441).
 
-    `_answer_batch` used to set `stop` from a member's own method name as
-    soon as it was parsed, before `_exec` ever ran it, so a member that
-    asked to `stop` but was refused -- too many positional arguments,
-    here -- still reached `node.stop()`. The refused member is answered
-    inside the batch's own 200 reply, through `send`, exactly like the
-    ping beside it.
+    `_answer_batch` setting `stop` from a member's own method name as
+    soon as it is parsed, before `_exec` ever runs it, would let a
+    member that asks to `stop` but is refused -- too many positional
+    arguments, here -- still reach `node.stop()`. The refused member is
+    answered inside the batch's own 200 reply, through `send`, exactly
+    like the ping beside it.
     """
     refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
     node, sent, waited, stopped = make_node([refused_stop, PING])
@@ -840,21 +840,19 @@ def test_a_batch_stop_with_wait_schedules_a_delay_too() -> None:
 
 
 def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:
-    """handle_rpc leaves a connection's own entry for `async_send` to remove.
+    """handle_rpc leaves a connection's own entry for `RpcConnection` to remove.
 
-    `handle_rpc` used to pop this entry itself, right after scheduling
-    `conn.send`, on the theory that every reply eventually closes --
-    every request growing `connections` without bound otherwise, since
-    nothing else shrank it (issue #64). Once a reply could keep the
-    connection open instead (issue #640), that pop could run after
-    `RpcConnection.async_send` had already read the *next* request off
+    A pop here, right after scheduling `conn.send`, would keep
+    `connections` bounded (issue #64), but a reply can keep the
+    connection open (issue #640), so that pop could run after
+    `RpcConnection.async_send` has already read the *next* request off
     the same, still-open connection and queued it, on `RpcManager`'s own
-    thread -- removing the entry that next request's own answer needed
-    rather than the one this call was meant to retire, and losing that
-    next request's answer with nothing logged on either side (issue
-    #688). `RpcConnection.async_send` is the sole owner of this dict's
-    membership now: this test pins `handle_rpc`'s own side of that, that
-    it touches `connections` not at all.
+    thread -- removing the entry that next request's own answer needs
+    rather than the one this call means to retire, and losing that next
+    request's answer with nothing logged on either side (issue #688).
+    `RpcConnection`'s own close paths remove this entry
+    (`RpcManager.forget_connection`): this test pins `handle_rpc`'s side
+    of that, that it touches `connections` not at all.
     """
     node, _, _, _ = make_node(PING)
     assert 0 in node.rpc_manager.connections

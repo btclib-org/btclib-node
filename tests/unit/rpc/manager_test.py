@@ -7,7 +7,7 @@
 What answers a request is `handle_rpc`, which the node's loop calls and
 tests/unit/rpc/main_test.py covers. What is left is everything between
 the port and that queue -- binding it, accepting a client, and letting
-go of both -- and until now only a functional test reached any of it.
+go of both.
 
 `bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
@@ -828,15 +828,15 @@ def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
     Nothing paces `stop` against `run`'s own parse-error branch the way
     `manager.messages` paces a well-formed request through `handle_rpc`:
     that branch answers on the spot, scheduling `async_send` as its own
-    task rather than awaiting it inline (issue #640 review round 2).
-    This is `stop` arriving right after `run`'s own task has scheduled
-    that reply and before the reply has taken a single step, made
-    deterministic by driving the loop by hand rather than racing it from
-    a second thread the way the real listener would. Core waits for this
-    reply, `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, as for any other
+    task rather than awaiting it inline (issue #640). This is `stop`
+    arriving right after `run`'s own task has scheduled that reply and
+    before the reply has taken a single step, made deterministic by
+    driving the loop by hand rather than racing it from a second thread
+    the way the real listener would. Core waits for this reply,
+    `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, as for any other
     (`StopHTTPServer`, `src/httpserver.cpp:1417-1450`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so it arrives whole,
-    and the connection it kept alive is closed after it
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so it arrives whole, and
+    the connection it kept alive is closed after it
     (btclib-org/btclib-node#1539).
     """
     manager = a_manager(get_random_port())
@@ -1069,17 +1069,17 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     """#88: see tests/unit/p2p/manager.py's manager of the same name.
 
     `_bind` runs in `run` before `run_forever`, so a taken port's
-    `OSError` ends `run` itself instead of sitting unread in the
-    `concurrent.futures.Future` `run_coroutine_threadsafe` used to hand
-    back, and `start_listener` answers that it is not listening. The
-    bind comes before the cookie, as in Core's `AppInitServers`, so the
-    failure leaves no cookie behind.
+    `OSError` ends `run` itself instead of sitting unread in a
+    `concurrent.futures.Future` from `run_coroutine_threadsafe`, and
+    `start_listener` answers that it is not listening. The bind comes
+    before the cookie, as in Core's `AppInitServers`, so the failure
+    leaves no cookie behind.
     """
     logged: list[tuple[object, ...]] = []
     # both loopbacks and not "" (every interface, p2p/manager.py's own
     # test of the same name): the manager under test binds
     # Config.rpc_host's default, and a wildcard bind here would not
-    # contend for those specific addresses the way it did before #27
+    # contend for those specific addresses (#27)
     with taken_loopbacks() as port:
         manager = a_manager(port)
         monkeypatch.setattr(manager.logger, "error", lambda *a: logged.append(a))
@@ -1179,14 +1179,14 @@ def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_canc
     #386). A connection can already sit in `server`'s own accept queue
     when something cancels the task waiting on it -- `Queue.get`'s own
     internal wakeup future can be discarded by `Task.cancel` exactly as
-    `loop.sock_accept`'s own future used to be (#323), forcing
-    `CancelledError` in on the task's next step rather than letting it
-    resume with the result. What that discards is only the wakeup: the
-    item itself lives in the queue's own deque and not inside that
-    future, so it is still there for `server`'s own `finally` to close
-    once the cancellation it raises unwinds through it -- unlike an
-    accepted socket held by nothing but a discarded future, which goes
-    out with the frame that unwinds and nothing else ever holding it.
+    `loop.sock_accept`'s own future can (#323), forcing `CancelledError`
+    in on the task's next step rather than letting it resume with the
+    result. What that discards is only the wakeup: the item itself lives
+    in the queue's own deque and not inside that future, so it is still
+    there for `server`'s own `finally` to close once the cancellation it
+    raises unwinds through it -- unlike an accepted socket held by
+    nothing but a discarded future, which goes out with the frame that
+    unwinds and nothing else ever holding it.
 
     The two `call_soon` callbacks below are that instant, made
     deterministic: they run in the order they were scheduled, so the
@@ -1194,19 +1194,18 @@ def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_canc
 
     `listening_socket` is bound and put into `listen`, matching what
     `_bind` always hands `server` in production (#430): left merely
-    constructed, as an earlier revision of this test had it,
-    `_accept_loop`'s own `sock_accept` fails on it synchronously and
-    every retry races this test's own cancellation against Windows'
-    Proactor allocating and abandoning its own internal accept socket,
-    which is a real leak but not the one this test is for -- accepting
-    nothing at all, bound and listening, is the ordinary idle shutdown
-    `_accept_loop` is cancelled out of on every platform this node runs
-    on, ceasing there without raising -- `settimeout(0.0)` beside it for
-    the same reason `_bind_one` carries its own: a blocking `accept()`
-    reached synchronously, which is what a freshly constructed socket
-    still is, freezes this single thread's event loop for the length of
-    `pyproject.toml`'s own per-test ceiling rather than ever reaching
-    `_accept_loop`'s `await`.
+    constructed, `_accept_loop`'s own `sock_accept` fails on it
+    synchronously and every retry races this test's own cancellation
+    against Windows' Proactor allocating and abandoning its own internal
+    accept socket, which is a real leak but not the one this test is for
+    -- accepting nothing at all, bound and listening, is the ordinary
+    idle shutdown `_accept_loop` is cancelled out of on every platform
+    this node runs on, ceasing there without raising --
+    `settimeout(0.0)` beside it for the same reason `_bind_one` carries
+    its own: a blocking `accept()` reached synchronously, which is what
+    a freshly constructed socket still is, freezes this single thread's
+    event loop for the length of `pyproject.toml`'s own per-test ceiling
+    rather than ever reaching `_accept_loop`'s `await`.
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
@@ -1305,25 +1304,22 @@ def test_stop_closes_a_connection_queued_when_the_drain_begins(
     """`stop` closes a connection queued right as its own drain begins.
 
     Mirrors `P2pManager.stop`'s own test of the same shape (issue #386,
-    issue #391). `server`'s own task is what `stop`'s blanket sweep over
-    `asyncio.all_tasks` reaches directly, `accept` no longer being a
-    task of its own for it to reach instead -- not only through
-    `server`'s own task cascading a cancel onto it, which the
-    neighbouring test above turns on instead.
+    issue #391). Here `stop` cancels `server`'s own task itself, through
+    `_stop_accepting`, where the neighbouring test above calls
+    `task.cancel()` by hand.
 
     `Task.cancel` on a task whose own awaited future is already done
     cannot cancel that future either: it forces `CancelledError` into
     the task's next step regardless -- but the item this test lands is
     in the queue's own deque, not inside the future `Queue.get` awaits
-    to be woken, so the discard costs it nothing, unlike
-    `loop.sock_accept`'s own future before this fix. `server`'s own
-    `finally` is what closes whatever the discard still leaves behind,
-    reaching it before the unconditional `self.connections` sweep at
-    the end of `stop()` ever could -- that sweep is what
-    `RpcManager.stop`'s own standing comment still relies on for a
-    connection landed later still, during the cancel-and-drain below
-    rather than before it, which is why this manager needs no
-    `P2pManager`-style repeated pass.
+    to be woken, so the discard costs it nothing, unlike a socket inside
+    `loop.sock_accept`'s own future. `server`'s own `finally` is what
+    closes whatever the discard still leaves behind, reaching it before
+    the unconditional `self.connections` sweep at the end of `stop()`
+    ever could -- that sweep is what `RpcManager.stop`'s own comment
+    relies on for a connection landed later still, during the
+    cancel-and-drain below rather than before it, which is why this
+    manager needs no `P2pManager`-style repeated pass.
 
     Landed into the live queue directly, via `manager._accept_queue`,
     scheduled through a monkeypatched `is_alive()` -- the window `stop`
@@ -1385,9 +1381,9 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     Neither #323's own regression test (`asyncio.Event().wait()`, whose
     cancellation resolves inside that same first batch) nor #368's
     (mirrored above in this file) builds a task shaped this way: this
-    one does, on a manager whose thread was never started, and used to
-    raise the identical `RuntimeError('Event loop stopped before Future
-    completed.')` out of this same drain loop.
+    one does, on a manager whose thread was never started, where the
+    drain loop would otherwise raise the identical `RuntimeError('Event
+    loop stopped before Future completed.')`.
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
@@ -1829,19 +1825,17 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
 ) -> None:
     """`stop` does not raise where start ran but run never reached run_forever.
 
-    `self.ident is not None` -- issue #362's own guard on a grace step
-    this method no longer has -- is true from the moment `start()`
-    is called, well before `run()` reaches `run_forever()`. Where
-    `run()` returns before that -- a bind failure being the ordinary way
-    -- the `loop.stop` `stop()` schedules at its own top is never
-    delivered, and `self.ident is not None` read `True` anyway: the
-    grace step that guard used to gate ran against a loop with nothing
-    having ever stepped it, raising the identical `RuntimeError('Event
-    loop stopped before Future completed.')` #362 exists to eliminate,
-    through the very guard meant to rule it out. `stop_handle.cancel()`
-    is what removes that failure outright now, on this precondition as
-    on every other this method can be handed, so nothing downstream of
-    it needs a guard of its own to answer this scenario any more.
+    `self.ident is not None` is true from the moment `start()` is
+    called, well before `run()` reaches `run_forever()`. Where `run()`
+    returns before that -- a bind failure being the ordinary way -- the
+    `loop.stop` `stop()` schedules at its own top is never delivered,
+    and `self.ident is not None` reads `True` anyway: a grace step gated
+    on it would run against a loop with nothing having ever stepped it,
+    raising the identical `RuntimeError('Event loop stopped before
+    Future completed.')` issue #362 is about. `stop_handle.cancel()` is
+    what removes that failure outright, on this precondition as on every
+    other this method can be handed, so nothing downstream of it needs a
+    guard of its own to answer this scenario.
 
     A real bind failure, not a monkeypatched `_bind`, the same way
     `test_a_manager_that_cannot_bind_stops_being_alive` above gets one --
@@ -1881,15 +1875,15 @@ def test_accept_loop_logs_and_retries_on_a_refused_accept(
 
     `sock_accept` itself is monkeypatched to fail rather than handed a
     socket engineered to make the real one fail: a duck-typed stand-in
-    with a `fileno` of -1, this test's own shape before #430's Windows
-    run, reaches a selector loop's `sock.accept()` call harmlessly but
-    reaches Windows' Proactor at the raw `AcceptEx` level, on the real
-    fd it reads off that -1 rather than through any Python-level
-    `.accept()` call -- which is what crashed the worker process outright
-    rather than raising, on that platform only. What this test is for is
-    `_accept_loop`'s own retry-and-log arm, not the kernel's accept
-    machinery underneath `sock_accept`, so a fake replacing `sock_accept`
-    itself is the narrower fake and is what stays clear of it.
+    with a `fileno` of -1 reaches a selector loop's `sock.accept()` call
+    harmlessly but reaches Windows' Proactor at the raw `AcceptEx`
+    level, on the real fd it reads off that -1 rather than through any
+    Python-level `.accept()` call -- which crashes the worker process
+    outright rather than raising, on that platform only (#430). What
+    this test is for is `_accept_loop`'s own retry-and-log arm, not the
+    kernel's accept machinery underneath `sock_accept`, so a fake
+    replacing `sock_accept` itself is the narrower fake and is what
+    stays clear of it.
 
     The failure below is synchronous, so `loop.sock_accept`'s own
     internal future is already done the instant this loop's `await`
@@ -2285,15 +2279,14 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
 ) -> None:
     """`_report_server_failure`'s `isinstance` arm, `stop` never reaches.
 
-    `future.cancelled()` being true is what the test above covers, and
-    is the only way `stop`'s own sweep actually ends this task -- so
-    this arm has no path of its own through this class's ordinary use,
-    only through a `future` built to carry a `CancelledError` as its
-    stored exception rather than through `.cancel()`: what a `server`
-    coroutine that caught and re-raised one not thrown by `Task.cancel`
-    would leave behind, `Task.cancelled()` still false. Moved here
-    rather than removed, on the same reasoning the coverage floor
-    argues for a safety branch generally.
+    `future.cancelled()` being true is what the test above covers. A
+    `server` task that ends on a `CancelledError` is cancelled, whether
+    `Task.cancel` threw it in or the coroutine raised one of its own,
+    and `run_coroutine_threadsafe` cancels `future` with it, so this arm
+    has no path through this class's ordinary use. This test reaches it
+    with a `Future` given an `asyncio.CancelledError` through
+    `set_exception`. Kept and reached here, on the same reasoning the
+    coverage floor argues for a safety branch generally.
     """
     manager = a_manager(get_random_port())
     logged: list[BaseException | None] = []

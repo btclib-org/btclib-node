@@ -1996,7 +1996,7 @@ def test_forcednsseed_defaults_to_false(tmp_path: Path) -> None:
 
 
 def test_forcednsseed_is_read(tmp_path: Path) -> None:
-    """ISS 1265: `-forcednsseed=1` no longer "Invalid parameter"."""
+    """ISS 1265: `-forcednsseed=1` is read, not "Invalid parameter"."""
     assert _build(tmp_path, "-forcednsseed=1").forcednsseed is True
 
 
@@ -2035,14 +2035,14 @@ def test_forcednsseed_is_refused_alongside_the_dnsseed_soft_set_off(
 def test_an_explicit_dnsseed_true_wins_over_the_soft_set(
     tmp_path: Path, argv: tuple[str, ...]
 ) -> None:
-    """ISS 1265, review round 3: `-dnsseed=1` wins over the soft-set-off.
+    """ISS 1265: `-dnsseed=1` wins over the soft-set-off.
 
     `InitParameterInteraction`'s `SoftSetBoolArg` (`src/init.cpp`, at
     bitcoin/bitcoin@f0de87f040) never overwrites an arg already set,
-    whichever condition would otherwise have turned `-dnsseed` off.
-    This reaches `_before_lock`'s own early `Config(...)` call: a
-    version reading the raw soft-set alone, ignoring the explicit
-    value, refused this combination in error.
+    whichever condition would otherwise have turned `-dnsseed` off. This
+    reaches `_before_lock`'s own early `Config(...)` call: reading the
+    raw soft-set alone, ignoring the explicit value, would refuse this
+    combination in error.
     """
     built = _build(tmp_path, *argv)
     assert built.dnsseed is True
@@ -3501,8 +3501,8 @@ def test_build_config_every_rpcbind_value_is_checked() -> None:
     """ISS 1211: `CheckHostPortOptions` checks every value, bound or not.
 
     bitcoind refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
-    "Invalid port specified in -rpcbind: '1.2.3.4:0'", where only the
-    last value was read here.
+    "Invalid port specified in -rpcbind: '1.2.3.4:0'": the first value
+    is checked, not only the last.
     """
     argv = ["-regtest", "-rpcbind=1.2.3.4:0", "-rpcbind=127.0.0.1"]
     with pytest.raises(
