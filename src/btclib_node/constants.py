@@ -18,6 +18,10 @@ import sys
 from datetime import timedelta
 from importlib.metadata import version
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = [
     "CLIENT_BUGREPORT",
@@ -42,6 +46,7 @@ __all__ = [
     "numeric_version",
     "quoted",
     "quoted_name",
+    "shown_path",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
@@ -190,6 +195,25 @@ def quoted_name(name: str) -> str:
     there.
     """
     return name if len(name) <= MAX_QUOTED_NAME else f"<{len(name)} characters>"
+
+
+def shown_path(
+    path: str | Path,
+    default_path: str | Path | None = None,
+    quote: Callable[[str], str] = str,
+) -> str:
+    """Return `path` as a refusal writes it: whole where it is `default_path`.
+
+    A path that is `default_path` is built from defaults alone and holds
+    nothing an operator gave, so it is written through `quote`, as Bitcoin
+    Core writes it. Any other may hold a key given in place of an option's
+    value, and is written by its length alone, as `<52 characters>`, with
+    no quotes (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    text = str(path)
+    if default_path is not None and text == str(default_path):
+        return quote(text)
+    return f"<{len(text)} characters>"
 
 
 # Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`

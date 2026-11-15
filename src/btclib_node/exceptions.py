@@ -418,8 +418,8 @@ class DirectoryLockError(RuntimeError):
     """A directory `Node` keeps its data in cannot be locked for it.
 
     Raised by `dirlock.DirectoryLock`, with Core's own message for each
-    of its two refusals, and printed by `cli.main` the way Core's
-    `InitError` is.
+    of its two refusals, the directory named as `DirectoryLock` says, and
+    printed by `cli.main` the way Core's `InitError` is.
     """
 
     def __init__(self, message: str) -> None:

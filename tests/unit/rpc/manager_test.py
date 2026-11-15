@@ -2408,7 +2408,7 @@ def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
     wait_until(lambda: not manager.is_alive())
     tmp = f"{cookie_path(manager.node.config.data_dir)}.tmp"
     assert [str(args[1]) for args in logged] == [
-        f"Unable to open cookie authentication file {tmp} for writing"
+        f"Unable to open cookie authentication file <{len(tmp)} characters> for writing"
     ]
     assert not manager.listening.is_set()
     # every loopback bound, then closed: a closed socket's own fileno is -1
