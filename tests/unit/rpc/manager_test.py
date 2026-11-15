@@ -757,7 +757,8 @@ def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
 
     Measured on bitcoind: `-rpcallowip=bogus` exits 1 with the
     message naming the value, and then "Unable to start HTTP server". The
-    first is `init_error`, which `Node` shows ahead of the second.
+    first, with `'...'` for the value (ISS 2517), is `init_error`, which
+    `Node` shows ahead of the second.
     """
     port = get_random_port()
     manager = a_manager(port, rpcallowip=("bogus",))
@@ -765,7 +766,7 @@ def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
     wait_until(lambda: not manager.is_alive())
     assert manager.init_error is not None
     assert manager.init_error.startswith(
-        "Invalid -rpcallowip subnet specification: bogus. "
+        "Invalid -rpcallowip subnet specification: '...' (value 1 of -rpcallowip). "
     )
     assert manager._server_sockets == []
     assert not cookie_path(manager.node.config.data_dir).exists()

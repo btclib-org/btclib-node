@@ -575,7 +575,7 @@ def _content_length(head: RequestHead) -> int:
         raise MalformedRequestHeadError(detail)
     length = _uint64(values[0], 10)
     if length is None:
-        detail = f"Content-Length {values[0]!r}"
+        detail = f"Content-Length of {len(values[0])} octets"
         raise MalformedRequestHeadError(detail)
     if length > MAX_BODY_BYTES:
         detail = f"Content-Length past {MAX_BODY_BYTES}"

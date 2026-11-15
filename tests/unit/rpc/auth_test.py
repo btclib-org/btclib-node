@@ -32,6 +32,8 @@ from btclib_node.rpc.auth import (
     password_hmac,
 )
 from tests import RPCAUTH, RPCAUTH_PASSWORD
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     import logging
@@ -327,6 +329,17 @@ def test_cookie_perms_refuses_anything_else(value: str) -> None:
     )
     with pytest.raises(ValueError, match=err_msg):
         cookie_perms(value)
+
+
+def test_cookie_perms_gives_a_key_by_its_length() -> None:
+    """ISS 2517: a value longer than a name is not quoted."""
+    with pytest.raises(ValueError, match="must be one of") as raised:
+        cookie_perms(LEAK_WIF)
+    assert str(raised.value) == (
+        f"Invalid -rpccookieperms=<{len(LEAK_WIF)} characters>; must be one of "
+        "'owner', 'group', or 'all'."
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

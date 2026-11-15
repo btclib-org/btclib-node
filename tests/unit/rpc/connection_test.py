@@ -62,6 +62,7 @@ from btclib_node.rpc.jsonrpc import (
 from btclib_node.rpc.manager import RpcManager
 from tests import RPCAUTH, RPCAUTH_LINE
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Buffer, Callable
@@ -1693,6 +1694,17 @@ def test_a_content_length_core_refuses_is_400_and_closes(value: bytes) -> None:
         assert reply == no_store(b"400 Bad Request")
         assert closed
         assert not messages
+
+
+def test_a_content_length_core_refuses_is_named_by_its_length() -> None:
+    """ISS 2517: a key given as a `Content-Length` is not in the refusal."""
+    value = LEAK_WIF.encode()
+    with pytest.raises(MalformedRequestHeadError) as raised:
+        parse_request_head(request(b"Content-Length: " + value + b"\r\n"))
+    assert str(raised.value) == (
+        f"malformed request head: Content-Length of {len(value)} octets"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF, value])
 
 
 @pytest.mark.parametrize(

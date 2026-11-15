@@ -1964,7 +1964,9 @@ def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
     finally:
         node.stop()
     first, second = node.init_errors
-    assert first.startswith("Invalid -rpcallowip subnet specification: bogus. ")
+    assert first.startswith(
+        "Invalid -rpcallowip subnet specification: '...' (value 1 of -rpcallowip). "
+    )
     assert second == btclib_node.RPC_INIT_ERROR
 
 
