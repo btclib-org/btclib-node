@@ -323,3 +323,49 @@ def test_a_count_is_refused_without_its_octets(raw: bytes, err_msg: str) -> None
         assert_secret_free(refusal.value, secrets)
         text = text_of(refusal.value)
         assert all(f"0x{byte:02x}" not in text for byte in _KEY)
+
+
+# one transaction of one input, with no script, and one output whose script
+# length is the next CompactSize
+_SCRIPT_AT = _INPUTS_AT + b"\x01" + bytes(41) + b"\x01" + bytes(8)
+_PAST = int.from_bytes(_KEY[:3], "little")
+_SHORT = _KEY[0]
+
+
+@pytest.mark.parametrize(
+    ("raw", "fed", "end", "err_msg"),
+    [
+        (
+            _SCRIPT_AT + b"\xfe" + _KEY[:3] + b"\x00",
+            _KEY[:3],
+            len(_SCRIPT_AT) + 5 + _PAST + 4,
+            "not enough binary data for the block of 141 octets",
+        ),
+        (
+            _SCRIPT_AT + _KEY[:1] + bytes(_SHORT + 4) + b"\x00",
+            _KEY[:1],
+            len(_SCRIPT_AT) + 1 + _SHORT + 4,
+            "octets left over in the block of 300 octets",
+        ),
+    ],
+    ids=["past-the-end", "left-over"],
+)
+def test_a_walk_off_the_last_octet_is_refused_without_its_lengths(
+    raw: bytes, fed: bytes, end: int, err_msg: str
+) -> None:
+    """The refusal names the block's size, not where the walk ended.
+
+    The last output's script length is the key octets `fed`, so that
+    length, in decimal and as `hex_string` writes it, and `end`, where the
+    walk stops, are looked for as secrets of their own.
+    """
+    length = int.from_bytes(fed, "little")
+    secrets: list[str | bytes] = [_KEY, fed, str(length), hex_string(length), str(end)]
+    for check in (strip_witnesses, assert_well_formed):
+        with pytest.raises(BTClibValueError) as refusal:
+            check(raw)
+        assert str(refusal.value) == err_msg
+        assert list(chained(refusal.value)) == [refusal.value]
+        assert_secret_free(refusal.value, secrets)
+        text = text_of(refusal.value)
+        assert all(f"0x{byte:02x}" not in text for byte in _KEY)
