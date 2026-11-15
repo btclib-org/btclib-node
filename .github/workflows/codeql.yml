@@ -69,14 +69,21 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs. Named literally rather than through
-# github.workflow, as everywhere else here. By the pull request's own
-# number where there is one: github.ref for a closed, merged pull
-# request resolves to the base branch's ref, so a group built from it
-# alone would put that run in the push trigger's group and cancel the
-# analysis of the merge commit
+# cancel a pull request's superseded runs. Named literally rather than
+# through github.workflow, as everywhere else here. By the pull
+# request's own number where there is one: github.ref for a closed,
+# merged pull request resolves to the base branch's ref, so a group
+# built from it alone would put that run in the push trigger's group and
+# cancel the analysis of the merge commit.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    codeql-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -118,16 +125,16 @@ jobs:
     # not success(): a job whose dependencies failed is skipped, and a
     # skipped check reports "skipped", which a ruleset counts as
     # satisfied. Not always() either: a cancellation of this run itself
-    # -- the concurrency group superseding it with a newer push -- would
-    # reach this job and fail it, turning a cancellation the newer run
-    # already speaks for into a red check with no defect behind it. The
-    # draft flag is not part of this condition: a skipped required check
-    # reads as passing, and this job's own check run does not exist
-    # until analyze has settled, so declining it here while draft would
-    # leave the draft's skip as the only check of this name on the sha
-    # until a later run's own aggregate exists. The closed condition
-    # stays: a closed pull request has nothing left to become ready
-    # (btclib-org/.github#1327)
+    # -- the concurrency group superseding it with a newer push to its
+    # pull request -- would reach this job and fail it, turning a
+    # cancellation the newer run already speaks for into a red check
+    # with no defect behind it. The draft flag is not part of this
+    # condition: a skipped required check reads as passing, and this
+    # job's own check run does not exist until analyze has settled, so
+    # declining it here while draft would leave the draft's skip as the
+    # only check of this name on the sha until a later run's own
+    # aggregate exists. The closed condition stays: a closed pull
+    # request has nothing left to become ready (btclib-org/.github#1327)
     if: >-
       ${{ !cancelled()
       && github.event.action != 'closed' }}
