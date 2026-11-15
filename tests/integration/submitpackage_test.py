@@ -26,6 +26,9 @@ from btclib.tx.tx_out import TxOut
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
+from btclib_node.rpc.callbacks import arg_names, named_only
+from btclib_node.rpc.errors import RpcError as NodeRpcError
+from btclib_node.rpc.jsonrpc import transform_named_arguments
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
 from tests.integration import departed
 
@@ -45,6 +48,24 @@ _SPENDS_IT = Witness([_OP_TRUE])
 _SUBSIDY = 50 * 10**8
 _COINS = 80
 _MATURITY = 100
+
+
+def _package(method: str, params: Any) -> list[Any]:
+    """Return the transactions `params` holds first, or none.
+
+    Named arguments, an `args` array among them, are first put in their
+    positions by `transform_named_arguments`, as the node puts them: they
+    hold none where it refuses them.
+    """
+    if isinstance(params, dict):
+        try:
+            params = transform_named_arguments(
+                params, arg_names[method], named_only.get(method, ())
+            )
+        except NodeRpcError:
+            return []
+    package = params[0] if params else None
+    return package if isinstance(package, list) else []
 
 
 class Coin(NamedTuple):
@@ -126,11 +147,7 @@ class Ctx:
         if ours is not None:
             expected = theirs
             if theirs[0] == "error":
-                if isinstance(params, dict):
-                    package = params.get("package")
-                else:
-                    package = params[0] if params else None
-                transactions = package if isinstance(package, list) else []
+                transactions = _package(method, params)
                 expected = (*theirs[:2], departed(theirs[2], transactions))
             assert ours == expected, (method, params)
             assert key_order(ours) == key_order(expected), (method, params)
@@ -273,7 +290,10 @@ def refusals(ctx: Ctx) -> None:
     ctx.agree("submitpackage", {"package": [_hex(tx)], "maxfeerate": 0.1})
     ctx.agree("submitpackage", {"package": [_hex(tx)], "foo": 1})
     ctx.agree("submitpackage", {"package": ["zz"]})
-    ctx.agree("submitpackage", {"package": [_hex(tx), "zz"], "maxfeerate": "x"})
+    ctx.agree("submitpackage", {"package": [_hex(tx), "zz"], "maxfeerate": 0.1})
+    ctx.agree("submitpackage", {"args": [["zz"]]})
+    ctx.agree("submitpackage", {"args": [[_hex(tx), "zz"]], "maxfeerate": 0.1})
+    ctx.agree("submitpackage", {"args": [[_hex(tx)], 0.1], "package": ["zz"]})
     ctx.agree("submitpackage", [[_hex(tx)], None, None])
     ours, theirs = ctx.ask("help", ["submitpackage"])
     # `help` here answers without the newline that ends Core's text
