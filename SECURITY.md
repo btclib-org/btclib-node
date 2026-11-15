@@ -34,7 +34,9 @@ of those — a block this node accepts that Bitcoin Core would reject or
 the reverse, a p2p message that can wedge a connection or exhaust memory
 before its own length is even read, a UTXO index a reorg leaves
 inconsistent, an RPC handler that trusts a parameter it should bound — is
-this repository's to fix.
+this repository's to fix. A flaw that lets funds be stolen, lost or
+locked is a vulnerability to report here too, and an output consensus can
+spend but standard relay policy refuses counts as locked.
 
 What belongs to [btclib](https://github.com/btclib-org/btclib/security/policy)
 is the primitives and the wire serialization this node calls rather than
