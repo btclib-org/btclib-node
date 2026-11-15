@@ -829,7 +829,7 @@ def _as_stored(
     `address` and `source` share a host -- a self-announcement, port
     aside, `address_module._host` rather than `endpoint_key` since an
     inbound `source`'s own port is an ephemeral one
-    (btclib-org/btclib-node#1380, review round 2) --
+    (btclib-org/btclib-node#1380) --
     `address_module._GOSSIP_TIME_PENALTY` otherwise. `source` defaults
     to `a_peer()`'s own default address, which is what every test below
     gossips through unless it builds its own peer at another one.
@@ -1463,8 +1463,8 @@ def test_an_inbound_peer_with_neither_service_is_kept() -> None:
 def test_a_dialled_peer_with_neither_service_is_dropped() -> None:
     """A peer this node drew and dialled, offering neither service, is refused.
 
-    The third of the three cases #725's round 1 review asked for, beside
-    the two above, and not discouraged (ISS 1090).
+    The third of three cases, beside the two above (#725), and not
+    discouraged (ISS 1090).
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
@@ -1492,15 +1492,15 @@ def test_a_manual_peer_with_neither_service_is_kept() -> None:
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
     """A `version` with `relay=False` sets `relay_tx` false, right attribute.
 
-    The flag went to the attribute `Connection` defines, and nowhere else: the
-    near miss that dropped it before was one letter long, `relay_txs` rather
-    than `relay_tx`.
+    The flag goes to the attribute `Connection` defines, and nowhere
+    else: `relay_txs`, one letter off `relay_tx`, is the near miss this
+    catches.
     """
     peer = a_peer()
     version(a_handshake_node(), a_version(relay=False), peer)
     assert peer.relay_tx is False
-    # the flag went to the attribute Connection defines, and nowhere
-    # else: the near miss that dropped it was one letter long
+    # `relay_txs`, one letter off, is not set: the flag goes only to the
+    # attribute Connection defines
     assert not hasattr(peer, "relay_txs")
 
 
@@ -1561,11 +1561,12 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
 def a_real_connection() -> Connection:
     """Build a real `Connection`, not a stand-in, for a defect a double misses.
 
-    Not a stand-in: the defect this is about was a callback writing an attribute
-    no `Connection` has, which a `SimpleNamespace` peer takes without a word and
-    a `Connection` takes just as quietly -- Python attribute assignment does not
-    check the name either way. What a real one adds is that the attribute
-    asserted on below is the one the rest of the node reads.
+    Not a stand-in: the defect this guards against is a callback writing
+    an attribute no `Connection` has, which a `SimpleNamespace` peer
+    takes without a word and a `Connection` takes just as quietly --
+    Python attribute assignment does not check the name either way. What
+    a real one adds is that the attribute asserted on below is the one
+    the rest of the node reads.
     """
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
     unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
@@ -1781,9 +1782,9 @@ def test_an_inbound_handshake_keeps_its_own_address_and_is_not_recorded() -> Non
     not that this node can reach it back, so its endpoint stays out of
     the answered table even where the gossiped table already holds it.
     `conn.address` stays the socket's, the ephemeral port included, as
-    Core's `CNode::addr` does -- `verack` no longer moves it to the
-    port the peer's `version` names, `manager.py`'s `already_connected`
-    now comparing by host and not needing it (ISS 1304).
+    Core's `CNode::addr` does -- `verack` does not move it to the port
+    the peer's `version` names, `manager.py`'s `already_connected`
+    comparing by host and not needing it (ISS 1304).
     """
     accepted = peer_address("1.2.3.4", 55555)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
@@ -2304,7 +2305,7 @@ def test_a_version_marks_the_getaddr_it_sends_as_unanswered() -> None:
 
 
 def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> None:
-    """#1380, review round 2: an inbound peer's own port is an ephemeral one.
+    """#1380: an inbound peer's own port is an ephemeral one.
 
     `conn.address` for an inbound connection keeps the peer's ephemeral
     TCP source port from `sock.accept()`'s own peername -- `version`'s
@@ -2660,17 +2661,13 @@ def test_an_octet_past_an_addr_or_addrv2_ignored_raises_nothing() -> None:
 def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> None:
     """An addrv2 network id nobody recognizes is dropped, and the peer kept.
 
-    What this used to cost: the network id was an enumeration over the
-    ids BIP155 had assigned, so a yggdrasil peer raised out of the
-    parser and p2p.main turned that into a disconnect. The whole point
-    of the format is that a new network needs no new message. Not
-    stored either, as Core decodes such an address as one `IsValid`
-    refuses and its addrman refuses it for that (ISS 1091).
+    A network id read as an enumeration over the ids BIP155 assigns
+    would make a yggdrasil peer raise out of the parser, and p2p.main
+    would turn that into a disconnect. The whole point of the format is
+    that a new network needs no new message. Not stored either, as Core
+    decodes such an address as one `IsValid` refuses and its addrman
+    refuses it for that (ISS 1091).
     """
-    # what this used to cost: the network id was an enumeration over the
-    # ids BIP155 had assigned, so a yggdrasil peer raised out of the
-    # parser and p2p.main turned that into a disconnect. The whole point
-    # of the format is that a new network needs no new message.
     full_node = ServiceFlags.NODE_NETWORK
     yggdrasil = NetworkAddressV2(0, full_node, 7, b"\x02" + b"\x22" * 15, 18444)
     unassigned = NetworkAddressV2(0, full_node, 250, b"\x33" * 8, 18444)
@@ -3203,21 +3200,14 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
 ) -> None:
     """A transaction arriving in IBD is dropped, not the peer.
 
-    #129: a peer's version now always asks for relay, so a
-    transaction sent while this node is still syncing is possible --
-    Core's own reason for the same drop is that the utxo set is not
-    caught up enough to check it, not that the peer misbehaved.
-    pre_verify_mempool_acceptance is patched to accept unconditionally,
-    so the mempool staying empty is the gate firing rather than a
-    coincidental rejection.
+    #129: this node's version asks a full-relay peer for transactions
+    whether or not it is syncing, so a transaction sent while this node
+    is still syncing is possible -- Core's own reason for the same drop
+    is that the utxo set is not caught up enough to check it, not that
+    the peer misbehaved. pre_verify_mempool_acceptance is patched to
+    accept unconditionally, so the mempool staying empty is the gate
+    firing rather than a coincidental rejection.
     """
-    # #129: a peer's version now always asks for relay, so a
-    # transaction sent while this node is still syncing is possible --
-    # Core's own reason for the same drop is that the utxo set is not
-    # caught up enough to check it, not that the peer misbehaved.
-    # pre_verify_mempool_acceptance is patched to accept unconditionally,
-    # so the mempool staying empty is the gate firing rather than a
-    # coincidental rejection
     monkeypatch.setattr(
         cb,
         "pre_verify_mempool_acceptance",
@@ -3527,13 +3517,13 @@ def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -
     parent is known even though this test's own `FakeBlockIndex` starts
     with nothing in it -- the shape a block arrives in unannounced by a
     prior `headers` round, over `inv`/`getdata` alone, or the exact
-    reproduction issue #711 itself carries: before the fix, `block`
-    called `get_block_info` on a hash this stand-in had no entry for at
-    all, `KeyError` and not `BTClibValueError` -- an exception `main.
-    handle_p2p`'s own `except Exception` still catches, but never
-    discourages the peer for, `isinstance(e, BTClibException)` being
-    `False` for it. This is the accepting half of #711's fix; the
-    refusing half is
+    reproduction issue #711 itself carries: `block` calling
+    `get_block_info` on a hash this stand-in has no entry for at all
+    would raise `KeyError` and not `BTClibValueError` -- an exception
+    `p2p.main._dispatch`'s own `except Exception` catches, but never
+    discourages the peer for, `isinstance(e, MisbehavingError)` being
+    `False` for it. This is the accepting half of #711; the refusing
+    half is
     `test_an_unsolicited_block_with_an_unknown_parent_is_refused` below.
     """
     block = a_block()
@@ -3561,9 +3551,8 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     `MisbehavingError` here is what `main.handle_p2p`'s own `except`
     answers by discouraging and dropping the peer
     (`test_a_callback_that_raises_a_btclib_exception_costs_the_peer`,
-    `p2p/main_test.py`, covers that mechanics generically). Before the
-    fix this raised `KeyError` instead, which is not discouraged.
-    btclib-org/btclib-node#711
+    `p2p/main_test.py`, covers that mechanics generically). A `KeyError`
+    in its place is not discouraged. btclib-org/btclib-node#711
     """
     (orphan,) = generate_random_chain(1, b"\x11" * 32)
     index = FakeBlockIndex({}, accepts_headers=False)
@@ -5794,15 +5783,10 @@ def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> Non
 def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
     """A short, unconnecting batch still gets a `getheaders`, not silence.
 
-    A short batch is the ordinary shape of a BIP130 announcement, and unlike the
-    full-batch case above the pre-existing code never sent anything for it: the
-    `len(headers) == 2000` guard was the only place a follow-up GetHeaders was
-    built. btclib-org/btclib-node#233
+    A short batch is the ordinary shape of a BIP130 announcement, so it
+    is answered as the full-batch case above is, and not left to the
+    `len(headers) == 2000` guard alone. btclib-org/btclib-node#233
     """
-    # a short batch is the ordinary shape of a BIP130 announcement, and
-    # unlike the full-batch case above the pre-existing code never sent
-    # anything for it: the `len(headers) == 2000` guard was the only
-    # place a follow-up GetHeaders was built. btclib-org/btclib-node#233
     chain = generate_random_header_chain(4, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     index = FakeHeaderIndex(tip=None)
@@ -7923,10 +7907,10 @@ def test_a_header_version_above_bip34_is_misbehaving_bad_version(
 ) -> None:
     """ISS 1262: a version of zero or below reaches Core's `bad-version`.
 
-    btclib's own parse no longer refuses this version on its own (btclib
-    2026.9.29, closing btclib-org/btclib#2309): it is `add_headers`'s own
-    height-gated check, not btclib's, that this depends on, and `headers`
-    reads the batch unchecked so that check runs regardless
+    btclib's own parse does not refuse this version on its own (closing
+    btclib-org/btclib#2309): it is `add_headers`'s own height-gated
+    check, not btclib's, that this depends on, and `headers` reads the
+    batch unchecked so that check runs regardless
     (btclib-org/btclib-node#1511).
     """
     genesis = RegTest().genesis

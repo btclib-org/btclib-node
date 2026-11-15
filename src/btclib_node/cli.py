@@ -64,21 +64,21 @@ against.
 A run through this command stays one process past the start of block
 download for two reasons, one enforced regardless of the other.
 `Node.__init__` refuses outright inside a re-imported `__main__`
-(`ReimportedMainProcessError`, issue #589 -- the guard ISS 579 asked
-for, now enforced by `Node` itself rather than by a module-body
-`if __name__ == "__main__":` every future caller has to remember), and
-that backstop holds whichever entry point built the `Node`. The
-console script `[project.scripts]` installs also never reaches that
-backstop in the first place: its own generated shim carries the same
-`if __name__ == "__main__":` guard `pytest`'s own `.venv/bin/pytest`
-has (ISS 583's own body quotes it), and a `multiprocessing` pool
-worker spawned from it re-executes that shim under `__mp_main__`
-(`_fixup_main_from_path`, `multiprocessing/spawn.py`), never taking
-the guard's own branch. `python -m btclib_node` needs neither
-argument: `__main__.py`'s own module docstring is where the third,
-narrower mechanism that exempts it -- `multiprocessing.spawn`'s
-special case for any module named `*.__main__` -- is read from the
-interpreter's own source rather than assumed.
+(`ReimportedMainProcessError`, issue #589 -- the guard ISS 579 asks for,
+enforced by `Node` itself rather than by a module-body `if __name__ ==
+"__main__":` every caller would have to remember), and that backstop
+holds whichever entry point built the `Node`. The console script
+`[project.scripts]` installs also never reaches that backstop in the
+first place: its own generated shim carries the same `if __name__ ==
+"__main__":` guard `pytest`'s own `.venv/bin/pytest` has (ISS 583's own
+body quotes it), and a `multiprocessing` pool worker spawned from it
+re-executes that shim under `__mp_main__` (`_fixup_main_from_path`,
+`multiprocessing/spawn.py`), never taking the guard's own branch.
+`python -m btclib_node` needs neither argument: `__main__.py`'s own
+module docstring is where the third, narrower mechanism that exempts it
+-- `multiprocessing.spawn`'s special case for any module named
+`*.__main__` -- is read from the interpreter's own source rather than
+assumed.
 
 ## `bitcoin.conf`
 
@@ -280,10 +280,9 @@ _CHAIN_SECTION = {
     "testnet4": "testnet4",
 }
 
-# Core's own external `-chain=` vocabulary (`ChainTypeFromString`,
-# same file), which is not this node's internal one: `main`/`test`
-# rather than `mainnet`/`testnet`, predating this module and not
-# renamed for it.
+# Core's own external `-chain=` vocabulary (`ChainTypeFromString`, same
+# file), which is not this node's internal one: `main`/`test` rather
+# than `mainnet`/`testnet`, kept as Core spells it.
 # `LocaleIndependentAtoi`: what `TrimStringView` trims by default, and
 # the integer `std::from_chars` reads at the start of what is left, its
 # sign and its leading zeros matched apart from the digits that count
@@ -2709,9 +2708,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     # value of its own: `SoftSetBoolArg` never overwrites an arg already
     # set, so an explicit `-dnsseed=1` reaches `Config.__init__`'s own
     # `-forcednsseed` refusal as `True` even under `-connect`
-    # (btclib-org/btclib-node#1265, review round 3). `_after_lock`
-    # recomputes the identical value from `max_connections_arg` below,
-    # once this returns it.
+    # (btclib-org/btclib-node#1265). `_after_lock` recomputes the
+    # identical value from `max_connections_arg` below, once this
+    # returns it.
     dnsseed = _get_bool(settings, "dnsseed")
     if dnsseed is None:
         dnsseed = not connect and not connect_negated and max_connections_arg > 0

@@ -102,9 +102,9 @@ def test_an_input_that_verifies_returns_quietly() -> None:
 
 def test_an_input_that_does_not_verify_raises() -> None:
     """`f` raises `ScriptError` for an input that does not verify."""
-    # the property update_chain rests on: this used to be written to
-    # errors/ and swallowed, inside a worker pool, so the block was
-    # connected anyway
+    # the property update_chain rests on: written to errors/ and
+    # swallowed inside a worker pool instead, the block would connect
+    # anyway
     prevouts, tx = [prevout(script.serialize(["OP_RETURN"]))], spend(b"")
     with pytest.raises(ScriptError):
         f(prevouts, tx, 0, (), _precomputed_for(prevouts, tx))
@@ -256,12 +256,12 @@ def test_the_transaction_checked_is_left_as_it_was(
     build: Callable[[int], tuple[list[TxOut], Tx]], hash_type: int
 ) -> None:
     """`check_transaction` leaves a signed transaction byte-identical."""
-    # what the deepcopy here used to be for, and it was for a defect
-    # btclib does not have: sig_hash builds the blanked transaction each
-    # preimage commits to rather than editing the one it is handed.
-    # Signed inputs, because an unsigned one reaches no preimage at all
-    # and would say nothing -- and one of every preimage, because the
-    # blanking differs between them and between hash types.
+    # no deepcopy is needed here: sig_hash builds the blanked
+    # transaction each preimage commits to rather than editing the one
+    # it is handed. Signed inputs, because an unsigned one reaches no
+    # preimage at all and would say nothing -- and one of every
+    # preimage, because the blanking differs between them and between
+    # hash types.
     prevouts, tx = build(hash_type)
     before = tx.serialize(include_witness=True)
     check_transaction(prevouts, tx)
@@ -345,11 +345,12 @@ def _count_transaction_wide_serializations(
     with no `precomputed` never constructs one at all for a segwit v0
     spend (`segwit_v0` calls these three functions directly in that
     case), so that counter would answer zero under the very dispatch
-    this measures against and the zero would look like the fix rather
-    than like a counter measuring nothing. These three are called
-    exactly once each by `PrecomputedTxData.__init__` and are the ones
-    `segwit_v0` falls back to per input when handed no `precomputed`, so
-    they see every call either dispatch makes.
+    this measures against and the zero would look like the shared
+    `precomputed` working rather than like a counter measuring nothing.
+    These three are called exactly once each by
+    `PrecomputedTxData.__init__` and are the ones `segwit_v0` falls back
+    to per input when handed no `precomputed`, so they see every call
+    either dispatch makes.
     """
     calls = [0]
     for name in (
@@ -373,11 +374,11 @@ def test_a_positive_control_proves_the_counter_can_answer_non_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per-input `verify_input` with no `precomputed` re-serializes 3n times."""
-    # the old per-input dispatch, reproduced directly: no precomputed, so
-    # every one of the n inputs re-serializes the transaction on its own.
-    # Built before the count starts, so building it -- which signs every
-    # input, itself calling these three functions once per input -- is
-    # not what the counter below is measuring.
+    # a per-input dispatch, reproduced directly: no precomputed, so
+    # every one of the n inputs re-serializes the transaction on its
+    # own. Built before the count starts, so building it -- which signs
+    # every input, itself calling these three functions once per input
+    # -- is not what the counter below is measuring.
     n = 5
     prevouts, tx = _multi_input_p2wpkh_spend(n)
     count = _count_transaction_wide_serializations(monkeypatch)

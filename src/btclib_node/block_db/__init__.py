@@ -316,11 +316,10 @@ class BlockDB:
         # below.
         self.pruned_up_to = -1
         # held here between add_rev_block and finalize/rollback, the way
-        # UtxoIndex.updated_utxo_set and FilterIndex.pending hold theirs:
-        # a branch update_chain refuses never reaches disk, where writing
-        # each patch as it was generated left it there regardless of
-        # whether the branch it belonged to connected:
-        # btclib-org/btclib-node#200
+        # UtxoIndex.updated_utxo_set and FilterIndex.pending hold
+        # theirs: a branch update_chain refuses never reaches disk, as
+        # it would if each patch were written as it is generated,
+        # whether or not its branch connects: btclib-org/btclib-node#200
         self.pending_rev_blocks: dict[bytes, RevBlock] = {}
 
         self.open_block_file: BinaryIO | None = None
@@ -411,10 +410,10 @@ class BlockDB:
 
     def __find_block_file(self) -> BinaryIO:
         # the name is bound before the test rather than inside one
-        # branch of it: written as a flag set in one `if` and read in
-        # the next, it was bound on some paths only and nothing but the
-        # flag said which. The `or` short-circuits, so index zero --
-        # nothing written yet -- never looks up metadata it has none of.
+        # branch of it, so every path binds it; a flag set in one `if`
+        # and read in the next would leave only the flag saying which
+        # paths do. The `or` short-circuits, so index zero -- nothing
+        # written yet -- never looks up metadata it has none of.
         filename = f"{self.file_index:06d}.blk"
         if self.file_index == 0 or self.files[filename].size > 128 * 1000**2:  # 128MB
             self.file_index += 1

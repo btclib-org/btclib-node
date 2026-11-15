@@ -256,9 +256,7 @@ class Logger(logging.Logger):
         self._limit_lock = threading.RLock()
         # `logging.Handler`, which is the type the two branches share:
         # inferred from the first of them instead, the second is a
-        # StreamHandler assigned to a name holding a FileHandler. What
-        # stood here before the branch was a third handler, built on
-        # every path and used on none.
+        # StreamHandler assigned to a name holding a FileHandler.
         handler: logging.Handler
         if log_path:
             # UTF-8 with `surrogateescape`: a setting holding a byte UTF-8

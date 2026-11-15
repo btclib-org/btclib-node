@@ -99,14 +99,14 @@ MIN_BLOCKS_TO_KEEP = 288
 MIN_PRUNE_TARGET_MIB = 550
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
-# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the v32.1
-# tag) and sends as `/Satoshi:<version>/` -- the one thing this node says
-# about itself to every peer it meets, and what a crawler reporting the
-# composition of the network parses. `p2p.connection`'s own `_USER_AGENT`
-# (the wire bytes of a `version` message) and
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag) and sends as `/Satoshi:<version>/` -- the one thing this
+# node says about itself to every peer it meets, and what a crawler
+# reporting the composition of the network parses. `p2p.connection`'s
+# own `_USER_AGENT` (the wire bytes of a `version` message) and
 # `rpc.callbacks.get_network_info`'s `subversion` answer both read this
-# one string rather than each computing it, so the two can never drift the
-# way they once did (btclib-org/btclib-node#1009).
+# one string rather than each computing it, so the two cannot drift
+# apart (btclib-org/btclib-node#1009).
 #
 # The version is read from the installed distribution rather than
 # written here. `RELEASING.md`'s *Which version string is which*
@@ -202,9 +202,7 @@ def default_data_dir() -> Path:
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table
 # here: they are a bitfield rather than an enumeration, so an unnamed
-# bit is a service nobody here has heard of and not an error, and the
-# table this used to hold named a bit Core removed while missing the
-# one BIP324 added.
+# bit is a service nobody here has heard of and not an error.
 
 
 class P2pConnStatus(enum.IntEnum):

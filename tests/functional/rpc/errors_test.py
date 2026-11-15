@@ -95,20 +95,19 @@ def test_a_legacy_request_core_refuses_is_answered_its_refusal(
 def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
     """An empty batch is answered `[]`, matching Core; the node's loop survives.
 
-    `[]` is legal JSON and legal JSON-RPC, and it used to leave
-    `Node.run` by exception -- ending the thread and skipping every
-    close after the loop (issue #55); the node answering the request
-    after it is what says the loop survived, still. What it answers
-    changed since: this used to be a single `Invalid request` object, a
-    literal reading of JSON-RPC 2.0 section 6's own wording for a batch
-    that "fails to be recognized... as an Array with at least one
-    value" -- but Core's own `ExecuteHTTPRPC` does not read it that way,
-    answering an empty client-sent array with an empty array instead
+    `[]` is legal JSON, and must not leave `Node.run` by exception --
+    ending the thread and skipping every close after the loop (issue
+    #55); the node answering the request after it is what says the loop
+    survived. The answer is not the single `-32600 Invalid Request`
+    object JSON-RPC 2.0 requires for `[]`, in section 6's wording for a
+    batch that "fails to be recognized... as an Array with at least one
+    value" and in its own example for an empty array. It is Core
+    compatibility, not JSON-RPC compliance: Core's own `ExecuteHTTPRPC`
+    answers an empty client-sent array with an empty array
     (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), and
-    CONTRIBUTING.md's Following Bitcoin Core section leaves no room for a
-    convention of this tree's own on an axis Core's own behaviour
-    already decides (issue #669).
+    tag), and CONTRIBUTING.md's Following Bitcoin Core section leaves no
+    room for a convention of this tree's own on an axis Core's own
+    behaviour already decides (issue #669).
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
@@ -185,10 +184,10 @@ def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
 def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> None:
     """`testmempoolaccept` and `sendrawtransaction` short of an argument, live.
 
-    Both used to reach `params[0]` unguarded, raising `IndexError` for an
-    empty `params` -- caught only by `handle_rpc`'s own catch-all, which
-    answers `-32603 Internal Error`, the code this node owes its own
-    fault rather than a call short of a required argument (issue #443).
+    Each answers Core's `-1` and its help text, not `-32603 Internal
+    Error`, the code `rpc.main._execute`'s `except Exception` answers
+    for this node's own fault, an `IndexError` from reaching `params[0]`
+    of an empty `params` among them (issue #443).
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)

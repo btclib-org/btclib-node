@@ -938,12 +938,12 @@ class Connection:
         pass of `ThreadSocketHandler` runs `DisconnectNodes`. Here this
         is the one step that closes a socket, so it drops both.
 
-        The ordering is the fix for btclib-org/btclib-node#518.
-        `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
-        (`asyncio/selector_events.py`, read on this tree's own
-        `3.14`) each register a reader or a writer for `self.client`'s
-        fd and add `_sock_read_done`/`_sock_write_done` as a done
-        callback on the future they await, and that callback calls
+        The ordering prevents the error btclib-org/btclib-node#518
+        reports. `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
+        (`asyncio/selector_events.py`, read on this tree's own `3.14`)
+        each register a reader or a writer for `self.client`'s fd and
+        add `_sock_read_done`/`_sock_write_done` as a done callback on
+        the future they await, and that callback calls
         `remove_reader`/`remove_writer` in turn. `_remove_reader` reads
         `self._selector.get_map()` for the fd and, finding a writer
         still registered alongside the reader being dropped, calls
@@ -952,22 +952,22 @@ class Connection:
         closed fd raises `OSError: Bad file descriptor` from
         `KqueueSelector.register`'s own `control()` call.
         `KqueueSelector.unregister`, the path taken when no writer is
-        left to preserve, swallows exactly that error; `modify` does
-        not carry the same guard, which is why the traceback in the
-        issue only ever appears with a writer sharing the descriptor.
+        left to preserve, swallows exactly that error; `modify` does not
+        carry the same guard, which is why the traceback in the issue
+        only ever appears with a writer sharing the descriptor.
         `_send`'s own `sock_sendall` is that writer -- `async_send`
-        reaches it through `_deliver` and `_drain_outbox` -- so a peer not
-        draining its send queue at the moment this closes is exactly
-        the case that used to raise.
-        Closing the fd before either callback has had a chance to run
-        is what raises: this method removes the reader and the writer
-        itself, before closing, so that fd is unregistered by the time
-        anything might otherwise have tried to re-register it. Once
-        removed here, `_sock_read_done`/`_sock_write_done`'s own later
-        call is a no-op -- `_remove_reader`/`_remove_writer` cancel the
-        stored handle as part of removing it, and `_sock_read_done`
-        checks `handle.cancelled()` before calling `remove_reader`
-        again, so the second call never reaches the selector at all.
+        reaches it through `_deliver` and `_drain_outbox` -- so a peer
+        not draining its send queue at the moment this closes is exactly
+        the case that would raise. Closing the fd before either callback
+        has had a chance to run is what raises: this method removes the
+        reader and the writer itself, before closing, so that fd is
+        unregistered by the time anything might otherwise have tried to
+        re-register it. Once removed here,
+        `_sock_read_done`/`_sock_write_done`'s own later call is a no-op
+        -- `_remove_reader`/`_remove_writer` cancel the stored handle as
+        part of removing it, and `_sock_read_done` checks
+        `handle.cancelled()` before calling `remove_reader` again, so
+        the second call never reaches the selector at all.
 
         A fd of -1 is `self.client` already closed -- `stop`'s own
         idempotency (argued there) can schedule this twice -- and nothing
@@ -1059,9 +1059,8 @@ class Connection:
                 # btclib-org/btclib-node#462
                 await self._recv_resume.wait()
                 # 64 KB, matching Core's own read buffer (`pchBuf`,
-                # `src/net.cpp`) rather than the 1024 this had no
-                # argument for: fewer syscalls, and fewer reads for the
-                # transport to take one large message from.
+                # `src/net.cpp`): fewer syscalls, and fewer reads for
+                # the transport to take one large message from.
                 # btclib-org/btclib-node#438
                 try:
                     data = await self.loop.sock_recv(self.client, 65536)
@@ -1453,12 +1452,10 @@ class Connection:
             # a `version` message's address carries no timestamp, which
             # is what the narrowest of btclib's address types is
             addr_recv=network_address(self.address),
-            # the default address, which btclib spells `::` where this
-            # node used to write the v4-mapped `::ffff:0.0.0.0`. Core's
-            # own `addrMe` is a default CService, which is the sixteen
-            # zero octets btclib writes, and no peer reads the field:
-            # Core has ignored it since it started learning its own
-            # address elsewhere
+            # the default address, which btclib spells `::`. Core's own
+            # `addrMe` is a default CService, which is the sixteen zero
+            # octets btclib writes, and no peer reads the field: Core
+            # ignores it, learning its own address elsewhere
             addr_from=NetworkAddress(services=services, port=port),
             nonce=nonce,
             # octets and not text: Core reads the subversion into a

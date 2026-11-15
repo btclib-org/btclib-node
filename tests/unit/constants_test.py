@@ -5,8 +5,8 @@
 """`USER_AGENT` is one constant, read rather than recomputed by its two callers.
 
 btclib-org/btclib-node#1009: `p2p.connection`'s own wire bytes and
-`rpc.callbacks.get_network_info`'s `subversion` used to compute the
-identical formula independently, with nothing tying the two together.
+`rpc.callbacks.get_network_info`'s `subversion` both read it, so nothing
+can make the two differ.
 """
 
 from types import SimpleNamespace
