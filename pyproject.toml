@@ -744,6 +744,7 @@ package = ["src/btclib_node"]
 # -- a selection, whose floor `tests/conftest.py`'s own
 # `relax_coverage_floor` drops.
 testpaths = [
+    "tests/bug_report_form_test.py",
     "tests/check_core_citation_pin_test.py",
     "tests/check_vendored_pin_test.py",
     "tests/docs_conf_test.py",
