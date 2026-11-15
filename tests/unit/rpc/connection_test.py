@@ -1894,6 +1894,26 @@ def test_a_number_in_an_id_is_written_back_as_read(request_id: str) -> None:
     assert _json_text(request.reply(0)) == expected
 
 
+def test_a_string_is_written_as_bitcoind_writes_it() -> None:
+    r"""ISS 2492: Core's `json_escape`, in a key as in a value.
+
+    A control character, `"`, `\` and DEL are escaped, and a character
+    outside ASCII is its UTF-8.
+    """
+    text = 'é\x7f\x01\b\t\n\x0b\f\r"\\/…\U0001f600'
+    data = sent(HttpReply(OK, {"result": {text: text}, "error": None, "id": 1}))
+    written = '"é\\u007f\\u0001\\b\\t\\n\\u000b\\f\\r\\"\\\\/…\U0001f600"'
+    assert data.endswith(
+        f'"result":{{{written}:{written}}},"error":null,"id":1}}\n'.encode()
+    )
+
+
+def test_a_byte_a_setting_holds_is_written_as_that_byte() -> None:
+    """ISS 2492: a lone surrogate `surrogateescape` made is its byte again."""
+    data = sent(HttpReply(OK, {"result": "/a\udcff", "error": None, "id": 1}))
+    assert data.endswith(b'"result":"/a\xff","error":null,"id":1}\n')
+
+
 def test_a_request_under_wallet_is_dispatched() -> None:
     """A `POST` under `/wallet/` is dispatched like one to `/`, as in Core."""
     data = request(b"Content-Length: %d\r\n" % len(BODY), target=b"/wallet/w")
