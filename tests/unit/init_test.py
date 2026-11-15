@@ -1404,7 +1404,7 @@ def test_a_node_over_a_data_directory_another_process_holds_opens_nothing(
         with pytest.raises(DirectoryLockError) as excinfo:
             a_node(tmp_path)
         assert str(excinfo.value) == (
-            f"Cannot obtain a lock on directory {data_dir}."
+            f"Cannot obtain a lock on directory <{len(str(data_dir))} characters>."
             " btclib-node is probably already running."
         )
     assert sorted(path.name for path in data_dir.iterdir()) == [".lock", "blocks"]
@@ -1427,7 +1427,7 @@ def test_a_node_over_a_blocks_directory_another_process_holds_frees_its_data_dir
         with pytest.raises(DirectoryLockError) as excinfo:
             Node(config=config)
         assert str(excinfo.value) == (
-            f"Cannot obtain a lock on directory {blocks_dir}."
+            f"Cannot obtain a lock on directory <{len(str(blocks_dir))} characters>."
             " btclib-node is probably already running."
         )
         assert lock_from_another_process(config.data_dir) == "locked"

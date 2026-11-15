@@ -61,3 +61,11 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
     result = get_network_info(node, conn, [])
     assert result["subversion"] == constants.USER_AGENT
     assert constants.USER_AGENT.encode() == connection._USER_AGENT
+
+
+def test_shown_path_quotes_a_default_path_and_gives_any_other_by_its_length() -> None:
+    """ISS 2533: a path an option gave may hold a key; a default does not."""
+    assert constants.shown_path("/d/x", "/d/x") == "/d/x"
+    assert constants.shown_path("/d/x", "/d/x", lambda text: f'"{text}"') == '"/d/x"'
+    assert constants.shown_path("/d/y", "/d/x") == "<4 characters>"
+    assert constants.shown_path("/d/x") == "<4 characters>"

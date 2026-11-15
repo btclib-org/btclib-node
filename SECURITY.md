@@ -233,9 +233,21 @@ resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind` address that
 resolves and names no port is quoted, as Core quotes it: what resolves is a
 numeric, onion or I2P address, which a key's usual encodings are not.
 
-A path is quoted whole, a key given in its place included, as a `-datadir`,
-`-blocksdir`, `-conf` or `includeconf` value is: `Specified data directory
-"/srv/btc" does not exist.` (btclib-org/btclib-node#2533).
+Core's start-up refusals of a path write it whole, a key given by mistake
+in place of an option's value included (`InitConfig` in
+`src/common/init.cpp:22`, `ReadConfigFiles` in `src/common/config.cpp:152`
+and `LockDirectory` in `src/init.cpp:1237` among them, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words. A path built from defaults alone, as the default data directory's
+`settings.json`, is written as Core writes it. A path that holds an option's
+value, as a `-datadir`, `-blocksdir`, `-conf`, `includeconf`, `-settings` or
+`-rpccookiefile` value, is given by its length: `Specified data directory
+<52 characters> does not exist.` An `includeconf` value is also named by its
+position, counted from 1 in the order the files are read: `Failed to include
+configuration file <13 characters> (value 2 of -includeconf)`. Python's error
+text for such a path, the warnings a configuration file's reading writes, and
+the log's `Config file:` and `Generated RPC authentication cookie` lines take
+the same form.
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,

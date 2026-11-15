@@ -50,6 +50,7 @@ from btclib_node.constants import (
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
     MAX_TIP_AGE,
     default_data_dir,
+    shown_path,
 )
 from btclib_node.exceptions import (
     InvalidChainTypeError,
@@ -1280,11 +1281,14 @@ class Config:
             # there too, not a silent `mkdir` -- unlike `data_dir` above,
             # which every caller here is content to have created on first
             # use. The path asked about is `get_path_arg`'s, as
-            # `GetBlocksDirPath` reads `GetPathArg`, and the message names
-            # the value as given, as Core names `GetArg("-blocksdir")`.
+            # `GetBlocksDirPath` reads `GetPathArg`. Core names the value
+            # whole, `GetArg("-blocksdir")`, and the message gives its
+            # length, as `shown_path` writes a path an option gave
+            # (SECURITY.md, "Where this node departs from Bitcoin Core").
             resolved = Path(get_path_arg(str(blocks_dir))).absolute()
             if not resolved.is_dir():
-                err_msg = f'Specified blocks directory "{blocks_dir}" does not exist.'
+                shown = shown_path(blocks_dir)
+                err_msg = f"Specified blocks directory {shown} does not exist."
                 raise ValueError(err_msg)
             self.blocks_dir = resolved / self.chain.name
 

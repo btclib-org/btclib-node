@@ -226,9 +226,11 @@ def test_generate_cookie_raises_where_it_cannot_write(tmp_path: Path) -> None:
     auth = RpcAuth()
     tmp = tmp_path / "missing" / f"{COOKIE_FILE}.tmp"
     err_msg = f"^Unable to open cookie authentication file {re.escape(str(tmp))} "
+    path = tmp_path / "missing" / COOKIE_FILE
     with pytest.raises(OSError, match=f"{err_msg}for writing$") as caught:
-        auth.generate_cookie(tmp_path / "missing" / COOKIE_FILE)
-    assert isinstance(caught.value.__cause__, FileNotFoundError)
+        auth.generate_cookie(path, default_path=path)
+    # unchained: the `FileNotFoundError` names the path whole
+    assert caught.value.__context__ is None
     assert auth.cookie_path is None
     assert auth.entries == []
 
@@ -238,7 +240,7 @@ def test_a_path_holding_a_nul_byte_cannot_be_opened(tmp_path: Path) -> None:
     auth = RpcAuth()
     with pytest.raises(OSError, match=r"^Unable to open cookie") as caught:
         auth.generate_cookie(tmp_path / "a\0b")
-    assert isinstance(caught.value.__cause__, ValueError)
+    assert caught.value.__context__ is None
     assert auth.cookie_path is None
     assert not list(tmp_path.iterdir())
 
@@ -251,7 +253,7 @@ def test_the_root_directory_cannot_be_a_cookie() -> None:
     auth = RpcAuth()
     err_msg = r"^Unable to open cookie authentication file /\.tmp for writing$"
     with pytest.raises(OSError, match=err_msg):
-        auth.generate_cookie(Path("/"))
+        auth.generate_cookie(Path("/"), default_path=Path("/"))
     assert auth.cookie_path is None
 
 
@@ -259,11 +261,12 @@ def test_a_cookie_that_cannot_be_renamed_leaves_its_tmp(tmp_path: Path) -> None:
     """The chain directory as the cookie: Core's `.tmp` inside it, left there.
 
     `-rpccookiefile=.` makes `bitcoind` write `<chain dir>/..tmp`
-    and refuse to rename it over the chain directory, logging both paths.
+    and refuse to rename it over the chain directory, logging both paths,
+    each given here by its length, as an option gave them.
     """
     auth = RpcAuth()
     tmp = tmp_path / "..tmp"
-    names = f"{re.escape(str(tmp))} to {re.escape(str(tmp_path))}"
+    names = f"<{len(str(tmp))} characters> to <{len(str(tmp_path))} characters>"
     with pytest.raises(OSError, match=f"^Unable to rename cookie .* {names}$"):
         auth.generate_cookie(tmp_path, tmp=tmp)
     assert tmp.is_file()
@@ -285,7 +288,7 @@ def test_a_cookie_whose_mode_cannot_be_set_raises(
     path = tmp_path / COOKIE_FILE
     err_msg = "^Unable to set permissions on cookie authentication file "
     with pytest.raises(OSError, match=err_msg + re.escape(str(path)) + "$"):
-        auth.generate_cookie(path, 0o640)
+        auth.generate_cookie(path, 0o640, default_path=path)
     assert auth.cookie_path is None
     assert auth.entries == []
 
@@ -444,7 +447,7 @@ def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
     still comes first, as `bitcoind` logs it for `-rpcauth=bogus`.
     """
     path = tmp_path / COOKIE_FILE
-    auth = RpcAuth(cookie_file=path, rpcauth_invalid=True)
+    auth = RpcAuth(cookie_file=path, cookie_default=path, rpcauth_invalid=True)
     recorder = Recorder()
     with pytest.raises(
         RpcCredentialRefusedError, match=r"^Invalid -rpcauth argument\.$"
@@ -453,7 +456,7 @@ def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
     assert auth.cookie_path == path
     perms = stat.filemode(path.stat().st_mode)[1:]
     assert recorder.calls == [
-        ("info", ("Generated RPC authentication cookie %s", path)),
+        ("info", ("Generated RPC authentication cookie %s", str(path))),
         ("info", ("Permissions used for cookie: %s", perms)),
         ("info", ("Using random cookie authentication.",)),
         ("info", ("Using rpcauth authentication.",)),
@@ -464,12 +467,14 @@ def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
 def test_start_writes_the_cookie_and_logs_what_core_logs(tmp_path: Path) -> None:
     """`InitRPCAuthentication`'s lines where it writes a cookie."""
     path = tmp_path / COOKIE_FILE
-    auth = RpcAuth((RpcAuthEntry.parse(RPCAUTH),), cookie_file=path)
+    auth = RpcAuth(
+        (RpcAuthEntry.parse(RPCAUTH),), cookie_file=path, cookie_default=path
+    )
     calls = start(auth)
     assert auth.cookie_path == path
     perms = stat.filemode(path.stat().st_mode)[1:]
     assert calls == [
-        ("info", ("Generated RPC authentication cookie %s", path)),
+        ("info", ("Generated RPC authentication cookie %s", str(path))),
         ("info", ("Permissions used for cookie: %s", perms)),
         ("info", ("Using random cookie authentication.",)),
         ("info", ("Using rpcauth authentication.",)),
@@ -559,3 +564,45 @@ def test_an_entry_prints_neither_its_salt_nor_its_hmac() -> None:
     assert entry.salt.decode() not in shown
     assert entry.hmac.decode() not in shown
     assert "alice" in shown
+
+
+def test_a_cookie_path_an_option_gave_is_not_in_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: each cookie refusal gives a path by its length, unchained."""
+    auth = RpcAuth()
+    path = tmp_path / LEAK_WIF / COOKIE_FILE
+    with pytest.raises(OSError, match=r"^Unable to open") as caught:
+        auth.generate_cookie(path, default_path=tmp_path / COOKIE_FILE)
+    assert str(caught.value) == (
+        f"Unable to open cookie authentication file <{len(str(path)) + 4} "
+        "characters> for writing"
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
+    path.parent.mkdir()
+
+    def refuse(self: Path, mode: int) -> None:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    with pytest.raises(OSError, match=r"^Unable to set") as caught:
+        auth.generate_cookie(path, 0o640)
+    assert str(caught.value) == (
+        "Unable to set permissions on cookie authentication file "
+        f"<{len(str(path))} characters>"
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
+
+
+def test_the_log_gives_a_cookie_path_an_option_gave_by_its_length(
+    tmp_path: Path,
+) -> None:
+    """ISS 2533: the log names the cookie as a refusal does."""
+    path = tmp_path / LEAK_WIF
+    auth = RpcAuth(cookie_file=path, cookie_default=tmp_path / COOKIE_FILE)
+    calls = start(auth)
+    assert calls[0] == (
+        "info",
+        ("Generated RPC authentication cookie %s", f"<{len(str(path))} characters>"),
+    )
+    assert_secret_free(ValueError(*map(str, calls)), [LEAK_WIF])

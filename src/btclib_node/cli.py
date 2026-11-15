@@ -237,6 +237,7 @@ from btclib_node.constants import (
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
     quoted_name,
+    shown_path,
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
@@ -1106,6 +1107,12 @@ def _parse_parameters(
     not negated. The second value is `ParseArgs`'s own "unexpected
     token", the first argument anywhere in `argv` not starting with `-`,
     which `build_config` refuses once the file is read.
+
+    Core's `-includeconf` refusal writes the value whole
+    (`src/common/args.cpp:249`, same sha). This one writes it as
+    `shown_path` writes a path an option gave, by its length, and names it
+    by its place among the `-includeconf` values, counted from 1
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     options: dict[str, list[_Value]] = {}
     for arg in argv:
@@ -1128,8 +1135,14 @@ def _parse_parameters(
             raise ValueError(err_msg) from None
         options.setdefault(info.name, []).append(value)
     includes = options.get("includeconf", [])
-    if live := includes[_negated(includes) :]:
-        first = "true" if live[0] is True else json.dumps(live[0], ensure_ascii=False)
+    skip = _negated(includes)
+    if live := includes[skip:]:
+        first = (
+            "true"
+            if live[0] is True
+            else f"{shown_path(_setting_to_str(live[0]))} "
+            f"(value {skip + 1} of -includeconf)"
+        )
         err_msg = (
             f"{_PARSE_ERROR}-includeconf cannot be used from commandline; "
             f"-includeconf={first}"
@@ -1286,15 +1299,16 @@ def _read_conf_file(  # noqa: PLR0913
     *,
     required: bool,
     include: str | None = None,
+    position: int = 1,
+    default_path: str | None = None,
     sections: list[_SectionInfo] | None = None,
-    filepath: str = "",
     warnings: list[str],
 ) -> _RoConfig:
     """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
-    `sections` and `filepath` are `_config_options`', `filepath` being
-    the name `path` is given in a warning, and `warnings`
-    `_interpret_value`'s.
+    `sections` is `_config_options`', and `warnings` `_interpret_value`'s.
+    `include` is the `includeconf` value that named `path`, and `position`
+    its place among the `includeconf` values read, counted from 1.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
@@ -1322,11 +1336,25 @@ def _read_conf_file(  # noqa: PLR0913
     which one they are given.
 
     The refusals are `ReadConfigFiles`'s own words, those of an included
-    file where `include` is the `includeconf` value that named it.
+    file where `include` is given.
+
+    Core writes the path whole (`src/common/config.cpp:146`, `:152`, `:198`
+    and `:208`, same sha), and so does its warning of an unknown key. These
+    write it as `shown_path` does, `default_path` being where the root file
+    is when no option names it, and name an included file by `position` as
+    well (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
+    if include is None:
+        shown = shown_path(path, default_path, lambda text: f'"{text}"')
+        filepath = shown_path(path, default_path)
+        where = ""
+    else:
+        shown = shown_path(path)
+        filepath = shown_path(include)
+        where = f" (value {position} of -includeconf)"
     if os.path.isdir(path):  # noqa: PTH112
         kind = "Config" if include is None else "Included config"
-        err_msg = f'{kind} file "{path}" is a directory.'
+        err_msg = f"{kind} file {shown}{where} is a directory."
         raise ValueError(err_msg)
     try:
         # `newline=""`: universal newlines would end a line at a lone
@@ -1338,14 +1366,18 @@ def _read_conf_file(  # noqa: PLR0913
         with open(  # noqa: PTH123
             path, encoding="utf-8", errors="surrogateescape", newline=""
         ) as conf_file:
-            text = conf_file.read()
+            text: str | None = conf_file.read()
     except OSError:
+        text = None
+    # each refusal raised past the `except`, whose `OSError` names the path
+    # whole
+    if text is None:
         if include is not None:
-            err_msg = f"Failed to include configuration file {include}"
-            raise ValueError(err_msg) from None
+            err_msg = f"Failed to include configuration file {filepath}{where}"
+            raise ValueError(err_msg)
         if required:
-            err_msg = f'specified config file "{path}" could not be opened.'
-            raise ValueError(err_msg) from None
+            err_msg = f"specified config file {shown} could not be opened."
+            raise ValueError(err_msg)
         return {}
     return _parse_conf_text(text, sections, filepath, warnings=warnings)
 
@@ -1356,6 +1388,7 @@ def _load_conf_tree(  # noqa: PLR0913
     conf_explicit: bool,
     base_dir: str | Path,
     use_includes: bool,
+    default_path: str | None = None,
     sections: list[_SectionInfo] | None = None,
     command_line: dict[str, list[_Value]] | None = None,
     warnings: list[str],
@@ -1376,12 +1409,15 @@ def _load_conf_tree(  # noqa: PLR0913
     appends into one shared `ro_config[section][key]` list regardless of
     which file contributed a value. An `includeconf` an included file
     adds to either section is warned about and not read, and so is every
-    one of the chain an included file switched to.
+    one of the chain an included file switched to, the value written by
+    its length, as `shown_path` writes a path an option gave.
 
     Every section named is appended to `sections`, where given: the root
     file under its path, an included one under its name as written, as
-    `ReadConfigFiles` passes each to `ReadConfigStream`. `warnings` is
-    `_interpret_value`'s.
+    `ReadConfigFiles` passes each to `ReadConfigStream`, each written as
+    `_read_conf_file` writes it. `warnings` is `_interpret_value`'s, and
+    `default_path` is `_read_conf_file`'s for the root file. An included
+    file's `position` is its place in the order the files are read.
 
     `conf_path` and `base_dir` are taken as given -- a caller building one
     by joining a value onto a base passes a plain string, `os.path.join`
@@ -1394,8 +1430,8 @@ def _load_conf_tree(  # noqa: PLR0913
     tree = _read_conf_file(
         conf_path,
         required=conf_explicit,
+        default_path=default_path,
         sections=sections,
-        filepath=str(conf_path),
         warnings=warnings,
     )
     if not use_includes:
@@ -1414,7 +1450,7 @@ def _load_conf_tree(  # noqa: PLR0913
     names: list[str] = []
     chain_includes = add_includes(chain_id, names)
     default_includes = add_includes("", names)
-    for include in names:
+    for position, include in enumerate(names, 1):
         include_path = (
             include
             if os.path.isabs(include)  # noqa: PTH117
@@ -1424,8 +1460,8 @@ def _load_conf_tree(  # noqa: PLR0913
             include_path,
             required=True,
             include=include,
+            position=position,
             sections=sections,
-            filepath=include,
             warnings=warnings,
         )
         for section, keys in included.items():
@@ -1441,7 +1477,7 @@ def _load_conf_tree(  # noqa: PLR0913
     for name in names:
         sys.stderr.write(
             "warning: -includeconf cannot be used from included files; "
-            f"ignoring -includeconf={name}\n"
+            f"ignoring -includeconf={shown_path(name)}\n"
         )
     return tree
 
@@ -2078,6 +2114,27 @@ def _help_message(*, show_debug: bool) -> str:
     return "".join(parts)
 
 
+def _default_conf_path() -> str:
+    """Return where the configuration file is when no option names it."""
+    return os.path.join(str(default_data_dir()), _DEFAULT_CONF_FILENAME)  # noqa: PTH118
+
+
+def _os_error_text(os_error: OSError, default_path: str | None = None) -> str:
+    """Return `str(os_error)`, its paths written as `shown_path` writes them.
+
+    Python's own words, `[Errno <n>] <strerror>: '<path>'`, each path
+    whole only where it is `default_path`: a path an option gave may hold
+    a key.
+    """
+    if os_error.filename is None:
+        return str(os_error)
+    text = f"[Errno {os_error.errno}] {os_error.strerror}: "
+    text += shown_path(os.fsdecode(os_error.filename), default_path, repr)
+    if os_error.filename2 is not None:
+        text += f" -> {shown_path(os.fsdecode(os_error.filename2))}"
+    return text
+
+
 def _check_datadir(base_dir: Path, datadir: str) -> None:
     """Refuse an explicit `-datadir` that is not an existing directory.
 
@@ -2087,7 +2144,9 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     a directory separately from reading the config file, and
     `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     answers "Specified data directory ... does not exist." when it
-    fails, naming `datadir` as it was given; `ReadConfigFiles` checks
+    fails, naming `datadir` whole (`:22`), which this names by its length,
+    as `shown_path` writes a path an option gave (SECURITY.md, "Where this
+    node departs from Bitcoin Core"); `ReadConfigFiles` checks
     again because a `datadir=` line inside the config file can still
     change it after the command-line value already passed this same
     check once. This function is
@@ -2108,7 +2167,7 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     `fs::create_directories`.
     """
     if not base_dir.is_dir():
-        err_msg = f'Specified data directory "{datadir}" does not exist.'
+        err_msg = f"Specified data directory {shown_path(datadir)} does not exist."
         raise ValueError(err_msg)
 
 
@@ -2126,7 +2185,10 @@ def _check_ignored_conf(
     first made absolute and a relative `-conf` joined to it
     (`AbsPathForConfigVal`), as `_read_settings` reads them.
     `-allowignoredconf` makes the refusal a warning for the log alone,
-    appended to `settings.log_warnings`, as Core logs it. Core's other source,
+    appended to `settings.log_warnings`, as Core logs it. Each path, and
+    the `-conf` value, is written as `shown_path` writes it, where Core
+    writes it whole (`src/common/init.cpp:78-88`, same sha), and so is the
+    path of an `OSError`. Core's other source,
     "data directory", is a `datadir=` line that moved the data directory,
     which `_parse_conf_text` drops; and the line Core logs under `-noconf`
     is not written.
@@ -2139,27 +2201,35 @@ def _check_ignored_conf(
     # as "<cwd>/./other.conf"; `fs::absolute` asks for the working
     # directory only where the path is relative
     base = str(base_dir)
+    failure = ""
+    same = False
     try:
         # not `Path(conf_path).samefile(...)`, ruff's own PTH121 fix:
         # constructing a `Path` from `conf_path` is the very drop this
         # module works around elsewhere (btclib-org/btclib-node#1273)
-        if os.path.samefile(conf_path, base_config):  # noqa: PTH121
-            return
-        if datadir := _get_arg(settings, "datadir"):
+        same = os.path.samefile(conf_path, base_config)  # noqa: PTH121
+        if not same and (datadir := _get_arg(settings, "datadir")):
             base = get_path_arg(datadir)
             if not os.path.isabs(base):  # noqa: PTH117
                 base = os.path.join(os.getcwd(), base)  # noqa: PTH109, PTH118
     except OSError as os_error:
-        raise ValueError(str(os_error)) from None
+        failure = _os_error_text(os_error, _default_conf_path())
+    # raised past the `except`, whose `OSError` names the path whole
+    if failure:
+        raise ValueError(failure)
+    if same:
+        return
     conf = _get_arg(settings, "conf") or ""
     config = os.path.join(base, get_path_arg(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
     name = _quoted(_DEFAULT_CONF_FILENAME)
+    shown_base = shown_path(base, str(default_data_dir()), _quoted)
+    shown_config = shown_path(config, _default_conf_path(), _quoted)
     error = (
-        f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
-        f"because a different configuration file {_quoted(config)} from command "
-        f"line argument {_quoted(f'-conf={conf}')} is being used instead. Possible "
+        f"Data directory {shown_base} contains a {name} file which is ignored, "
+        f"because a different configuration file {shown_config} from command "
+        f"line argument -conf={shown_path(conf)} is being used instead. Possible "
         "ways to address this would be to:\n"
-        f"- Delete or rename the {name} file in data directory {_quoted(base)}.\n"
+        f"- Delete or rename the {name} file in data directory {shown_base}.\n"
         "- Change datadir= or conf= options to specify one configuration file, not "
         "two, and use includeconf= to include any other configuration files."
     )
@@ -2186,21 +2256,28 @@ def _settings_path(settings: _Settings, net_dir: str) -> str | None:
     return os.path.join(net_dir, get_path_arg(name or SETTINGS_FILENAME))  # noqa: PTH118
 
 
-def _make_data_dirs(net_dir: str) -> None:
+def _make_data_dirs(net_dir: str, default_path: str) -> None:
     """Make the chain's data directory where missing, as `InitConfig` does.
 
     It makes no `wallets` directory, which `SECURITY.md`'s *Where this node
     departs from Bitcoin Core* explains. A failure is Python's words rather
-    than the C++ library's.
+    than the C++ library's. Its path is written whole only where `net_dir`
+    is `default_path`, the chain's directory when no option names one, and
+    by its length otherwise, as `shown_path` writes a path an option gave.
     """
-    if not os.path.exists(net_dir):  # noqa: PTH110
-        try:
-            Path(net_dir).mkdir(exist_ok=True, parents=True)
-        except OSError as os_error:
-            raise ValueError(str(os_error)) from None
+    if os.path.exists(net_dir):  # noqa: PTH110
+        return
+    err_msg = ""
+    try:
+        Path(net_dir).mkdir(exist_ok=True, parents=True)
+    except OSError as os_error:
+        err_msg = str(os_error) if net_dir == default_path else _os_error_text(os_error)
+    # raised past the `except`, whose `OSError` names the path whole
+    if err_msg:
+        raise ValueError(err_msg)
 
 
-def _init_settings_file(settings: _Settings, net_dir: str) -> None:
+def _init_settings_file(settings: _Settings, net_dir: str, default_dir: str) -> None:
     """Read `settings.json`, warn of its unknown names, and write it back.
 
     `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
@@ -2210,22 +2287,30 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     A name no option has is warned of in the log alone, quoted by
     `_quoted_line`, which Core's warning is not: the name may be a secret.
     The path is asked for again by the write, as `WriteSettingsFile` does,
-    after the file's own `settings` key has had its say.
+    after the file's own `settings` key has had its say. Each refusal writes
+    the path as `shown_path` does, `default_dir` being the chain's directory
+    when no option names one.
     """
     path = _settings_path(settings, net_dir)
     if path is None:
         return
+    default_path = os.path.join(default_dir, SETTINGS_FILENAME)  # noqa: PTH118
+    err_msg = ""
     try:
-        settings.rw_settings = read_settings(path, quote=_quoted_line)
+        settings.rw_settings = read_settings(
+            path, quote=_quoted_line, default_path=default_path
+        )
     except OSError as os_error:
         # `fs::exists` throws, and `InitConfig` shows libstdc++'s `what()`
+        shown = shown_path(path, default_path)
         err_msg = (
-            f"filesystem error: cannot get file status: {os_error.strerror} [{path}]"
+            f"filesystem error: cannot get file status: {os_error.strerror} [{shown}]"
         )
-        raise ValueError(err_msg) from None
     except ValueError as error:
         err_msg = f"Settings file could not be read:\n- {error}"
-        raise ValueError(err_msg) from None
+    # raised past the `except`, whose `OSError` names the path whole
+    if err_msg:
+        raise ValueError(err_msg)
     settings.log_warnings.extend(
         f"Ignoring unknown rw_settings value {_quoted_line(name)}"
         for name in settings.rw_settings
@@ -2236,7 +2321,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
         err_msg = "Attempt to write settings file when dynamic settings are disabled."
         raise ValueError(err_msg)
     try:
-        write_settings(path, settings.rw_settings)
+        write_settings(path, settings.rw_settings, default_path=default_path)
     except ValueError as error:
         err_msg = f"Settings file could not be written:\n- {error}"
         raise ValueError(err_msg) from None
@@ -2493,6 +2578,7 @@ def _read_settings(
                 str(Path.cwd()), normalized_datadir
             )
         _check_datadir(base_dir, datadir)
+    default_conf = _default_conf_path()
     conf_path = None
     settings.config_file_line = "Config file: <disabled>"
     if not _is_negated(settings, "conf"):
@@ -2509,6 +2595,7 @@ def _read_settings(
                 conf_explicit=_is_set(settings, "conf"),
                 base_dir=base_display,
                 use_includes="includeconf" not in settings.command_line,
+                default_path=default_conf,
                 sections=settings.config_sections,
                 command_line=settings.command_line,
                 warnings=settings.log_warnings,
@@ -2522,19 +2609,23 @@ def _read_settings(
         # `StartLogging`'s other two lines, for a directory and for a
         # `-conf` that is absent, are refused above by `_read_conf_file`
         # before any log is open, as `ReadConfigFiles` refuses them
-        # before `StartLogging`
+        # before `StartLogging`; the line's path is written as `shown_path`
+        # writes it, where Core logs it whole (`src/init/common.cpp:136` and
+        # `:141`, same sha)
+        shown = shown_path(conf_path, default_conf)
         settings.config_file_line = (
-            f"Config file: {conf_path}"
+            f"Config file: {shown}"
             if os.path.exists(conf_path)  # noqa: PTH110
-            else f"Config file: {conf_path} (not found, skipping)"
+            else f"Config file: {shown} (not found, skipping)"
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
     activation_heights = _get_activation_heights(settings)
     net_dir = os.path.join(base_display, chain_name)  # noqa: PTH118
-    _make_data_dirs(net_dir)
+    default_net_dir = os.path.join(str(default_data_dir()), chain_name)  # noqa: PTH118
+    _make_data_dirs(net_dir, default_net_dir)
     _check_ignored_conf(settings, base_dir, conf_path)
-    _init_settings_file(settings, net_dir)
+    _init_settings_file(settings, net_dir, default_net_dir)
     # `AppInitParameterInteraction` asks again, with the file's values in
     _resolve_chain_name(settings)
 
@@ -2815,7 +2906,10 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
     directories.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
     blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
-    return lock_directories(directories.data_dir, blocks_dir)
+    default_dir = default_data_dir().absolute() / directories.chain.name
+    return lock_directories(
+        (directories.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))
+    )
 
 
 def _resolve_externalip(values: list[str], default_port: int) -> list[str]:

@@ -35,7 +35,7 @@ from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import Config
-from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
+from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus, default_data_dir
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
@@ -348,8 +348,12 @@ class Node(threading.Thread):
 
         # Core's own `AppInitLockDirectories`: the data directory, then the
         # blocks directory, both before the log or any store is opened
-        # (`src/init.cpp`, same sha)
-        self._directory_locks = lock_directories(self.data_dir, blocks_dir)
+        # (`src/init.cpp`, same sha); each refusal names the directory as
+        # `shown_path` does, given where it is when no option names it
+        default_dir = default_data_dir().absolute() / self.chain.name
+        self._directory_locks = lock_directories(
+            (self.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))
+        )
 
         self.terminate_flag = threading.Event()
         # set by `run` once the stores begin to close, which `stop`'s

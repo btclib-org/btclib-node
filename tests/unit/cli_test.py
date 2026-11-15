@@ -124,6 +124,11 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
 LEAK = "correct-horse-battery-staple"
 
 
+def _length(path: str | Path) -> str:
+    """Return how a refusal writes a path an option gave: by its length."""
+    return f"<{len(str(path))} characters>"
+
+
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
 # (`src/common/config.cpp`, `src/common/args.cpp`, at
 # bitcoin/bitcoin@f0de87f040), each measured on `bitcoind` with the line
@@ -452,11 +457,13 @@ def test_load_conf_tree_names_the_included_file_in_an_unknown_key_warning(
         use_includes=True,
         warnings=warnings,
     )
-    assert sorted(warnings) == [
-        f"{conf}:2 Ignoring unknown configuration value foo",
-        "extra.conf:2 Ignoring unknown configuration value <28 characters>",
-        "extra.conf:4 Ignoring unknown configuration value <17 characters>",
-    ]
+    assert sorted(warnings) == sorted(
+        [
+            f"{_length(conf)}:2 Ignoring unknown configuration value foo",
+            "<10 characters>:2 Ignoring unknown configuration value <28 characters>",
+            "<10 characters>:4 Ignoring unknown configuration value <17 characters>",
+        ]
+    )
     assert_secret_free(ValueError(*warnings), [LEAK])
 
 
@@ -619,7 +626,7 @@ def test_load_conf_tree_warns_about_and_ignores_a_nested_includeconf(
     assert tree[""]["includeconf"] == ["secrets.conf", "third.conf"]
     assert capsys.readouterr().err == (
         "warning: -includeconf cannot be used from included files; "
-        "ignoring -includeconf=third.conf\n"
+        "ignoring -includeconf=<10 characters>\n"
     )
 
 
@@ -670,17 +677,20 @@ def test_load_conf_tree_warns_of_the_includes_of_either_section_it_read(
 ) -> None:
     """ISS 1302: the chain's section's first, and never another chain's.
 
-    Measured on `bitcoind` with these files: it warns of `y.conf`, then
-    `x.conf`, and says nothing of `z.conf`.
+    Measured on `bitcoind` with these files, `x.conf` in place of
+    `xx.conf`: it warns of `y.conf`, then `x.conf`, and says nothing of
+    `z.conf`. The warning gives each by its length, so the two differ here.
     """
     (tmp_path / "inc.conf").write_text(
-        "includeconf=x.conf\n[regtest]\nincludeconf=y.conf\n[main]\nincludeconf=z.conf\n",
+        "includeconf=xx.conf\n[regtest]\nincludeconf=y.conf\n[main]\nincludeconf=z.conf\n",
         encoding="utf-8",
     )
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("regtest=1\n[regtest]\nincludeconf=inc.conf\n", encoding="utf-8")
     _load(conf)
-    assert capsys.readouterr().err == f"{_NESTED}y.conf\n{_NESTED}x.conf\n"
+    assert capsys.readouterr().err == (
+        f"{_NESTED}{_length('y.conf')}\n{_NESTED}{_length('xx.conf')}\n"
+    )
 
 
 def test_load_conf_tree_warns_of_the_includes_of_a_chain_an_include_chose(
@@ -698,7 +708,7 @@ def test_load_conf_tree_warns_of_the_includes_of_a_chain_an_include_chose(
         "includeconf=inc.conf\n[regtest]\nincludeconf=r.conf\n", encoding="utf-8"
     )
     assert "port" not in _load(conf)[""]
-    assert capsys.readouterr().err == f"{_NESTED}r.conf\n"
+    assert capsys.readouterr().err == f"{_NESTED}{_length('r.conf')}\n"
 
 
 @pytest.mark.parametrize(
@@ -722,14 +732,13 @@ def test_load_conf_tree_reads_no_include_a_negation_discards(
 def test_load_conf_tree_a_missing_included_file_is_fatal(tmp_path: Path) -> None:
     """An `includeconf` naming a file that does not exist is refused.
 
-    In `ReadConfigFiles`'s words, naming the value as written, as
-    `bitcoind` names `inc/../nosuch.conf`.
+    In `ReadConfigFiles`'s words, the value as written by its length, as
+    `bitcoind` names `inc/../nosuch.conf` as written, and by its position.
     """
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("includeconf=missing.conf\n", encoding="utf-8")
-    with pytest.raises(
-        ValueError, match=r"^Failed to include configuration file missing\.conf$"
-    ):
+    refusal = "Failed to include configuration file <12 characters> (value 1 of"
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)} -includeconf\\)$"):
         _load(conf)
 
 
@@ -866,11 +875,17 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
         (["-nodatadir"], "Negating of -datadir is meaningless and therefore forbidden"),
         (
             ["-includeconf=x"],
-            '-includeconf cannot be used from commandline; -includeconf="x"',
+            (
+                "-includeconf cannot be used from commandline; -includeconf=<1 characters> "
+                "(value 1 of -includeconf)"
+            ),
         ),
         (
-            ["-includeconf=\u00e9"],
-            '-includeconf cannot be used from commandline; -includeconf="\u00e9"',
+            ["-noincludeconf", "-includeconf=\u00e9x"],
+            (
+                "-includeconf cannot be used from commandline; -includeconf=<2 characters> "
+                "(value 2 of -includeconf)"
+            ),
         ),
         (
             ["-noincludeconf=0"],
@@ -883,14 +898,15 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
         "a section",
         "nodatadir",
         "includeconf",
-        "includeconf, not ASCII",
+        "includeconf after its negation",
         "a double negative",
     ],
 )
 def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) -> None:
     """Each message as `bitcoind` printed it, but for the argument.
 
-    Core quotes the argument whole; `_quoted_line` stops at the `=`.
+    Core quotes the argument whole; `_quoted_line` stops at the `=`, and an
+    `-includeconf` value is given by its length and its position.
     """
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$"):
@@ -1247,7 +1263,7 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
     """
     conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
     config = _build(tmp_path, "-nolisten=0", conf=conf)
-    path = tmp_path / "bitcoin.conf"
+    path = _length(tmp_path / "bitcoin.conf")
     sections = (
         f"{path}:4 Section [x] is not recognized.\n"
         f"{path}:5 Section [y] is not recognized.\n"
@@ -2924,14 +2940,20 @@ def test_build_config_conf_explicit_and_missing_raises(tmp_path: Path) -> None:
 def _ignored_conf(datadir: str, config: str, conf: str) -> str:
     """Return `InitConfig`'s refusal of an ignored `bitcoin.conf`, as measured.
 
-    `bitcoind` printed it after `Error: `, the paths absolute.
+    `bitcoind` printed it after `Error: `, the paths absolute and quoted.
+    Here a path is quoted only where it is the default data directory's,
+    and is given by its length otherwise, as is the `-conf` value.
     """
+    default = str(default_data_dir())
+    shown = _length(datadir) if datadir != default else f'"{datadir}"'
+    default_conf = os.path.join(default, "bitcoin.conf")  # noqa: PTH118
+    shown_config = _length(config) if config != default_conf else f'"{config}"'
     return (
-        f'Data directory "{datadir}" contains a "bitcoin.conf" file which is '
-        f'ignored, because a different configuration file "{config}" from command '
-        f'line argument "-conf={conf}" is being used instead. Possible ways to '
-        "address this would be to:\n"
-        f'- Delete or rename the "bitcoin.conf" file in data directory "{datadir}".\n'
+        f'Data directory {shown} contains a "bitcoin.conf" file which is '
+        f"ignored, because a different configuration file {shown_config} from "
+        f"command line argument -conf={_length(conf)} is being used instead. "
+        "Possible ways to address this would be to:\n"
+        f'- Delete or rename the "bitcoin.conf" file in data directory {shown}.\n'
         "- Change datadir= or conf= options to specify one configuration file, not "
         "two, and use includeconf= to include any other configuration files.\n"
         "- Set allowignoredconf=1 option to treat this condition as a warning, not "
@@ -3010,15 +3032,20 @@ def test_build_config_an_ignored_bitcoin_conf_in_the_default_datadir(
 
 @pytest.mark.skipif(os.name == "nt", reason='`"` names no Windows file')
 def test_build_config_an_ignored_bitcoin_conf_is_quoted_as_core_quotes(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `"` or a `&` in a path is escaped with `&`, as `fs::quoted` does."""
-    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
-    (tmp_path / 'o"t&.conf').write_text("", encoding="utf-8")
+    """A `"` or a `&` in a path is escaped with `&`, as `fs::quoted` does.
+
+    The default data directory is the path quoted whole.
+    """
+    home = tmp_path / 'h"o&me'
+    monkeypatch.setattr(Path, "home", lambda: home)
+    (home / ".btclib").mkdir(parents=True)
+    (home / ".btclib" / "bitcoin.conf").write_text("", encoding="utf-8")
+    (home / ".btclib" / "other.conf").write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match=r"^Data directory") as error:
-        cli.build_config([f"-datadir={tmp_path}", '-conf=o"t&.conf'])
-    assert f'file "{tmp_path}/o&"t&&.conf" from' in str(error.value)
-    assert 'argument "-conf=o&"t&&.conf" is' in str(error.value)
+        cli.build_config(["-conf=other.conf"])
+    assert f'directory "{tmp_path}/h&"o&&me/.btclib" contains' in str(error.value)
 
 
 def test_build_config_an_ignored_bitcoin_conf_directory_is_refused(
@@ -3147,7 +3174,7 @@ def test_build_config_an_ignored_bitcoin_conf_through_a_symbolic_link(
             cli.build_config([*argv, "-h"])
         assert str(error.value) == (
             "Error reading configuration file: specified config file "
-            f'"{tmp_path / "D" / "other.conf"}" could not be opened.'
+            f"{_length(tmp_path / 'D' / 'other.conf')} could not be opened."
         )
         return
     with pytest.raises(SystemExit) as stop:
@@ -3222,9 +3249,12 @@ def test_build_config_datadir_is_lexically_normal(paths: Path, datadir: str) -> 
 def test_build_config_a_missing_datadir_is_named_as_given(
     paths: Path, datadir: str
 ) -> None:
-    """`InitConfig`'s refusal names `-datadir` as written, not normalised."""
+    """`InitConfig`'s refusal names `-datadir` as written, not normalised.
+
+    By its length, which differs from the normalised path's.
+    """
     datadir = datadir.format(x=paths)
-    expected = re.escape(f'Specified data directory "{datadir}" does not exist.')
+    expected = re.escape(f"Specified data directory {_length(datadir)} does not exist.")
     with pytest.raises(ValueError, match=f"^{expected}$"):
         cli.build_config([f"-datadir={datadir}"])
 
@@ -3248,42 +3278,50 @@ def test_build_config_blocksdir_is_lexically_normal(
 def test_build_config_a_missing_blocksdir_is_named_as_given(
     paths: Path, blocksdir: str
 ) -> None:
-    """`bitcoind` names `-blocksdir` as written, `..` and all."""
+    """`bitcoind` names `-blocksdir` as written, `..` and all: by its length."""
     blocksdir = blocksdir.format(x=paths)
-    expected = re.escape(f'Specified blocks directory "{blocksdir}" does not exist.')
+    shown = _length(blocksdir)
+    expected = re.escape(f"Specified blocks directory {shown} does not exist.")
     with pytest.raises(ValueError, match=f"^{expected}$"):
         cli.build_config([f"-datadir={paths / 'd'}", f"-blocksdir={blocksdir}"])
 
 
 @pytest.mark.parametrize(
-    ("argv", "conf", "refusal"),
+    ("argv", "conf", "refusal", "path"),
     [
-        (["-conf=nosuch/../cdir"], "", 'Config file "{d}{s}cdir" is a directory.'),
+        (["-conf=nosuch/../cdir"], "", "Config file {} is a directory.", "{d}{s}cdir"),
         (
             ["-conf=missing.conf"],
             "",
-            'specified config file "{d}{s}missing.conf" could not be opened.',
+            "specified config file {} could not be opened.",
+            "{d}{s}missing.conf",
         ),
         (
             ["-conf=j.conf"],
             "regtest=1\nincludeconf=incd\n",
-            'Included config file "{d}{s}incd" is a directory.',
+            "Included config file {} (value 1 of -includeconf) is a directory.",
+            "{d}{s}incd",
         ),
         (
             ["-conf=j.conf"],
             "regtest=1\nincludeconf=inc/../nosuch.conf\n",
-            "Failed to include configuration file inc/../nosuch.conf",
+            "Failed to include configuration file {} (value 1 of -includeconf)",
+            "inc/../nosuch.conf",
         ),
     ],
     ids=["a directory", "missing", "an included directory", "an included missing"],
 )
 def test_build_config_a_configuration_file_refusal_is_core_s(
-    paths: Path, argv: list[str], conf: str, refusal: str
+    paths: Path, argv: list[str], conf: str, refusal: str, path: str
 ) -> None:
-    """`ReadConfigFiles`'s words after `InitConfig`'s prefix, each measured."""
+    """`ReadConfigFiles`'s words after `InitConfig`'s prefix, each measured.
+
+    The path `bitcoind` named is given by its length.
+    """
     data = paths / "d"
     (data / "j.conf").write_text(conf, encoding="utf-8")
-    refusal = f"Error reading configuration file: {refusal.format(d=data, s=os.sep)}"
+    shown = _length(path.format(d=data, s=os.sep))
+    refusal = f"Error reading configuration file: {refusal.format(shown)}"
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", *argv])
 
@@ -3302,7 +3340,7 @@ def test_build_config_a_datadir_that_normalises_to_dot_keeps_it_in_a_refusal(
     monkeypatch.chdir(tmp_path)
     refusal = (
         "Error reading configuration file: specified config file "
-        f'"{tmp_path}{os.sep}.{os.sep}missing.conf" could not be opened.'
+        f"{_length(f'{tmp_path}{os.sep}.{os.sep}missing.conf')} could not be opened."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config(["-datadir=.", "-conf=missing.conf"])
@@ -3319,7 +3357,7 @@ def test_build_config_a_conf_that_normalises_to_dot_keeps_it_in_a_refusal(
     """
     data = paths / "d"
     refusal = (
-        f'Error reading configuration file: Config file "{data}{os.sep}." '
+        f"Error reading configuration file: Config file {_length(f'{data}{os.sep}.')} "
         "is a directory."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
@@ -3349,7 +3387,8 @@ def test_build_config_an_includeconf_value_is_not_lexically_normalised(
     )
     refusal = (
         "Error reading configuration file: Included config file "
-        f'"{data}{os.sep}{include}" is a directory.'
+        f"{_length(f'{data}{os.sep}{include}')} (value 1 of -includeconf) is a "
+        "directory."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", "-conf=j.conf"])
@@ -3365,7 +3404,7 @@ def test_build_config_a_relative_datadir_is_refused_by_its_full_path(
     monkeypatch.chdir(paths)
     missing = Path.cwd() / "d" / "missing.conf"
     refusal = (
-        f'Error reading configuration file: specified config file "{missing}" '
+        f"Error reading configuration file: specified config file {_length(missing)} "
         "could not be opened."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
@@ -3384,12 +3423,15 @@ _UNREADABLE = pytest.mark.skipif(
         (
             ["-conf=other.conf"],
             "other.conf",
-            'specified config file "{d}/other.conf" could not be opened.',
+            "specified config file {d} could not be opened.",
         ),
         (
             ["-conf=j.conf"],
             "inc.conf",
-            "Failed to include configuration file inc.conf",
+            (
+                "Failed to include configuration file <8 characters> (value 1 of "
+                "-includeconf)"
+            ),
         ),
     ],
     ids=["-conf", "an include"],
@@ -3406,7 +3448,8 @@ def test_build_config_an_unreadable_configuration_file_is_refused_as_core_s(
     (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
     (data / "inc.conf").write_text("port=1\n", encoding="utf-8")
     (data / conf).chmod(0)
-    refusal = f"Error reading configuration file: {refusal.format(d=data)}"
+    shown = _length(f"{data}/other.conf")
+    refusal = f"Error reading configuration file: {refusal.format(d=shown)}"
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", *argv])
 
@@ -3425,7 +3468,7 @@ def test_build_config_names_a_leading_double_slash_as_one(paths: Path) -> None:
     """`lexically_normal` collapses `//`, `bitcoind` naming "/<X>/d/..."."""
     missing = paths / "d" / "missing.conf"
     refusal = (
-        f'Error reading configuration file: specified config file "{missing}" '
+        f"Error reading configuration file: specified config file {_length(missing)} "
         "could not be opened."
     )
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
@@ -3439,7 +3482,7 @@ def test_build_config_names_an_ignored_conf_s_double_slash_as_one(paths: Path) -
     """`bitcoind` names "/<X>/d" for `-datadir=//<X>/d` here too."""
     data = paths / "d"
     (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
-    with pytest.raises(ValueError, match=f'^Data directory "{re.escape(str(data))}"'):
+    with pytest.raises(ValueError, match=f"^Data directory {_length(data)} "):
         cli.build_config([f"-datadir=/{data}", "-conf=other.conf"])
 
 
@@ -4210,7 +4253,7 @@ _BEFORE_THE_LOCK = [
     (["-maxconnections=-1"], "-maxconnections must be greater or equal than zero"),
     (
         ["-blocksdir={x}/nosuch"],
-        'Specified blocks directory "{x}/nosuch" does not exist.',
+        "Specified blocks directory {blocksdir} does not exist.",
     ),
     (["-prune=-1", "-port=0"], "Prune cannot be configured with a negative value."),
 ]
@@ -4231,7 +4274,7 @@ def test_main_a_held_directory_is_refused_before_these_options(
         cli.main([f"-datadir={data_dir}", "-regtest", *argv])
     assert excinfo.value.code == 1
     assert capsys.readouterr().err == (
-        f"Error: Cannot obtain a lock on directory {data_dir / 'regtest'}. "
+        f"Error: Cannot obtain a lock on directory {_length(data_dir / 'regtest')}. "
         "btclib-node is probably already running.\n"
     )
 
@@ -4254,7 +4297,8 @@ def test_main_these_options_are_refused_before_a_held_directory(
     ):
         cli.main([f"-datadir={data_dir}", "-regtest", *argv])
     assert excinfo.value.code == 1
-    assert capsys.readouterr().err == f"Error: {refusal.format(x=tmp_path)}\n"
+    shown = refusal.format(blocksdir=_length(f"{tmp_path}/nosuch"))
+    assert capsys.readouterr().err == f"Error: {shown}\n"
 
 
 @pytest.mark.parametrize(
@@ -4262,7 +4306,7 @@ def test_main_these_options_are_refused_before_a_held_directory(
     [
         (
             ["-blocksdir={x}/nosuch", "-maxconnections=-1"],
-            'Specified blocks directory "{x}/nosuch" does not exist.',
+            "Specified blocks directory {nosuch} does not exist.",
         ),
         (
             ["-maxconnections=-1", "-debug=bogus"],
@@ -4298,7 +4342,7 @@ def test_build_config_refuses_in_core_order(
     `'...'` (ISS 2521).
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
-    expected = re.escape(refusal.format(x=tmp_path))
+    expected = re.escape(refusal.format(nosuch=_length(f"{tmp_path}/nosuch")))
     with pytest.raises(ValueError, match=f"^{expected}$"):
         cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
 
@@ -4397,6 +4441,264 @@ def test_a_key_given_as_an_option_s_value_is_not_in_the_refusal(
     assert_secret_free(raised.value, [LEAK_WIF])
 
 
+_JSON_REFUSAL = (
+    "does not contain valid JSON. This may be caused by a crash, power loss, "
+    "full disk, or storage error, and can be fixed by removing the file, which "
+    "will reset settings to default values."
+)
+
+
+# a path option's value, a WIF in its place, each refusal `bitcoind` gives
+# for it naming it whole: `{d}` is the test's directory and `{k}` the WIF,
+# the files are made before the start, and the message names each path
+# Core would name by its length
+@pytest.mark.parametrize(
+    ("argv", "files", "message"),
+    [
+        (
+            ["-datadir={d}/{k}"],
+            {},
+            "Specified data directory {d/k} does not exist.",
+        ),
+        (
+            ["-datadir={d}", "-regtest", "-blocksdir={d}/{k}"],
+            {},
+            "Specified blocks directory {d/k} does not exist.",
+        ),
+        (
+            ["-datadir={d}", "-regtest", "-conf={d}/{k}"],
+            {},
+            (
+                "Error reading configuration file: specified config file {d/k} could "
+                "not be opened."
+            ),
+        ),
+        (
+            ["-datadir={d}", "-regtest", "-conf={d}/{k}"],
+            {"{k}/": ""},
+            "Error reading configuration file: Config file {d/k} is a directory.",
+        ),
+        (
+            ["-datadir={d}", "-regtest"],
+            {"bitcoin.conf": "includeconf={k}\n"},
+            (
+                "Error reading configuration file: Failed to include configuration file "
+                "{k} (value 1 of -includeconf)"
+            ),
+        ),
+        (
+            ["-datadir={d}", "-regtest"],
+            {
+                "bitcoin.conf": "includeconf=a.conf\nincludeconf={k}\n",
+                "a.conf": "",
+                "{k}/": "",
+            },
+            (
+                "Error reading configuration file: Included config file {d/k} (value 2 "
+                "of -includeconf) is a directory."
+            ),
+        ),
+        (
+            ["-datadir={d}", "-includeconf={k}"],
+            {},
+            (
+                "Error parsing command line arguments: -includeconf cannot be used from "
+                "commandline; -includeconf={k} (value 1 of -includeconf)"
+            ),
+        ),
+        (
+            ["-datadir={d}", "-regtest", "-settings={k}"],
+            {"regtest/{k}": "x"},
+            (
+                "Settings file could not be read:\n- Settings file {d/regtest/k} "
+                f"{_JSON_REFUSAL}"
+            ),
+        ),
+        (
+            ["-datadir={d}", "-regtest", "-settings={k}"],
+            {"regtest": "a file where the chain's directory goes"},
+            (
+                "Settings file could not be written:\n- Error: Unable to open settings "
+                "file {d/regtest/k.tmp} for writing"
+            ),
+        ),
+    ],
+    ids=[
+        "datadir",
+        "blocksdir",
+        "conf",
+        "conf a directory",
+        "includeconf",
+        "includeconf a directory",
+        "includeconf on the command line",
+        "settings not JSON",
+        "settings not written",
+    ],
+)
+def test_a_key_given_as_a_path_is_not_in_the_refusal(
+    tmp_path: Path, argv: list[str], files: dict[str, str], message: str
+) -> None:
+    """ISS 2533: a path an option gave is given by its length, not quoted.
+
+    An `includeconf` value is also named by its position.
+    """
+    d = str(tmp_path)
+    for name, text in files.items():
+        path = tmp_path / name.replace("{k}", LEAK_WIF)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if name.endswith("/"):
+            path.mkdir()
+        else:
+            path.write_text(text.replace("{k}", LEAK_WIF), encoding="utf-8")
+    shown = {
+        "{d/k}": _length(f"{d}/{LEAK_WIF}"),
+        "{d/regtest/k}": _length(os.path.join(d, "regtest", LEAK_WIF)),  # noqa: PTH118
+        "{d/regtest/k.tmp}": _length(
+            os.path.join(d, "regtest", f"{LEAK_WIF}.tmp")  # noqa: PTH118
+        ),
+        "{k}": _length(LEAK_WIF),
+    }
+    for key, value in shown.items():
+        message = message.replace(key, value)
+    with pytest.raises(ValueError, match=r"\S") as raised:
+        cli.build_config([arg.format(d=d, k=LEAK_WIF) for arg in argv])
+    assert str(raised.value) == message
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+def test_a_key_given_as_conf_beside_an_ignored_bitcoin_conf_is_not_in_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2533: the refusal, and the warning `-allowignoredconf` makes."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    other = tmp_path / LEAK_WIF
+    other.write_text("regtest=1\n", encoding="utf-8")
+    argv = [f"-datadir={tmp_path}", f"-conf={other}"]
+    expected = _ignored_conf(str(tmp_path), str(other), str(other))
+    with pytest.raises(ValueError, match=r"^Data directory") as raised:
+        cli.build_config(argv)
+    assert str(raised.value) == expected
+    assert_secret_free(raised.value, [LEAK_WIF])
+    config = cli.build_config([*argv, "-allowignoredconf"])
+    assert config.log_warnings == (expected.rpartition("\n")[0],)
+    assert_secret_free(ValueError(*config.log_warnings), [LEAK_WIF])
+    assert capsys.readouterr().err == ""
+
+
+def test_a_key_given_as_a_path_is_not_in_a_configuration_file_s_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2533: the warnings that name a file, and the `Config file:` line."""
+    conf = tmp_path / LEAK_WIF
+    included = f"{LEAK_WIF}.conf"
+    conf.write_text(
+        f"regtest=1\nfoo=1\nincludeconf={included}\n[x]\n", encoding="utf-8"
+    )
+    (tmp_path / included).write_text(
+        f"bar=1\nincludeconf={LEAK_WIF}\n", encoding="utf-8"
+    )
+    config = cli.build_config([f"-datadir={tmp_path}", f"-conf={conf}"])
+    err = capsys.readouterr().err
+    lines = (*config.log_warnings, config.section_warning, config.config_file_line, err)
+    assert config.config_file_line == f"Config file: {_length(conf)}"
+    assert f"{_length(conf)}:2 Ignoring unknown configuration value foo" in lines
+    assert f"{_length(included)}:1 Ignoring unknown configuration value bar" in lines
+    assert f"ignoring -includeconf={_length(LEAK_WIF)}" in err
+    assert_secret_free(ValueError(*lines), [LEAK_WIF])
+
+
+def test_a_key_given_as_settings_is_not_in_a_status_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: the library's words for a status it cannot read."""
+
+    def refuse(_path: str, *, quote: object, default_path: object) -> dict[str, object]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "read_settings", refuse)
+    with pytest.raises(ValueError, match=r"^filesystem error") as raised:
+        _read(tmp_path, f"-settings={LEAK_WIF}")
+    path = _length(tmp_path / "regtest" / LEAK_WIF)
+    assert str(raised.value) == (
+        f"filesystem error: cannot get file status: Permission denied [{path}]"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+def test_a_key_given_as_datadir_is_not_in_python_s_words_for_a_chain_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: the path of an `OSError` is given by its length."""
+
+    def refuse(self: Path, *_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    data = tmp_path / LEAK_WIF
+    data.mkdir()
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    with pytest.raises(ValueError, match=r"^\[Errno 13\]") as raised:
+        cli.build_config([f"-datadir={data}", "-regtest"])
+    shown = _length(data / "regtest")
+    assert str(raised.value) == f"[Errno 13] Permission denied: {shown}"
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+def test_the_default_chain_directory_is_named_whole_in_python_s_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path built from defaults alone holds nothing an operator gave."""
+    net_dir = default_data_dir() / "regtest"
+    error = PermissionError(13, "Permission denied", str(net_dir))
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    with pytest.raises(ValueError, match=r"^\[Errno 13\]") as raised:
+        cli.build_config(["-regtest"])
+    assert str(raised.value) == str(error)
+
+
+def test_a_key_given_as_conf_is_not_in_python_s_words_for_a_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: the `OSError` of `fs::equivalent`'s check, by its length."""
+    conf = tmp_path / LEAK_WIF
+    conf.write_text("regtest=1\n", encoding="utf-8")
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+
+    def refuse(first: str, _second: object) -> bool:
+        raise PermissionError(13, "Permission denied", first)
+
+    monkeypatch.setattr(os.path, "samefile", refuse)
+    with pytest.raises(ValueError, match=r"^\[Errno 13\]") as raised:
+        cli.build_config([f"-datadir={tmp_path}", f"-conf={conf}"])
+    assert str(raised.value) == f"[Errno 13] Permission denied: {_length(conf)}"
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+@pytest.mark.parametrize(
+    ("error", "text"),
+    [
+        (OSError("no path"), "no path"),
+        (
+            OSError(18, "Invalid cross-device link", "/a/b", None, "/c"),
+            "[Errno 18] Invalid cross-device link: <4 characters> -> <2 characters>",
+        ),
+        (
+            OSError(2, "No such file or directory", "/d/x"),
+            "[Errno 2] No such file or directory: '/d/x'",
+        ),
+    ],
+    ids=["no path", "two paths", "the default path"],
+)
+def test_os_error_text_writes_each_path_by_its_length(
+    error: OSError, text: str
+) -> None:
+    """Python's words, a path whole only where it is the default's."""
+    assert cli._os_error_text(error, "/d/x") == text
+
+
 def test_main_releases_its_lock_once_the_node_holds_its_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4457,7 +4759,10 @@ def test_main_reads_an_include_of_the_chains_own_section(
         (
             ["-chain=bogus"],
             "includeconf=nosuch.conf\n",
-            "Failed to include configuration file nosuch.conf",
+            (
+                "Failed to include configuration file <11 characters> (value 1 of "
+                "-includeconf)"
+            ),
         ),
         ([], "chain=bogus\nincludeconf=inc.conf\n", "parse error on line 1: bad"),
         (
@@ -4620,7 +4925,8 @@ def test_main_warns_of_an_unrecognized_section_before_refusing(
     """ISS 1271: the warning, then the blocks directory, as `bitcoind` prints.
 
     Measured on `bitcoind` with this file and include: the root file is
-    named by its path, the included one as `includeconf=` names it.
+    named by its path, the included one as `includeconf=` names it, each
+    here by its length.
     """
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nincludeconf=inc.conf\n[x]\n", encoding="utf-8"
@@ -4629,9 +4935,10 @@ def test_main_warns_of_an_unrecognized_section_before_refusing(
     with pytest.raises(SystemExit):
         cli.main([f"-datadir={tmp_path}", f"-blocksdir={tmp_path}/nosuch"])
     assert capsys.readouterr().err == (
-        f"Warning: {tmp_path / 'bitcoin.conf'}:3 Section [x] is not recognized.\n"
-        "inc.conf:1 Section [z] is not recognized.\n\n"
-        f'Error: Specified blocks directory "{tmp_path}/nosuch" does not exist.\n'
+        f"Warning: {_length(tmp_path / 'bitcoin.conf')}:3 Section [x] is not "
+        "recognized.\n<8 characters>:1 Section [z] is not recognized.\n\n"
+        f"Error: Specified blocks directory {_length(f'{tmp_path}/nosuch')} does not "
+        "exist.\n"
     )
 
 
@@ -4694,7 +5001,7 @@ def test_main_a_refusal_after_the_lock_reaches_history_log(
     [
         (
             ["-blocksdir={tmp}/nosuch"],
-            'Specified blocks directory "{tmp}/nosuch" does not exist.',
+            "Specified blocks directory {nosuch} does not exist.",
         ),
         (
             ["-prune=550", "-reindex-chainstate"],
@@ -4732,7 +5039,8 @@ def test_a_maxconnections_number_past_an_int_is_refused_where_core_reads_it(
     )
     args = [arg.format(tmp=tmp_path) for arg in argv]
     with pytest.raises(
-        ValueError, match=f"^{re.escape(message.format(tmp=tmp_path))}$"
+        ValueError,
+        match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
     ):
         _build(tmp_path, "-regtest", *args)
 
@@ -4742,7 +5050,7 @@ def test_a_maxconnections_number_past_an_int_is_refused_where_core_reads_it(
     [
         (
             ["-blocksdir={tmp}/nosuch"],
-            'Specified blocks directory "{tmp}/nosuch" does not exist.',
+            "Specified blocks directory {nosuch} does not exist.",
         ),
         (
             ["-prune=550", "-reindex-chainstate"],
@@ -4797,7 +5105,8 @@ def test_an_rpcmaxconnections_number_no_int_is_refused_where_core_reads_it(
     )
     args = [arg.format(tmp=tmp_path) for arg in argv]
     with pytest.raises(
-        ValueError, match=f"^{re.escape(message.format(tmp=tmp_path))}$"
+        ValueError,
+        match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
     ):
         _build(tmp_path, "-regtest", *args)
 
@@ -5199,10 +5508,23 @@ def test_build_config_keeps_the_categories_debug_names(
 
 
 def test_build_config_names_the_config_file_it_read(tmp_path: Path) -> None:
-    """ISS 1444: `StartLogging`'s "Config file: <path>" for a file found."""
+    """ISS 1444: `StartLogging`'s "Config file: <path>" for a file found.
+
+    The path `-datadir` gave by its length.
+    """
     config = _build(tmp_path)
     assert config.config_file_line == (
-        f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')}"  # noqa: PTH118
+        f"Config file: {_length(os.path.join(tmp_path, 'bitcoin.conf'))}"  # noqa: PTH118
+    )
+
+
+def test_build_config_names_the_default_config_file_whole(home: Path) -> None:
+    """A path built from defaults alone is logged as Core logs it."""
+    (home / ".btclib").mkdir()
+    (home / ".btclib" / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    config = cli.build_config([])
+    assert config.config_file_line == (
+        f"Config file: {os.path.join(default_data_dir(), 'bitcoin.conf')}"  # noqa: PTH118
     )
 
 
@@ -5210,7 +5532,7 @@ def test_build_config_names_the_config_file_it_did_not_find(tmp_path: Path) -> N
     """ISS 1444: the default file's absence is `(not found, skipping)`."""
     config = cli.build_config([f"-datadir={tmp_path}"])
     assert config.config_file_line == (
-        f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')} "  # noqa: PTH118
+        f"Config file: {_length(os.path.join(tmp_path, 'bitcoin.conf'))} "  # noqa: PTH118
         "(not found, skipping)"
     )
 
@@ -5244,7 +5566,7 @@ def test_main_history_log_names_the_data_directory_and_config_file(
         f"Default data directory {default_data_dir()}",
         f"Using data directory {tmp_path / 'mainnet'}",
         (
-            f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')} "  # noqa: PTH118
+            f"Config file: {_length(os.path.join(tmp_path, 'bitcoin.conf'))} "  # noqa: PTH118
             "(not found, skipping)"
         ),
     ]
@@ -5524,7 +5846,7 @@ def test_a_malformed_file_refuses_the_start(
     with pytest.raises(ValueError, match=r".") as refused:
         _read(tmp_path)
     assert str(refused.value).startswith(
-        "Settings file could not be read:\n- " + detail.format(p=path)
+        "Settings file could not be read:\n- " + detail.format(p=_length(path))
     )
     assert path.read_text(encoding="utf-8") == content
 
@@ -5556,7 +5878,7 @@ def test_a_malformed_file_is_refused_without_its_secret(
         _read(tmp_path)
     assert str(refused.value) == (
         f"Settings file could not be read:\n- {detail} in settings file "
-        f"{_settings(tmp_path)}"
+        f"{_length(_settings(tmp_path))}"
     )
     assert_secret_free(refused.value, [LEAK])
 
@@ -5572,7 +5894,7 @@ def test_main_prints_a_malformed_file_as_core_does(
     assert exit_.value.code == 1
     assert capsys.readouterr().err == (
         "Error: Settings file could not be read:\n"
-        f"- Found duplicate key key in settings file {_settings(tmp_path)}\n"
+        f"- Found duplicate key key in settings file {_length(_settings(tmp_path))}\n"
     )
 
 
@@ -5582,7 +5904,7 @@ def test_a_file_that_cannot_be_written_refuses_the_start(tmp_path: Path) -> None
         _read(tmp_path, "-settings=sub/s.json")
     assert str(refused.value) == (
         "Settings file could not be written:\n- Error: Unable to open settings "
-        f"file {tmp_path / 'regtest' / 'sub' / 's.json'}.tmp for writing"
+        f"file {_length(f'{tmp_path / "regtest" / "sub" / "s.json"}.tmp')} for writing"
     )
 
 
@@ -5860,11 +6182,11 @@ def test_a_status_that_cannot_be_read_is_refused_as_the_library_words_it(
 ) -> None:
     """`fs::exists` throws; `InitConfig` shows the exception's text alone."""
 
-    def refuse(_path: str, *, quote: object) -> dict[str, object]:
+    def refuse(_path: str, *, quote: object, default_path: object) -> dict[str, object]:
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(cli, "read_settings", refuse)
-    path = tmp_path / "regtest" / "settings.json"
+    path = _length(tmp_path / "regtest" / "settings.json")
     with pytest.raises(
         ValueError, match=r"^filesystem error: cannot get file status: "
     ) as refused:
