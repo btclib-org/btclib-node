@@ -4320,14 +4320,12 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `Mempool.add_tx` evicts to make room rather than refusing outright
     # past `is_full()` (btclib-org/btclib-node#294), so whether this
     # call is answered with the refusal below is not knowable before
-    # making it: a transaction that clears whatever eviction would
-    # otherwise remove is kept even into a mempool already at its limit,
-    # and one that does not is evicted right back out, `add_tx`
-    # answering `False` either way a caller of this method could tell
-    # apart before calling it. Answering `tx.id.hex()` regardless of
-    # that boolean would tell the caller this transaction was kept when
-    # it was not -- the same defect #277 names on the peer-to-peer path,
-    # `p2p/callbacks.py`'s `tx` handler.
+    # making it: `add_tx` answers `True` for a transaction it keeps,
+    # even into a mempool already at its limit, and `False` for one the
+    # trim evicts right back out, as for one it refuses. Answering
+    # `tx.id.hex()` regardless of that boolean would tell the caller
+    # this transaction was kept when it was not -- the same defect #277
+    # names on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     if not node.mempool.add_tx(
         tx, fee, vsize, height=tip_height, weight=weight, replaced=replaced

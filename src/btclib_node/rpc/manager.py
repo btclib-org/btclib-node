@@ -751,29 +751,24 @@ class RpcManager(threading.Thread):
         `run_coroutine_threadsafe` and never awaits the
         `concurrent.futures.Future` it returns -- deliberately, `server`
         running for this manager's whole lifetime rather than returning
-        -- so an exception it raises before ever reaching its own accept
-        loop would otherwise surface only through asyncio's own "Task
-        exception was never retrieved" warning: timed to whenever the
-        garbage collector reaches that future rather than to the failure
-        itself, and written to the `asyncio` logger rather than this
-        node's own. `_bind` avoids the same shape by binding
-        synchronously (`btclib-org/btclib-node#88`), which `server`
-        cannot do, it being this manager's own listener for as long as
-        it runs.
+        -- so without this callback an exception it raises before ever
+        reaching its own accept loop is never logged at all: copying the
+        task's state onto that future reads the task's exception, so
+        asyncio's "Task exception was never retrieved" warning does not
+        fire, and a `concurrent.futures.Future` nobody reads warns about
+        nothing. `_bind` avoids the same shape by binding synchronously
+        (`btclib-org/btclib-node#88`), which `server` cannot do, it
+        being this manager's own listener for as long as it runs.
 
-        `stop`'s own sweep ending this task on purpose is not logged, in
-        two different ways depending on how the cancellation actually
-        unwound: the ordinary one is `future` itself in the cancelled
-        state, `Task.cancelled()` being true because `server` ended on
-        the exact `CancelledError` `Task.cancel()` threw in, which
-        `future.exception()` answers by raising rather than returning --
-        the `with suppress` below is what that arm is. The `isinstance`
-        arm below it is for a `CancelledError` `future.exception()`
-        returns instead of raising: `server`'s own coroutine chain
-        catching and re-raising a `CancelledError` that was not the one
-        `Task.cancel()` threw would leave `Task.cancelled()` false while
-        still ending on that same exception type, and this is what
-        keeps that from being logged as a failure too.
+        `stop` ending this task on purpose is not logged. A task that
+        ends on a `CancelledError`, whether `Task.cancel()` threw it in
+        or the coroutine raised one of its own, is cancelled, and
+        `future` with it, so `future.exception()` raises
+        `concurrent.futures.CancelledError` -- the `with suppress`
+        below. The `isinstance` check keeps an `asyncio.CancelledError`
+        held as `future`'s exception from being logged as a failure;
+        `run_coroutine_threadsafe` never stores one there, only a
+        `Future` given one through `set_exception` holds it.
         """
         with suppress(CancelledError):
             exc = future.exception()

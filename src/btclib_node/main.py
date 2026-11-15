@@ -1588,11 +1588,9 @@ def _resolve_trial_exception(
     keeps trying on top of storage it just proved inconsistent, the same
     conclusion already drawn above `to_add`/`to_remove` themselves for a
     read failure at the same citation. `raise exc` and not a bare
-    `raise`: this is not itself an except block, so a bare `raise` here
-    has no currently-handled exception of its own to reach for -- `exc`
-    already carries the traceback `update_chain`'s own except caught it
-    with, and raising it explicitly extends that same traceback rather
-    than starting a new one.
+    `raise`: called from inside `update_chain`'s own except, a bare
+    `raise` would re-raise the same exception, but `raise exc` adds this
+    function's own frame to the traceback `exc` already carries.
     """
     if isinstance(exc, _CONTENT_FAILURE):
         _record_rejection(node, cast("bytes", failed_hash), exc)

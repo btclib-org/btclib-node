@@ -1117,14 +1117,12 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
     `stop` itself runs inside the loop and schedules onto the loop it is
     on.
 
-    What this catches is a synchronous close in `stop`. Measured:
-    removing `_close`'s own `remove_reader`/`remove_writer` while
-    leaving the scheduling in place leaves this test green --
-    `_sock_read_done` gets its `remove_reader` in before the scheduled
-    `_close` runs, so there is no closed fd for `modify` to re-register.
-    The test above fails on that narrower mutation and this one does
-    not, which is the whole reason both are here rather than either
-    alone.
+    What this test catches is `stop` closing the socket itself, before
+    the reader and the writer are removed. It stays green where `_close`
+    is scheduled but does not remove them: `_sock_read_done` gets its
+    `remove_reader` in before the scheduled `_close` runs, so there is
+    no closed fd for `modify` to re-register. The test above fails there
+    too, which is why both are here.
     """
     caplog.set_level(logging.ERROR, logger="asyncio")
     loop = asyncio.new_event_loop()

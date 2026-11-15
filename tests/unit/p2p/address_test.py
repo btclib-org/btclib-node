@@ -197,10 +197,7 @@ def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
 
     #270: this many calls against the one endpoint is the same shape
     `test_the_table_of_active_addresses_is_bounded` puts the cap
-    through, without a distinct port spending it each time -- and it
-    also guards against a per-call scan of `active_addresses`:
-    `pyproject.toml`'s own per-test `timeout` is what such a scan,
-    repeated this many times, would fail on, not the assertion below.
+    through, without a distinct port spending it each time.
     """
     peer_db = a_peer_db()
     peer_db.add_addresses([peer_address("1.2.3.4", 18444)])

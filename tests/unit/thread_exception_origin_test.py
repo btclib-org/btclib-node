@@ -132,14 +132,13 @@ def test_a_module_scoped_fixtures_thread_is_attributed_to_the_test_that_built_it
     a function-scoped one, autouse or not, so a thread such a fixture
     starts on the first test of its own scope starts before a
     function-scoped autouse fixture belonging to that same test has run
-    at all -- reproduced directly, against a version of this mechanism
-    built as such a fixture. `pytest_runtest_protocol` in
-    `tests/conftest.py` is a hookwrapper instead, and a hookwrapper's
-    own code ahead of its `yield` runs before every non-wrapper
-    implementation of the same hook -- which is where `_pytest.runner`
-    builds a fixture of any scope -- so this is not testable in-process:
-    what is under test is pytest's own ordering across a real collection
-    of more than one test module, the same reason
+    at all. `pytest_runtest_protocol` in `tests/conftest.py` is a
+    hookwrapper instead, and a hookwrapper's own code ahead of its
+    `yield` runs before every non-wrapper implementation of the same
+    hook -- which is where `_pytest.runner` builds a fixture of any
+    scope -- so this is not testable in-process: what is under test is
+    pytest's own ordering across a real collection of more than one test
+    module, the same reason
     `test_a_run_started_from_tests_says_it_is_ungated` above needs a
     real subprocess and not a call into this session's own.
 

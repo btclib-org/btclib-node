@@ -1138,11 +1138,11 @@ def test_resume_getdata_discourages_the_peer_on_a_btclib_exception(
 # what actually observes it, the same way `log_test.py` already proves
 # `Logger` itself against a file rather than against `caplog`.
 #
-# Proven against a mutation rather than argued: reducing
-# `handle_p2p_handshake`'s own site to the shared
-# `node.logger.exception("Exception occurred")` makes
-# `test_handle_p2p_handshake_log_line_...` below fail, both lines in the
-# file it reads back becoming the same one.
+# `handle_p2p_handshake` logs a line of its own that ends on `_verdict`,
+# not the shared `node.logger.exception("Exception occurred")`, so its
+# discouraged run and its other run read back as two different lines:
+# `test_handle_p2p_handshake_log_line_...` below fails on a site that
+# logs the same line for both.
 
 
 def test_handle_p2p_handshake_log_line_distinguishes_the_verdict(

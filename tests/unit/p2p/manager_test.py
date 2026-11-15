@@ -8726,15 +8726,14 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
 ) -> None:
     """`_report_server_failure`'s `isinstance` arm, `stop` never reaches.
 
-    `future.cancelled()` being true is what the test above covers, and
-    is the only way `stop`'s own sweep actually ends this task -- so
-    this arm has no path of its own through this class's ordinary use,
-    only through a `future` built to carry a `CancelledError` as its
-    stored exception rather than through `.cancel()`: what a `server`
-    coroutine that caught and re-raised one not thrown by `Task.cancel`
-    would leave behind, `Task.cancelled()` still false. Kept and reached
-    here, on the same reasoning the coverage floor argues for a safety
-    branch generally.
+    `future.cancelled()` being true is what the test above covers. A
+    `server` task that ends on a `CancelledError` is cancelled, whether
+    `Task.cancel` threw it in or the coroutine raised one of its own,
+    and `run_coroutine_threadsafe` cancels `future` with it, so this arm
+    has no path through this class's ordinary use. This test reaches it
+    with a `Future` given an `asyncio.CancelledError` through
+    `set_exception`. Kept and reached here, on the same reasoning the
+    coverage floor argues for a safety branch generally.
     """
     manager = a_manager()
     logged: list[BaseException | None] = []

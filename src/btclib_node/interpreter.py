@@ -161,10 +161,11 @@ def _tasks(
     `CScriptCheck::txdata`, at bitcoin/bitcoin@f0de87f040). Under
     `_pool_factory`'s process arm nothing here can be shared by pointer
     the way Core's threads share `txdata`: what a thread reads through
-    it a process has to receive as its own pickled copy, one per task.
-    That copy is a handful of hashes, cheap next to the whole
-    transaction every task already carries and far cheaper than
-    re-serializing the transaction per input
+    it a process has to receive as its own pickled copy, one per chunk
+    of tasks `starmap` hands a worker: pickle keeps the tasks of one
+    transaction within a chunk on one copy. That copy is a handful of
+    hashes, cheap next to the whole transaction a chunk already carries
+    and far cheaper than re-serializing the transaction per input
     (btclib-org/btclib-node#385). Under the thread arm, this generator's
     own `precomputed` is that pointer: every task built from one
     iteration of the loop below shares the identical object, exactly as
