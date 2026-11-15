@@ -60,6 +60,21 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
     assert [str(each) for each in allowed_subnets((value,))] == [*_LOOPBACK, subnet]
 
 
+def test_a_cidr_suffix_past_the_digit_limit_is_still_a_prefix() -> None:
+    """ISS 2461: a CIDR suffix past CPython's digit limit is still a prefix.
+
+    `ToIntegral<uint8_t>` drops leading zeros and takes at most three
+    digits. A suffix longer than `int()` accepts must not raise, and
+    with leading zeros the remaining digits are a prefix length, as
+    Core's `from_chars` read is.
+    """
+    value = "127.0.0.1/" + "0" * 4996 + "32"
+    assert [str(each) for each in allowed_subnets((value,))] == [
+        *_LOOPBACK,
+        "127.0.0.1/32",
+    ]
+
+
 @pytest.mark.parametrize(
     "value",
     [
