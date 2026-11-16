@@ -103,8 +103,8 @@ _X_ONLY_KEY_BYTES = 32
 
 # what bip32_descriptors raises as BTClibValueError, not ecc's
 # EccException, for a key Core refuses with `ParsePubkeyInner`'s message:
-# an x-only key outside `tr()` and `rawtr()`, and a `musig()` participant
-# that is no point
+# an x-only key outside `tr()` and `rawtr()` or in a `musig()`, and a
+# `musig()` participant that is no point
 _BTCLIB_KEY_REFUSALS = ("x-only public keys", "musig(): not a public key")
 
 # the functions `ParseScript` reads a key in, naming themselves in its
@@ -112,8 +112,8 @@ _BTCLIB_KEY_REFUSALS = ("x-only public keys", "musig(): not a public key")
 _KEY_FUNCTIONS = {"pk", "pkh", "combo", "wpkh", "tr", "rawtr"}
 _MULTI_FUNCTIONS = {"multi", "sortedmulti", "multi_a", "sortedmulti_a"}
 
-# every function whose argument may be a key ecc refuses, miniscript's
-# included: bip32_descriptors refuses a `musig()` participant itself
+# every function whose argument may be a key Core refuses with
+# `ParsePubkeyInner`'s message, miniscript's and `musig()` included
 _KEY_HOLDERS = (
     _KEY_FUNCTIONS
     | _MULTI_FUNCTIONS
@@ -287,10 +287,13 @@ def _key_prefix(calls: list[str]) -> str:
 
 
 def _invalid_key_refusal(text: str) -> str | None:
-    """Return Core's message for the first hex key in `text` that is no point.
+    """Return Core's message for the first such hex key in `text`.
 
-    Where bip32_descriptors hands such a key to ecc, ecc refuses it with
-    `EccException`, which names the key by its index. Core's
+    Such a key is no point, or is x-only outside `tr()` and `rawtr()` or in
+    a `musig()`; Core refuses each. ecc refuses a key that is no point
+    with `EccException`. bip32_descriptors refuses those x-only keys, and a
+    `musig()` participant that is no point, with `BTClibValueError`. Both
+    name the key by its index. Core's
     `ParsePubkeyInner` (`Pubkey '%s' is invalid`) quotes the key, where
     this writes `...` (SECURITY.md, "Where this node departs from Bitcoin
     Core"), and `ParseScript` puts `_key_prefix` before it, both in
@@ -325,7 +328,8 @@ def _parse(node: Node, text: str) -> list[_Source]:
     bip32_descriptors' here, which words it differently, except for what
     `_core_refusal` refuses, whose message is Core's, shortened where Core
     quotes the expression. The message for a hex key that ecc refuses as no
-    point is `_invalid_key_refusal`'s.
+    point, or that bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says,
+    is `_invalid_key_refusal`'s.
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
