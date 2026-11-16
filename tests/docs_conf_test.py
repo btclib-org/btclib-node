@@ -2,15 +2,21 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`RootFileLinks` in docs/source/conf.py links an included file to its page.
+"""docs/source/conf.py: `RootFileLinks`, and the placeholders `nitpick_ignore` lists.
 
-Section 2 of the organization's standard, *The documentation*, is the rule
-these tests hold `RootFileLinks` to. They run the transform on a
-hand-made doctree, so each case is checked whether or not a page of the
-tree holds it: a fragment, and a page other than an included one.
+`RootFileLinks` links an included file to its page. Section 2 of the
+organization's standard, *The documentation*, is the rule its tests hold
+it to. They run the transform on a hand-made doctree, so each case is
+checked whether or not a page of the tree holds it: a fragment, and a
+page other than an included one.
 
-Executing conf.py imports sphinx, which the `test` group carries with
-the `docs` group's floor.
+The placeholder entries of `nitpick_ignore` are checked against a build
+of docs/source with them removed: they must be the placeholders that
+build warns about.
+
+Executing conf.py imports sphinx, and the build parses the Markdown
+pages with myst-parser: the `test` group carries both, sphinx with the
+`docs` group's floor.
 
 This sits at `tests/` root, as `pragma_test.py` does: docs/source/conf.py
 is neither a module of `src/btclib_node/` nor suite machinery.
