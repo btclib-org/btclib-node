@@ -34,6 +34,7 @@ from bip32_descriptors.descriptors import (
 )
 from bip32_descriptors.descriptors import parse as parse_descriptor
 from bitcoin_core_rpc import RPCErrorCode
+from btclib import b58
 from btclib.exceptions import BTClibException, BTClibValueError
 from ecc.exceptions import EccException
 from ecc.ssa import point_from_bip340pub_key_var
@@ -100,17 +101,39 @@ _HEX_KEY = re.compile(
     r"(?P<key>[0-9a-fA-F]{64}(?:[0-9a-fA-F]{2}(?:[0-9a-fA-F]{64})?)?)"
 )
 _X_ONLY_KEY_BYTES = 32
+_SEC_KEY_BYTES = 65
+_HYBRID_PREFIXES = {0x06, 0x07}
 
 # what bip32_descriptors raises as BTClibValueError, not ecc's
-# EccException, for a key Core refuses with `ParsePubkeyInner`'s message:
-# an x-only key outside `tr()` and `rawtr()` or in a `musig()`, and a
-# `musig()` participant that is no point
-_BTCLIB_KEY_REFUSALS = ("x-only public keys", "musig(): not a public key")
+# EccException, where Core refuses a key or a `musig()` with words of its
+# own: an x-only key outside `tr()` and `rawtr()` or in a `musig()`, a
+# `musig()` participant that is no point, a key with a prefix Core reads as
+# no key or as hybrid, an uncompressed key, and a `musig()` outside `tr()`
+# and `rawtr()` or where a script belongs. bip32_descriptors refuses a
+# `musig(...)/0/*` where a script belongs in Core's words, which Core gives
+# only where it refuses nothing before it, such as a draft function
+# bip32_descriptors reads.
+_BTCLIB_KEY_REFUSALS = (
+    "x-only public keys",
+    "musig(): not a public key",
+    "invalid public key prefix",
+    "uncompressed public keys are not allowed",
+    "musig() is only allowed in tr() and rawtr()",
+    "musig() is a key expression",
+    "'musig(...)",
+)
+
+# `ParsePubkey`'s message for a `musig()` it reads outside `P2TR`
+_MUSIG_PLACE = "musig() is only allowed in tr() and rawtr()"
 
 # the functions `ParseScript` reads a key in, naming themselves in its
 # message
 _KEY_FUNCTIONS = {"pk", "pkh", "combo", "wpkh", "tr", "rawtr"}
 _MULTI_FUNCTIONS = {"multi", "sortedmulti", "multi_a", "sortedmulti_a"}
+
+# the functions `_core_refusal` refuses where another holds them, which
+# Core meets before any key that follows them
+_DRAFT_NAMES = {"raw", "rawpkh", "rawnode", "rawleaf"}
 
 # every function whose argument may be a key Core refuses with
 # `ParsePubkeyInner`'s message, miniscript's and `musig()` included
@@ -213,9 +236,17 @@ def _core_refusal(expr: str, ctx: str) -> str | None:
     tag, reads none of them. It refuses the first it meets, with a message
     that depends on where it stands: this walks `expr` as it does.
 
+    `ParseScript` reads no `musig()` where a script belongs either, and
+    refuses it in the same words. bip32_descriptors refuses one there with
+    a message of its own, which `_parse` replaces with this function's
+    where the two differ.
+
     Where Core quotes the expression, which may hold a key, this names the
-    function and writes its arguments as `...` (SECURITY.md, "Where this
-    node departs from Bitcoin Core").
+    expression's function and writes its arguments as `...`, keeping what
+    follows them, as the path of `musig(...)/0/*` (SECURITY.md, "Where this
+    node departs from Bitcoin Core"). Core quotes the expression whole,
+    so a draft function inside a miniscript is named by the miniscript's
+    function, as `and_v` is in `tr(K,and_v(v:rawpkh(H),pk(K)))`.
     """
     name, _, args = expr[:-1].partition("(")
     if name == "sh":
@@ -226,12 +257,11 @@ def _core_refusal(expr: str, ctx: str) -> str | None:
         return _tree_refusal(args)
     if name == "raw":
         return None if ctx == _TOP else "Can only have raw() at top level"
-    if (draft := _DRAFT_FUNCTION.search(expr)) is None:
+    if name != "musig" and _DRAFT_FUNCTION.search(expr) is None:
         return None
     # neither a function `ParseScript` knows nor a miniscript
-    return _NEEDED.get(
-        ctx, f"'{draft['name']}(...)' is not a valid descriptor function"
-    )
+    quoted = f"'{name}(...){expr.rpartition(')')[2]}'"
+    return _NEEDED.get(ctx, f"{quoted} is not a valid descriptor function")
 
 
 def _tree_refusal(args: str) -> str | None:
@@ -286,37 +316,128 @@ def _key_prefix(calls: list[str]) -> str:
     return ""
 
 
-def _invalid_key_refusal(text: str) -> str | None:
-    """Return Core's message for the first such hex key in `text`.
+def _refuses_uncompressed(calls: list[str]) -> bool:
+    """Say whether Core refuses an uncompressed key that `calls` hold.
 
-    Such a key is no point, or is x-only outside `tr()` and `rawtr()` or in
-    a `musig()`; Core refuses each. ecc refuses a key that is no point
-    with `EccException`. bip32_descriptors refuses those x-only keys, and a
-    `musig()` participant that is no point, with `BTClibValueError`. Both
-    name the key by its index. Core's
-    `ParsePubkeyInner` (`Pubkey '%s' is invalid`) quotes the key, where
-    this writes `...` (SECURITY.md, "Where this node departs from Bitcoin
-    Core"), and `ParseScript` puts `_key_prefix` before it, both in
-    `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag. None where `text` holds no such key.
+    `ParsePubkeyInner` reads one only in the contexts `TOP` and `P2SH`,
+    which neither `wpkh()` nor `musig()` passes on to its keys.
+    """
+    holder = calls[-1].rpartition(":")[2]
+    return holder in {"wpkh", "musig"} or any(
+        call in {"wsh", "tr", "rawtr"} for call in calls
+    )
+
+
+def _wif_refusal(text: str, network: str, *, uncompressed_refused: bool) -> str | None:
+    """Return `ParsePubkeyInner`'s message for `text` as a WIF, else None.
+
+    `DecodeSecret` reads a WIF of `network`'s prefix alone, so Core refuses
+    a WIF of another network as no key, whether or not it is compressed.
+    """
+    wif = text.rpartition("]")[2]
+    try:
+        data = b58.prv_key_data_from_wif(wif)
+    except BTClibException:
+        return None
+    try:
+        b58.prv_key_data_from_wif(wif, network)
+    except BTClibException:
+        return "key '...' is not valid"
+    if uncompressed_refused and not data.compressed:
+        return "Uncompressed keys are not allowed"
+    return None
+
+
+def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
+    """Return `ParsePubkeyInner`'s message for `text`, else None.
+
+    `text` is a hex key or a WIF, after its origin if it has one, or else
+    no key this reads. `calls` are the functions open around it, its holder
+    last, and `network` the node's. Core quotes a key it calls invalid,
+    which may be a private key given by mistake, where this writes `...`
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    uncompressed_refused = _refuses_uncompressed(calls)
+    if (hex_key := _HEX_KEY.fullmatch(text)) is None:
+        return _wif_refusal(text, network, uncompressed_refused=uncompressed_refused)
+    key = bytes.fromhex(hex_key["key"])
+    # `CPubKey::IsValid` reads the size alone: such a key may be no point
+    if len(key) == _SEC_KEY_BYTES and key[0] in _HYBRID_PREFIXES:
+        return "Hybrid public keys are not allowed"
+    holder = calls[-1].rpartition(":")[2]
+    invalid_x_only = len(key) == _X_ONLY_KEY_BYTES and (
+        holder == "musig" or all(call not in {"rawtr", "tr"} for call in calls)
+    )
+    if not _is_point(key) or invalid_x_only:
+        return "Pubkey '...' is invalid"
+    if len(key) == _SEC_KEY_BYTES and uncompressed_refused:
+        return "Uncompressed keys are not allowed"
+    return None
+
+
+def _opened_refusal(name: str, calls: list[str], commas: list[int]) -> str | None:
+    """Return what Core refuses the function `name` opened in `calls` with.
+
+    `_MUSIG_PLACE`, after `_key_prefix`, for a `musig()` a function reads as
+    a key outside `P2TR`. "" for a function of `_DRAFT_NAMES`, and for a
+    `musig()` where a script belongs, which `_core_refusal` refuses. None
+    where Core reads on. `commas` are as `_invalid_key_refusal` counts them.
+    """
+    if name != "musig":
+        return "" if name in _DRAFT_NAMES else None
+    holder = calls[-1].rpartition(":")[2] if calls else ""
+    if holder not in _KEY_HOLDERS or (holder == "tr" and commas[-1]):
+        return ""
+    if {"tr", "rawtr"} & set(calls):
+        return None
+    return f"{_key_prefix(calls)}{_MUSIG_PLACE}"
+
+
+def _invalid_key_refusal(text: str, network: str) -> str | None:
+    """Return Core's message for the first key or `musig()` it refuses.
+
+    Core refuses a hex key that is hybrid, that is no point, or that is
+    x-only outside `tr()` and `rawtr()` or in a `musig()`; a WIF of another
+    network than `network`; an uncompressed key where
+    `_refuses_uncompressed` says; and a `musig()` outside `tr()` and
+    `rawtr()`. ecc refuses a key that is no point with `EccException`,
+    and bip32_descriptors refuses the rest with `BTClibValueError`, each in
+    words of its own. Core's message is `ParsePubkeyInner`'s for a key and
+    `ParsePubkey`'s for a `musig()`, and `ParseScript` puts `_key_prefix`
+    before it, all in `src/script/descriptor.cpp` at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+
+    Core reads `text` in order and refuses the first thing it cannot read,
+    a `musig()` before the keys inside it. So this answers None where it
+    first meets a function of `_DRAFT_NAMES` or a `musig()` where a script
+    belongs, as it does where `text` holds no key or `musig()` Core
+    refuses.
     """
     calls: list[str] = []
+    # the commas read in each open call: after the first, a `tr()` reads
+    # its tree
+    commas: list[int] = []
     word = ""
     for part in _DELIMITER.split(text):
         if part == "(":
+            name = word.rpartition(":")[2]
+            if (refusal := _opened_refusal(name, calls, commas)) is not None:
+                return refusal or None
             calls.append(word)
+            commas.append(0)
         elif part == ")":
             if not calls:
                 return None
             calls.pop()
-        elif (key := _HEX_KEY.fullmatch(part)) and calls:
-            key_bytes = bytes.fromhex(key["key"])
-            holder = calls[-1].rpartition(":")[2]
-            invalid_x_only = len(key_bytes) == _X_ONLY_KEY_BYTES and (
-                holder == "musig" or all(call not in {"rawtr", "tr"} for call in calls)
-            )
-            if holder in _KEY_HOLDERS and (not _is_point(key_bytes) or invalid_x_only):
-                return f"{_key_prefix(calls)}Pubkey '...' is invalid"
+            commas.pop()
+        elif part == "," and commas:
+            commas[-1] += 1
+        elif (
+            calls
+            and calls[-1].rpartition(":")[2] in _KEY_HOLDERS
+            and (refusal := _key_refusal(part, calls, network))
+        ):
+            return f"{_key_prefix(calls)}{refusal}"
         word = part
     return None
 
@@ -327,9 +448,10 @@ def _parse(node: Node, text: str) -> list[_Source]:
     Core's `Parse`. Its message names what it found wrong and is
     bip32_descriptors' here, which words it differently, except for what
     `_core_refusal` refuses, whose message is Core's, shortened where Core
-    quotes the expression. The message for a hex key that ecc refuses as no
-    point, or that bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says,
-    is `_invalid_key_refusal`'s.
+    quotes the expression. Where ecc refuses a hex key as no point, or
+    bip32_descriptors refuses a key or a `musig()` as
+    `_BTCLIB_KEY_REFUSALS` says, the message is that of whichever of
+    `_invalid_key_refusal` and `_core_refusal` Core meets first in `text`.
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
@@ -339,15 +461,17 @@ def _parse(node: Node, text: str) -> list[_Source]:
             _Source(parse_descriptor(one, node.chain.name, prv_keys), prv_keys)
             for one in multipath_descriptors(stripped)
         ]
-    except BTClibException as err:
+    except (BTClibException, EccException) as err:
         message = str(err)
-        if stripped is not None and any(
-            refused in message for refused in _BTCLIB_KEY_REFUSALS
+        if stripped is not None and (
+            isinstance(err, EccException)
+            or any(refused in message for refused in _BTCLIB_KEY_REFUSALS)
         ):
-            message = _invalid_key_refusal(stripped) or message
-        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
-    except EccException as err:
-        message = _invalid_key_refusal(strip_checksum(text)) or str(err)
+            message = (
+                _invalid_key_refusal(stripped, node.chain.name)
+                or _core_refusal(stripped, _TOP)
+                or message
+            )
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)

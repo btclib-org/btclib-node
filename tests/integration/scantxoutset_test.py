@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from bip32_descriptors.descriptors import multipath_descriptors, parse
 from bitcoin_core_rpc import RpcError
+from btclib.b58 import wif_from_prv_key
 
 from btclib_node import Node
 from btclib_node.config import Config
@@ -60,6 +61,11 @@ _XPUB = (
 _ADDRESS = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
 _H160 = "ab" * 20
 _H256 = "cd" * 32
+_MUSIG = f"musig({_K},{_K2})"
+# a hybrid key, which Core tells by its prefix and size alone, and the WIF
+# of _UNCOMPRESSED's private key
+_HYBRID = f"07{_UNCOMPRESSED[2:]}"
+_UNCOMPRESSED_WIF = wif_from_prv_key(1, "regtest", compressed=False)
 
 # a multisig whose key at one index is the other's at the next, so its
 # origin is the first index's, and a leaf at two depths of a taproot
@@ -184,6 +190,22 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", [f"tr({_X},rawleaf(51,c0))"]], False),
     (["start", [f"tr({_X},raw(51))"]], True),
     (["start", [f"tr({_X},{{pk({_X2}),{{rawnode({_H256}),raw(51)}}}})"]], False),
+    (["start", [f"wpkh({_MUSIG})"]], True),
+    (["start", [f"pk({_MUSIG})"]], True),
+    (["start", [f"multi(1,{_MUSIG})"]], True),
+    (["start", [f"wsh(and_v(v:pk({_MUSIG}),older(10)))"]], True),
+    (["start", [f"unused({_MUSIG})"]], True),
+    (["start", [_MUSIG]], False),
+    (["start", [f"sh({_MUSIG})"]], True),
+    (["start", [f"wsh({_MUSIG})"]], True),
+    (["start", [f"tr({_X},{_MUSIG})"]], False),
+    (["start", [f"wsh(or_d(rawpkh({_H160}),pkh({_MUSIG})))"]], True),
+    (["start", [f"pk({_HYBRID})"]], True),
+    (["start", [f"tr(musig({_HYBRID},{_K}))"]], True),
+    (["start", [f"wpkh({_UNCOMPRESSED})"]], True),
+    (["start", [f"wsh(and_v(v:pk({_UNCOMPRESSED}),older(10)))"]], True),
+    (["start", [f"tr(musig({_UNCOMPRESSED},{_K2}))"]], True),
+    (["start", [f"wpkh({_UNCOMPRESSED_WIF})"]], True),
 ]
 
 
@@ -296,6 +318,8 @@ _NOT_A_POINT_DESCRIPTORS = [
     f"tr({_NOT_A_POINT_X})",
     f"tr({_X},{{pk({_X2}),pk({_NOT_A_POINT_X})}})",
     f"tr({_X},pkh({_NOT_A_POINT_X}))",
+    f"pk(05{_NOT_A_POINT_X})",
+    f"tr(musig({_K},05{_NOT_A_POINT_X}))",
 ]
 
 
