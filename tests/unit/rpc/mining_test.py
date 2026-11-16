@@ -1481,7 +1481,7 @@ def test_a_long_poll_id_is_read_as_core_reads_it(
 def test_a_long_poll_counter_past_python_s_digit_limit(
     node: Node, suffix: str, counter: int
 ) -> None:
-    """ISS 2458: a counter of any length saturates before Python reads it."""
+    """ISS 2458: a counter past CPython's digit limit is read as Core does."""
     assert _long_poll_id(node, tip(node).hex() + suffix) == (tip(node), counter)
 
 
