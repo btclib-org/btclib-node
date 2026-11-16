@@ -17,11 +17,16 @@ is neither a module of `src/btclib_node/` nor suite machinery.
 """
 
 import importlib.util
+import re
+import warnings
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from sphinx.application import Sphinx
+from sphinx.deprecation import RemovedInSphinx11Warning
 
 _CONF = Path(__file__).parents[1] / "docs" / "source" / "conf.py"
 # the docnames a build finds: each page of docs/source, by its stem
@@ -171,15 +176,42 @@ def test_github_link_other_than_blob_is_left(conf: ModuleType, url: str) -> None
     assert node["refuri"] == url
 
 
-def test_nitpick_ignore_lists_only_reached_placeholders(conf: ModuleType) -> None:
-    """`nitpick_ignore` lists the placeholders 1 to 7 only.
-
-    The build renders no `__annotationlib_name_8__` or `_9__`, so an entry for
-    either would hide the next warning carrying that number.
-    """
-    placeholders = [
+def test_nitpick_ignore_matches_unignored_build(
+    conf: ModuleType, tmp_path: Path
+) -> None:
+    """Every placeholder ignore corresponds to a target the build reaches."""
+    placeholder = re.compile(r"__annotationlib_name_\d+__")
+    configured = {
         target
-        for _, target in conf.nitpick_ignore
-        if target.startswith("__annotationlib_name_")
-    ]
-    assert placeholders == [f"__annotationlib_name_{n}__" for n in range(1, 8)]
+        for domain, target in conf.nitpick_ignore
+        if domain == "py:class" and placeholder.fullmatch(target)
+    }
+    overrides = {
+        "nitpick_ignore": [
+            (domain, target)
+            for domain, target in conf.nitpick_ignore
+            if not (domain == "py:class" and placeholder.fullmatch(target))
+        ],
+        "intersphinx_mapping": {},
+        "nitpicky": True,
+    }
+    warning_log = StringIO()
+    app = Sphinx(
+        srcdir=_CONF.parent,
+        confdir=_CONF.parent,
+        outdir=tmp_path / "html",
+        doctreedir=tmp_path / "doctrees",
+        buildername="dummy",
+        confoverrides=overrides,
+        status=StringIO(),
+        warning=warning_log,
+        freshenv=True,
+    )
+    with warnings.catch_warnings():
+        # MyST accesses this Sphinx API during parsing; pytest treats the
+        # deprecation as an error even though the docs build does not.
+        warnings.simplefilter("ignore", RemovedInSphinx11Warning)
+        app.build(force_all=True)
+
+    reached = set(placeholder.findall(warning_log.getvalue()))
+    assert configured == reached
