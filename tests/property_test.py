@@ -10,10 +10,10 @@ parser and an adversary who chooses the bytes -- and this tree has that
 property: `fuzz.yml`'s own header says so, and each harness under
 `fuzz/` names what it owns of the surface. The two answer different
 questions. A property test answers *does this hold over the domain I
-described*; a fuzzer answers *what is in the domain I did not
-describe*, and the second presupposes the first, a fuzzer extending no
-described domain having nothing to contradict. Until
-btclib-org/btclib-node#742 this tree ran the second without the first.
+described*; a fuzzer answers *what is in the domain I did not describe*,
+and the second presupposes the first, a fuzzer extending no described
+domain having nothing to contradict. This file is the first
+(btclib-org/btclib-node#742).
 
 The property is the one every harness in `fuzz/` already states in
 prose and encodes as a `contextlib.suppress`: **over unconstrained

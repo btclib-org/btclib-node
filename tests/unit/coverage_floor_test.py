@@ -189,7 +189,7 @@ def test_the_help_path_names_no_paths_at_all() -> None:
     # Why --help reaches the hook with file_or_dir None is
     # asks_for_everything's docstring. What is here is the cover: the
     # guard it describes adds no branch for the floor to miss, so
-    # deleting this test leaves the fix untested.
+    # deleting this test leaves the guard untested.
     assert asks_for_everything(None, TESTPATHS, Path.cwd()) is True
     config, options = a_config(file_or_dir=None)
     assert relax_coverage_floor(config) is False
@@ -334,9 +334,9 @@ def test_a_floor_asked_for_explicitly_is_left_alone() -> None:
     """A narrowed run leaves an explicit `cov_fail_under` alone."""
     # `option.cov_fail_under` is argparse's parsed result, which reads
     # the same whether the flag arrived on the command line or through
-    # PYTEST_ADDOPTS -- the two are not distinguishable past this point,
-    # which is what fixes #180: a scan of `invocation_params.args` would
-    # only see the first.
+    # PYTEST_ADDOPTS -- the two are not distinguishable past this point
+    # (issue #180): a scan of `invocation_params.args` would only see
+    # the first.
     config, options = a_config(
         file_or_dir=["tests/unit/mempool_test.py"], cov_fail_under=FLOOR
     )
@@ -561,7 +561,7 @@ def test_a_selection_does_not_excuse_the_configuration_missing() -> None:
     """Asking for less is refused the same way.
 
     A selective run is gated at zero by `relax_coverage_floor`, so
-    nothing was taken from it -- but `source` and `branch = true` went
+    nothing is taken from it -- but `source` and `branch = true` go
     unread as well, and its report is a measurement of a different set
     of files. Iterating on one module from inside `tests/` reads a
     percentage that is not about this tree, which is what the guard says

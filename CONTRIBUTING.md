@@ -52,9 +52,11 @@ long after the branch is gone.
 
 ## Working with an LLM
 
-**Development here is LLM-based.** Most issues, code and reviews are
-written by agentic sessions that the maintainer directs and reads.
-Humans are welcome, as long as they are comfortable working that way.
+**Your agents are welcome.** Use them to solve the open issues and to
+review the open pull requests. There is no cap on how many pull requests
+you open, and no rule to disclose an agent's part: every change is held
+to the same review, whoever or whatever wrote it, as the rest of this
+file and `REVIEWING.md` say.
 
 **A contribution is yours, whoever wrote it.** Read every line before
 you open the pull request, understand it, and be ready to answer a
@@ -142,9 +144,12 @@ It is opened the moment it is written and verified — not held for the
 previous one to be reviewed or to land, and not batched with the next. A
 batch arrives as one reviewing job with several subjects, which is the
 shape that costs the most to read; a finished pull request held back is
-review that could have started and did not. A security advisory's fix is
-the exception, held back as [section 12][s12]'s *A security advisory is
-worked in this order* says.
+review that could have started and did not. A port of the standard is
+one subject: one pull request per tree, holding every change to the
+standard landed since that tree's last port. Its review asks one
+question: does each copy now match the standard's source? A security
+advisory's fix is the exception, held back as [section 12][s12]'s *A
+security advisory is worked in this order* says.
 
 Working this way stacks branches, which is fine and costs one rule: a
 child whose base was amended is moved with the old base named,
@@ -198,11 +203,10 @@ has seen.
 
 When `main`'s CI is red after a merge, its repair takes priority over
 every other pull request, because until it lands `main`'s runs cannot
-tell a new failure from the one already there. A pull request armed with
-`--auto` (below) stays armed, and others keep landing meanwhile. Holding
-every landing for a repair costs more than the break it guards against,
-so the risk of landing on a red `main` is accepted
-(btclib-org/.github#1777).
+tell a new failure from the one already there. Other pull requests keep
+landing meanwhile. Holding every landing for a repair costs more than
+the break it guards against, so the risk of landing on a red `main` is
+accepted (btclib-org/.github#1777).
 
 A pull request whose required check is red only because `main` was red
 is closed and reopened once the repair lands (`gh pr close <n>`, then
@@ -213,9 +217,8 @@ run's log is read before the run is relied on: its line `HEAD is now at
 <sha> Merge <head> into <base>` names the merge it tested, and where
 `<base>` lacks the repair, the pull request is closed and reopened
 again. No push is made, so its approvals and its ack of record stand.
-Closing disarms `--auto`, so it is armed again once the checks are
-green. The reopen also runs the review bot again, and changes that
-review requests are answered like any other review's.
+The reopen also runs the review bot again, and changes that review
+requests are answered like any other review's.
 
 Then squash, [the only method the rule accepts][s11].
 
@@ -226,8 +229,38 @@ head**, through `gh pr merge` pinned to it:
 gh pr merge <n> --squash --match-head-commit <the head the checks ran on>
 ```
 
-With `--auto` added, GitHub runs the same merge once the approval and
-the checks are in.
+Whoever approved it runs that merge, or a session on the maintainer's
+word. Auto-merge is off, so no pull request can be armed, for the reason
+[section 11's *Merge method*][s11] gives.
+
+**A release can hold the landing.** Before every merge, these two read
+the repository `gh` resolves, from `GH_REPO` where it is set and from the
+checkout otherwise, and its open or merged pull requests carrying
+`release-hold`:
+
+```shell
+gh api 'repos/{owner}/{repo}' --jq .full_name
+```
+
+```shell
+gh api --paginate \
+  'repos/{owner}/{repo}/issues?labels=release-hold&state=all&per_page=100' \
+  --jq '.[] | select(.pull_request)
+    | select(.state == "open" or .pull_request.merged_at != null)
+    | {number, state, merged: .pull_request.merged_at}'
+```
+
+The first must print the tree's own `owner/name`. The second reads every
+page and prints one line per hold, so where it prints nothing there is
+no hold, and each line it prints is read as a publishing tree's
+`RELEASING.md` says in *Release to PyPI*. A nonzero exit of either, as
+the `404` of a repository that does not exist, is an error, and the
+merge waits until both answer.
+
+The check and the merge are two calls, and none of the [rules a GitHub
+ruleset offers][rulesets] reads a label, so a label put on between them
+does not stop the merge. Until the release merges, its own check that
+`main` has not moved catches such a merge, as *Release to PyPI* says.
 
 **Where the repository has a bypass, the maintainer may land without
 that approval, through it**: [`GOVERNANCE.md`][governance]'s *How a
@@ -285,26 +318,10 @@ settings and why they are what they are.
 [s-sigs]: https://github.com/btclib-org/.github#signatures
 [s-branch]: https://github.com/btclib-org/.github#branch-protection-and-rulesets
 [dco]: https://developercertificate.org/
+[rulesets]: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
 [governance]: https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md
 [roadmap]: https://github.com/btclib-org/.github/blob/main/ROADMAP.md
 [good-first]: https://github.com/search?q=org%3Abtclib-org+label%3A%22good+first+issue%22+is%3Aopen&type=issues
-
-## Worktrees
-
-Run `git fetch origin` in the primary checkout, then check that
-`git status --porcelain` is empty and `git branch --show-current` is
-`main`. Run `git pull --ff-only` only when both checks pass, then verify
-`git rev-parse HEAD origin/main` prints the same sha twice. Create a separate
-worktree for each task with
-`git worktree add <path> origin/main -b <branch>`. After committing,
-remove it with `git worktree remove <path>`. If initialized submodules
-make that fail,
-check for uncommitted, untracked, and ignored files in the worktree and
-its initialized submodules. Preserve anything needed before retrying with
-`git worktree remove --force <path>`; it can delete those files. Keep the
-primary checkout clean and on `main`; do not
-switch branches or stash there. Hooks can fix files in place, and the local
-`main` and `refs/stash` are shared by all worktrees.
 
 ## This repository in particular
 
@@ -402,6 +419,13 @@ over the whole suite is a claim about, so it is not held to one —
 narrowing a run is added. `--cov-fail-under` asked for explicitly still
 applies.
 
+Beyond that floor, new or changed functionality must come with tests of
+its own, added or updated in the same pull request, and a fix must come
+with a test that fails without the fix.
+
+Coverage shows that a line ran, not that anything checked what it did,
+and a test that passes without the fix proves nothing about it.
+
 The tests marked `slow` are skipped by a run without `--run-slow`, and
 `tests/README.md`'s *Slow tests* says why. To run them, and only them:
 
@@ -457,8 +481,7 @@ until that sweep runs, at most a week.
 
 A `when` cell leaves out a `pull_request` trigger that `paths:` filters.
 Such a workflow also runs on a pull request that changes a file its
-`paths:` names. The `test` row's push to main also leaves out what its
-`paths-ignore:` names.
+`paths:` names.
 
 `lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
 is no second list of tools and versions to keep in step; its invocation
@@ -551,11 +574,8 @@ standard](https://github.com/btclib-org/.github/blob/main/README.md)
 measures a repository's tier from that file and `pyproject.toml` alone,
 so this tree is tier 1 — the decision
 [ISS btclib-org/btclib-node#286](https://github.com/btclib-org/btclib-node/issues/286)
-records, superseding the tier-2 state
-[PR btclib-org/btclib-node#171](https://github.com/btclib-org/btclib-node/pull/171)
-had landed one day before that issue was filed. `RELEASING.md` and
-`RELEASE_NOTES.md` are the two files section 2 gives a tier-1 repository
-that #171 had removed, back under this section's own heading.
+records. `RELEASING.md` and `RELEASE_NOTES.md` are the two files
+section 2 gives a tier-1 repository, and this tree keeps both.
 
 It publishes to PyPI. The `pypi` and `testpypi` pair of
 `RELEASING.md`'s *One-time setup* is what uploads —
@@ -572,16 +592,8 @@ curl -s https://pypi.org/pypi/btclib-node/json |
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
 ```
 
-A lightweight `v0.1.0` from 2023, with a release page and no artifact
-on it, was deleted with its release on 2026-08-23, on the maintainer's
-decision closing btclib-org/.github#105: a ref with no object of its
-own has nothing on it to sign, and a repository that published nothing
-had no release the tag was the record of. This section went on
-describing it for four days afterwards (btclib-org/btclib-node#553),
-which is what a deletion decided in another repository's issue costs
-when nobody carries it into the files that mention it. `CHANGELOG.md`
-starts where the record starts rather than where a tag does, for the
-reason its own introduction gives.
+`CHANGELOG.md` starts where the record starts rather than where a tag
+does, for the reason its own introduction gives.
 
 A tag is cut with `git tag -s`. `tag-integrity` does not check the tag's
 own signature: `REPOSITORY.md` has what it refuses and the call that

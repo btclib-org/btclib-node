@@ -32,7 +32,7 @@ import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 import btclib_node.p2p.banman as banman_module
-from btclib_node.constants import CLIENT_NAME
+from btclib_node.constants import CLIENT_NAME, MAX_JSON_DEPTH
 from btclib_node.log import Logger
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import (
@@ -654,6 +654,26 @@ def test_a_file_core_cannot_read_is_recreated_empty(
     path.write_text(document, encoding="utf-8")
     assert BanMan(path, _LOGGER).banned() == []
     assert read(path)["banned_nets"] == []
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH, MAX_JSON_DEPTH + 1, 100_000])
+def test_a_file_nested_past_max_json_depth_is_recreated_empty(
+    tmp_path: Path, depth: int
+) -> None:
+    """ISS 2486: `MAX_JSON_DEPTH` arrays and objects open at once are read.
+
+    One more is a file `UniValue::read` refuses, however deep. The
+    top-level object holds the ban and a key nothing reads, nested in
+    arrays.
+    """
+    path = tmp_path / "banlist.json"
+    arrays = depth - 1
+    path.write_text(
+        f'{{"banned_nets": [{_ENTRY}], "x": ' + "[" * arrays + "]" * arrays + "}",
+        encoding="utf-8",
+    )
+    kept = ["1.2.3.4/32"] if depth <= MAX_JSON_DEPTH else []
+    assert [str(subnet) for subnet, _ in BanMan(path, _LOGGER).banned()] == kept
 
 
 def test_a_list_unchanged_is_not_written_again(tmp_path: Path) -> None:

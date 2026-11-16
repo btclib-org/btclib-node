@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from enum import IntFlag
 from typing import TYPE_CHECKING
 
+from btclib_node.constants import quoted_name
 from btclib_node.p2p.banman import Subnet, lookup_subnet
 
 if TYPE_CHECKING:
@@ -125,14 +126,21 @@ class WhitelistEntry:
 
 
 def _parse_permissions(
-    text: str, *, whitebind: bool
+    text: str, *, whitebind: bool, position: int
 ) -> tuple[NetPermissionFlags, bool, bool, int]:
     """Read the `perm1,perm2@` prefix of a value, as `TryParsePermissionFlags`.
 
     Returns the flags, whether the value applies to incoming and to
     outgoing connections, and where its address starts. A `-whitebind`
     value that names `out` is refused. Raises `ValueError` with Core's
-    message.
+    message, a permission quoted through `quoted_name` and a value
+    naming only a direction written `'...'` and named by `position`, its
+    place among the option's values counted from 1.
+
+    Core quotes the permission and the value (`src/net_permissions.cpp:69`
+    and `:80`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and either
+    may be a key (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     flags = NetPermissionFlags.NONE
     incoming = outgoing = False
@@ -154,39 +162,57 @@ def _parse_permissions(
             elif name == "out":
                 outgoing = True
             elif name:
-                msg = f"Invalid P2P permission: '{name}'"
+                msg = f"Invalid P2P permission: '{quoted_name(name)}'"
                 raise ValueError(msg)
     if not incoming and not outgoing:
         # a whitelist applies to incoming connections alone by default
         incoming = True
     elif flags == NetPermissionFlags.NONE:
-        msg = f"Only direction was set, no permissions: '{text}'"
+        option = "-whitebind" if whitebind else "-whitelist"
+        msg = (
+            "Only direction was set, no permissions: '...' "
+            f"(value {position} of {option})"
+        )
         raise ValueError(msg)
     return flags, incoming, outgoing, at + 1
 
 
-def parse_whitebind_permissions(text: str) -> tuple[NetPermissionFlags, str]:
+def parse_whitebind_permissions(
+    text: str, *, position: int
+) -> tuple[NetPermissionFlags, str]:
     """Split a `-whitebind` value into its permissions and its address.
 
     `NetWhitebindPermissions::TryParse` up to the address, which the
     caller resolves. A value naming no permission holds `IMPLICIT`.
-    Raises `ValueError` with Core's message.
+    Raises `ValueError` as `_parse_permissions` does, `position` being
+    the value's place among the `-whitebind` values.
     """
-    flags, _, _, start = _parse_permissions(text, whitebind=True)
+    flags, _, _, start = _parse_permissions(text, whitebind=True, position=position)
     return flags, text[start:]
 
 
-def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
+def _parse(text: str, position: int) -> tuple[WhitelistEntry, bool, bool]:
     """Read one `-whitelist` value, as Core's `TryParse` does.
 
     Returns the entry and whether it applies to incoming and to outgoing
-    connections. Raises `ValueError` with Core's message.
+    connections. Raises `ValueError` as `_parse_permissions` does, and
+    with Core's message for a netmask it does not read, `'...'` in its
+    place and the value named by `position`, its place among the
+    `-whitelist` values counted from 1. Core quotes the netmask
+    (`src/net_permissions.cpp:138`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), which may be a key (SECURITY.md, "Where this node departs
+    from Bitcoin Core").
     """
-    flags, incoming, outgoing, start = _parse_permissions(text, whitebind=False)
+    flags, incoming, outgoing, start = _parse_permissions(
+        text, whitebind=False, position=position
+    )
     network = text[start:]
     subnet = lookup_subnet(network)
     if subnet is None:
-        msg = f"Invalid netmask specified in -whitelist: '{network}'"
+        msg = (
+            "Invalid netmask specified in -whitelist: '...' "
+            f"(value {position} of -whitelist)"
+        )
         raise ValueError(msg)
     return WhitelistEntry(subnet, flags), incoming, outgoing
 
@@ -211,12 +237,12 @@ class Whitelist:
     ) -> Whitelist:
         """Read every `-whitelist` value, in order.
 
-        Raises `ValueError` with Core's message for the first one refused.
+        Raises `ValueError` as `_parse` does for the first one refused.
         """
         incoming: list[WhitelistEntry] = []
         outgoing: list[WhitelistEntry] = []
-        for value in values:
-            entry, is_incoming, is_outgoing = _parse(value)
+        for position, value in enumerate(values, 1):
+            entry, is_incoming, is_outgoing = _parse(value, position)
             if is_incoming:
                 incoming.append(entry)
             if is_outgoing:

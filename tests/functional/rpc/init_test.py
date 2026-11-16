@@ -95,15 +95,16 @@ def test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced(
 ) -> None:
     """`wait_until_listening` returning implies `status` is already set.
 
-    btclib-org/btclib-node#398: `Node.run` used to start the managers and
-    only then assign `self.status`, on `Node`'s own thread; a manager's
-    `listening` event is set on the manager's own thread and said nothing
-    about whether that assignment had already run. Widening the window
-    between `start()` returning and the assignment after it -- standing in
-    for `Node`'s thread being descheduled there -- reproduces the race a
-    test's own `node.status = NodeStatus.HeaderSynced` used to lose:
-    `Node`'s late write landed after it and put `status` back to
-    `SyncingHeaders`, and `_ready_fork` never returns past that again.
+    btclib-org/btclib-node#398: `Node.run` assigns `self.status`, on
+    `Node`'s own thread, before it starts the managers; a manager's
+    `listening` event is set on the manager's own thread and says
+    nothing about whether that assignment has run. With the assignment
+    there, the race cannot occur. The test widens the window after
+    `start()` returns, standing in for `Node`'s thread being descheduled
+    there: an assignment made after the managers start would land after
+    a test's own `node.status = NodeStatus.HeaderSynced`, put `status`
+    back to `SyncingHeaders`, and `_ready_fork` would never return past
+    that again.
     """
     original_start = RpcManager.start
 

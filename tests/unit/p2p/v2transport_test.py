@@ -694,7 +694,7 @@ def test_a_packet_is_refused_over_the_largest_message() -> None:
     assert out is not None
     assert [m.command for m in out if m] == ["big"]
     tester.send(tester.cipher.encrypt(bytes(1 + 12 + 4_000_001))[:LENGTH_LEN])
-    expected = r"^packet contents too large: at most 4000013 bytes expected$"
+    expected = r"^packet too large: at most 4000013 bytes expected$"
     with pytest.raises(V2TransportError, match=expected):
         feed(tester.transport, bytes(tester.to_send))
 
@@ -740,7 +740,7 @@ def test_a_length_past_the_bound_is_refused_without_it() -> None:
         feed(tester.transport, wire)
     decimal = str(int.from_bytes(length, "little"))
     assert_secret_free(refusal.value, [_KEY, length, decimal, wire])
-    expected = "packet contents too large: at most 4000013 bytes expected"
+    expected = "packet too large: at most 4000013 bytes expected"
     assert str(refusal.value) == expected
 
 
@@ -761,6 +761,29 @@ def test_a_packet_that_does_not_authenticate_is_refused_without_its_length() -> 
         feed(tester.transport, wire)
     assert_secret_free(refusal.value, [_KEY, length, str(size), wire[:LENGTH_LEN]])
     assert str(refusal.value) == "packet decryption failure"
+
+
+def test_a_rejected_message_is_refused_without_its_size() -> None:
+    """The text names no size; `size` keeps it, for the caller to count.
+
+    The contents' length is made a key's octets, looked for with the
+    decimal of that length and of the size. `size` is the one attribute
+    allowed to hold it, so it is checked and then taken off before the
+    search.
+    """
+    tester = handshaken()
+    length = _KEY[:2] + bytes(1)
+    contents = bytes([len(MESSAGE_IDS)]) + bytes(int.from_bytes(length, "little") - 1)
+    tester.send_packet(contents)
+    feed(tester.transport, bytes(tester.to_send))
+    assert tester.transport.received_message_complete()
+    with pytest.raises(RejectedMessageError) as refusal:
+        tester.transport.get_received_message()
+    size = len(contents) + EXPANSION
+    assert refusal.value.size == size
+    del refusal.value.size
+    assert_secret_free(refusal.value, [_KEY, length, str(len(contents)), str(size)])
+    assert str(refusal.value) == "message rejected"
 
 
 @pytest.mark.parametrize(

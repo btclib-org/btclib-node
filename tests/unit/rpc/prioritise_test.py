@@ -211,8 +211,8 @@ def test_a_txid_that_is_no_string_is_a_type_error(value: Any, name: str) -> None
 @pytest.mark.parametrize(
     ("txid", "message"),
     [
-        ("foo", "txid must be of length 64 (not 3, for 'foo')"),
-        (f"Z{_TXID[1:]}", f"txid must be hexadecimal string (not 'Z{_TXID[1:]}')"),
+        ("foo", "txid must be of length 64 (not 3, for '...')"),
+        (f"Z{_TXID[1:]}", "txid must be hexadecimal string (not '...')"),
     ],
 )
 def test_a_bad_txid_is_invalid_parameter(txid: str, message: str) -> None:

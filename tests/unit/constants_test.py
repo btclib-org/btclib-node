@@ -5,8 +5,8 @@
 """`USER_AGENT` is one constant, read rather than recomputed by its two callers.
 
 btclib-org/btclib-node#1009: `p2p.connection`'s own wire bytes and
-`rpc.callbacks.get_network_info`'s `subversion` used to compute the
-identical formula independently, with nothing tying the two together.
+`rpc.callbacks.get_network_info`'s `subversion` both read it, so nothing
+can make the two differ.
 """
 
 from types import SimpleNamespace
@@ -61,3 +61,11 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
     result = get_network_info(node, conn, [])
     assert result["subversion"] == constants.USER_AGENT
     assert constants.USER_AGENT.encode() == connection._USER_AGENT
+
+
+def test_shown_path_quotes_a_default_path_and_gives_any_other_by_its_length() -> None:
+    """ISS 2533: a path an option gave may hold a key; a default does not."""
+    assert constants.shown_path("/d/x", "/d/x") == "/d/x"
+    assert constants.shown_path("/d/x", "/d/x", lambda text: f'"{text}"') == '"/d/x"'
+    assert constants.shown_path("/d/y", "/d/x") == "<4 characters>"
+    assert constants.shown_path("/d/x") == "<4 characters>"

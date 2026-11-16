@@ -193,12 +193,11 @@ def test_maxtipage_override_lets_a_2011_dated_chain_leave_initial_block_download
     """A wide `-maxtipage` is what the test above names as the alternative.
 
     `generate_random_chain`'s own docstring: a caller whose test needs
-    this node to read as caught up names a recent `tip_time` instead of
-    changing the tip-age bound, `Chain.consensus`'s fixed
-    `minimum_chain_work` and `MAX_TIP_AGE` having had no override before
-    this. `-maxtipage` is that override now (btclib-org/btclib-node#1474):
-    widened past the real gap between 2011 and today, it reads a chain
-    dated at `GENESIS_TIME` as recent with no `tip_time` override at all.
+    this node to read as caught up names a recent `tip_time`.
+    `-maxtipage` is the other way, an override of `MAX_TIP_AGE`
+    (btclib-org/btclib-node#1474): widened past the real gap between
+    2011 and today, it reads a chain dated at `GENESIS_TIME` as recent
+    with no `tip_time` override at all.
     """
     with node_context(tmp_path, allow_p2p=False, max_tip_age=10**10) as node:
         wait_until_listening(node.rpc_manager)

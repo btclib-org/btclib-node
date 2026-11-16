@@ -28,9 +28,12 @@ sites, which fire on a peer's bad block rather than this tree's own
 bug.
 """
 
+from typing import ClassVar
+
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.constants import quoted_name
 
 __all__ = [
     "BlockScriptVerifyError",
@@ -40,6 +43,7 @@ __all__ = [
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
+    "JsonIntegerOutOfRangeError",
     "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
@@ -54,6 +58,7 @@ __all__ = [
     "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
+    "TransportError",
     "TxRejectedError",
     "UnknownChainError",
     "UnsupportedAddressTypeError",
@@ -320,18 +325,17 @@ class ReimportedMainProcessError(RuntimeError):
     `"MainProcess"` and the active start method is not `fork` -- exactly
     the shape a `Pool` worker's own bootstrap produces
     (`multiprocessing.spawn.import_main_path` re-importing `__main__` to
-    find the target it was asked to run), which is what let
-    `scripts/chains/*.py` build a second `Node` on the same data
-    directory in every worker `Node.worker_pool` spawned before those
-    three scripts guarded their own module body (issue #579). This is
-    the same failure caught one layer up, for every caller rather than
-    only the three this tree ships (issue #589) -- unless the caller
-    passed `Node(..., allow_reimported_main=True)`, which this class
-    never sees raised against, since `Node.__init__` checks that flag
-    before either of the two calls this docstring names. A caller that
-    reaches this exception has not opted in, so the two things the
-    message offers -- a module-body guard, or that same flag -- are
-    both live for it, whichever this actually was.
+    find the target it was asked to run), in which a script whose module
+    body is unguarded builds a second `Node` on the same data directory
+    in every worker `Node.worker_pool` spawns (issue #579). This catches
+    that failure one layer up, for every caller rather than only the
+    scripts this tree ships (issue #589) -- unless the caller passed
+    `Node(..., allow_reimported_main=True)`, which this class never sees
+    raised against, since `Node.__init__` checks that flag before either
+    of the two calls this docstring names. A caller that reaches this
+    exception has not opted in, so the two things the message offers --
+    a module-body guard, or that same flag -- are both live for it,
+    whichever this actually was.
     """
 
     def __init__(self, process_name: str) -> None:
@@ -414,12 +418,27 @@ class DirectoryLockError(RuntimeError):
     """A directory `Node` keeps its data in cannot be locked for it.
 
     Raised by `dirlock.DirectoryLock`, with Core's own message for each
-    of its two refusals, and printed by `cli.main` the way Core's
-    `InitError` is.
+    of its two refusals, the directory named as `DirectoryLock` says, and
+    printed by `cli.main` the way Core's `InitError` is.
     """
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class JsonIntegerOutOfRangeError(ValueError):
+    """A start refused as `UniValue::getInt` refuses a `settings.json` number.
+
+    `getInt` throws a `std::runtime_error` (`src/univalue/include/univalue.h`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `AppInit` catches it
+    and hands it to `PrintExceptionContinue` rather than to `InitError`
+    (`src/bitcoind.cpp`, same sha), and `cli.main` prints it as that
+    function does. Raised by `cli._get_int` and by `Config.__init__`.
+    """
+
+    def __init__(self) -> None:
+        """Carry `getInt`'s own message."""
+        super().__init__("JSON integer out of range")
 
 
 class RpcCredentialRefusedError(ValueError):
@@ -436,19 +455,23 @@ class RpcCredentialRefusedError(ValueError):
 
 
 class UnknownChainError(ValueError):
-    """`Config`'s own `chain` string names no chain this tree knows."""
+    """`Config`'s own `chain` string names no chain this tree knows.
+
+    The string stands where a chain's name belongs, so it is quoted
+    through `quoted_name`: a longer one may be a key.
+    """
 
     def __init__(self, chain: str) -> None:
-        super().__init__(f"unknown chain: {chain!r}")
+        super().__init__(f"unknown chain: {quoted_name(chain)!r}")
 
 
 class InvalidChainTypeError(TypeError):
     """`Config`'s own `chain` is neither a `Chain` nor a `str`.
 
     `TypeError` and not `ValueError`: this is the argument being the
-    wrong *type* entirely, which `TRY004` is what noticed the tree
-    already had a `ValueError` for -- `unknown chain`, `UnknownChainError`
-    above, is the right *type* with the wrong *value*, and stays one.
+    wrong *type* entirely, as ruff's `TRY004` asks -- `unknown chain`,
+    `UnknownChainError` above, is the right *type* with the wrong
+    *value*, and is a `ValueError`.
     """
 
     def __init__(self, chain: object) -> None:
@@ -475,13 +498,32 @@ class UnsupportedAddressTypeError(ValueError):
         super().__init__("Address type not yet supported")
 
 
-class WrongNetworkMagicError(BTClibValueError):
+class TransportError(BTClibValueError):
+    """Octets a transport refuses: the connection they came on ends.
+
+    Core's transport answers them with `false` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), after a `net` debug line
+    that starts with `prefix`, then gives the reason, then the peer where
+    `names_peer` is true. `Connection.run` writes that line. `prefix` is
+    Core's `V1Transport`'s; `V2TransportError` has its own.
+    """
+
+    prefix: ClassVar[str] = "Header error"
+
+    def __init__(self, reason: str, *, names_peer: bool = True) -> None:
+        super().__init__(reason)
+        self.names_peer = names_peer
+
+
+class WrongNetworkMagicError(TransportError):
     """A message's magic names a chain other than the one this node runs.
 
     `BTClibValueError` and not a plain `ValueError`: it is the peer's
     envelope being wrong, as `Message.parse`'s own refusals are, and
     `fuzz/fuzz_framing.py` tells a refusal from a finding by
-    `isinstance(e, BTClibException)`.
+    `isinstance(e, BTClibException)`. The text is Core's `readHeader`
+    reason (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    less a magic no chain defines.
     """
 
     def __init__(self, magic: bytes) -> None:
@@ -490,8 +532,8 @@ class WrongNetworkMagicError(BTClibValueError):
         # may hold anything, key bytes included, and is printed only where
         # it is one of the magics `btclib_node.chains` defines
         known = {cls().magic for cls in (Main, TestNet, TestNet4, SigNet, RegTest)}
-        suffix = f": {magic.hex()}" if magic in known else ""
-        super().__init__(f"message for another network{suffix}")
+        suffix = f" {magic.hex()}" if magic in known else ""
+        super().__init__(f"Wrong MessageStart{suffix} received")
 
 
 class RejectedMessageError(BTClibValueError):
@@ -501,11 +543,17 @@ class RejectedMessageError(BTClibValueError):
     `src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a
     checksum that does not match the payload, or a command
     `IsMessageTypeValid` refuses. `size` is the message's own octets,
-    header included, which the stream has been moved past.
+    header included, which the stream has been moved past and the caller
+    counts as received.
+
+    The text names no size: on V1 the size holds the length field the
+    peer wrote, and on V2 the length it decrypted, which section 7 of the
+    organization's standard, *A refusal carries no secret*, keeps out of
+    a refusal's text.
     """
 
     def __init__(self, size: int) -> None:
-        super().__init__(f"message of {size} bytes rejected")
+        super().__init__("message rejected")
         self.size = size
 
 

@@ -47,12 +47,12 @@ _EXACT_REJECT_REASONS = {
     "coinbase input in a non-coinbase transaction": "bad-txns-prevout-null",
 }
 
-# `Tx.assert_valid`'s own oversize message (`btclib/tx/tx.py`, since
-# btclib 2026.9.30, btclib-org/btclib#2420): "invalid transaction size:
-# {size} * {WITNESS_SCALE_FACTOR} > {MAX_BLOCK_WEIGHT}", the last two
-# numbers fixed but the first the transaction's own stripped size, so
-# this is a prefix rather than an entry of `_EXACT_REJECT_REASONS`
-# above. btclib-org/btclib-node#1447
+# `Tx.assert_valid`'s own oversize message (`btclib/tx/tx.py`,
+# btclib-org/btclib#2420): "invalid transaction size: {size} *
+# {WITNESS_SCALE_FACTOR} > {MAX_BLOCK_WEIGHT}", the last two numbers
+# fixed but the first the transaction's own stripped size, so this is a
+# prefix rather than an entry of `_EXACT_REJECT_REASONS` above.
+# btclib-org/btclib-node#1447
 _OVERSIZE_MESSAGE_PREFIX = "invalid transaction size:"
 
 
@@ -83,19 +83,18 @@ def _reject_reason(tx: Tx, error: BTClibException) -> str:
     `Tx.assert_valid`'s own docstring already claims it checks what
     Core's `CheckTransaction` checks of a lone transaction
     (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag), and since btclib 2026.9.30 in the same order too:
-    vin-empty, vout-empty, the size, the outputs, the duplicate inputs,
-    the coinbase/prevout-null rule last (btclib-org/btclib#2417,
-    btclib-org/btclib#2422). This does not run any rule a second time
-    -- `error` is already btclib's own verdict, whichever rule
-    `assert_valid` raised first in its own order -- it only answers
-    which of Core's own reject reasons that message names, relying on
-    that order matching `CheckTransaction`'s for a transaction that
-    violates more than one rule at once to answer the same one of the
-    two Core would: two inputs, one of them the null outpoint, and no
-    outputs now answers `bad-txns-vout-empty` here, as it does in Core,
-    `Tx.assert_valid` having reached the empty `vout` before the
-    coinbase/prevout-null check reads either input
+    v32.1 tag), and in the same order too: vin-empty, vout-empty, the
+    size, the outputs, the duplicate inputs, the coinbase/prevout-null
+    rule last (btclib-org/btclib#2417, btclib-org/btclib#2422). This
+    does not run any rule a second time -- `error` is already btclib's
+    own verdict, whichever rule `assert_valid` raised first in its own
+    order -- it only answers which of Core's own reject reasons that
+    message names, relying on that order matching `CheckTransaction`'s
+    for a transaction that violates more than one rule at once to answer
+    the same one of the two Core would: two inputs, one of them the null
+    outpoint, and no outputs answers `bad-txns-vout-empty` here, as it
+    does in Core, `Tx.assert_valid` having reached the empty `vout`
+    before the coinbase/prevout-null check reads either input
     (btclib-org/btclib-node#1375).
 
     Every message `assert_valid` can raise for a `Tx` read from the
@@ -124,21 +123,17 @@ def check_transaction_reason(tx: Tx) -> str | None:
     `tx.assert_valid()` is the rule, the same one this node already
     trusts to judge a transaction, and this only translates a refusal
     into the reason string Core's own JSON-RPC answers name -- it never
-    decides validity on its own account, `ARCHITECTURE.md`'s own
-    *What is delegated, and what is not*. `_reject_reason`'s own
-    docstring is where a transaction violating more than one of
-    `CheckTransaction`'s rules at once is argued: since btclib
-    2026.9.30, `assert_valid`'s own check order matches
+    decides validity on its own account, `ARCHITECTURE.md`'s own *What
+    is delegated, and what is not*. `_reject_reason`'s own docstring is
+    where a transaction violating more than one of `CheckTransaction`'s
+    rules at once is argued: `assert_valid`'s own check order matches
     `CheckTransaction`'s, so the rule it raises first is the one Core
     would too (btclib-org/btclib#2417, btclib-org/btclib#2422).
 
     Core's `bad-txns-oversize` -- a transaction whose own non-witness
-    size alone already exceeds a block's weight limit -- used to have
-    no `Tx.assert_valid` check behind it to translate, and a
-    transaction breaking only that rule was answered as one this node
-    accepted rather than refused (btclib-org/btclib-node#1447). Closed
-    by the same 2026.9.30 that fixed the check order:
-    `Tx.assert_valid` now raises its own message for it, ahead of the
+    size alone already exceeds a block's weight limit -- has a
+    `Tx.assert_valid` check behind it (btclib-org/btclib-node#1447):
+    `Tx.assert_valid` raises its own message for it, ahead of the
     per-output amount checks in `CheckTransaction`'s own order
     (btclib-org/btclib#2420), and `_reject_reason` matches that message
     by its fixed prefix, the transaction's own stripped size being the

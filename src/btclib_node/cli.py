@@ -38,8 +38,9 @@ there), and `allow_p2p` (the P2P listener is always requested;
 (`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040,
 the v32.1 tag), and `libevent` with Core's warning that it does nothing.
 It refuses any other with Core's own "Unsupported logging category"
-message (`SetLoggingCategories`, `src/init/common.cpp`), and `0` or
-`none` discards the categories before it. Each debug line is written under
+message (`SetLoggingCategories`, `src/init/common.cpp`), the category
+quoted as `_resolve_debug` says, and `0` or `none` discards the
+categories before it. Each debug line is written under
 Core's category for it (`Logger.log_debug`), and `-debug` with no
 category, `1` or `all` selects every one. `-debugexclude=<category>` takes
 a category out after `-debug`'s, refused the same way.
@@ -64,21 +65,21 @@ against.
 A run through this command stays one process past the start of block
 download for two reasons, one enforced regardless of the other.
 `Node.__init__` refuses outright inside a re-imported `__main__`
-(`ReimportedMainProcessError`, issue #589 -- the guard ISS 579 asked
-for, now enforced by `Node` itself rather than by a module-body
-`if __name__ == "__main__":` every future caller has to remember), and
-that backstop holds whichever entry point built the `Node`. The
-console script `[project.scripts]` installs also never reaches that
-backstop in the first place: its own generated shim carries the same
-`if __name__ == "__main__":` guard `pytest`'s own `.venv/bin/pytest`
-has (ISS 583's own body quotes it), and a `multiprocessing` pool
-worker spawned from it re-executes that shim under `__mp_main__`
-(`_fixup_main_from_path`, `multiprocessing/spawn.py`), never taking
-the guard's own branch. `python -m btclib_node` needs neither
-argument: `__main__.py`'s own module docstring is where the third,
-narrower mechanism that exempts it -- `multiprocessing.spawn`'s
-special case for any module named `*.__main__` -- is read from the
-interpreter's own source rather than assumed.
+(`ReimportedMainProcessError`, issue #589 -- the guard ISS 579 asks for,
+enforced by `Node` itself rather than by a module-body `if __name__ ==
+"__main__":` every caller would have to remember), and that backstop
+holds whichever entry point built the `Node`. The console script
+`[project.scripts]` installs also never reaches that backstop in the
+first place: its own generated shim carries the same `if __name__ ==
+"__main__":` guard `pytest`'s own `.venv/bin/pytest` has (ISS 583's own
+body quotes it), and a `multiprocessing` pool worker spawned from it
+re-executes that shim under `__mp_main__` (`_fixup_main_from_path`,
+`multiprocessing/spawn.py`), never taking the guard's own branch.
+`python -m btclib_node` needs neither argument: `__main__.py`'s own
+module docstring is where the third, narrower mechanism that exempts it
+-- `multiprocessing.spawn`'s special case for any module named
+`*.__main__` -- is read from the interpreter's own source rather than
+assumed.
 
 ## `bitcoin.conf`
 
@@ -219,24 +220,28 @@ from btclib_node.config import (
     WhitebindAddress,
     default_onion_bind,
     get_path_arg,
+    has_valid_port,
+    invalid_port_message,
     listen_port,
     lookup_service,
     parse_bind,
     parse_whitebind,
     service_text,
-    split_host_port,
 )
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
     DIR_MODE,
+    MAX_QUOTED_NAME,
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
+    quoted_name,
+    shown_path,
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
-from btclib_node.exceptions import DirectoryLockError
+from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeError
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
@@ -280,10 +285,9 @@ _CHAIN_SECTION = {
     "testnet4": "testnet4",
 }
 
-# Core's own external `-chain=` vocabulary (`ChainTypeFromString`,
-# same file), which is not this node's internal one: `main`/`test`
-# rather than `mainnet`/`testnet`, predating this module and not
-# renamed for it.
+# Core's own external `-chain=` vocabulary (`ChainTypeFromString`, same
+# file), which is not this node's internal one: `main`/`test` rather
+# than `mainnet`/`testnet`, kept as Core spells it.
 # `LocaleIndependentAtoi`: what `TrimStringView` trims by default, and
 # the integer `std::from_chars` reads at the start of what is left, its
 # sign and its leading zeros matched apart from the digits that count
@@ -374,9 +378,6 @@ _TITLES = (
 
 # `ParseArgs`'s own prefix on a `ParseParameters` refusal.
 _PARSE_ERROR = "Error parsing command line arguments: "
-# The longest name a refusal quotes: section 7 of the organization's
-# standard, *A refusal carries no secret*.
-_MAX_QUOTED_NAME = 16
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).
 _MAX_PORT = 0xFFFF
@@ -1106,6 +1107,12 @@ def _parse_parameters(
     not negated. The second value is `ParseArgs`'s own "unexpected
     token", the first argument anywhere in `argv` not starting with `-`,
     which `build_config` refuses once the file is read.
+
+    Core's `-includeconf` refusal writes the value whole
+    (`src/common/args.cpp:249`, same sha). This one writes it as
+    `shown_path` writes a path an option gave, by its length, and names it
+    by its place among the `-includeconf` values, counted from 1
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     options: dict[str, list[_Value]] = {}
     for arg in argv:
@@ -1128,8 +1135,14 @@ def _parse_parameters(
             raise ValueError(err_msg) from None
         options.setdefault(info.name, []).append(value)
     includes = options.get("includeconf", [])
-    if live := includes[_negated(includes) :]:
-        first = "true" if live[0] is True else json.dumps(live[0], ensure_ascii=False)
+    skip = _negated(includes)
+    if live := includes[skip:]:
+        first = (
+            "true"
+            if live[0] is True
+            else f"{shown_path(_setting_to_str(live[0]))} "
+            f"(value {skip + 1} of -includeconf)"
+        )
         err_msg = (
             f"{_PARSE_ERROR}-includeconf cannot be used from commandline; "
             f"-includeconf={first}"
@@ -1161,12 +1174,10 @@ def _quoted_line(line: str) -> str:
     `ParseParameters` (`src/common/args.cpp`) quote the whole line or
     argument. This tree departs on purpose: the refusal reaches stderr and
     logs, and the line may hold a password (ASSURANCE_CASE.md, "Common
-    implementation weaknesses"). `_name_of` is quoted only where it has at
-    most `_MAX_QUOTED_NAME` characters, too short for a key; any other is
-    given by its length.
+    implementation weaknesses"). `_name_of` is quoted as
+    `constants.quoted_name` quotes a name.
     """
-    name = _name_of(line)
-    return name if len(name) <= _MAX_QUOTED_NAME else f"<{len(name)} characters>"
+    return quoted_name(_name_of(line))
 
 
 def _config_options(
@@ -1212,7 +1223,7 @@ def _config_options(
             shown = _quoted_line(line)
             err_msg = f"parse error on line {lineno}: {shown}"
             # the hint repeats the name, which is quoted only when short
-            if line.startswith("no") and len(_name_of(line)) <= _MAX_QUOTED_NAME:
+            if line.startswith("no") and len(_name_of(line)) <= MAX_QUOTED_NAME:
                 err_msg += (
                     ", if you intended to specify a negated option, use "
                     f"{shown}=1 instead"
@@ -1288,15 +1299,16 @@ def _read_conf_file(  # noqa: PLR0913
     *,
     required: bool,
     include: str | None = None,
+    position: int = 1,
+    default_path: str | None = None,
     sections: list[_SectionInfo] | None = None,
-    filepath: str = "",
     warnings: list[str],
 ) -> _RoConfig:
     """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
-    `sections` and `filepath` are `_config_options`', `filepath` being
-    the name `path` is given in a warning, and `warnings`
-    `_interpret_value`'s.
+    `sections` is `_config_options`', and `warnings` `_interpret_value`'s.
+    `include` is the `includeconf` value that named `path`, and `position`
+    its place among the `includeconf` values read, counted from 1.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
@@ -1324,11 +1336,25 @@ def _read_conf_file(  # noqa: PLR0913
     which one they are given.
 
     The refusals are `ReadConfigFiles`'s own words, those of an included
-    file where `include` is the `includeconf` value that named it.
+    file where `include` is given.
+
+    Core writes the path whole (`src/common/config.cpp:146`, `:152`, `:198`
+    and `:208`, same sha), and so does its warning of an unknown key. These
+    write it as `shown_path` does, `default_path` being where the root file
+    is when no option names it, and name an included file by `position` as
+    well (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
+    if include is None:
+        shown = shown_path(path, default_path, lambda text: f'"{text}"')
+        filepath = shown_path(path, default_path)
+        where = ""
+    else:
+        shown = shown_path(path)
+        filepath = shown_path(include)
+        where = f" (value {position} of -includeconf)"
     if os.path.isdir(path):  # noqa: PTH112
         kind = "Config" if include is None else "Included config"
-        err_msg = f'{kind} file "{path}" is a directory.'
+        err_msg = f"{kind} file {shown}{where} is a directory."
         raise ValueError(err_msg)
     try:
         # `newline=""`: universal newlines would end a line at a lone
@@ -1340,14 +1366,18 @@ def _read_conf_file(  # noqa: PLR0913
         with open(  # noqa: PTH123
             path, encoding="utf-8", errors="surrogateescape", newline=""
         ) as conf_file:
-            text = conf_file.read()
+            text: str | None = conf_file.read()
     except OSError:
+        text = None
+    # each refusal raised past the `except`, whose `OSError` names the path
+    # whole
+    if text is None:
         if include is not None:
-            err_msg = f"Failed to include configuration file {include}"
-            raise ValueError(err_msg) from None
+            err_msg = f"Failed to include configuration file {filepath}{where}"
+            raise ValueError(err_msg)
         if required:
-            err_msg = f'specified config file "{path}" could not be opened.'
-            raise ValueError(err_msg) from None
+            err_msg = f"specified config file {shown} could not be opened."
+            raise ValueError(err_msg)
         return {}
     return _parse_conf_text(text, sections, filepath, warnings=warnings)
 
@@ -1358,6 +1388,7 @@ def _load_conf_tree(  # noqa: PLR0913
     conf_explicit: bool,
     base_dir: str | Path,
     use_includes: bool,
+    default_path: str | None = None,
     sections: list[_SectionInfo] | None = None,
     command_line: dict[str, list[_Value]] | None = None,
     warnings: list[str],
@@ -1378,12 +1409,15 @@ def _load_conf_tree(  # noqa: PLR0913
     appends into one shared `ro_config[section][key]` list regardless of
     which file contributed a value. An `includeconf` an included file
     adds to either section is warned about and not read, and so is every
-    one of the chain an included file switched to.
+    one of the chain an included file switched to, the value written by
+    its length, as `shown_path` writes a path an option gave.
 
     Every section named is appended to `sections`, where given: the root
     file under its path, an included one under its name as written, as
-    `ReadConfigFiles` passes each to `ReadConfigStream`. `warnings` is
-    `_interpret_value`'s.
+    `ReadConfigFiles` passes each to `ReadConfigStream`, each written as
+    `_read_conf_file` writes it. `warnings` is `_interpret_value`'s, and
+    `default_path` is `_read_conf_file`'s for the root file. An included
+    file's `position` is its place in the order the files are read.
 
     `conf_path` and `base_dir` are taken as given -- a caller building one
     by joining a value onto a base passes a plain string, `os.path.join`
@@ -1396,8 +1430,8 @@ def _load_conf_tree(  # noqa: PLR0913
     tree = _read_conf_file(
         conf_path,
         required=conf_explicit,
+        default_path=default_path,
         sections=sections,
-        filepath=str(conf_path),
         warnings=warnings,
     )
     if not use_includes:
@@ -1416,7 +1450,7 @@ def _load_conf_tree(  # noqa: PLR0913
     names: list[str] = []
     chain_includes = add_includes(chain_id, names)
     default_includes = add_includes("", names)
-    for include in names:
+    for position, include in enumerate(names, 1):
         include_path = (
             include
             if os.path.isabs(include)  # noqa: PTH117
@@ -1426,8 +1460,8 @@ def _load_conf_tree(  # noqa: PLR0913
             include_path,
             required=True,
             include=include,
+            position=position,
             sections=sections,
-            filepath=include,
             warnings=warnings,
         )
         for section, keys in included.items():
@@ -1443,7 +1477,7 @@ def _load_conf_tree(  # noqa: PLR0913
     for name in names:
         sys.stderr.write(
             "warning: -includeconf cannot be used from included files; "
-            f"ignoring -includeconf={name}\n"
+            f"ignoring -includeconf={shown_path(name)}\n"
         )
     return tree
 
@@ -1691,8 +1725,7 @@ def _get_int(settings: _Settings, name: str) -> int | None:
             or not _LEADING_INTEGER.fullmatch(value)
             or not _INT64_MIN <= int(value) <= _INT64_MAX
         ):
-            err_msg = "JSON integer out of range"
-            raise ValueError(err_msg)
+            raise JsonIntegerOutOfRangeError
         return int(value)
     if not isinstance(value, str):
         raise _wrong_type(value)
@@ -1807,6 +1840,10 @@ def _get_port(settings: _Settings, name: str) -> int | None:
     -- which a negation reads as -- included. Leading zeros are read, as
     `std::from_chars` reads them, and dropped before `int`, which refuses
     a text past CPython's digit limit, zeros counted.
+
+    The refusal is Core's `InvalidPortErrMsg` (`src/common/messages.cpp:150`,
+    same sha) with `'...'` for the value, which may be a key (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     value = _get_arg(settings, name)
     if value is None:
@@ -1818,7 +1855,7 @@ def _get_port(settings: _Settings, name: str) -> int | None:
         or len(digits) > len(str(_MAX_PORT))
         or not 0 < int(digits or "0") <= _MAX_PORT
     ):
-        err_msg = f"Invalid port specified in -{name}: '{value}'"
+        err_msg = f"Invalid port specified in -{name}: '...'"
         raise ValueError(err_msg)
     return int(digits)
 
@@ -1904,12 +1941,16 @@ def _resolve_chain_name(settings: _Settings) -> str:
 
     `GetChainType`'s refusal (`src/common/args.cpp`, at
     bitcoin/bitcoin@f0de87f040), asked once the files are read: Core's
-    own `strprintf("Unknown chain %s.", ...)`, the name written in as
-    given rather than quoted (btclib-org/btclib-node#1311).
+    own `strprintf("Unknown chain %s.", ...)`, the name written in bare
+    rather than in quotes (btclib-org/btclib-node#1311). Core writes the
+    name whole (`src/common/args.cpp:914`, same sha), and this writes it
+    through `quoted_name`, since a longer one may be a key (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     chain_name = _chain_arg(settings)
     if chain_name.startswith(_UNKNOWN_CHAIN):
-        err_msg = f"Unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)}."
+        shown = quoted_name(chain_name.removeprefix(_UNKNOWN_CHAIN))
+        err_msg = f"Unknown chain {shown}."
         raise ValueError(err_msg)
     return chain_name
 
@@ -1951,6 +1992,11 @@ def _resolve_debug(
     refused the same way for a category Core does not know; `all`
     excludes every one. `libevent`, in either, selects nothing and
     appends `GetLogCategory`'s warning to `settings.debug_warnings`.
+
+    Core writes the category whole (`src/init/common.cpp:93` and `:100`,
+    same sha), and this writes it through `quoted_name`, since a longer
+    one may be a key (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     categories = _get_args(settings, "debug")
     discard = [i for i, category in enumerate(categories) if category in _DEBUG_NONE]
@@ -1959,7 +2005,7 @@ def _resolve_debug(
         if category == _DEPRECATED_CATEGORY:
             _warn_deprecated_category(settings)
         elif category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
-            err_msg = f"Unsupported logging category -debug={category}."
+            err_msg = f"Unsupported logging category -debug={quoted_name(category)}."
             raise ValueError(err_msg)
     enabled = [category for category in enabled if category != _DEPRECATED_CATEGORY]
     excluded: set[str] = set()
@@ -1971,7 +2017,8 @@ def _resolve_debug(
         elif category == _DEPRECATED_CATEGORY:
             _warn_deprecated_category(settings)
         else:
-            err_msg = f"Unsupported logging category -debugexclude={category}."
+            shown = quoted_name(category)
+            err_msg = f"Unsupported logging category -debugexclude={shown}."
             raise ValueError(err_msg)
     if any(category in _DEBUG_ALL for category in enabled):
         return True, frozenset(), frozenset(excluded)
@@ -2019,22 +2066,28 @@ def _get_activation_heights(settings: _Settings) -> dict[str, int]:
     `ToIntegral<int32_t>`'s, refused below zero and from `INT_MAX` up,
     and the name before it is a key of `BURIED_DEPLOYMENTS`. A later
     value for the same name wins.
+
+    Core's refusals write the value whole (`src/chainparams.cpp:31`, `:37`
+    and `:44`, same sha). These write `...` in its place, since it may be
+    a key, and name it by its place among the `-testactivationheight`
+    values, counted from 1 (SECURITY.md, "Where this node departs from
+    Bitcoin Core").
     """
     heights: dict[str, int] = {}
-    for arg in _get_args(settings, "testactivationheight"):
+    for position, arg in enumerate(_get_args(settings, "testactivationheight"), 1):
         name, found, value = arg.partition("@")
+        where = f"-testactivationheight=name@height (value {position} of "
+        where += "-testactivationheight)."
         if not found:
-            err_msg = f"Invalid format ({arg}) for -testactivationheight=name@height."
+            err_msg = f"Invalid format (...) for {where}"
             raise ValueError(err_msg)
         match = _ACTIVATION_HEIGHT.fullmatch(value)
         # `-0` is zero, and any other negative refused
         if match is None or (match[1] and int(match[2])) or int(match[2]) >= _INT_MAX:
-            err_msg = (
-                f"Invalid height value ({arg}) for -testactivationheight=name@height."
-            )
+            err_msg = f"Invalid height value (...) for {where}"
             raise ValueError(err_msg)
         if name not in BURIED_DEPLOYMENTS:
-            err_msg = f"Invalid name ({arg}) for -testactivationheight=name@height."
+            err_msg = f"Invalid name (...) for {where}"
             raise ValueError(err_msg)
         heights[name] = int(match[2])
     return heights
@@ -2061,6 +2114,27 @@ def _help_message(*, show_debug: bool) -> str:
     return "".join(parts)
 
 
+def _default_conf_path() -> str:
+    """Return where the configuration file is when no option names it."""
+    return os.path.join(str(default_data_dir()), _DEFAULT_CONF_FILENAME)  # noqa: PTH118
+
+
+def _os_error_text(os_error: OSError, default_path: str | None = None) -> str:
+    """Return `str(os_error)`, its paths written as `shown_path` writes them.
+
+    Python's own words, `[Errno <n>] <strerror>: '<path>'`, each path
+    whole only where it is `default_path`: a path an option gave may hold
+    a key.
+    """
+    if os_error.filename is None:
+        return str(os_error)
+    text = f"[Errno {os_error.errno}] {os_error.strerror}: "
+    text += shown_path(os.fsdecode(os_error.filename), default_path, repr)
+    if os_error.filename2 is not None:
+        text += f" -> {shown_path(os.fsdecode(os_error.filename2))}"
+    return text
+
+
 def _check_datadir(base_dir: Path, datadir: str) -> None:
     """Refuse an explicit `-datadir` that is not an existing directory.
 
@@ -2070,7 +2144,9 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     a directory separately from reading the config file, and
     `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
     answers "Specified data directory ... does not exist." when it
-    fails, naming `datadir` as it was given; `ReadConfigFiles` checks
+    fails, naming `datadir` whole (`:22`), which this names by its length,
+    as `shown_path` writes a path an option gave (SECURITY.md, "Where this
+    node departs from Bitcoin Core"); `ReadConfigFiles` checks
     again because a `datadir=` line inside the config file can still
     change it after the command-line value already passed this same
     check once. This function is
@@ -2091,7 +2167,7 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     `fs::create_directories`.
     """
     if not base_dir.is_dir():
-        err_msg = f'Specified data directory "{datadir}" does not exist.'
+        err_msg = f"Specified data directory {shown_path(datadir)} does not exist."
         raise ValueError(err_msg)
 
 
@@ -2109,7 +2185,10 @@ def _check_ignored_conf(
     first made absolute and a relative `-conf` joined to it
     (`AbsPathForConfigVal`), as `_read_settings` reads them.
     `-allowignoredconf` makes the refusal a warning for the log alone,
-    appended to `settings.log_warnings`, as Core logs it. Core's other source,
+    appended to `settings.log_warnings`, as Core logs it. Each path, and
+    the `-conf` value, is written as `shown_path` writes it, where Core
+    writes it whole (`src/common/init.cpp:78-88`, same sha), and so is the
+    path of an `OSError`. Core's other source,
     "data directory", is a `datadir=` line that moved the data directory,
     which `_parse_conf_text` drops; and the line Core logs under `-noconf`
     is not written.
@@ -2122,27 +2201,35 @@ def _check_ignored_conf(
     # as "<cwd>/./other.conf"; `fs::absolute` asks for the working
     # directory only where the path is relative
     base = str(base_dir)
+    failure = ""
+    same = False
     try:
         # not `Path(conf_path).samefile(...)`, ruff's own PTH121 fix:
         # constructing a `Path` from `conf_path` is the very drop this
         # module works around elsewhere (btclib-org/btclib-node#1273)
-        if os.path.samefile(conf_path, base_config):  # noqa: PTH121
-            return
-        if datadir := _get_arg(settings, "datadir"):
+        same = os.path.samefile(conf_path, base_config)  # noqa: PTH121
+        if not same and (datadir := _get_arg(settings, "datadir")):
             base = get_path_arg(datadir)
             if not os.path.isabs(base):  # noqa: PTH117
                 base = os.path.join(os.getcwd(), base)  # noqa: PTH109, PTH118
     except OSError as os_error:
-        raise ValueError(str(os_error)) from None
+        failure = _os_error_text(os_error, _default_conf_path())
+    # raised past the `except`, whose `OSError` names the path whole
+    if failure:
+        raise ValueError(failure)
+    if same:
+        return
     conf = _get_arg(settings, "conf") or ""
     config = os.path.join(base, get_path_arg(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
     name = _quoted(_DEFAULT_CONF_FILENAME)
+    shown_base = shown_path(base, str(default_data_dir()), _quoted)
+    shown_config = shown_path(config, _default_conf_path(), _quoted)
     error = (
-        f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
-        f"because a different configuration file {_quoted(config)} from command "
-        f"line argument {_quoted(f'-conf={conf}')} is being used instead. Possible "
+        f"Data directory {shown_base} contains a {name} file which is ignored, "
+        f"because a different configuration file {shown_config} from command "
+        f"line argument -conf={shown_path(conf)} is being used instead. Possible "
         "ways to address this would be to:\n"
-        f"- Delete or rename the {name} file in data directory {_quoted(base)}.\n"
+        f"- Delete or rename the {name} file in data directory {shown_base}.\n"
         "- Change datadir= or conf= options to specify one configuration file, not "
         "two, and use includeconf= to include any other configuration files."
     )
@@ -2169,21 +2256,28 @@ def _settings_path(settings: _Settings, net_dir: str) -> str | None:
     return os.path.join(net_dir, get_path_arg(name or SETTINGS_FILENAME))  # noqa: PTH118
 
 
-def _make_data_dirs(net_dir: str) -> None:
+def _make_data_dirs(net_dir: str, default_path: str) -> None:
     """Make the chain's data directory where missing, as `InitConfig` does.
 
     It makes no `wallets` directory, which `SECURITY.md`'s *Where this node
     departs from Bitcoin Core* explains. A failure is Python's words rather
-    than the C++ library's.
+    than the C++ library's. Its path is written whole only where `net_dir`
+    is `default_path`, the chain's directory when no option names one, and
+    by its length otherwise, as `shown_path` writes a path an option gave.
     """
-    if not os.path.exists(net_dir):  # noqa: PTH110
-        try:
-            Path(net_dir).mkdir(exist_ok=True, parents=True)
-        except OSError as os_error:
-            raise ValueError(str(os_error)) from None
+    if os.path.exists(net_dir):  # noqa: PTH110
+        return
+    err_msg = ""
+    try:
+        Path(net_dir).mkdir(exist_ok=True, parents=True)
+    except OSError as os_error:
+        err_msg = str(os_error) if net_dir == default_path else _os_error_text(os_error)
+    # raised past the `except`, whose `OSError` names the path whole
+    if err_msg:
+        raise ValueError(err_msg)
 
 
-def _init_settings_file(settings: _Settings, net_dir: str) -> None:
+def _init_settings_file(settings: _Settings, net_dir: str, default_dir: str) -> None:
     """Read `settings.json`, warn of its unknown names, and write it back.
 
     `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@f0de87f040)
@@ -2193,22 +2287,30 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     A name no option has is warned of in the log alone, quoted by
     `_quoted_line`, which Core's warning is not: the name may be a secret.
     The path is asked for again by the write, as `WriteSettingsFile` does,
-    after the file's own `settings` key has had its say.
+    after the file's own `settings` key has had its say. Each refusal writes
+    the path as `shown_path` does, `default_dir` being the chain's directory
+    when no option names one.
     """
     path = _settings_path(settings, net_dir)
     if path is None:
         return
+    default_path = os.path.join(default_dir, SETTINGS_FILENAME)  # noqa: PTH118
+    err_msg = ""
     try:
-        settings.rw_settings = read_settings(path, quote=_quoted_line)
+        settings.rw_settings = read_settings(
+            path, quote=_quoted_line, default_path=default_path
+        )
     except OSError as os_error:
         # `fs::exists` throws, and `InitConfig` shows libstdc++'s `what()`
+        shown = shown_path(path, default_path)
         err_msg = (
-            f"filesystem error: cannot get file status: {os_error.strerror} [{path}]"
+            f"filesystem error: cannot get file status: {os_error.strerror} [{shown}]"
         )
-        raise ValueError(err_msg) from None
     except ValueError as error:
         err_msg = f"Settings file could not be read:\n- {error}"
-        raise ValueError(err_msg) from None
+    # raised past the `except`, whose `OSError` names the path whole
+    if err_msg:
+        raise ValueError(err_msg)
     settings.log_warnings.extend(
         f"Ignoring unknown rw_settings value {_quoted_line(name)}"
         for name in settings.rw_settings
@@ -2219,7 +2321,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
         err_msg = "Attempt to write settings file when dynamic settings are disabled."
         raise ValueError(err_msg)
     try:
-        write_settings(path, settings.rw_settings)
+        write_settings(path, settings.rw_settings, default_path=default_path)
     except ValueError as error:
         err_msg = f"Settings file could not be written:\n- {error}"
         raise ValueError(err_msg) from None
@@ -2253,8 +2355,10 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
     at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
-    through `_parse_hex_uint256`, refused in Core's own words. A `None`
-    return is `Config.__init__`'s own to default, to the chain's own
+    through `_parse_hex_uint256`, refused in Core's own words, `...` in
+    place of the value, which may be a key (`:37`, same sha; SECURITY.md,
+    "Where this node departs from Bitcoin Core"). A `None` return is
+    `Config.__init__`'s own to default, to the chain's own
     `minimum_chain_work` -- which chain that is is not decided until
     then.
     """
@@ -2264,7 +2368,7 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
     work = _parse_hex_uint256(value)
     if work is None:
         err_msg = (
-            f"Invalid minimum work specified ({value}), must be up to "
+            "Invalid minimum work specified (...), must be up to "
             f"{_MIN_WORK_HEX_DIGITS} hex digits"
         )
         raise ValueError(err_msg)
@@ -2276,11 +2380,12 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
 
     `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
     at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `uint256::FromUserHex`
-    through `_parse_hex_uint256`, refused in Core's own words. Zero --
-    `0`, `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all",
-    and is `None` here, as is a value not given, until Core's default
-    per network is read (btclib-org/btclib-node#1576, a later pull
-    request).
+    through `_parse_hex_uint256`, refused in Core's own words, `...` in
+    place of the value, which may be a key (`:45`, same sha; SECURITY.md,
+    "Where this node departs from Bitcoin Core"). Zero -- `0`,
+    `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all", and
+    is `None` here, as is a value not given, until Core's default per
+    network is read (btclib-org/btclib-node#1576, a later pull request).
     """
     value = _get_arg(settings, "assumevalid")
     if value is None:
@@ -2288,7 +2393,7 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
     block_hash = _parse_hex_uint256(value)
     if block_hash is None:
         err_msg = (
-            f"Invalid assumevalid block hash specified ({value}), must be up "
+            "Invalid assumevalid block hash specified (...), must be up "
             f"to {_MIN_WORK_HEX_DIGITS} hex digits (or 0 to disable)"
         )
         raise ValueError(err_msg)
@@ -2311,15 +2416,17 @@ def _get_feerate(settings: _Settings, name: str) -> FeeRate | None:
     """Return `-name` as a rate, `None` where it is not given.
 
     BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s words
-    (`src/common/messages.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag); a negation reads as `0`.
+    (`src/common/messages.cpp:160`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), `'...'` in place of the value, which may be a key
+    (SECURITY.md, "Where this node departs from Bitcoin Core"); a negation
+    reads as `0`.
     """
     value = _get_arg(settings, name)
     if value is None:
         return None
     amount = _parse_money(value)
     if amount is None:
-        err_msg = f"Invalid amount for -{name}=<amount>: '{value}'"
+        err_msg = f"Invalid amount for -{name}=<amount>: '...'"
         raise ValueError(err_msg)
     return FeeRate(sats_per_kvbyte=amount)
 
@@ -2471,6 +2578,7 @@ def _read_settings(
                 str(Path.cwd()), normalized_datadir
             )
         _check_datadir(base_dir, datadir)
+    default_conf = _default_conf_path()
     conf_path = None
     settings.config_file_line = "Config file: <disabled>"
     if not _is_negated(settings, "conf"):
@@ -2487,6 +2595,7 @@ def _read_settings(
                 conf_explicit=_is_set(settings, "conf"),
                 base_dir=base_display,
                 use_includes="includeconf" not in settings.command_line,
+                default_path=default_conf,
                 sections=settings.config_sections,
                 command_line=settings.command_line,
                 warnings=settings.log_warnings,
@@ -2500,25 +2609,33 @@ def _read_settings(
         # `StartLogging`'s other two lines, for a directory and for a
         # `-conf` that is absent, are refused above by `_read_conf_file`
         # before any log is open, as `ReadConfigFiles` refuses them
-        # before `StartLogging`
+        # before `StartLogging`; the line's path is written as `shown_path`
+        # writes it, where Core logs it whole (`src/init/common.cpp:136` and
+        # `:141`, same sha)
+        shown = shown_path(conf_path, default_conf)
         settings.config_file_line = (
-            f"Config file: {conf_path}"
+            f"Config file: {shown}"
             if os.path.exists(conf_path)  # noqa: PTH110
-            else f"Config file: {conf_path} (not found, skipping)"
+            else f"Config file: {shown} (not found, skipping)"
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
     activation_heights = _get_activation_heights(settings)
     net_dir = os.path.join(base_display, chain_name)  # noqa: PTH118
-    _make_data_dirs(net_dir)
+    default_net_dir = os.path.join(str(default_data_dir()), chain_name)  # noqa: PTH118
+    _make_data_dirs(net_dir, default_net_dir)
     _check_ignored_conf(settings, base_dir, conf_path)
-    _init_settings_file(settings, net_dir)
+    _init_settings_file(settings, net_dir, default_net_dir)
     # `AppInitParameterInteraction` asks again, with the file's values in
     _resolve_chain_name(settings)
 
     if token is not None:
+        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
+        # quotes the argument, which may be a key (SECURITY.md, "Where this
+        # node departs from Bitcoin Core")
         err_msg = (
-            f"Command line contains unexpected token '{token}', "
+            "Command line contains unexpected token '...', "
             "see btclib-node -h for a list of options."
         )
         raise ValueError(err_msg)
@@ -2710,9 +2827,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     # value of its own: `SoftSetBoolArg` never overwrites an arg already
     # set, so an explicit `-dnsseed=1` reaches `Config.__init__`'s own
     # `-forcednsseed` refusal as `True` even under `-connect`
-    # (btclib-org/btclib-node#1265, review round 3). `_after_lock`
-    # recomputes the identical value from `max_connections_arg` below,
-    # once this returns it.
+    # (btclib-org/btclib-node#1265). `_after_lock` recomputes the
+    # identical value from `max_connections_arg` below, once this
+    # returns it.
     dnsseed = _get_bool(settings, "dnsseed")
     if dnsseed is None:
         dnsseed = not connect and not connect_negated and max_connections_arg > 0
@@ -2789,7 +2906,10 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
     directories.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
     blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
-    return lock_directories(directories.data_dir, blocks_dir)
+    default_dir = default_data_dir().absolute() / directories.chain.name
+    return lock_directories(
+        (directories.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))
+    )
 
 
 def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
@@ -2799,12 +2919,20 @@ def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
     value is looked up at `-port`, names allowed (`-dns`'s default), and
     refused where nothing answers or the address is not valid. The port
     is `GetListenPort`'s, which `listen_port` reads.
+
+    The refusal is Core's `ResolveErrMsg` (`src/common/messages.cpp:145`,
+    same sha) with `'...'` for the value, which may be a key, and the
+    value named by its place among `values`, counted from 1 (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     resolved: list[str] = []
-    for value in values:
+    for position, value in enumerate(values, 1):
         service = lookup_service(value, default_port, allow_lookup=True)
         if service is None or not is_valid_host(service[0]):
-            err_msg = f"Cannot resolve -externalip address: '{value}'"
+            err_msg = (
+                "Cannot resolve -externalip address: '...' "
+                f"(value {position} of -externalip)"
+            )
             raise ValueError(err_msg)
         resolved.append(service_text(*service))
     return resolved
@@ -2840,12 +2968,15 @@ def _check_bind(
     neither is, `-port` being ignored otherwise.
     """
     parsed = []
-    for value in values:
-        address = parse_bind(value, default_port)
+    for position, value in enumerate(values, 1):
+        address = parse_bind(value, default_port, position=position)
         if not address.onion:
             _warn_bad_port("-bind", address.port)
         parsed.append(address)
-    whitebound = [parse_whitebind(value) for value in whitebind]
+    whitebound = [
+        parse_whitebind(value, position=position)
+        for position, value in enumerate(whitebind, 1)
+    ]
     if not values and not whitebind and port is not None:
         _warn_bad_port("-port", port)
     ordered: list[BindAddress | WhitebindAddress] = [
@@ -2885,7 +3016,8 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
     # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
     # tag; `RpcManager` binds the second beside `-rpcallowip`, as
-    # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does
+    # `GetBindAddresses` (`src/httpserver.cpp`, same sha) does. The
+    # refusal is `invalid_port_message`'s
     bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
     whitebind = _get_args(settings, "whitebind")
@@ -2894,13 +3026,10 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         ("rpcbind", rpcbind),
         ("whitebind", whitebind),
     ):
-        for value in values:
+        for position, value in enumerate(values, 1):
             head, tagged, _ = value.rpartition("=")
-            try:
-                split_host_port(head if tagged and name == "bind" else value, 0)
-            except ValueError:
-                err_msg = f"Invalid port specified in -{name}: '{value}'"
-                raise ValueError(err_msg) from None
+            if not has_valid_port(head if tagged and name == "bind" else value):
+                raise ValueError(invalid_port_message(name, position))
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"),
@@ -3074,6 +3203,37 @@ def _setup_environment() -> None:
         os.umask(_PRIVATE_UMASK)
 
 
+def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
+    """Return what Core's `PrintExceptionContinue` logs for `error`.
+
+    `FormatException` (`src/util/exception.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) after a line of asterisks:
+    the `typeid` name of `getInt`'s `std::runtime_error`, its message, and
+    where `AppInit` caught it, each of these lines ending in seven
+    spaces. Core names its executable's path in place of `bitcoin` on
+    Windows. Here that executable is the Python interpreter, which names
+    no node, so `bitcoin` stands on every platform.
+    """
+    return (
+        "\n\n************************\n"
+        "EXCEPTION: St13runtime_error       \n"
+        f"{error}       \n"
+        "bitcoin in AppInit()       \n"
+    )
+
+
+def _refusal(error: Exception) -> str:
+    """Return what `main` writes to stderr for a refusal of the start.
+
+    `PrintExceptionContinue`'s block and the newline it adds for a
+    `JsonIntegerOutOfRangeError`, `InitError`'s `Error: <message>` for any
+    other.
+    """
+    if isinstance(error, JsonIntegerOutOfRangeError):
+        return f"{_exception_block(error)}\n"
+    return f"Error: {error}\n"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -3090,6 +3250,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     refusal after the lock reaches `history.log` too, `open_history_log`
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
+
+    A `JsonIntegerOutOfRangeError` is the exception: Core throws it rather
+    than reporting it, so stderr gets `_exception_block`'s text, and a
+    refusal after the lock also logs it as a warning, as
+    `PrintExceptionContinue` writes it to both. The exit status is `1`
+    there too.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -3101,7 +3267,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
     except (ValueError, DirectoryLockError) as error:
-        sys.stderr.write(f"Error: {error}\n")
+        sys.stderr.write(_refusal(error))
         raise SystemExit(1) from error
     # `Node.__init__` takes the same locks, and holds them once these go
     try:
@@ -3134,9 +3300,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
-            logger.error(str(error))  # noqa: TRY400
+            if isinstance(error, JsonIntegerOutOfRangeError):
+                logger.warning(_exception_block(error))
+            else:
+                logger.error(str(error))  # noqa: TRY400
             logger.close()
-            sys.stderr.write(f"Error: {error}\n")
+            sys.stderr.write(_refusal(error))
             raise SystemExit(1) from error
         node = Node(config=config)
     finally:

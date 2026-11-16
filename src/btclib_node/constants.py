@@ -18,6 +18,10 @@ import sys
 from datetime import timedelta
 from importlib.metadata import version
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = [
     "CLIENT_BUGREPORT",
@@ -27,6 +31,8 @@ __all__ = [
     "DEFAULT_MAXSENDBUFFER",
     "DEFAULT_MEMPOOL_EXPIRY_HOURS",
     "DIR_MODE",
+    "MAX_JSON_DEPTH",
+    "MAX_QUOTED_NAME",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -39,6 +45,8 @@ __all__ = [
     "default_data_dir",
     "numeric_version",
     "quoted",
+    "quoted_name",
+    "shown_path",
 ]
 
 # Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
@@ -56,6 +64,11 @@ DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
 # Windows gets 0777, as Core does: since Python 3.13 a 0700 there is a
 # protected ACL where Core's directories inherit the parent's.
 DIR_MODE = 0o777 if sys.platform == "win32" else 0o700
+
+# Core's `MAX_JSON_DEPTH` (`src/univalue/lib/univalue_read.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the most arrays and
+# objects open at once in a JSON text `UniValue::read` accepts.
+MAX_JSON_DEPTH = 512
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
@@ -93,14 +106,14 @@ MIN_BLOCKS_TO_KEEP = 288
 MIN_PRUNE_TARGET_MIB = 550
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
-# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the v32.1
-# tag) and sends as `/Satoshi:<version>/` -- the one thing this node says
-# about itself to every peer it meets, and what a crawler reporting the
-# composition of the network parses. `p2p.connection`'s own `_USER_AGENT`
-# (the wire bytes of a `version` message) and
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag) and sends as `/Satoshi:<version>/` -- the one thing this
+# node says about itself to every peer it meets, and what a crawler
+# reporting the composition of the network parses. `p2p.connection`'s
+# own `_USER_AGENT` (the wire bytes of a `version` message) and
 # `rpc.callbacks.get_network_info`'s `subversion` answer both read this
-# one string rather than each computing it, so the two can never drift the
-# way they once did (btclib-org/btclib-node#1009).
+# one string rather than each computing it, so the two cannot drift
+# apart (btclib-org/btclib-node#1009).
 #
 # The version is read from the installed distribution rather than
 # written here. `RELEASING.md`'s *Which version string is which*
@@ -165,6 +178,44 @@ def quoted(text: str) -> str:
     return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
 
 
+# The longest name a refusal quotes: section 7 of the organization's
+# standard, *A refusal carries no secret*.
+MAX_QUOTED_NAME = 16
+
+
+def quoted_name(name: str) -> str:
+    """Return `name` where it is short enough to quote, else its length.
+
+    A name of at most `MAX_QUOTED_NAME` characters is too short for a key;
+    a longer one may be a key passed in its place. Where Bitcoin Core
+    quotes such a name whole, as an RPC's network or an option's key, a
+    refusal that quotes it through this departs from Core (SECURITY.md,
+    "Where this node departs from Bitcoin Core"): section 7 of the
+    organization's standard, *A refusal carries no secret*, wins over Core
+    there.
+    """
+    return name if len(name) <= MAX_QUOTED_NAME else f"<{len(name)} characters>"
+
+
+def shown_path(
+    path: str | Path,
+    default_path: str | Path | None = None,
+    quote: Callable[[str], str] = str,
+) -> str:
+    """Return `path` as a refusal writes it: whole where it is `default_path`.
+
+    A path that is `default_path` is built from defaults alone and holds
+    nothing an operator gave, so it is written through `quote`, as Bitcoin
+    Core writes it. Any other may hold a key given in place of an option's
+    value, and is written by its length alone, as `<52 characters>`, with
+    no quotes (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    text = str(path)
+    if default_path is not None and text == str(default_path):
+        return quote(text)
+    return f"<{len(text)} characters>"
+
+
 # Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # requests running at once, and requests waiting for a thread, past which a
@@ -196,9 +247,7 @@ def default_data_dir() -> Path:
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table
 # here: they are a bitfield rather than an enumeration, so an unnamed
-# bit is a service nobody here has heard of and not an error, and the
-# table this used to hold named a bit Core removed while missing the
-# one BIP324 added.
+# bit is a service nobody here has heard of and not an error.
 
 
 class P2pConnStatus(enum.IntEnum):

@@ -4,86 +4,76 @@
 
 """The ordered key-value store every index of this node is kept in.
 
-Read a key, write one, delete one or every key of a prefix, write several
-as one, walk the whole store or one prefix of it in key order, and close:
-that is everything any index here asks of it. They are behind one class
-so that what implements them is one decision in one file --
-`src/btclib_node/db.py` -- rather than a library named in as many modules
-as import it. None of that surface moved with this file's own
-implementation, below.
+Read a key, write one, delete one or every key of a prefix, write
+several as one, walk the whole store or one prefix of it in key order,
+and close: that is everything any index here asks of it. They are behind
+one class so that what implements them is one decision in one file --
+`src/btclib_node/db.py` -- rather than a library named in as many
+modules as import it.
 
 The implementation is RocksDB, through `rocksdict`, and the reason is
 not speed, even though it is markedly faster
 (btclib-org/btclib-node#641's own measurement: load, flush and get all
 several times sqlite3's own, on this tree's own workload). It is
-integrity. btclib-org/btclib-node#107 chose sqlite3 over LevelDB --
-Bitcoin Core's own store, `src/leveldb/`, vendored into its tree and
-wrapped by `CDBWrapper` -- to avoid a compiled dependency: no wheel
-missing on a platform, no compiler, no stubs. That measurement never
-weighed what LevelDB gives Core in exchange:
-`CDBWrapper` reads with `verify_checksums = true`
-(`src/dbwrapper.cpp:248`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-over data LevelDB itself checksums per block (CRC32C), so a bit flipped
-on disk is an exception at the read, never a wrong answer. sqlite3, as
-this store used it, checksummed nothing: a flipped bit in a value read
-back as a different, valid-looking value, silently, and a flipped bit in
-a key made the record it named cease to exist, both measured directly
+integrity. Bitcoin Core's own store is LevelDB, `src/leveldb/`, vendored
+into its tree and wrapped by `CDBWrapper`, and `CDBWrapper` reads with
+`verify_checksums = true` (`src/dbwrapper.cpp:248`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag) over data LevelDB itself
+checksums per block (CRC32C), so a bit flipped on disk is an exception
+at the read, never a wrong answer. sqlite3, the alternative that needs
+no compiled dependency (btclib-org/btclib-node#107), verifies no
+checksum on a read: a flipped bit in a value reads back as a different,
+valid-looking value, silently, and a flipped bit in a key makes the
+record it names cease to exist, both measured directly
 (btclib-org/btclib-node#641). Only the first of those two is even in
 reach of a scheme built by hand inside a value's own bytes
 (btclib-org/btclib-node#637's own per-record CRC): a corrupted key is
 never read under its own name, so nothing carried inside the record it
-pointed to can ever see it, and that is the fault that silently forks
-a node off the network, a UTXO its own consensus rules still consider
-spendable simply gone. `rocksdict` was chosen over `plyvel` -- the
-library #107 measured LevelDB itself through -- because `plyvel` is
-dead against this tree's `requires-python = ">=3.14"`: no cp314 wheel
-at all, one platform, last released 2024-01
-(btclib-org/btclib-node#641). `rocksdict` ships cp314 wheels for
-macOS, Linux and `win_amd64`, `py.typed` plus a `.pyi`, current
-releases -- #107's own packaging argument, answered on today's numbers
-rather than assumed to still hold. What it does not ship is an sdist,
-on any of its releases, so a platform its wheel matrix does not carry,
-`win_arm64` among them, fails at resolution rather than building from
-source.
+pointed to can ever see it, and that is the fault that silently forks a
+node off the network, a UTXO its own consensus rules still consider
+spendable simply gone. `rocksdict` is used rather than `plyvel`,
+LevelDB's own Python binding, because `plyvel` is dead against this
+tree's `requires-python = ">=3.14"`: no cp314 wheel at all, one
+platform, last released 2024-01 (btclib-org/btclib-node#641).
+`rocksdict` ships cp314 wheels for macOS, Linux and `win_amd64`,
+`py.typed` plus a `.pyi`, current releases. What it does not ship is an
+sdist, on any of its releases, so a platform its wheel matrix does not
+carry, `win_arm64` among them, fails at resolution rather than building
+from source.
 
 What is accepted in exchange, stated whole rather than left implicit: a
-compiled dependency returns, narrowing "wherever Python runs" to
-"wherever a wheel exists"; RSS several times sqlite3's own (memtables
-and a block cache, sized below the way Core's own `-dbcache` sizes the
-same knobs, and tunable the same way); `rocksdict`'s own exceptions
-arrive untyped, a bare `Exception` string-matched into this tree's own
+compiled dependency, narrowing "wherever Python runs" to "wherever a
+wheel exists"; RSS several times sqlite3's own (memtables and a block
+cache, sized below the way Core's own `-dbcache` sizes the same knobs,
+and tunable the same way); `rocksdict`'s own exceptions arrive untyped,
+a bare `Exception` string-matched into this tree's own
 `StoreCorruptionError` (`exceptions.py`); a reader in another process,
-which sqlite3's WAL let in beside the writer, is refused outright by
+which sqlite3's WAL lets in beside the writer, is refused outright by
 RocksDB's own directory `LOCK` -- nothing in this tree opens the store
 from a second process, so what is given up is a capability and not a
-caller; and one datadir migration, the same shape #107 itself already
-cost once. None of that is a departure
-from *Following Bitcoin Core* -- it is Core's own choice, reached this
-time by measurement rather than assumed, and the packaging half of it
-is the "Python-native" axis `CONTRIBUTING.md` already carves out for this
-file, argued in the same terms `db.py` used against LevelDB in the
-first place. What was never available before now is: a wheel that
-carries LevelDB's own fork, typed, on the platforms this tree ships to.
+caller; and a datadir a sqlite3 store wrote is refused, not read (*A
+datadir sqlite3 wrote is refused*, below). None of that is a departure
+from *Following Bitcoin Core* -- it is Core's own choice, and the
+packaging half of it is the "Python-native" axis `CONTRIBUTING.md`
+carves out for this file: a wheel that carries LevelDB's own fork,
+typed, on the platforms this tree ships to.
 
-**Key order is load-bearing**, exactly as before: `BlockIndex.init_from_db`
-reads until the first key that is not a `blkinfo-`, so a prefix that
-sorted before that one would stop it early; `BlockDB.init_from_db` walks
-the whole store and dispatches on the prefix, which is slower and
-cannot be tripped that way. RocksDB keeps a key's own bytes in
-lexicographic order the same way LevelDB does -- the comparator neither
-side changes -- so nothing here depends on this store's own choice of
-engine.
+**Key order is load-bearing**: `BlockIndex.init_from_db` reads until the
+first key that is not a `blkinfo-`, so a prefix that sorted before that
+one would stop it early; `BlockDB.init_from_db` walks the whole store
+and dispatches on the prefix, which is slower and cannot be tripped that
+way. RocksDB keeps a key's own bytes in lexicographic order the same way
+LevelDB does -- the comparator neither side changes -- so nothing here
+depends on this store's own choice of engine.
 
 **`raw_mode=True`, on every `Options` and `WriteBatch` this file
-builds.** `rocksdict`'s own default mode pickles a value that is not
-one of a handful of native types it recognizes, and tags even the ones
-it does with a type byte -- an encoding this store never asked for and
+builds.** `rocksdict`'s own default mode pickles a value that is not one
+of a handful of native types it recognizes, and tags even the ones it
+does with a type byte -- an encoding this store never asked for and
 would pay for silently: every key and value here is already the caller's
 own serialized bytes, and a comparison of `rocksdict` against sqlite3
-that left the default mode on measured that tag-and-pickle overhead
-alongside the two stores rather than between them
-(btclib-org/btclib-node#641's own comment names this the trap the
-benchmark could have fallen into).
+with the default mode on measures that tag-and-pickle overhead alongside
+the two stores rather than between them (btclib-org/btclib-node#641).
 
 ## The configuration, matched to Core's `GetOptions`/`DBParams` line by line
 
@@ -139,8 +129,8 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag:
   buffer this file builds from it are the same fractions of it Core
   takes of `nCacheSize`.
 - `raw_mode=True` is argued above, on both `Options` and `WriteBatch`.
-- `WriteOptions`' own default, `sync=False`, is the counterpart of the
-  `synchronous=NORMAL` the sqlite3 store ran under: a write reaches the
+- `WriteOptions`' own default, `sync=False`, is the counterpart of
+  sqlite3's `synchronous=NORMAL`: a write reaches the
   operating system's own page cache and is not fsynced before this
   store answers its caller, so a kill loses whatever was not yet
   flushed to disk and never corrupts what was. It is passed explicitly
@@ -148,69 +138,51 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag:
   options above are passed rather than left to a default nothing here
   states.
 
-## The datadir marker inverts
+## A datadir sqlite3 wrote is refused
 
-`_SQLITE_MARKER` refuses the file this store itself used to write,
-`index.sqlite`, the same way `_LEVELDB_MARKER = "CURRENT"` used to
-refuse the file LevelDB wrote before that -- RocksDB being LevelDB's own
-fork, it writes `CURRENT` too, so a marker built the old way would now
-refuse this store's own datadir on its second open. Refusing
-`index.sqlite` by name is the same shape of guard for the same reason:
-a datadir written by the version before this one is not a store this
-version can silently start an empty chain over the top of, and the
-message stays "delete the directory and sync again" -- there is nothing
-here to migrate a `sqlite3` file's own rows into RocksDB's own SST
-format, and no attempt is made to.
+`_SQLITE_MARKER` refuses a datadir holding `index.sqlite`, the file a
+sqlite3 store writes. No marker refuses `CURRENT`, the file LevelDB
+writes: RocksDB, LevelDB's own fork, writes `CURRENT` too, so such a
+marker would refuse this store's own datadir on its second open. A
+datadir a sqlite3 store wrote is not a store this one can silently start
+an empty chain over the top of, and the message is "delete the directory
+and sync again" -- there is nothing here to migrate a `sqlite3` file's
+own rows into RocksDB's own SST format, and no attempt is made to.
 
-## `_SCHEMA_VERSION` moves to its own column family
+## `_SCHEMA_VERSION` has its own column family
 
-The old argument for keeping a schema version out of `kv`'s own key
-order -- `PRAGMA user_version`, four bytes in the SQLite file's own
-header, untouched by anything this class wrote into the table --
-carries over whole, and RocksDB's own native answer to the same
-constraint is a second **column family**: `_META_COLUMN_FAMILY`, kept
-open beside the default one every `get`/`put`/`delete`/`__iter__` above
-reads and writes, and never walked by any of them -- `BlockIndex
-.init_from_db` stopping at the first key that is not its own `blkinfo-`
-never sees it, the same guarantee `PRAGMA user_version` gave by sitting
-outside `kv` entirely. `_VERSION_KEY` inside that column family holds
-`_SCHEMA_VERSION`, four bytes, big-endian, the same width `PRAGMA
-user_version` answered in.
+A schema version is kept out of `kv`'s own key order in a second
+**column family**: `_META_COLUMN_FAMILY`, kept open beside the default
+one every `get`/`put`/`delete`/`__iter__` above reads and writes, and
+never walked by any of them -- `BlockIndex.init_from_db` stopping at the
+first key that is not its own `blkinfo-` never sees it. `_VERSION_KEY`
+inside that column family holds `_SCHEMA_VERSION`, four bytes,
+big-endian.
 
-The two states `PRAGMA user_version == 0` used to leave ambiguous --
-a brand-new file, answering `0` because SQLite starts every one there,
-and a store written before this class carried a version at all -- have
-a narrower RocksDB shape. A **fresh** store is a directory RocksDB has
-never opened: `Options.create_missing_column_families(True)` (below)
-creates `_META_COLUMN_FAMILY` itself, empty, on that first open, so the
-version key is absent there for the same reason it is absent from a
-brand-new SQLite file -- nothing has written it yet -- and `kv` (the
-default column family) is checked for a row exactly as before, to tell
-that state apart from the other one still possible: a version key
-absent from a column family this store's own default policy would
-otherwise have already created empty, with data already sitting in
-`kv`. A store written by any version of *this* class, in contrast,
-cannot be version-less at all: `_check_schema_version` stamps
-`_SCHEMA_VERSION` into the meta column family before `__init__` ever
-hands the object back to a caller, on every store this class has ever
-opened, so the "pre-versioning store" `PRAGMA user_version` had to
-distinguish by content has no RocksDB analogue to keep -- it is
-simulated in the tests below, as it already was for SQLite, since
-nothing in this tree still writes one on purpose.
+An absent version key is one of two states. A **fresh** store is a
+directory RocksDB has never opened:
+`Options.create_missing_column_families(True)` (below) creates
+`_META_COLUMN_FAMILY` itself, empty, on that first open, so nothing has
+written the version key yet, and `kv` (the default column family) holds
+no row. The other state is a version key absent with data already
+sitting in `kv`. A store this class wrote cannot be in it:
+`_check_schema_version` stamps `_SCHEMA_VERSION` into the meta column
+family before `__init__` ever hands the object back to a caller, on
+every store this class opens, so the tests below simulate that state,
+nothing in this tree writing one on purpose.
 
-`_VERSION_KEY` is no longer the only thing this class keeps outside
-`kv`'s own key order: `get_meta`/`put_meta` below are the general
-form, and `UtxoIndex`'s own running MuHash commitment
-(btclib-org/btclib-node#639, `chainstate/muhash.py`) is what they were
-added for -- a single scalar value, not a range any reader ever walks,
-which is exactly what a column family outside the default one's own
-scan is for. `put_meta` stages into the same `WriteBatch` `put`/`delete`
-do when a batch is open, so a caller's meta write and its coin writes
-commit or fail together -- `UtxoIndex.finalize` is where that matters,
-writing the commitment and the coins it commits to in the one batch
+`get_meta`/`put_meta` below keep other values outside `kv`'s own key
+order, as `_VERSION_KEY` is kept: `UtxoIndex`'s own running MuHash
+commitment (btclib-org/btclib-node#639, `chainstate/muhash.py`) is one
+-- a single scalar value, not a range any reader ever walks, which is
+exactly what a column family outside the default one's own scan is for.
+`put_meta` stages into the same `WriteBatch` `put`/`delete` do when a
+batch is open, so a caller's meta write and its coin writes commit or
+fail together -- `UtxoIndex.finalize` is where that matters, writing the
+commitment and the coins it commits to in the one batch
 `Chainstate.flush` opens.
 
-## Corruption is an error this tree now classifies itself
+## Corruption is an error this tree classifies itself
 
 `rocksdict` raises a bare `Exception` on a checksum mismatch, its
 message beginning `Corruption:` -- only `DbClosedError` is typed, per
@@ -229,53 +201,50 @@ of them raises on its own.** `Rdict.get` -- what `get` and the
 schema-version check above both call -- raises the moment it meets a
 corrupted block, measured directly. `Rdict.items` and `Rdict.keys` do
 not: RocksDB's own iterator, underneath either, answers a corrupted
-block the way it answers the genuine end of the store -- `Valid()`
-turns false, and the fault is only ever in a separate `status()` call,
-which neither wrapper makes. Measured directly, twice: over a store
-with one corrupted block partway through, `items()` returned every pair
-before that block and then stopped, silently, and `keys()` on a store
-whose only intact block was the corrupted one returned nothing at all,
+block the way it answers the genuine end of the store -- `Valid()` turns
+false, and the fault is only ever in a separate `status()` call, which
+neither wrapper makes. Measured directly, twice: over a store with one
+corrupted block partway through, `items()` returned every pair before
+that block and then stopped, silently, and `keys()` on a store whose
+only intact block was the corrupted one returned nothing at all,
 indistinguishable from a genuinely empty store. The second is not a
 theoretical risk -- `_has_any_data` is exactly the read
 `_check_schema_version` trusts to tell an empty store from one this
-class predates, so trusting `keys()` there would have let a corrupted,
+class predates, so trusting `keys()` there would let a corrupted,
 version-less store be silently stamped current rather than refused.
 `__iter__` and `_has_any_data` below both go through the lower-level
 `Rdict.iter` instead -- `seek_to_first`, walk `valid()`, and call
 `status()` once after -- which is what makes them raise the same way
 `get` already does.
 
-## The lock stays, for a different reason than before
+## The lock stays
 
-RocksDB is internally thread-safe -- unlike SQLite's connection under
-`check_same_thread=False`, nothing here needs the `RLock` to serialize
-an ordinary `get`/`put`/`delete` across threads. Two measurements taken
-directly against this file's own shape are why it stays regardless.
-First: a live iterator still holds the directory `LOCK` after `close()`
-returns -- `Rdict.close()` on the handle this file calls `self._db`
-succeeds and returns, but a second `Rdict` opened on the same path
-still refuses with the OS-level lock held, for as long as anything --
-an iterator, a second column-family handle obtained through
-`get_column_family` -- keeps the underlying handle alive from Python's
-own side. `__iter__` below reads the whole store into a list under the
-lock and drops the iterator before returning, exactly as it already did
-for SQLite's own, different reason (a cursor stepped on by a second
-statement on the same connection); `close` closes both the default and
-the meta column-family handles this file keeps open, for the same
-reason. Second: `close()` racing an unguarded `get()` from another
-thread does not corrupt anything or crash the process the way CPython's
-own `sqlite3` used to -- but it is not silent either, measured directly,
-three runs, same result each time: `RuntimeError: Already mutably
-borrowed`, `rocksdict`'s own Rust layer refusing the race rather than
-letting it through undefined. The `RLock` below is what keeps a
-caller from ever seeing that message: every read and every close take
-it, so a `close()` from one thread simply waits for a `get()` already
-in progress on another, the same shape `test_close_waits_for_whoever
-_is_using_the_connection` already pins.
+RocksDB is internally thread-safe: nothing here needs the `RLock` to
+serialize an ordinary `get`/`put`/`delete` across threads. Two
+measurements taken directly against this file's own shape are why it
+stays regardless. First: a live iterator still holds the directory
+`LOCK` after `close()` returns -- `Rdict.close()` on the handle this
+file calls `self._db` succeeds and returns, but a second `Rdict` opened
+on the same path still refuses with the OS-level lock held, for as long
+as anything -- an iterator, a second column-family handle obtained
+through `get_column_family` -- keeps the underlying handle alive from
+Python's own side. `__iter__` below reads the whole store into a list
+under the lock and drops the iterator before returning; `close` closes
+both the default and the meta column-family handles this file keeps
+open, for the same reason. Second: `close()` racing an unguarded `get()`
+from another thread does not corrupt anything or crash the process, but
+it is not silent either, measured directly, three runs, same result each
+time: `RuntimeError: Already mutably borrowed`, `rocksdict`'s own Rust
+layer refusing the race rather than letting it through undefined. The
+`RLock` below is what keeps a caller from ever seeing that message:
+every read and every close take it, so a `close()` from one thread
+simply waits for a `get()` already in progress on another, the same
+shape `test_close_waits_for_whoever _is_using_the_connection` already
+pins.
 
 **A closed store's `LOCK` releases synchronously, traced source to
-source and then measured directly on `windows-latest`.** `close()`'s
-own drop chain -- `DbReferenceHolder::close` (`src/db_reference.rs`,
+source and then measured directly on `windows-latest`.** `close()`'s own
+drop chain -- `DbReferenceHolder::close` (`src/db_reference.rs`,
 rocksdict at rocksdict/RocksDict@v0.3.29) dropping the last `Arc<DB>`
 clone into `DBCommon::drop`, `ffi::rocksdb_close`, `DBImpl::~DBImpl`,
 `DBImpl::CloseHelper`, which waits out every background compaction and
@@ -287,31 +256,24 @@ Congyuwang/rust-rocksdb@4cf3c68a993b807bc54ff1c5293cdf49e62aaf72) -- is
 synchronous on the calling thread the whole way,
 `WinFileSystem::UnlockFile` (`port/win/env_win.cc`) itself a bare
 `delete lock` into `WinFileLock::~WinFileLock`'s own `::CloseHandle`
-(`port/win/io_win.cc`), nothing in it deferred to a background thread
-or to Python's own garbage collector. A `windows-latest` run once
-found a `LOCK` still held immediately after three such closes and a
-`shutil.copytree` right behind them (btclib-org/btclib-node#683, run
-33273020014); a single `close()`-then-reopen on the same path,
-dispatched separately to answer that finding on its own
-(btclib-org/btclib-node#703, run 33274969391), opened on its first
-attempt, and every close-then-reopen
-test already in this suite -- this file's own, `block_db_test.py`,
-`chainstate/filter_index_test.py`, `chainstate/block_index_test.py`,
-`main_test.py`'s `first`/`reopened` pair among them -- passed in that
-same run. Weighed against the traced chain above, the first run's own
-gap reads as contention on a loaded parallel runner rather than a
-defect this store, `rocksdict`, or RocksDB owes a fix for, and #703
-closes on that measurement rather than on a code change.
+(`port/win/io_win.cc`), nothing in it deferred to a background thread or
+to Python's own garbage collector. A single `close()`-then-reopen on the
+same path on `windows-latest` opens on its first attempt
+(btclib-org/btclib-node#703, run 33274969391). Weighed against the
+traced chain above, a `LOCK` found held right after three such closes
+and a `shutil.copytree` (btclib-org/btclib-node#683, run 33273020014)
+reads as contention on a loaded parallel runner rather than a defect
+this store, `rocksdict`, or RocksDB owes a fix for.
 
 **A crash before `Chainstate.flush` writes costs whatever is staged
-since the last one, and never a torn store.** `main._finalize_fork` no
-longer writes `BlockIndex`'s and `FilterIndex`'s own changes on every
+since the last one, and never a torn store.** `main._finalize_fork` does
+not write `BlockIndex`'s and `FilterIndex`'s own changes on each
 connected block: `BlockIndex.stage_status` and `FilterIndex`'s own
-`pending` (`filter_index.py`'s docstring) hold them the way `UtxoIndex`
-already held its own spends and creations, and `Chainstate.flush` writes
+`pending` (`filter_index.py`'s docstring) hold them, as `UtxoIndex`
+holds its own spends and creations, and `Chainstate.flush` writes
 `BlockIndex`'s with the UTXO set into the one `write_batch` this store
-already gives a caller -- one RocksDB `WriteBatch`, committed whole or not
-at all (`write_batch`'s own docstring below) -- and the filters after it,
+gives a caller -- one RocksDB `WriteBatch`, committed whole or not at
+all (`write_batch`'s own docstring below) -- and the filters after it,
 in their own store, once `UtxoIndex.should_flush` says the staged UTXO
 cache has reached its own bound (`utxo_index.py`'s `_FLUSH_BOUND`), or
 once `Chainstate.close` is called. This is what
@@ -320,12 +282,11 @@ and one `db.delete` apiece, and holding several blocks' own changes
 staged rather than committing each block's alone is the only lever on
 that, blocks connecting one at a time on this store's own single writer.
 Crash atomicity itself -- the property this whole recovery design rests
-on -- was measured directly against both stores rather than assumed to
-carry over: a child process writing two-key batches forever, `kill -9`
-at a random moment, reopen, check every pair whole, six runs each,
-**0 torn batches** of roughly 570 000 committed on RocksDB against
-roughly 165 000 on sqlite3 in the same wall time
-(btclib-org/btclib-node#641).
+on -- was measured directly against both stores: a child process writing
+two-key batches forever, `kill -9` at a random moment, reopen, check
+every pair whole, six runs each, **0 torn batches** of roughly 570 000
+committed on RocksDB against roughly 165 000 on sqlite3 in the same wall
+time (btclib-org/btclib-node#641).
 
 So a block whose own status change never reached this store is, after an
 unclean stop, still whatever `init_from_db` last read for it --
@@ -411,17 +372,16 @@ if TYPE_CHECKING:
 
 __all__ = ["KeyValueStore"]
 
-# What this store itself wrote before this class existed, and this one
-# never will. A datadir written by the sqlite3 store this class
-# replaced (#107, #641) cannot be read by it, and starting an empty
-# chain over the top of one is a worse answer than saying so. The
-# module docstring's own "The datadir marker inverts" is where this is
-# argued against the LevelDB-shaped marker it replaces.
+# The file a sqlite3 store writes, and this one never does. This class
+# cannot read a datadir a sqlite3 store wrote (#107, #641), and starting
+# an empty chain over the top of one is a worse answer than saying so.
+# The module docstring's own "A datadir sqlite3 wrote is refused" is
+# where this is argued.
 _SQLITE_MARKER = "index.sqlite"
 
-# The module docstring's own "_SCHEMA_VERSION moves to its own column
-# family" is where keeping this out of the default column family's own
-# key order, rather than a row in it, is argued.
+# The module docstring's own "_SCHEMA_VERSION has its own column family"
+# is where keeping this out of the default column family's own key
+# order, rather than a row in it, is argued.
 _META_COLUMN_FAMILY = "meta"
 _VERSION_KEY = b"schema-version"
 
@@ -503,9 +463,8 @@ class KeyValueStore:
     One `Rdict` handle on the default column family, one more on the
     `_META_COLUMN_FAMILY` beside it, and a lock around every use of
     either. RocksDB is internally thread-safe on its own -- the module
-    docstring's own "The lock stays, for a different reason than before"
-    is where the two measurements that keep the `RLock` here anyway are
-    argued.
+    docstring's own "The lock stays" is where the two measurements that
+    keep the `RLock` here anyway are argued.
 
     Reentrant, because a batch holds the lock for its whole block and
     the writes inside it come back through the same door.
@@ -531,7 +490,7 @@ class KeyValueStore:
                 column_families={_META_COLUMN_FAMILY: _make_options()},
             )
         except Exception as exc:
-            # "Corruption is an error this tree now classifies itself"
+            # "Corruption is an error this tree classifies itself"
             # argues the string match this raises through
             self._raise_if_corrupted(exc)
             raise
@@ -578,10 +537,10 @@ class KeyValueStore:
     def _check_schema_version(self) -> None:
         """Refuse a store this version's own shape cannot make sense of.
 
-        The module docstring's own "`_SCHEMA_VERSION` moves to its own
-        column family" argues the two states an absent `_VERSION_KEY`
-        can mean, and why a store this class itself ever wrote cannot
-        be one of them by the time this runs.
+        The module docstring's own "`_SCHEMA_VERSION` has its own column
+        family" argues the two states an absent `_VERSION_KEY` can mean,
+        and why a store this class itself ever wrote cannot be one of
+        them by the time this runs.
 
         A refusal closes the connection it just opened before raising:
         `__init__` never hands this object back to whoever asked for
@@ -663,12 +622,11 @@ class KeyValueStore:
     def get_meta(self, key: bytes) -> bytes | None:
         """Return the value stored under `key` in the meta column family.
 
-        The module docstring's own "`_SCHEMA_VERSION` moves to its own
-        column family" is where that family, and what belongs outside
-        the default one's own key order, is argued;
-        `UtxoIndex`'s own running MuHash commitment
-        (`chainstate/muhash.py`) is the second thing to live here,
-        `_VERSION_KEY` being the first.
+        The module docstring's own "`_SCHEMA_VERSION` has its own column
+        family" is where that family, and what belongs outside the
+        default one's own key order, is argued; `UtxoIndex`'s own
+        running MuHash commitment (`chainstate/muhash.py`) lives here
+        beside `_VERSION_KEY`.
         """
         with self._lock:
             self._ensure_open()
@@ -719,13 +677,11 @@ class KeyValueStore:
     def __iter__(self) -> Iterator[tuple[bytes, bytes]]:
         """Walk every pair, in ascending key order.
 
-        Read whole under the lock rather than handed out as an
-        iterator: the module docstring's own "The lock stays, for a
-        different reason than before" is where a live iterator being
-        found to keep this store's own directory `LOCK` held past
-        `close()` is measured -- the reason this still runs the whole
-        walk to a list before returning has changed, but the shape has
-        not.
+        Read whole under the lock rather than handed out as an iterator:
+        the module docstring's own "The lock stays" is where a live
+        iterator being found to keep this store's own directory `LOCK`
+        held past `close()` is measured, which is why this runs the
+        whole walk to a list before returning.
 
         Walked through `Rdict.iter`, not the higher-level `Rdict.items`:
         RocksDB's own iterator does not raise when it meets a corrupted
@@ -766,9 +722,8 @@ class KeyValueStore:
         the lock is not held while it is walked.
 
         The iterator holds the directory `LOCK` (the module docstring's
-        "The lock stays, for a different reason than before") until the
-        walk ends or the generator is dropped, so a caller finishes or
-        drops it before `close()`.
+        "The lock stays") until the walk ends or the generator is
+        dropped, so a caller finishes or drops it before `close()`.
         """
         with self._lock:
             self._ensure_open()

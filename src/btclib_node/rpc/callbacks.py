@@ -51,6 +51,7 @@ from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     NUMERIC_CLIENT_VERSION,
     USER_AGENT,
+    quoted_name,
 )
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
@@ -93,12 +94,13 @@ from btclib_node.p2p.manager import reaches
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.p2p.protocol_version import PROTOCOL_VERSION
 from btclib_node.p2p.selfannounce import LocalService, host_record
-from btclib_node.rpc.connection import COIN, RawJSON, btc_amount, univalue_float
+from btclib_node.rpc.connection import COIN, btc_amount, univalue_float
 from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
     bool_param,
     check_object,
+    decode_failed_for,
     is_hex,
     json_type_name,
     parse_hash_v,
@@ -107,7 +109,13 @@ from btclib_node.rpc.errors import (
 )
 from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject, get_real
+from btclib_node.rpc.jsonrpc import (
+    JsonNumber,
+    JsonObject,
+    NegativeZero,
+    RawJSON,
+    get_real,
+)
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -225,11 +233,10 @@ def get_blockchain_info(
     `chain`: `BitcoinCoreFetcher.assert_network` (btclib) and
     `BitcoinCoreRpcClient.assert_chain` (`bitcoin_core_rpc`) call this
     once before their first fetch, by default, and read `chain` alone --
-    proven by asking a real client of a real node here for
-    `get_best_block_id` before this callback existed: the very first
-    call failed `-32601 Method not found` on `getblockchaininfo`, not on
-    the method it asked for. That is why `chain` could not be left out,
-    not a reason the rest stayed absent.
+    without this callback, a real client asking this node for
+    `get_best_block_id` fails its very first call with `-32601 Method
+    not found` on `getblockchaininfo`, not on the method it asked for.
+    That is why `chain` cannot be left out.
 
     `blocks` is `active_chain`'s own last index, matching `get_block_count`
     above: Core's own "the height of the most-work fully-validated chain"
@@ -244,8 +251,8 @@ def get_blockchain_info(
     `get_best_block_hash` above (src/rpc/blockchain.cpp:1459, same sha) --
     both already the display byte order Core's own `GetHex()` answers,
     `BlockHeader.hash` (btclib) being the reversed hash rather than the
-    wire's own, confirmed against a real `bitcoind`'s identical expression
-    at `tests/integration/bitcoind_test.py:66`.
+    wire's own, confirmed against a real `bitcoind`'s identical expression in
+    `tests/integration/bitcoind_test.py::test_node_syncs_from_a_real_bitcoind`.
 
     `bits` is the tip header's own compact target, `header.bits`, hex
     (Core's `strprintf("%08x", tip.nBits)`, src/rpc/blockchain.cpp:1460,
@@ -265,16 +272,16 @@ def get_blockchain_info(
     `0x207fffff` in this callback's own unit test.
 
     `time` is the tip header's own timestamp, `block_index.block_time`
-    (Core's `CBlockHeader::GetBlockTime`, src/rpc/blockchain.cpp:1463, same
-    sha). `mediantime` is btclib's own `median_time_past` of the tip, over
-    `main.parent_lookup`'s own walk -- the same call
-    `main.verify_mempool_acceptance` already makes of the tip, for Core's
-    own `CBlockIndex::GetMedianTimePast` (src/rpc/blockchain.cpp:1464, same
-    sha). `chainwork` is `block_index.chainwork`'s own entry for the tip,
-    hex and zero-padded to 64 digits the way Core's `nChainWork.GetHex()`
-    prints a plain magnitude (src/rpc/blockchain.cpp:1480, same sha) --
-    `get_block_header` above answers its own `chainwork` the same way now,
-    closing what used to be a divergence from Core between the two
+    (Core's `CBlockHeader::GetBlockTime`, src/rpc/blockchain.cpp:1463,
+    same sha). `mediantime` is btclib's own `median_time_past` of the
+    tip, over `main.parent_lookup`'s own walk -- the same call
+    `main.verify_mempool_acceptance` already makes of the tip, for
+    Core's own `CBlockIndex::GetMedianTimePast`
+    (src/rpc/blockchain.cpp:1464, same sha). `chainwork` is
+    `block_index.chainwork`'s own entry for the tip, hex and zero-padded
+    to 64 digits the way Core's `nChainWork.GetHex()` prints a plain
+    magnitude (src/rpc/blockchain.cpp:1480, same sha) --
+    `get_block_header` above answers its own `chainwork` the same way
     (btclib-org/btclib-node#658).
 
     `initialblockdownload` is `node.is_initial_block_download`,
@@ -372,9 +379,9 @@ def _height_param(params: list[Any]) -> int:
     repeated in this docstring.
     """
     if not params:
-        # a call short of a required argument is `HelpResult{ToString()}`
-        # too, the method's own full help text under `RPC_MISC_ERROR`
-        # rather than the one-line usage string this used to raise --
+        # a call short of a required argument is
+        # `HelpResult{ToString()}` too, the method's own full help text
+        # under `RPC_MISC_ERROR` rather than a one-line usage string --
         # `rpc.main._execute`'s own docstring is where the sibling case,
         # a call carrying too many, is argued the identical way
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["pruneblockchain"])
@@ -521,8 +528,9 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
 
     if height < 0 or height >= len(active_chain):
         # src/rpc/blockchain.cpp:629-631: one check either direction,
-        # and the same message both ways -- height < 0 is what used to
-        # read the active chain from its own end instead of raising
+        # and the same message both ways -- height < 0 included, which
+        # Python's indexing would read from the active chain's own end
+        # instead of raising
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Block height out of range")
 
     return active_chain[height]
@@ -599,10 +607,9 @@ def get_block_header(
     if not verbose:
         # src/rpc/blockchain.cpp:698-703: the same eighty bytes a peer
         # is sent on the wire, hex-encoded rather than the JSON object.
-        # Checked here now. It used to be serialized unchecked: a
+        # `serialize` checks the header, and btclib's check accepts a
         # version of zero or below, which Core takes below BIP34's
-        # height, was one btclib's own check refused on its own -- fixed
-        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # height (btclib-org/btclib@bbb1ad71, closing
         # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The
         # index only ever stores a header past `add_headers`'s own
         # height-gated `bad-version` check, so nothing this validates
@@ -666,8 +673,7 @@ def get_block_header(
         "difficulty": header.difficulty,
         # nChainWork.GetHex(), src/rpc/blockchain.cpp:214 -- hex,
         # zero-padded to 64 digits, matching `get_blockchain_info`'s own
-        # `chainwork` rather than the plain int this answered before
-        # (closes #658)
+        # `chainwork` (issue #658)
         "chainwork": f"{block_index.chainwork[block_hash]:064x}",
     }
     if height > 0:
@@ -1402,9 +1408,13 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     block_index = node.chainstate.block_index
     parent = header.previous_block_hash
     if parent not in block_index.header_dict:
+        # `...` where Core writes the parent's hash (`src/rpc/mining.cpp:1165`,
+        # same tag): those are the caller's bytes, no header this index
+        # holds, and may be a key's (SECURITY.md, "Where this node departs
+        # from Bitcoin Core"; section 7 of the organization's standard, *A
+        # refusal carries no secret*)
         raise RpcError(
-            RPCErrorCode.VERIFY_ERROR,
-            f"Must submit previous header ({parent.hex()}) first",
+            RPCErrorCode.VERIFY_ERROR, "Must submit previous header (...) first"
         )
     try:
         block_index.add_headers([header])
@@ -1872,11 +1882,11 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
     node_arg, command = params[0], params[1]
     if command not in _ADDNODE_COMMANDS:
         # Core's own `command`-validity refusal is the identical
-        # `std::runtime_error(self.ToString())` shape as a wrong argument
-        # count, `self.ToString()` being this same full help text (measured
-        # against a real bitcoind, the release `integration-bitcoind.yml`
-        # pins: `addnode "1.2.3.4" "bogus"` answers it byte for byte) rather
-        # than the one-line usage string this used to raise
+        # `std::runtime_error(self.ToString())` shape as a wrong
+        # argument count, `self.ToString()` being this same full help
+        # text (measured against a real bitcoind, the release
+        # `integration-bitcoind.yml` pins: `addnode "1.2.3.4" "bogus"`
+        # answers it byte for byte) rather than a one-line usage string
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
 
     if not node_arg.strip():
@@ -1957,10 +1967,9 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
     A call carrying more than two positional arguments never reaches
     this function's own body at all: `rpc.main._execute` refuses it
-    generically now, for every method `arg_names` declares, rather than
-    this function checking its own upper bound the way it used to be
-    the only callback here to (`rpc.main._execute`'s own docstring
-    argues the generalization, btclib-org/btclib-node#1424).
+    generically, for every method `arg_names` declares
+    (`rpc.main._execute`'s own docstring argues it,
+    btclib-org/btclib-node#1424).
     """
     address = params[0] if params else None
     node_id = params[1] if len(params) > 1 else None
@@ -2160,6 +2169,19 @@ def _integer(value: object, low: int, high: int) -> int:
     return value
 
 
+def _unsigned_integer(value: object, high: int) -> int:
+    """Read a JSON number as an unsigned `getInt` does, from 0 to `high`.
+
+    `UniValue::getInt` reads the number's text with `std::from_chars`
+    (`src/univalue/include/univalue.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), which refuses a minus sign for an unsigned type, so
+    `-0` is refused as `-1` is.
+    """
+    if isinstance(value, NegativeZero):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return _integer(value, 0, high)
+
+
 def _address_text(address: NetworkAddressV2) -> str:
     """Return `CNetAddr::ToStringAddr` of `address`."""
     if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
@@ -2199,9 +2221,13 @@ def get_node_addresses(
     if len(params) > 1 and params[1] is not None:
         network = _NETWORK_NAMES.get(params[1].lower())
         if network is None:
+            # Core quotes the name whole (`src/rpc/net.cpp:1011`, same tag);
+            # this quotes it through `quoted_name` (SECURITY.md, "Where this
+            # node departs from Bitcoin Core"; section 7 of the
+            # organization's standard, *A refusal carries no secret*)
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER,
-                f"Network not recognized: {params[1]}",
+                f"Network not recognized: {quoted_name(params[1])}",
             )
     manager = node.p2p_manager
     return [
@@ -2247,7 +2273,7 @@ def add_peer_address(
     if mismatches:
         raise type_errors(*mismatches)
     tried = bool_param(params, 2, name="tried", default=False)
-    port = _integer(params[1], 0, _MAX_PORT)
+    port = _unsigned_integer(params[1], _MAX_PORT)
     host = lookup_host(params[0])
     if host is None:
         raise RpcError(RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Invalid IP address")
@@ -2278,7 +2304,7 @@ def add_peer_address(
 def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
     """Check `setban`'s arguments as `HandleRequest` does, then `command`.
 
-    The upper bound on `len(params)` is `rpc.main._execute`'s own now,
+    The upper bound on `len(params)` is `rpc.main._execute`'s own,
     checked generically against `arg_names["setban"]` before this
     function ever runs; only the lower bound -- `subnet` and `command`
     both required -- is this function's own to check. Every declared
@@ -2405,19 +2431,19 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     BTC/kvB rather than this tree's own sat/kvB.
     """
     mempool = node.mempool
-    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`,
-    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
+    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
     # beyond these: `usage`, `total_fee`, `limitclustercount`,
     # `limitclustersize`, the deprecated `fullrbf`. Each is backed by
     # something this tree does not carry -- a memory count, a persisted
-    # total fee, the cluster options (btclib-org/btclib-node#1383) -- and
-    # answering any of them with a placeholder would be exactly the
-    # decoration this method's own sparse answer already was. `maxmempool`
-    # and `mempoolminfee` are wired in because #294 gave both a real source
-    # to read, `unbroadcastcount` because #1421 gave `Mempool.unbroadcast`
-    # one, the four fields the relay options set because `Config` holds
-    # those options (btclib-org/btclib-node#1497, #1596), and `optimal`
-    # because `Mempool.graph` knows it, Core's `DoWork(0)`.
+    # total fee, the cluster options (btclib-org/btclib-node#1383) --
+    # and answering any of them with a placeholder would be decoration.
+    # `maxmempool` and `mempoolminfee` are answered because the mempool
+    # holds a real source for both (#294), `unbroadcastcount` because
+    # `Mempool.unbroadcast` is one (#1421), the four fields the relay
+    # options set because `Config` holds those options
+    # (btclib-org/btclib-node#1497, #1596), and `optimal` because
+    # `Mempool.graph` knows it, Core's `DoWork(0)`.
     # btclib-org/btclib-node#305
     #
     # `mempoolminfee` is BTC/kvB, matching Core's own
@@ -2592,15 +2618,15 @@ def get_tx_out_set_info(
 
     `transactions` and `disk_size` are left out of every answer, the way
     Core's own indexed answer already leaves them out
-    (`src/rpc/blockchain.cpp:1162-1165`, same sha,
-    `if (!stats.index_used) {...}`):
-    both are an O(n) count over the whole set, which an incrementally
-    maintained accumulator exists specifically to avoid paying on every
-    call. `total_unspendable_amount` and `block_info`, `CoinStatsIndex`'s
-    own two fields this tree could in principle also answer, are left
-    out for a different reason: they need bookkeeping (the subsidy
-    schedule, the BIP30/genesis/unclaimed-reward split) this branch does
-    not add, and issue #639's own "Not in scope" does not ask for them.
+    (`src/rpc/blockchain.cpp:1162-1165`, same sha, `if
+    (!stats.index_used) {...}`): both are an O(n) count over the whole
+    set, which an incrementally maintained accumulator exists
+    specifically to avoid paying on every call.
+    `total_unspendable_amount` and `block_info`, `CoinStatsIndex`'s own
+    two fields this tree could in principle also answer, are left out
+    for a different reason: they need bookkeeping (the subsidy schedule,
+    the BIP30/genesis/unclaimed-reward split) this tree does not carry,
+    and issue #639 does not ask for them.
     """
     hash_type = (
         params[0] if params and params[0] is not None else _DEFAULT_TX_OUT_SET_HASH_TYPE
@@ -2620,7 +2646,12 @@ def get_tx_out_set_info(
     if mismatches:
         raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
-        err_msg = f"'{hash_type}' is not a valid hash_type"
+        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+        # Core"; section 7 of the organization's standard, *A refusal
+        # carries no secret*)
+        err_msg = f"'{quoted_name(hash_type)}' is not a valid hash_type"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
 
     if len(params) > 1 and params[1] is not None:
@@ -2899,14 +2930,13 @@ def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
         raise type_errors(*mismatches)
     txid = parse_hash_v("txid", txid_param)
     # `UniValue::getInt<uint32_t>()` (`src/univalue/include/univalue.h
-    # :142-153`): a non-integral number, or one outside uint32_t's own
-    # range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
+    # :142-153`): a non-integral number, `-0`, or one outside uint32_t's
+    # own range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
     # same message `get_block_hash`'s own float check above answers,
     # and not `RPC_TYPE_ERROR`, the type check having already passed.
-    if isinstance(n_param, float) or not 0 <= n_param < 2**32:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    n = _unsigned_integer(n_param, 2**32 - 1)
     include_mempool = bool_param(params, 2, name="include_mempool", default=True)
-    return txid, n_param, include_mempool
+    return txid, n, include_mempool
 
 
 def _mempool_spends(node: Node, txid: bytes, out_point_bytes: bytes) -> bool:
@@ -3676,15 +3706,20 @@ def _decode_hex_tx(rawtx: str, *, iswitness: bool | None = True) -> Tx:
     (`src/core_io.cpp`, same tag).
 
     `check_validity=False`: `DecodeHexTx` decodes the wire encoding
-    alone and never asks whether the transaction it decoded is one
-    Core would accept -- `CheckTransaction` is a later, separate step
-    of `PreChecks`, and this node's own equivalent is
+    alone and never asks whether the transaction it decoded is one Core
+    would accept -- `CheckTransaction` is a later, separate step of
+    `PreChecks`, and this node's own equivalent is
     `tx_check.check_transaction_reason`, run only by the callers that
     need it. Answering a well-formed but structurally invalid
-    transaction with "TX decode failed" was btclib-org/btclib-node#1375.
+    transaction with "TX decode failed" would part from Core
+    (btclib-org/btclib-node#1375).
+
+    The refusal of a string that is not hex gives its length alone: a key
+    passed in its place is not hex either (section 7 of the organization's
+    standard, *A refusal carries no secret*).
     """
     if not is_hex(rawtx):
-        err_msg = f"invalid hex string: {rawtx!r}"
+        err_msg = f"invalid hex string of {len(rawtx)} characters"
         raise BTClibValueError(err_msg)
     return _decode_tx(bytes.fromhex(rawtx), iswitness=iswitness)
 
@@ -3906,7 +3941,8 @@ def _parse_fixed_point(text: str, decimals: int) -> int | None:
     )
     if not 0 <= exponent < _FIXED_POINT_DIGITS:
         return None
-    amount: int = int(mantissa or "0") * 10**exponent
+    # without its leading zeros, which `int` counts against its digit limit
+    amount: int = int(mantissa.lstrip("0") or "0") * 10**exponent
     if amount > _FIXED_POINT_BOUND:
         return None
     return -amount if text.startswith("-") else amount
@@ -3927,6 +3963,12 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     `_parse_fixed_point` refuses, and "Amount out of range" for one that
     it reads but that falls outside `MoneyRange`, 0 through `MAX_MONEY`.
 
+    Core parses a number's text, `value.getValStr()`, so a number that
+    `decode` kept the text of, a `JsonNumber` or a `NegativeZero`, is
+    parsed from that text. A `float` drops the digits a double cannot
+    hold: `1.00000000000000000001` reads as `1.0`. Core refuses the
+    original text as "Invalid amount".
+
     `btclib.amount.valid_btc_amount` folds Core's two messages into the
     one `BTClibValueError` it always raises, and reads its text with
     `Decimal`, which is why this does not call it.
@@ -3936,7 +3978,8 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     value = params[position]
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise RpcError(RPCErrorCode.TYPE_ERROR, _AMOUNT_NOT_NUMBER_OR_STRING)
-    amount = _parse_fixed_point(str(value), _BTC_DECIMALS)
+    text = value.text if isinstance(value, JsonNumber | NegativeZero) else str(value)
+    amount = _parse_fixed_point(text, _BTC_DECIMALS)
     if amount is None:
         raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
     if not 0 <= amount <= _MAX_MONEY:
@@ -4057,7 +4100,7 @@ def test_mempool_accept(
     # btclib-org/btclib-node#1371
     max_raw_tx_fee_rate = _parse_max_fee_rate(params, 1)
     txs: list[Tx] = []
-    for rawtx in rawtxs:
+    for index, rawtx in enumerate(rawtxs):
         if not isinstance(rawtx, str):
             # the accessor's own message, unwrapped: an array's elements
             # are not among what the argument type check reads
@@ -4072,10 +4115,9 @@ def test_mempool_accept(
             # `BTClibException`, `send_raw_transaction`'s own clause below:
             # a script shorter than its declared length raises
             # `BTClibRuntimeError`, not `BTClibValueError`
-            err_msg = (
-                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
-            )
-            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+            raise RpcError(
+                RPCErrorCode.DESERIALIZATION_ERROR, decode_failed_for(index)
+            ) from error
     return _test_accept_results(node, txs, max_raw_tx_fee_rate)
 
 
@@ -4319,17 +4361,15 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # `vsize` and `fee` rather than a pre-verification estimate is
         # argued. btclib-org/btclib-node#1371
         raise RpcError(RPCErrorCode.VERIFY_ERROR, _MAX_FEE_EXCEEDED_REASON)
-    # `Mempool.add_tx` now evicts to make room rather than refusing
-    # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
-    # so whether this call is answered with the refusal below is no
-    # longer knowable before making it: a transaction that clears
-    # whatever eviction would otherwise remove is kept even into a
-    # mempool already at its limit, and one that does not is evicted
-    # right back out, `add_tx` answering `False` either way a caller
-    # of this method could tell apart before calling it. Answering
+    # `Mempool.add_tx` evicts to make room rather than refusing outright
+    # past `is_full()` (btclib-org/btclib-node#294), so whether this
+    # call is answered with the refusal below is not knowable before
+    # making it: `add_tx` answers `True` for a transaction it keeps,
+    # even into a mempool already at its limit, and `False` for one the
+    # trim evicts right back out, as for one it refuses. Answering
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
-    # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
+    # names on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     if not node.mempool.add_tx(
         tx, fee, vsize, height=tip_height, weight=weight, replaced=replaced
