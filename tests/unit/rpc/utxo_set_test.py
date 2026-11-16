@@ -23,6 +23,7 @@ from bip32_descriptors.descriptors import (
     parse,
     strip_checksum,
 )
+from btclib.b58 import wif_from_prv_key
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
@@ -36,7 +37,7 @@ from btclib_node.rpc.mining import generate_block
 from btclib_node.rpc.utxo_set import scan_tx_out_set
 from tests import finish
 from tests.secret_free import assert_secret_free
-from tests.unit.rpc import LEAK_WIF
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -620,9 +621,10 @@ DRAFT_REFUSALS = [
         "A function is needed within P2WSH",
     ),
     (f"tr({X_ONLY},rawpkh({H160}))", NOT_A_FUNCTION.format("rawpkh")),
+    # Core quotes the leaf, a miniscript holding the draft function
     (
         f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({X_ONLY2})))",
-        NOT_A_FUNCTION.format("rawpkh"),
+        NOT_A_FUNCTION.format("and_v"),
     ),
     (f"tr({X_ONLY},rawnode({H256}))", NOT_A_FUNCTION.format("rawnode")),
     (
@@ -689,7 +691,7 @@ LEAK = "92e07cd20dd29f3b6e3e2db783825a195e913e105c098d44b4dd7c67e200ac1c"
 @pytest.mark.parametrize(
     ("text", "name"),
     [
-        (f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({TPRV})))", "rawpkh"),
+        (f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({TPRV})))", "and_v"),
         (f"tr({X_ONLY},rawnode({LEAK}))", "rawnode"),
         (f"tr({X_ONLY},rawleaf({LEAK},c0))", "rawleaf"),
         (f"rawpkh({LEAK[:40]})", "rawpkh"),
@@ -801,14 +803,160 @@ def test_an_earlier_musig_context_refusal_is_not_replaced(node: Node) -> None:
         scan(node, text)
     assert (int(caught.value.code), caught.value.message) == (
         -5,
-        "key 0: musig() is only allowed in tr() and rawtr()",
+        "wpkh(): musig() is only allowed in tr() and rawtr()",
     )
+
+
+# the y of KEY's point, which is even
+Y = "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+UNCOMPRESSED = f"04{X_ONLY}{Y}"
+UNCOMPRESSED_WIF = wif_from_prv_key(LEAK_HEX, "regtest", compressed=False)
+# a WIF of another network than the node's, which Core reads as no key
+MAINNET_WIF = wif_from_prv_key(LEAK_HEX, "mainnet", compressed=False)
+# a prefix no key has
+BAD_PREFIX = f"05{LEAK_HEX}"
+MUSIG = f"musig({KEY},{KEY2})"
+MUSIG_PLACE = "musig() is only allowed in tr() and rawtr()"
+HYBRID = "Hybrid public keys are not allowed"
+NOT_UNCOMPRESSED = "Uncompressed keys are not allowed"
+NEEDED_P2SH = "A function is needed within P2SH"
+NEEDED_P2WSH = "A function is needed within P2WSH"
+NO_KEY = "key '...' is not valid"
+MUSIG_PATH = "'musig(...)/0/*' is not a valid descriptor function"
+
+# Each with the message of `ParsePubkey`, `ParsePubkeyInner` and
+# `ParseScript` in `src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag, whose key is `...` here where Core quotes it
+KEY_REFUSALS = [
+    # a musig() that a function reads as a key outside tr() and rawtr()
+    (f"wpkh({MUSIG})", f"wpkh(): {MUSIG_PLACE}"),
+    (f"pk({MUSIG})", f"pk(): {MUSIG_PLACE}"),
+    (f"pkh({MUSIG})", f"pkh(): {MUSIG_PLACE}"),
+    (f"combo({MUSIG})", f"combo(): {MUSIG_PLACE}"),
+    (f"sh(wpkh({MUSIG}))", f"wpkh(): {MUSIG_PLACE}"),
+    (f"wsh(pkh({MUSIG}))", f"pkh(): {MUSIG_PLACE}"),
+    (f"sortedmulti(1,{KEY},{MUSIG})", f"Multi: {MUSIG_PLACE}"),
+    (f"sh(multi(1,{MUSIG}))", f"Multi: {MUSIG_PLACE}"),
+    (f"wsh(and_v(v:pk({MUSIG}),older(10)))", MUSIG_PLACE),
+    (f"wsh(or_d(pk({KEY}),pkh({MUSIG})))", MUSIG_PLACE),
+    (f"unused({MUSIG})", MUSIG_PLACE),
+    (f"wpkh(musig({MUSIG},{KEY}))", f"wpkh(): {MUSIG_PLACE}"),
+    # a musig() where a script belongs, refused before its keys are read
+    (MUSIG, NOT_A_FUNCTION.format("musig")),
+    (f"sh({MUSIG})", NEEDED_P2SH),
+    (f"wsh({MUSIG})", NEEDED_P2WSH),
+    (f"sh(wsh({MUSIG}))", NEEDED_P2WSH),
+    (f"tr({X_ONLY},{MUSIG})", NOT_A_FUNCTION.format("musig")),
+    (f"tr({X_ONLY},{{pk({X_ONLY2}),{MUSIG}}})", NOT_A_FUNCTION.format("musig")),
+    (f"tr({X_ONLY},musig({BAD_PREFIX},{KEY}))", NOT_A_FUNCTION.format("musig")),
+    # a key with a prefix no key has
+    (f"pk({BAD_PREFIX})", f"pk(): {INVALID}"),
+    (f"multi(1,{KEY},{BAD_PREFIX})", f"Multi: {INVALID}"),
+    (f"wsh(and_v(v:pk({BAD_PREFIX}),older(10)))", INVALID),
+    (f"unused({BAD_PREFIX})", INVALID),
+    (f"tr({BAD_PREFIX})", f"tr(): {INVALID}"),
+    (f"tr(musig({BAD_PREFIX},{KEY}))", f"tr(): musig(): {INVALID}"),
+    (f"tr({X_ONLY},pk(musig({KEY},{BAD_PREFIX})))", f"pk(): musig(): {INVALID}"),
+    (f"pk(04{X_ONLY})", f"pk(): {INVALID}"),
+    (f"pk(02{X_ONLY}{Y})", f"pk(): {INVALID}"),
+    # a hybrid key, which Core tells by its prefix and size alone
+    (f"pk(06{X_ONLY}{Y})", f"pk(): {HYBRID}"),
+    (f"tr(07{X_ONLY}{Y})", f"tr(): {HYBRID}"),
+    (f"pk(06{X_ONLY}{'00' * 32})", f"pk(): {HYBRID}"),
+    (f"tr(musig(06{X_ONLY}{Y},{KEY2}))", f"tr(): musig(): {HYBRID}"),
+    (f"wsh(and_v(v:pk(07{X_ONLY}{Y}),older(10)))", HYBRID),
+    (f"unused(06{X_ONLY}{Y})", HYBRID),
+    # an uncompressed key where Core reads compressed ones only
+    (f"wpkh({UNCOMPRESSED})", f"wpkh(): {NOT_UNCOMPRESSED}"),
+    (f"sh(wpkh({UNCOMPRESSED}))", f"wpkh(): {NOT_UNCOMPRESSED}"),
+    (f"wsh(pk({UNCOMPRESSED}))", f"pk(): {NOT_UNCOMPRESSED}"),
+    (f"wsh(multi(1,{TPUB}/<0;1>/*,{UNCOMPRESSED}))", f"Multi: {NOT_UNCOMPRESSED}"),
+    (f"wsh(and_v(v:pk({UNCOMPRESSED}),older(10)))", NOT_UNCOMPRESSED),
+    (f"tr({UNCOMPRESSED})", f"tr(): {NOT_UNCOMPRESSED}"),
+    (f"rawtr({UNCOMPRESSED})", f"rawtr(): {NOT_UNCOMPRESSED}"),
+    (f"tr({X_ONLY},pk({UNCOMPRESSED}))", f"pk(): {NOT_UNCOMPRESSED}"),
+    (f"tr({X_ONLY},multi_a(1,{UNCOMPRESSED}))", f"Multi: {NOT_UNCOMPRESSED}"),
+    (f"tr(musig({UNCOMPRESSED},{KEY}))", f"tr(): musig(): {NOT_UNCOMPRESSED}"),
+    (f"wpkh([deadbeef/0]{UNCOMPRESSED_WIF})", f"wpkh(): {NOT_UNCOMPRESSED}"),
+    (f"tr(musig({KEY},{UNCOMPRESSED_WIF}))", f"tr(): musig(): {NOT_UNCOMPRESSED}"),
+    # an uncompressed WIF of another network, which Core reads as no key
+    (f"wpkh({MAINNET_WIF})", f"wpkh(): {NO_KEY}"),
+    (f"wsh(multi(1,{KEY},{MAINNET_WIF}))", f"Multi: {NO_KEY}"),
+    (f"wsh(and_v(v:pk({MAINNET_WIF}),older(10)))", NO_KEY),
+    (f"tr(musig({MAINNET_WIF},{KEY}))", f"tr(): musig(): {NO_KEY}"),
+    # the first Core meets, a function it does not read or a key it refuses
+    (f"wsh(or_d(rawpkh({H160}),pkh({MUSIG})))", NEEDED_P2WSH),
+    (f"wsh(or_d(pkh({MUSIG}),rawpkh({H160})))", MUSIG_PLACE),
+    (f"wsh(or_d(rawpkh({H160}),pk({NOT_A_POINT})))", NEEDED_P2WSH),
+    (f"wsh(or_d(rawpkh({H160}),pk({X_ONLY})))", NEEDED_P2WSH),
+    (f"wsh(or_d(pk({NOT_A_POINT}),rawpkh({H160})))", INVALID),
+    (
+        f"tr({X_ONLY},{{rawpkh({H160}),pk({UNCOMPRESSED})}})",
+        NOT_A_FUNCTION.format("rawpkh"),
+    ),
+    (
+        f"tr({X_ONLY},{{pk({UNCOMPRESSED}),rawpkh({H160})}})",
+        f"pk(): {NOT_UNCOMPRESSED}",
+    ),
+    (
+        f"tr({X_ONLY},{{raw(51),pk({UNCOMPRESSED})}})",
+        "Can only have raw() at top level",
+    ),
+    (f"tr({X_ONLY},{{pk({NOT_A_POINT_X}),raw(51)}})", f"pk(): {INVALID}"),
+    (f"tr({X_ONLY},{{rawpkh({H160}),{MUSIG}}})", NOT_A_FUNCTION.format("rawpkh")),
+    (f"tr({X_ONLY},{{{MUSIG},rawpkh({H160})}})", NOT_A_FUNCTION.format("musig")),
+    (
+        f"tr({X_ONLY},and_v(v:rawpkh({H160}),pk({NOT_A_POINT_X})))",
+        NOT_A_FUNCTION.format("and_v"),
+    ),
+    (f"tr({X_ONLY},and_v(v:pk({NOT_A_POINT_X}),rawpkh({H160})))", INVALID),
+    # a musig() with a path where a script belongs, its path kept
+    (f"tr({X_ONLY},{{raw(51),{MUSIG}/0/*}})", "Can only have raw() at top level"),
+    (f"tr({X_ONLY},{{rawnode({H256}),{MUSIG}/0/*}})", NOT_A_FUNCTION.format("rawnode")),
+    (f"tr({X_ONLY},{{{MUSIG}/0/*,raw(51)}})", MUSIG_PATH),
+    (f"tr({X_ONLY},{MUSIG}/0/*)", MUSIG_PATH),
+    (f"{MUSIG}/0/*", MUSIG_PATH),
+]
+
+
+@pytest.mark.parametrize(("text", "message"), KEY_REFUSALS)
+def test_a_key_or_musig_core_refuses_has_core_s_message(
+    node: Node, text: str, message: str
+) -> None:
+    """bip32_descriptors and ecc refuse each in words of their own."""
+    with pytest.raises((BTClibException, EccException)):
+        parse(multipath_descriptors(strip_checksum(text))[0], "regtest", {})
+    with pytest.raises(RpcError) as caught:
+        scan(node, text)
+    assert (int(caught.value.code), caught.value.message) == (-5, message)
+    assert_secret_free(caught.value, [LEAK_HEX, UNCOMPRESSED_WIF, MAINNET_WIF])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"pk({UNCOMPRESSED})",
+        f"sh(pk({UNCOMPRESSED}))",
+        f"sh(multi(1,{UNCOMPRESSED}))",
+        f"combo({UNCOMPRESSED})",
+        f"unused({UNCOMPRESSED})",
+        f"pk({UNCOMPRESSED_WIF})",
+        f"wpkh({wif_from_prv_key(LEAK_HEX, 'regtest')})",
+        f"tr({MUSIG})",
+        f"rawtr({MUSIG})",
+        f"tr({X_ONLY},pk({MUSIG}))",
+        f"tr({X_ONLY},multi_a(1,{MUSIG}))",
+    ],
+)
+def test_a_key_or_musig_core_reads_has_no_refusal(text: str) -> None:
+    """A key or a `musig()` that Core reads where it stands."""
+    assert utxo_set._invalid_key_refusal(text, "regtest") is None
 
 
 def test_an_unmatched_closing_parenthesis_keeps_the_parser_refusal(node: Node) -> None:
     """The key walker does not replace malformed-syntax diagnostics."""
     text = f"pk({KEY}))"
-    assert utxo_set._invalid_key_refusal(text) is None
+    assert utxo_set._invalid_key_refusal(text, "regtest") is None
     with pytest.raises(RpcError) as caught:
         scan(node, text)
     assert (int(caught.value.code), caught.value.message) == (-5, "unbalanced brackets")
@@ -817,7 +965,7 @@ def test_an_unmatched_closing_parenthesis_keeps_the_parser_refusal(node: Node) -
 @pytest.mark.parametrize("text", [NOT_A_POINT, f"raw({NOT_A_POINT})", f"pk({KEY})"])
 def test_a_text_with_no_key_that_is_no_point_has_no_such_refusal(text: str) -> None:
     """A key outside a function, an argument that is no key, and a point."""
-    assert utxo_set._invalid_key_refusal(text) is None
+    assert utxo_set._invalid_key_refusal(text, "regtest") is None
 
 
 def test_a_null_range_is_absent_and_scan_objects_are_read_in_order(node: Node) -> None:

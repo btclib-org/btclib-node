@@ -173,20 +173,23 @@ descriptor at `rpc/util.cpp:1376`, the line in `GetConfigOptions`
 `ReadSettings` (`src/common/settings.cpp:101`). A refusal reaches stderr,
 logs and the RPC caller.
 
-Core does not read `rawpkh()`, `rawnode()` or `rawleaf()`. At top level
-and in `tr()`, its `scantxoutset` refusal of one quotes the expression
-whole, a private key in it included (`ParseScript` in
-`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-tag). This node's refusal quotes none of its arguments, as in
+Core does not read `rawpkh()`, `rawnode()` or `rawleaf()`, nor a
+`musig()` where a script belongs. At top level and in `tr()`, its
+`scantxoutset` refusal of one quotes the expression whole, a private key
+in it included (`ParseScript` in `src/script/descriptor.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal quotes
+none of its arguments, as in
 `'rawnode(...)' is not a valid descriptor function`.
 
-Core's `scantxoutset` refusal of a hex key that is not a point quotes the
-key, which may be a private key given by mistake (`ParsePubkeyInner` in
+Core's `scantxoutset` refusal of a hex key it reads as invalid quotes
+the key, which may be a private key given by mistake, and so does its
+refusal of a WIF of another network (`ParsePubkeyInner` in
 `src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-tag). Where ecc refuses the key, this node's refusal writes `...` in its
-place, as in `pk(): Pubkey '...' is invalid`. Where bip32_descriptors
-refuses it, as a `musig()` participant or an x-only key outside `tr()`,
-the refusal names the key by its index alone.
+tag). This node's refusal writes `...` in its place, as in
+`pk(): Pubkey '...' is invalid` and `wpkh(): key '...' is not valid`.
+Where it gives bip32_descriptors' refusal instead, that refusal names
+the key by its index alone, as for a key of a length no key has or a WIF
+that bip32_descriptors refuses as of another network.
 
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
