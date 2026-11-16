@@ -737,13 +737,13 @@ _CORE_PROCESS_BLOCK_LINES = (
 
 
 def test_a_block_is_logged_as_core_logs_it(tmp_path: Path) -> None:
-    """`process_block` logs Core's line, the block's size and span's source too.
+    """`process_block` logs Core's line field for field, as bitcoind v32.1 does.
 
     `CBlockPolicyEstimator::processBlock`
-    (`src/policy/fees/block_policy_estimator.cpp:713-715`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag) logs how many of the
+    (`src/policy/fees/block_policy_estimator.cpp:713-715`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) logs how many of the
     block's transactions were counted out of how many it took from the
-    mempool, and whether the historical span or the current one is the
+    mempool, and `historical` only where the historical span is the
     longer; the lines compared are bitcoind's own, for the same blocks.
     """
     estimator, lines = an_estimator(tmp_path)

@@ -661,8 +661,8 @@ class FeeEstimator:
         counted = sum(self._process_block_tx(height, tx) for tx in txs)
         if self.first_recorded_height == 0 and counted > 0:
             self.first_recorded_height = height
-        # Core's line, `block_policy_estimator.cpp:713-715` at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag
+        # Core's line, `block_policy_estimator.cpp:713-715`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag
         self.logger.log_debug(
             "estimatefee",
             "Blockpolicy estimates updated by %d of %d block txs, since last block "
