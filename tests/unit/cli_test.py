@@ -1160,7 +1160,7 @@ def test_build_config_skips_rpcservertimeout_when_server_is_off(
 def test_build_config_reads_rpcservertimeout_when_server_is_on(
     tmp_path: Path,
 ) -> None:
-    """ISS 2500: with `-server` set, an out-of-range number is still refused."""
+    """ISS 2500: with `-server` on by default, out of range is refused."""
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "settings.json").write_text(
         '{"rpcservertimeout": 9223372036854775808}', encoding="utf-8"
