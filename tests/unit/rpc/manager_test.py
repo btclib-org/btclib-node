@@ -505,12 +505,13 @@ def test_a_host_that_is_no_address_is_not_looked_up(
 ) -> None:
     """ISS 2135: `Lookup(address, port, false)` reads a numeric address alone.
 
-    Measured on bitcoind with `-rpcallowip=127.0.0.1` and each
-    host as `-rpcbind`: it logs "Could not bind RPC on address <host>
-    port <port>: Address lookup failed." and binds nothing there. Here
-    the system's lookup answers every name with `127.0.0.1`, as a
-    machine's resolver may answer the fullwidth digits of 127, and is
-    asked with `AI_NUMERICHOST` alone, so it never resolves one.
+    Measured on bitcoind with `-rpcallowip=127.0.0.1` and each host as
+    `-rpcbind`: it logs "Could not bind RPC on address <host> port
+    <port>: Address lookup failed." and binds nothing there. This node
+    writes `'...'` for the host (ISS 2529). Here the system's lookup
+    answers every name with `127.0.0.1`, as a machine's resolver may
+    answer the fullwidth digits of 127, and is asked with
+    `AI_NUMERICHOST` alone, so it never resolves one.
     """
     lookup = socket.getaddrinfo
     flags_asked: list[int] = []
@@ -528,7 +529,7 @@ def test_a_host_that_is_no_address_is_not_looked_up(
     warnings: list[tuple[object, ...]] = []
     monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
     assert manager._bind() == []
-    assert warnings == [(_LOOKUP_FAILED, host, port)]
+    assert warnings == [(_LOOKUP_FAILED, "'...'", port)]
     assert all(flags & socket.AI_NUMERICHOST for flags in flags_asked)
 
 
@@ -623,7 +624,7 @@ _EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
         pytest.param(None, (_EVERY_INTERFACE,), [(_IGNORED,)], id="ignored"),
         pytest.param(_EVERY_INTERFACE, (), [(_EXPOSED,)], id="every interface"),
         pytest.param(
-            "localhost", (), [(_LOOKUP_FAILED, "localhost")], id="a name, not looked up"
+            "localhost", (), [(_LOOKUP_FAILED, "'...'")], id="a name, not looked up"
         ),
     ],
 )
@@ -649,7 +650,9 @@ def test_bind_warns_as_cores_init_http_server(
     bound_hosts(manager._bind())
     port = manager.port
     assert warnings == [(*w, port) if len(w) > 1 else w for w in warned]
-    hosts = ("::1", "127.0.0.1") if rpc_host is None else (rpc_host,)
+    hosts = {None: ("::1", "127.0.0.1"), "localhost": ("'...'",)}.get(
+        rpc_host, (rpc_host,)
+    )
     assert infos == [
         ("Binding RPC on address %s port %s", host, port) for host in hosts
     ]
@@ -718,7 +721,8 @@ def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
 
     Measured on bitcoind with `-rpcbind=a..b -rpcbind=127.0.0.1
     -rpcallowip=127.0.0.1`: it starts, and warns "Could not bind RPC on
-    address a..b port <port>: Address lookup failed.".
+    address a..b port <port>: Address lookup failed.". This node writes
+    `'...'` and the value's position for the host (ISS 2529).
     """
     port = get_random_port()
     manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
@@ -727,7 +731,31 @@ def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
     monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
     server_sockets = manager._bind()
     assert bound_hosts(server_sockets) == ["127.0.0.1"]
-    assert (_LOOKUP_FAILED, "a..b", port) in warnings
+    assert (_LOOKUP_FAILED, "'...' (value 2 of -rpcbind)", port) in warnings
+
+
+def test_a_key_given_as_an_rpcbind_host_is_not_in_the_log(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2529: a WIF in place of the host is logged as `'...'`, by position.
+
+    Core's "Binding RPC on address" and "Could not bind RPC on address"
+    lines write it whole. A host that looks up is written whole.
+    """
+    port = get_random_port()
+    manager = a_manager(
+        port, rpcbind=("127.0.0.1", LEAK_WIF), rpcallowip=("127.0.0.1",)
+    )
+    lines = LogLines()
+    manager.logger.addHandler(lines)
+    bound_hosts(manager._bind())
+    shown = "'...' (value 2 of -rpcbind)"
+    assert lines.messages == [
+        f"Binding RPC on address 127.0.0.1 port {port}",
+        f"Binding RPC on address {shown} port {port}",
+        f"Could not bind RPC on address {shown} port {port}: Address lookup failed.",
+    ]
+    assert_secret_free(ValueError(*lines.messages), [LEAK_WIF])
 
 
 def test_an_rpcbind_port_core_refuses_binds_nothing(

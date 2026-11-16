@@ -2134,7 +2134,7 @@ def test_a_start_that_ends_in_an_error_stays_in_warmup(
         (
             "start_listener",
             ["start", "Starting network threads…", "finish"],
-            ["startup command"],
+            [("startup command", "-startupnotify")],
         ),
     ],
     ids=["before-the-last-check", "after-it"],
@@ -2144,7 +2144,7 @@ def test_a_stop_after_start_ups_last_check_still_ends_warmup(
     monkeypatch: pytest.MonkeyPatch,
     stop_during: str,
     warmup: list[str],
-    notified: list[str],
+    notified: list[tuple[str, str]],
 ) -> None:
     """ISS 2349: Core checks `ShutdownRequested` last just before step 12.
 
@@ -2155,9 +2155,11 @@ def test_a_stop_after_start_ups_last_check_still_ends_warmup(
     """
     node = a_networked_node
     rpc_manager = cast("AManager", node.rpc_manager)
-    commands: list[str] = []
+    commands: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        btclib_node, "run_detached", lambda _logger, command: commands.append(command)
+        btclib_node,
+        "run_detached",
+        lambda _logger, command, option: commands.append((command, option)),
     )
     node.config.startup_notify = "startup command"
     real_load = node.load

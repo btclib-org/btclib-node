@@ -1212,7 +1212,7 @@ class Node(threading.Thread):
             # Core's `StartupNotify(args)`, the last call of `AppInitMain`
             # (`src/init.cpp:2403-2425`, same sha): run once, on a thread
             # nothing waits for.
-            run_detached(self.logger, self.config.startup_notify)
+            run_detached(self.logger, self.config.startup_notify, "-startupnotify")
             self._start_mempool_load()
         # `config.connect` and `config.addnode` are each dialled by a
         # loop of `P2pManager`'s own, `_open_connect_peers` and

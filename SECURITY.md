@@ -252,6 +252,26 @@ text for such a path, the warnings a configuration file's reading writes, and
 the log's `Config file:` and `Generated RPC authentication cookie` lines take
 the same form.
 
+Core's start-up warnings and log lines write an option's value whole too, a key
+given by mistake included: the double-negative warning (`InterpretValue` in
+`src/common/args.cpp:114`), the `-test` warning (`AppInitParameterInteraction`
+in `src/init.cpp:1180`), the RPC server's bind lines (`InitHTTPServer` in
+`src/httpserver.cpp:1367` and `:1380`) and the warning of a notify command that
+fails (`runCommand` in `src/common/system.cpp:53`), at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag. This node keeps Core's other words,
+and writes the value as the start-up refusals above write theirs. A double
+negative's value is `'...'`, as in `Parsed potentially confusing
+double-negative -listen='...'`. A `-test` value is quoted as a name, so that a
+key there is written `<52 characters>` between Core's quotes, except a name
+Core's `TEST_OPTIONS_DOC` lists, which is written whole. An RPC host that
+resolves is written whole, as a `-whitebind` address is; any other is `'...'`,
+and an `-rpcbind` value is also named by its position: `Could not bind RPC on
+address '...' (value 2 of -rpcbind) port 8332: Address lookup failed.` A notify
+command is `...`, followed by the option it is the value of: `runCommand error:
+system(...) returned 1 (value 2 of -shutdownnotify)`. The log of the settings
+writes a `-test`, `-rpcbind` or notify value whole
+(btclib-org/btclib-node#2556).
+
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
 `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This

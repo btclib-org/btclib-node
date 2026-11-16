@@ -429,6 +429,10 @@ _TEST_OPTIONS = {
     "addrman": "use deterministic addrman",
     "bip94": "enforce BIP94 consensus rules",
 }
+# every name of `TEST_OPTIONS_DOC`, same citation
+_CORE_TEST_OPTIONS = frozenset(
+    {*_TEST_OPTIONS, "reindex_after_failure_noninteractive_yes"}
+)
 # `LoadAddrman`'s clamp of `-checkaddrman` (`src/addrdb.cpp`, same sha)
 _MAX_CHECK_ADDRMAN = 1_000_000
 
@@ -1066,6 +1070,12 @@ def _interpret_value(
     negative, `-nofoo=0`, is `True`, and its warning is appended to
     `warnings`, for the log alone, as Core's `LogWarning`
     (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040).
+
+    Core's warning writes the value whole (`src/common/args.cpp:114`,
+    same sha). This one writes `'...'` in its place, as `-listen='...'`
+    for `-nolisten=0`: every value `_interpret_bool` reads as false
+    reaches it, a compressed WIF among them (SECURITY.md, "Where this
+    node departs from Bitcoin Core").
     """
     if not info.negated:
         return "" if value is None else value
@@ -1073,11 +1083,8 @@ def _interpret_value(
         err_msg = f"Negating of -{info.name} is meaningless and therefore forbidden"
         raise ValueError(err_msg)
     if value is not None and not _interpret_bool(value):
-        # Core's warning writes a `SENSITIVE` option's value in clear:
-        # this one writes the `****` Core's `LogArgs` writes instead.
-        shown = "****" if option.sensitive else value
         warnings.append(
-            f"Parsed potentially confusing double-negative -{info.name}={shown}"
+            f"Parsed potentially confusing double-negative -{info.name}='...'"
         )
         return True
     return False
@@ -2045,6 +2052,11 @@ def _check_test_options(settings: _Settings, chain_name: str) -> None:
     headers (`chainstate/__init__.py`'s docstring), so it cannot recover
     a block index that fails to load, as one holding a header that fails
     its proof of work does (`BlockIndex.init_from_db`).
+
+    Core's warning writes the value whole (`src/init.cpp:1180`, same
+    sha). This one writes it through `quoted_name`, since a longer one
+    may be a key, except a name Core's `TEST_OPTIONS_DOC` holds, which is
+    no key (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     options = _get_args(settings, "test")
     if options and chain_name != "regtest":
@@ -2052,7 +2064,8 @@ def _check_test_options(settings: _Settings, chain_name: str) -> None:
         raise ValueError(err_msg)
     for option in options:
         if option not in _TEST_OPTIONS:
-            warning = f'Unrecognised option "{option}" provided in -test=<option>.'
+            shown = option if option in _CORE_TEST_OPTIONS else quoted_name(option)
+            warning = f'Unrecognised option "{shown}" provided in -test=<option>.'
             sys.stderr.write(f"Warning: {warning}\n")
             settings.debug_warnings.append(warning)
 

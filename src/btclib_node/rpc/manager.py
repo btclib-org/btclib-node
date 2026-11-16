@@ -462,15 +462,34 @@ class RpcManager(threading.Thread):
         where none binds. See `P2pManager._bind` for why this is
         synchronous (#88). Unlike that one, this does not set
         `listening`: `_listen` does, once the cookie is written too.
+
+        Core's two lines write the host whole (`src/httpserver.cpp:1367` and
+        `:1380`, same sha). This writes it whole where it looks up as a
+        numeric, onion or I2P address. Where the platform reads a key as
+        numeric, as macOS reads `0x` and a key's hex digits, or a key as the
+        scope after an IPv6 address's `%`, that key is written whole too
+        (btclib-org/btclib-node#2566). A host that does not look up is
+        written `'...'`, followed by its position for an `-rpcbind` value,
+        as in `Could not bind RPC on address '...' (value 2 of -rpcbind)
+        port 8332: Address lookup failed.` (SECURITY.md, "Where this node
+        departs from Bitcoin Core"). The lookup comes first, so that both
+        lines write the host the same way. It asks no DNS and logs nothing,
+        so Core's line order holds.
         """
         bound: list[socket.socket] = []
-        for host, port in self._endpoints():
-            self.logger.info("Binding RPC on address %s port %s", host, port)
+        for host, port, position in self._endpoints():
             service = lookup_service(host, port)
+            if service is not None:
+                shown = host
+            elif position is None:
+                shown = "'...'"
+            else:
+                shown = f"'...' (value {position} of -rpcbind)"
+            self.logger.info("Binding RPC on address %s port %s", shown, port)
             if service is None:
                 self.logger.warning(
                     "Could not bind RPC on address %s port %s: Address lookup failed.",
-                    host,
+                    shown,
                     port,
                 )
                 continue
@@ -490,13 +509,15 @@ class RpcManager(threading.Thread):
                 )
         return bound
 
-    def _endpoints(self) -> list[tuple[str, int]]:
+    def _endpoints(self) -> list[tuple[str, int, int | None]]:
         """Return what `GetBindAddresses` binds, logging its warnings.
 
         Loopback, where `-rpcbind` and `-rpcallowip` are not both given;
         every `-rpcbind` endpoint otherwise, its port defaulting to
         `-rpcport`. Empty, the error logged, for a value naming an
-        invalid port, which `cli` has already refused.
+        invalid port, which `cli` has already refused. Each endpoint
+        carries its position among the `-rpcbind` values, counted from 1,
+        and `None` where it is no such value.
         """
         config = self.node.config
         port = self.port or 0
@@ -515,9 +536,9 @@ class RpcManager(threading.Thread):
             # host -- see its own comment for why the RPC control plane's
             # default is not every interface, unlike P2pManager's
             if config.rpc_host is None:
-                return [(host, port) for host in _LOOPBACK_HOSTS]
-            return [(config.rpc_host, port)]
-        endpoints: list[tuple[str, int]] = []
+                return [(host, port, None) for host in _LOOPBACK_HOSTS]
+            return [(config.rpc_host, port, None)]
+        endpoints: list[tuple[str, int, int | None]] = []
         for position, value in enumerate(config.rpcbind, 1):
             try:
                 endpoint: tuple[str, int] | None = split_host_port(value, port)
@@ -526,7 +547,7 @@ class RpcManager(threading.Thread):
             if endpoint is None:
                 self.logger.error("%s", invalid_port_message("rpcbind", position))
                 return []
-            endpoints.append(endpoint)
+            endpoints.append((*endpoint, position))
         return endpoints
 
     def _listen(self) -> list[socket.socket]:

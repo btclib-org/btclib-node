@@ -1267,20 +1267,24 @@ def test_build_config_warns_about_a_double_negative(
     config = _build(tmp_path, "-connect=0", "-nolisten=0")
     assert config.listen is True
     assert config.log_warnings == (
-        "Parsed potentially confusing double-negative -listen=0",
+        "Parsed potentially confusing double-negative -listen='...'",
     )
     assert capsys.readouterr().err == ""
 
 
-def test_build_config_echoes_a_double_negative_value(
+def test_build_config_writes_no_double_negative_value(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The warning echoes the value of an option that is not `SENSITIVE`."""
-    config = _build(tmp_path, "-connect=0", "-nolisten=garbage")
+    """ISS 2529: a compressed WIF reads as false, so it reaches the warning.
+
+    Core's warning writes it whole; this one writes `'...'`.
+    """
+    config = _build(tmp_path, "-connect=0", f"-nolisten={LEAK_WIF}")
     assert config.listen is True
     assert config.log_warnings == (
-        "Parsed potentially confusing double-negative -listen=garbage",
+        "Parsed potentially confusing double-negative -listen='...'",
     )
+    assert_secret_free(ValueError(*config.log_warnings), [LEAK_WIF])
     assert capsys.readouterr().err == ""
 
 
@@ -1304,9 +1308,9 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
         f"{path}:5 Section [y] is not recognized.\n"
     )
     assert config.log_warnings == (
-        "Parsed potentially confusing double-negative -listen=0",
+        "Parsed potentially confusing double-negative -listen='...'",
         f"{path}:2 Ignoring unknown configuration value foo",
-        "Parsed potentially confusing double-negative -server=0",
+        "Parsed potentially confusing double-negative -server='...'",
         f"{path}:6 Ignoring unknown configuration value y.bar",
     )
     assert config.section_warning == sections
@@ -1387,11 +1391,11 @@ def test_log_args_escapes_a_backslash_in_datadir() -> None:
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
 def test_interpret_value_masks_a_sensitive_double_negative(name: str) -> None:
-    """A `SENSITIVE` option's value is `****` in the warning, unlike Core."""
+    """A `SENSITIVE` option's value is `'...'` in the warning, unlike Core."""
     info = cli._interpret_key(f"no{name}")
     warnings: list[str] = []
     assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name], warnings) is True
-    assert warnings == [f"Parsed potentially confusing double-negative -{name}=****"]
+    assert warnings == [f"Parsed potentially confusing double-negative -{name}='...'"]
 
 
 @pytest.mark.parametrize(
@@ -1408,7 +1412,7 @@ def test_build_config_masks_a_double_negative_password(
     config = _build(tmp_path, "-connect=0", *argv, conf=conf)
     written = capsys.readouterr().err + "".join(config.log_warnings)
     assert "hunter2" not in written
-    assert "-rpcpassword=****" in written
+    assert "-rpcpassword='...'" in written
 
 
 @pytest.mark.parametrize(
@@ -6540,7 +6544,8 @@ def test_build_config_warns_of_a_test_value_it_does_not_know(
     """Measured on bitcoind: `-test=bogus` and a bare `-test` warn and start.
 
     `reindex_after_failure_noninteractive_yes` is one Core knows and this
-    node does not read.
+    node does not read: it is written whole, though longer than
+    `MAX_QUOTED_NAME`.
     """
     warning = f'Unrecognised option "{value}" provided in -test=<option>.'
     argv = ["-regtest", f"-test={value}" if value else "-test", "-test=addrman"]
@@ -6548,3 +6553,18 @@ def test_build_config_warns_of_a_test_value_it_does_not_know(
     assert capsys.readouterr().err == f"Warning: {warning}\n"
     assert config.debug_warnings == (warning,)
     assert config.deterministic_addrman
+
+
+def test_build_config_warns_of_a_long_test_value_by_its_length(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2529: a key given to `-test` is not written, on stderr or in the log.
+
+    Core's warning writes it whole.
+    """
+    config = _build(tmp_path, "-regtest", f"-test={LEAK_WIF}")
+    warning = 'Unrecognised option "<52 characters>" provided in -test=<option>.'
+    err = capsys.readouterr().err
+    assert err == f"Warning: {warning}\n"
+    assert config.debug_warnings == (warning,)
+    assert_secret_free(ValueError(err, *config.debug_warnings), [LEAK_WIF])
