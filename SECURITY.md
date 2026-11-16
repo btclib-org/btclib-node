@@ -268,14 +268,39 @@ resolves is written whole, as a `-whitebind` address is; any other is `'...'`,
 and an `-rpcbind` value is also named by its position: `Could not bind RPC on
 address '...' (value 2 of -rpcbind) port 8332: Address lookup failed.` A notify
 command is `...`, followed by the option it is the value of: `runCommand error:
-system(...) returned 1 (value 2 of -shutdownnotify)`. The log of the settings
-writes a `-test`, `-rpcbind` or notify value whole
-(btclib-org/btclib-node#2556).
+system(...) returned 1 (value 2 of -shutdownnotify)`.
 
-Core's log of the settings also writes each `settings.json` value in clear,
-a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
-`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This
-node masks some of them, as ASSURANCE_CASE.md's CWE-209 entry says.
+Core's log of the settings writes every value whole but a `SENSITIVE`
+option's from the configuration file or the command line, which it writes
+`****`. So a key given by mistake to any other option is written whole, and so
+is every `settings.json` value (`logArgsPrefix` and `LogArgs` in
+`src/common/args.cpp:993` and `:1007`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). This node writes `****` for a sensitive option's value wherever it was
+read, and for the value of a `settings.json` name no option has, which may be a
+sensitive one misspelled. It writes any other value by its shape
+(btclib-org/btclib-node#2556), as in `Command-line arg: blocknotify='...'`:
+
+- a name, as a chain, a logging category or a `-test` value, whole where the
+  warnings above write it whole, and by its length otherwise;
+- an address whole where it resolves without DNS and none of its parts between
+  the separators of an address, as a dot or a colon, is longer than
+  `MAX_QUOTED_NAME` characters. The onion or I2P host an address starts with is
+  excepted where it has the shape Core writes one in: 56 lowercase base32
+  characters before `.onion`, or 52 before `.b32.i2p`
+  (btclib-org/btclib-node#2570). Its port is not excepted, nor is a host of
+  another case or length, as a WIF given as an I2P label. An I2P label is any
+  32 bytes in base32, so a key written that way before `.b32.i2p` is written
+  whole. Any other address is `'...'`. Resolving alone is not enough: a port
+  may carry any number of leading zeros, and macOS reads a key's decimal, or
+  its hex after `0x`, as an IPv4 address, and any text after an IPv6 address's
+  `%` as its scope;
+- a path by its length, and a notify command and an `-rpcwhitelist` value,
+  which may hold a user name, as `'...'`;
+- any other value whole where it has at most `MAX_QUOTED_NAME` characters, as
+  a number, an amount or a port has, and `'...'` otherwise, as an
+  `-assumevalid` hash is, since a key in hex looks the same;
+- a `settings.json` number by the same rules, and an array or an object as
+  `'...'`.
 
 What a refusal may print about a secret is the organization's rule, section 7's
 *A refusal carries no secret* in
