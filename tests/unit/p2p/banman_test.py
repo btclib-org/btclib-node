@@ -641,6 +641,12 @@ def test_an_expired_entry_is_swept_on_loading(tmp_path: Path) -> None:
         '{"banned_nets": [{"version": true}]}',
         '{"banned_nets": [{"version": 4294967296}]}',
         '{"banned_nets": [{"version": 1, "address": 1}]}',
+        # `get_str` refuses a number too long for an int64 as any number,
+        # and the ban read before it goes with the file
+        (
+            f'{{"banned_nets": [{_ENTRY}, {{"version": 1, "ban_created": 1,'
+            f' "banned_until": 1800000000, "address": {"9" * 20}}}]}}'
+        ),
         '{"banned_nets": [{"version": 1, "address": "1.2.3.4"}]}',
         # `ReadSettings` refuses a top-level key held twice, whatever it holds
         '{"banned_nets": [%s], "banned_nets": [%s]}' % ((_ENTRY,) * 2),

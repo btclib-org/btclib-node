@@ -400,10 +400,21 @@ class _JsonObject(list[tuple[str, Any]]):
         return next((value for k, value in self if k == key), None)
 
 
-def _parse_json_int(text: str) -> int | str:
+@dataclass(frozen=True)
+class _LongJsonInt:
+    """A JSON integer too long for an int64.
+
+    It is neither `int` nor `str`, as UniValue's `getInt` and `get_str`
+    both refuse it.
+    """
+
+    text: str
+
+
+def _parse_json_int(text: str) -> int | _LongJsonInt:
     """Keep an integer too long for an int64 out of Python's ``int`` parser."""
     if len(text.removeprefix("-")) > len(str(_INT64_END)):
-        return text
+        return _LongJsonInt(text)
     return int(text)
 
 
