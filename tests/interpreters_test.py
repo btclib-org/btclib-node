@@ -76,12 +76,12 @@ _FREE_THREADING_CLASSIFIER = "Programming Language :: Python :: Free Threading"
 # `_VERSION` is what says so, and both arms are held to it rather than
 # one: the closure below asks whether the gate names an interpreter at
 # all, so a token that is not a version but arrives as one leaves that
-# question answered by nothing. A run of non-space hands it `${{` out
-# of `--python ${{ matrix.python }}`, and whatever sits between the
-# quotes hands it `${{ matrix.python }}` out of a quoted expression --
-# two characters apart, and the second is the ordinary thing to write.
-# No expression reaches either arm now; what the closure still cannot
-# see is named where it is read.
+# question answered by nothing. A run of non-space hands it `${{` out of
+# `--python ${{ matrix.python }}`, and whatever sits between the quotes
+# hands it `${{ matrix.python }}` out of a quoted expression -- two
+# characters apart, and the second is the ordinary thing to write. No
+# expression reaches either arm; what the closure cannot see is named
+# where it is read.
 _VERSION = r"[\w.+-]+"
 _NAMED = re.compile(rf'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python ({_VERSION})')
 _QUOTED = re.compile(rf'"({_VERSION})"')
@@ -91,16 +91,16 @@ _QUOTED = re.compile(rf'"({_VERSION})"')
 # line and not an input
 _NAMED_INPUT = re.compile(rf'^ +python: "({_VERSION})"', re.MULTILINE)
 # the shape a caller of `os-macos.yml` and `os-ubuntu.yml`'s own
-# reusable-os-suite.yml carries (btclib-org/.github#35):
-# reusable-deps-oldest.yml's own five callers already established the
-# quoting for one interpreter, `python-version: "3.10"`, and a
-# `workflow_call` input can only be a string, so the list a caller
-# passes arrives JSON-encoded inside one -- `python-versions:
+# reusable-os-suite.yml carries (btclib-org/.github#35): a caller of
+# reusable-deps-oldest.yml quotes one interpreter as `python-version:
+# "3.10"`, and a `workflow_call` input can only be a string, so the list
+# a caller passes arrives JSON-encoded inside one -- `python-versions:
 # '["3.14", "3.14t"]'` -- rather than in `_NAMED`'s own unquoted flow
 # sequence, `python-version: [...]`. Read beside `_NAMED` rather than
-# instead of it: every other file `_NAMES_ONE` lists still names its
-# interpreter the old way, and a pattern that read only the caller
-# shape would turn the suite red on them (btclib-org/.github#1119)
+# instead of it: every other file `_NAMES_ONE` lists names its
+# interpreter in `_NAMED`'s shape, and a pattern that read only the
+# caller shape would turn the suite red on them
+# (btclib-org/.github#1119)
 _NAMED_CALLER = re.compile(r"python-versions: '(?P<block>\[[^\]\n]*\])'")
 
 # the merge gate, and inside it the jobs a landing waits on. Section 3
@@ -413,11 +413,10 @@ _NAMES_ONE = (
     ".github/workflows/deps-latest.yml",
     ".github/workflows/deps-oldest.yml",
     ".github/workflows/fuzz.yml",
-    # mutation.yml's Setup uv step used to pin the interpreter on its own
-    # line, the number a mutant's kill was measured against; the job is
-    # now a call to btclib-org/.github's reusable-mutation.yml at a tagged
-    # commit, whose own Setup uv step names none, `uv run --locked` there
-    # resolving what this tree's .python-version names instead
+    # mutation.yml is not listed: its job is a call to
+    # btclib-org/.github's reusable-mutation.yml at a tagged commit,
+    # whose own Setup uv step names no interpreter, `uv run --locked`
+    # there resolving what this tree's .python-version names
     # (btclib-org/.github#35)
     ".github/workflows/os-macos.yml",
     ".github/workflows/os-ubuntu.yml",
@@ -426,21 +425,17 @@ _NAMES_ONE = (
     # project's `requires-python`, so it names the one uv resolves
     # (btclib-org/btclib-node#502)
     ".github/workflows/pypi-install.yml",
-    # release.yml's `build` job passes reusable-build.yml the interpreter
-    # that normalizes the sdist it publishes, as `python: "3.14"`. Its
-    # `documented` job used to run the read the docs wait through
-    # `uv run --no-project`, naming the interpreter on its own command
-    # line (btclib-org/.github#644); that wait is btclib-org/.github's
-    # reusable-documented.yml now, called at a tagged commit, and the
-    # interpreter it names lives in that file rather than in this one
-    # (btclib-org/.github#35)
+    # release.yml's `build` job passes reusable-build.yml the
+    # interpreter that normalizes the sdist it publishes, as `python:
+    # "3.14"`. Its `documented` job, the read the docs wait, calls
+    # btclib-org/.github's reusable-documented.yml at a tagged commit,
+    # and the interpreter it names lives in that file rather than in
+    # this one (btclib-org/.github#644, btclib-org/.github#35)
     ".github/workflows/release.yml",
-    # sdist-rebuild.yml's `rebuild` job used to run the tag's sdist
-    # normalizer through `uv run --no-project --python 3.14` on its own
-    # command line, as test.yml's dist job does; the job is now a call to
-    # btclib-org/.github's reusable-sdist-rebuild.yml at a tagged commit,
-    # and the interpreter that step runs on lives in that file rather than
-    # in this one (btclib-org/.github#35)
+    # sdist-rebuild.yml is not listed: its `rebuild` job is a call to
+    # btclib-org/.github's reusable-sdist-rebuild.yml at a tagged
+    # commit, and the interpreter its normalizer runs on lives in that
+    # file rather than in this one (btclib-org/.github#35)
     ".github/workflows/test.yml",
 )
 
@@ -982,15 +977,15 @@ def test_found_reads_a_local_action_with_its_comments_dropped(
     """A version an action only mentions in a comment is not one it pins.
 
     `_jobs` strips a workflow's comments before any of this reads them,
-    so a version named in prose there has never counted. An action's
-    own file is read separately and had escaped that, which would have
-    let a sentence about an interpreter make the gate look as though it
-    ran one -- the same false positive at a different scale from the one
-    issue #750 is about. The comment below is a commented-out step, so
-    it carries `--python 3.14t` in exactly the form `_NAMED` matches --
+    so a version named in prose there never counts. An action's own file
+    is read separately and is held to the same: otherwise a sentence
+    about an interpreter would make the gate look as though it ran one
+    -- the same false positive at a different scale from the one issue
+    #750 is about. The comment below is a commented-out step, so it
+    carries `--python 3.14t` in exactly the form `_NAMED` matches --
     which is what makes this a test rather than a decoration: prose
-    mentioning a bare `3.14t` is invisible to `_NAMED` either way, and
-    a read left unstripped would have passed against it.
+    mentioning a bare `3.14t` is invisible to `_NAMED` either way, and a
+    read left unstripped would have passed against it.
     """
     (tmp_path / "action").mkdir()
     (tmp_path / "action" / "action.yml").write_text(

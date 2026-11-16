@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 
 import btclib_node.rpc.connection as connection_module
-from btclib_node.constants import RPC_WORK_QUEUE
+from btclib_node.constants import MAX_JSON_DEPTH, RPC_WORK_QUEUE
 from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
@@ -62,6 +62,7 @@ from btclib_node.rpc.jsonrpc import (
 from btclib_node.rpc.manager import RpcManager
 from tests import RPCAUTH, RPCAUTH_LINE
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Buffer, Callable
@@ -276,7 +277,7 @@ def test_a_request_with_no_body_is_refused() -> None:
     its own `Connection: close`, so the refusal's own reply closing is
     what this asserts rather than an idle wait for a next request this
     test never sends -- the parse-error branch honours `Connection` the
-    same as any other reply now (issue #640, `test_several_malformed_
+    same as any other reply (issue #640, `test_several_malformed_
     bodies_over_one_kept_alive_connection_are_each_answered` below is
     the keep-alive half of this).
     """
@@ -301,16 +302,15 @@ def test_a_body_that_is_not_json_is_refused() -> None:
 def test_a_zero_header_request_leaves_the_next_ones_bytes_intact() -> None:
     r"""A request with no header fields trims `self.buffer` by what it consumed.
 
-    Review round 1: `RequestHead.serialize()` used to insert a `\r\n`
-    between `request_line` and `fields` unconditionally, fabricating
-    two octets nothing in the wire carried whenever a request had no
-    header fields at all -- `head.partition(b"\r\n")` (inside
-    `parse_request_head`) then returns an empty separator, `fields`
-    empty. `run` trimmed `self.buffer` by that fabricated length,
-    eating the first two bytes of whatever followed: a second,
-    pipelined request on a kept-alive connection. `request()`'s own
-    helper always injects `Host: x`, which is why nothing else in this
-    file exercises the zero-field case.
+    `RequestHead.serialize()` inserting a `\r\n` between `request_line`
+    and `fields` unconditionally would fabricate two octets nothing in
+    the wire carries whenever a request has no header fields at all --
+    `head.partition(b"\r\n")` (inside `parse_request_head`) then returns
+    an empty separator, `fields` empty. `run` trimming `self.buffer` by
+    that fabricated length would eat the first two bytes of whatever
+    follows: a second, pipelined request on a kept-alive connection.
+    `request()`'s own helper always injects `Host: x`, which is why
+    nothing else in this file exercises the zero-field case.
     """
 
     async def main() -> tuple[bytes, bytes]:
@@ -363,12 +363,12 @@ def test_a_body_shorter_than_its_length_is_waited_for() -> None:
 def test_a_stalled_read_is_refused_once_idle_timeout_elapses() -> None:
     """A client that never completes a request is refused once idle.
 
-    ISS 437: with no deadline at all, this coroutine hung on `sock_recv`
-    for as long as the node ran instead of ever reaching either outcome
+    ISS 437: with no deadline, this coroutine would wait on `sock_recv`
+    for as long as the node runs instead of ever reaching either outcome
     above. `idle_timeout` is lowered here, well below the external
     `timeout` `drive` itself waits on, so the assertion is that `run`
-    gives up **on its own** -- `outcome == "returned"`, not `"waiting"` --
-    rather than that `drive`'s own `asyncio.wait_for` gave up on it.
+    gives up **on its own** -- `outcome == "returned"`, not `"waiting"`
+    -- rather than that `drive`'s own `asyncio.wait_for` gave up on it.
     """
     outcome, messages, closed = drive(
         [b"POST / HTTP/1.1\r\nHost: x\r\n"], timeout=1.0, idle_timeout=0.05
@@ -823,13 +823,13 @@ def test_several_malformed_bodies_over_one_kept_alive_connection_are_each_answer
 ):
     """A kept-alive connection answers a run of malformed bodies, staying open.
 
-    `run`'s own `ValueError` branch used to force-close regardless of
-    `Connection`: scheduling that reply the way `send` already
-    schedules a dispatched one, instead of awaiting it inline, is what
-    keeps a run of malformed bodies from growing this coroutine's own
-    call stack by one frame each, and what lets each answer honour
-    keep-alive instead of always closing (issue #640), matching Core's
-    own `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
+    `run`'s own `ValueError` branch does not force-close regardless of
+    `Connection`: scheduling that reply the way `send` schedules a
+    dispatched one, instead of awaiting it inline, is what keeps a run
+    of malformed bodies from growing this coroutine's own call stack by
+    one frame each, and what lets each answer honour keep-alive instead
+    of always closing (issue #640), matching Core's own
+    `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
 
@@ -957,13 +957,13 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
 def test_a_connection_carries_no_task_handle_for_close_to_cancel() -> None:
     """A connection holds no `task` attribute of its own, past construction.
 
-    An earlier version did (`self.task`), set once at accept and never
-    again, so `close` cancelling it did nothing for any request after a
-    kept-alive connection's first (issue #714) -- `RpcManager.stop`'s
-    own `asyncio.all_tasks(self.loop)` sweep is what actually cancels
+    One set once at accept and never again would make `close` cancelling
+    it do nothing for any request after a kept-alive connection's first
+    (issue #714) -- `RpcManager.stop`'s own
+    `asyncio.all_tasks(self.loop)` sweep is what actually cancels
     whatever is live, run before `close` is ever called, which is what
-    `close`'s own docstring argues rather than a handle this class
-    would have to keep current across every request to make good on.
+    `close`'s own docstring argues rather than a handle this class would
+    have to keep current across every request to make good on.
     """
     ours, theirs = socket.socketpair()
     try:
@@ -1095,16 +1095,16 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     `_PyTime_AsMilliseconds(timeout, _PyTime_ROUND_TIMEOUT)`
     (`Python/parking_lot.c:95-133`, the call at `:130`, the conversion
     at `:105`) -- not `WaitForSingleObject`, and not the legacy
-    `Python/thread_nt.h` path `_thread.Lock` no longer uses in 3.14.
-    What remains is the gap between that millisecond count and the
+    `Python/thread_nt.h` path, which `_thread.Lock` does not use in
+    3.14. What remains is the gap between that millisecond count and the
     clock the OS actually satisfies the wait against: the kernel's own
-    interrupt-time tick, which `_WINDOWS_TIMER_TICK`'s own comment
-    above cites Microsoft's documentation for. A 2000ms wait is
-    satisfied once that tick clock reaches "start tick + 2000ms", up to
-    one tick before 2000ms have elapsed on the QPC-backed clock
-    `time.monotonic()` reads, so `_WINDOWS_TIMER_TICK` is the slack
-    this bound needs -- small next to the two-second wait it guards, so
-    a regression that actually shortens the wait still fails loudly.
+    interrupt-time tick, which `_WINDOWS_TIMER_TICK`'s own comment above
+    cites Microsoft's documentation for. A 2000ms wait is satisfied once
+    that tick clock reaches "start tick + 2000ms", up to one tick before
+    2000ms have elapsed on the QPC-backed clock `time.monotonic()`
+    reads, so `_WINDOWS_TIMER_TICK` is the slack this bound needs --
+    small next to the two-second wait it guards, so a regression that
+    actually shortens the wait still fails loudly.
     """
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
@@ -1696,6 +1696,17 @@ def test_a_content_length_core_refuses_is_400_and_closes(value: bytes) -> None:
         assert not messages
 
 
+def test_a_content_length_core_refuses_is_named_by_its_length() -> None:
+    """ISS 2517: a key given as a `Content-Length` is not in the refusal."""
+    value = LEAK_WIF.encode()
+    with pytest.raises(MalformedRequestHeadError) as raised:
+        parse_request_head(request(b"Content-Length: " + value + b"\r\n"))
+    assert str(raised.value) == (
+        f"malformed request head: Content-Length of {len(value)} octets"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF, value])
+
+
 @pytest.mark.parametrize(
     "value", [b"%d" % (MAX_BODY_BYTES + 1), b"18446744073709551615"]
 )
@@ -1811,6 +1822,34 @@ def test_a_body_holding_a_lone_surrogate_is_a_500_parse_error() -> None:
     assert not messages
 
 
+def _nested_request(depth: int) -> bytes:
+    """Return a request whose `x` holds 1 at `depth`, its object counted."""
+    arrays = depth - 1
+    return b'{"method":"getblockcount","x":%s1%s}' % (b"[" * arrays, b"]" * arrays)
+
+
+def test_a_body_as_deep_as_core_reads_is_dispatched() -> None:
+    """ISS 2468: `MAX_JSON_DEPTH` containers open at once are read."""
+    body = _nested_request(MAX_JSON_DEPTH)
+    _, messages, _ = drive([with_length(body)])
+    assert messages == [(json.loads(body), 0)]
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH + 1, 100_000])
+def test_a_body_deeper_than_core_reads_is_a_500_parse_error(depth: int) -> None:
+    """ISS 2468: `bitcoind` answers it `-32700`, at any depth."""
+    body = _nested_request(depth)
+    headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(body)
+    reply, _ = conversation(request(headers, body))
+    head, _, content = reply.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
+    assert json.loads(content) == {
+        "result": None,
+        "error": {"code": -32700, "message": "Parse error"},
+        "id": None,
+    }
+
+
 def test_a_key_named_twice_is_read_as_its_first_value() -> None:
     """`method` named twice runs the first, as `bitcoind` does (issue #1151)."""
     body = b'{"id":1,"method":"getblockcount","method":"nosuch"}'
@@ -1826,14 +1865,65 @@ def test_an_id_naming_a_key_twice_is_written_back_whole() -> None:
 
 
 def test_an_id_past_the_digit_limit_is_written_back_as_read() -> None:
-    """ISS 2456: as `bitcoind` writes it, at any depth."""
+    """ISS 2456: as `bitcoind` writes it, as deep as it reads."""
     digits = "9" * 5000
-    deep = "[" * 2000 + f"-{digits}" + "]" * 2000
+    # inside the request object and the id's own array
+    nested = MAX_JSON_DEPTH - 2
+    deep = "[" * nested + f"-{digits}" + "]" * nested
     request_id = f'[{digits},{{"a":-{digits},"a":{digits}}},{deep},"x"]'
     request = JsonRpcRequest()
     request.parse(decode(f'{{"id":{request_id},"method":"x"}}'.encode()))
     expected = f'{{"result":0,"error":null,"id":{request_id}}}'
     assert _json_text(request.reply(0)) == expected
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "1.50",
+        "1e2",
+        "-0.0",
+        "-0",
+        "1E400",
+        '[1.50,{"a":-0,"a":1e2},[[1E-400]]]',
+        f"[{'9' * 5000},-0,1.50]",
+    ],
+    ids=[
+        "fraction",
+        "exponent",
+        "minus-zero-fraction",
+        "minus-zero",
+        "overflow",
+        "nested",
+        "long",
+    ],
+)
+def test_a_number_in_an_id_is_written_back_as_read(request_id: str) -> None:
+    """ISS 2469: as `bitcoind` writes it, at any depth."""
+    request = JsonRpcRequest()
+    request.parse(decode(f'{{"id":{request_id},"method":"x"}}'.encode()))
+    expected = f'{{"result":0,"error":null,"id":{request_id}}}'
+    assert _json_text(request.reply(0)) == expected
+
+
+def test_a_string_is_written_as_bitcoind_writes_it() -> None:
+    r"""ISS 2492: Core's `json_escape`, in a key as in a value.
+
+    A control character, `"`, `\` and DEL are escaped, and a character
+    outside ASCII is its UTF-8.
+    """
+    text = 'é\x7f\x01\b\t\n\x0b\f\r"\\/…\U0001f600'
+    data = sent(HttpReply(OK, {"result": {text: text}, "error": None, "id": 1}))
+    written = '"é\\u007f\\u0001\\b\\t\\n\\u000b\\f\\r\\"\\\\/…\U0001f600"'
+    assert data.endswith(
+        f'"result":{{{written}:{written}}},"error":null,"id":1}}\n'.encode()
+    )
+
+
+def test_a_byte_a_setting_holds_is_written_as_that_byte() -> None:
+    """ISS 2492: a lone surrogate `surrogateescape` made is its byte again."""
+    data = sent(HttpReply(OK, {"result": "/a\udcff", "error": None, "id": 1}))
+    assert data.endswith(b'"result":"/a\xff","error":null,"id":1}\n')
 
 
 def test_a_request_under_wallet_is_dispatched() -> None:
@@ -1850,10 +1940,10 @@ def test_a_reply_to_a_socket_closed_under_it_is_dropped_not_raised(
     """A reply whose socket closed while it was queued leaves no exception.
 
     Issue #1079: `run` schedules a parse error's reply as a task of its
-    own, and closing `ours` before that task runs used to fail its
-    `sock_sendall` with `EBADF`, left on a task nothing awaits. The
-    connection is let go of either way, whether or not it was to be
-    kept alive.
+    own, and closing `ours` before that task runs fails its
+    `sock_sendall` with `EBADF`, which must not be left on a task
+    nothing awaits. The connection is let go of either way, whether or
+    not it was to be kept alive.
     """
 
     async def main() -> bool:

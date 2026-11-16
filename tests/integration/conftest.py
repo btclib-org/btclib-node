@@ -253,3 +253,18 @@ def bitcoind_v1_only(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
     """Give a started regtest bitcoind that does not offer BIP324."""
     with _started_bitcoind(bitcoind_path, tmp_path, "-v2transport=0") as node:
         yield node
+
+
+# the `-rpcwhitelist` value `bitcoind_whitelisted` is started with: the
+# cookie's user may call these two methods, the first being the one
+# `_wait_for_rpc` calls
+COOKIE_WHITELIST = "__cookie__:getblockchaininfo,getblockcount"
+
+
+@pytest.fixture
+def bitcoind_whitelisted(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
+    """Give a started regtest bitcoind under `COOKIE_WHITELIST`."""
+    with _started_bitcoind(
+        bitcoind_path, tmp_path, f"-rpcwhitelist={COOKIE_WHITELIST}"
+    ) as node:
+        yield node

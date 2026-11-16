@@ -41,7 +41,7 @@ from btclib_node.constants import (
     USER_AGENT,
     P2pConnStatus,
 )
-from btclib_node.exceptions import RejectedMessageError
+from btclib_node.exceptions import RejectedMessageError, TransportError
 from btclib_node.p2p.address import ip_and_port, service_key
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import handshake_callbacks
@@ -61,7 +61,7 @@ from btclib_node.p2p.transport import (
     TransportProtocolType,
     V1Transport,
 )
-from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
+from btclib_node.p2p.v2transport import V2Transport
 from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
@@ -938,12 +938,12 @@ class Connection:
         pass of `ThreadSocketHandler` runs `DisconnectNodes`. Here this
         is the one step that closes a socket, so it drops both.
 
-        The ordering is the fix for btclib-org/btclib-node#518.
-        `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
-        (`asyncio/selector_events.py`, read on this tree's own
-        `3.14`) each register a reader or a writer for `self.client`'s
-        fd and add `_sock_read_done`/`_sock_write_done` as a done
-        callback on the future they await, and that callback calls
+        The ordering prevents the error btclib-org/btclib-node#518
+        reports. `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
+        (`asyncio/selector_events.py`, read on this tree's own `3.14`)
+        each register a reader or a writer for `self.client`'s fd and
+        add `_sock_read_done`/`_sock_write_done` as a done callback on
+        the future they await, and that callback calls
         `remove_reader`/`remove_writer` in turn. `_remove_reader` reads
         `self._selector.get_map()` for the fd and, finding a writer
         still registered alongside the reader being dropped, calls
@@ -952,22 +952,22 @@ class Connection:
         closed fd raises `OSError: Bad file descriptor` from
         `KqueueSelector.register`'s own `control()` call.
         `KqueueSelector.unregister`, the path taken when no writer is
-        left to preserve, swallows exactly that error; `modify` does
-        not carry the same guard, which is why the traceback in the
-        issue only ever appears with a writer sharing the descriptor.
+        left to preserve, swallows exactly that error; `modify` does not
+        carry the same guard, which is why the traceback in the issue
+        only ever appears with a writer sharing the descriptor.
         `_send`'s own `sock_sendall` is that writer -- `async_send`
-        reaches it through `_deliver` and `_drain_outbox` -- so a peer not
-        draining its send queue at the moment this closes is exactly
-        the case that used to raise.
-        Closing the fd before either callback has had a chance to run
-        is what raises: this method removes the reader and the writer
-        itself, before closing, so that fd is unregistered by the time
-        anything might otherwise have tried to re-register it. Once
-        removed here, `_sock_read_done`/`_sock_write_done`'s own later
-        call is a no-op -- `_remove_reader`/`_remove_writer` cancel the
-        stored handle as part of removing it, and `_sock_read_done`
-        checks `handle.cancelled()` before calling `remove_reader`
-        again, so the second call never reaches the selector at all.
+        reaches it through `_deliver` and `_drain_outbox` -- so a peer
+        not draining its send queue at the moment this closes is exactly
+        the case that would raise. Closing the fd before either callback
+        has had a chance to run is what raises: this method removes the
+        reader and the writer itself, before closing, so that fd is
+        unregistered by the time anything might otherwise have tried to
+        re-register it. Once removed here,
+        `_sock_read_done`/`_sock_write_done`'s own later call is a no-op
+        -- `_remove_reader`/`_remove_writer` cancel the stored handle as
+        part of removing it, and `_sock_read_done` checks
+        `handle.cancelled()` before calling `remove_reader` again, so
+        the second call never reaches the selector at all.
 
         A fd of -1 is `self.client` already closed -- `stop`'s own
         idempotency (argued there) can schedule this twice -- and nothing
@@ -1059,9 +1059,8 @@ class Connection:
                 # btclib-org/btclib-node#462
                 await self._recv_resume.wait()
                 # 64 KB, matching Core's own read buffer (`pchBuf`,
-                # `src/net.cpp`) rather than the 1024 this had no
-                # argument for: fewer syscalls, and fewer reads for the
-                # transport to take one large message from.
+                # `src/net.cpp`): fewer syscalls, and fewer reads for
+                # the transport to take one large message from.
                 # btclib-org/btclib-node#438
                 try:
                     data = await self.loop.sock_recv(self.client, 65536)
@@ -1096,17 +1095,12 @@ class Connection:
                             self.transport.get_info().transport_type
                             is TransportProtocolType.DETECTING
                         )
-                except V1PeerRefusedError:
-                    # Core's wording for a v2 transport error
-                    # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the
-                    # v32.1 tag), for what `-v1transport` refuses: no
-                    # discouragement. SECURITY.md's *Where this node
-                    # departs from Bitcoin Core* argues the refusal.
-                    self.node.logger.log_debug(
-                        "net",
-                        "V2 transport error: V1 peer refused (see -v1transport), peer=%d",
-                        self.id,
-                    )
+                except TransportError as e:
+                    # Core's `ReceiveMsgBytes` answers the transport's
+                    # refusal by dropping the connection, and discourages
+                    # nobody (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+                    # the v32.1 tag)
+                    self._log_refusal(e)
                     return self.stop(cancel_task=False)
                 # deliberately blind (BLE001), not for the event loop's
                 # own sake: `run` reaches this coroutine through
@@ -1116,21 +1110,31 @@ class Connection:
                 # on it -- asyncio isolates that much on its own. What
                 # this catch buys instead is one explicit outcome for
                 # every failure this loop can hit: a bug in this node's
-                # own parsing reaches the same `stop()` below that a
-                # peer's bad envelope does, in the one place that
-                # decides it, rather than falling through to the outer
+                # own parsing reaches `stop()` as a transport's refusal
+                # does, rather than falling through to the outer
                 # `finally` by coincidence with nothing having looked at
                 # it
                 except Exception:  # noqa: BLE001
-                    # the transport refusing a header -- another
-                    # network's magic, an oversized length -- or this
-                    # node's own bug. Core's `ReceiveMsgBytes` answers
-                    # the first by dropping the connection and
-                    # discourages nobody (`src/net.cpp`,
-                    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
                     return self.stop(cancel_task=False)
         finally:
             self.stop(cancel_task=False)
+
+    def _log_refusal(self, refusal: TransportError) -> None:
+        """Write Core's `net` debug lines for a transport's `refusal`.
+
+        The transport's line, then the one `SocketHandlerConnected` writes
+        (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        Where Core's reason prints what the peer sent, the refusal's text
+        may leave it out, and the code that raises it says why.
+        """
+        log_debug = self.node.logger.log_debug
+        if refusal.names_peer:
+            log_debug("net", "%s: %s, peer=%d", refusal.prefix, refusal, self.id)
+        else:
+            log_debug("net", "%s: %s", refusal.prefix, refusal)
+        log_debug(
+            "net", "receiving message bytes failed, disconnecting peer=%d", self.id
+        )
 
     async def _send(self, data: bytes, sent: list[tuple[str, int]], /) -> None:
         """Write `data`, raising `OSError` where the socket cannot take it.
@@ -1448,12 +1452,10 @@ class Connection:
             # a `version` message's address carries no timestamp, which
             # is what the narrowest of btclib's address types is
             addr_recv=network_address(self.address),
-            # the default address, which btclib spells `::` where this
-            # node used to write the v4-mapped `::ffff:0.0.0.0`. Core's
-            # own `addrMe` is a default CService, which is the sixteen
-            # zero octets btclib writes, and no peer reads the field:
-            # Core has ignored it since it started learning its own
-            # address elsewhere
+            # the default address, which btclib spells `::`. Core's own
+            # `addrMe` is a default CService, which is the sixteen zero
+            # octets btclib writes, and no peer reads the field: Core
+            # ignores it, learning its own address elsewhere
             addr_from=NetworkAddress(services=services, port=port),
             nonce=nonce,
             # octets and not text: Core reads the subversion into a

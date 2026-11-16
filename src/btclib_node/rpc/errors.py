@@ -9,11 +9,14 @@ from typing import Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import quoted_name
+
 __all__ = [
     "RpcError",
     "bool_mismatch",
     "bool_param",
     "check_object",
+    "decode_failed_for",
     "is_hex",
     "parse_hash_v",
     "type_error",
@@ -142,7 +145,12 @@ def check_object(
             )
     for key in obj:
         if key not in fields:
-            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Unexpected key {key}")
+            # Core quotes the key whole (`src/rpc/util.cpp:81`, same tag);
+            # this quotes it through `quoted_name` (SECURITY.md, "Where this
+            # node departs from Bitcoin Core"; section 7 of the
+            # organization's standard, *A refusal carries no secret*)
+            err_msg = f"Unexpected key {quoted_name(key)}"
+            raise RpcError(RPCErrorCode.TYPE_ERROR, err_msg)
 
 
 def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:
@@ -179,18 +187,41 @@ def parse_hash_v(name: str, value: str) -> bytes:
     `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
     hash arguments, Core's own names for them
     (`src/rpc/rawtransaction.cpp:304,317`, same sha).
+
+    Both messages write `...` where Core quotes the string, and keep
+    Core's words around it: a string that is not a hash may be a key
+    passed in its place, as a WIF, or a raw key with a character too many
+    or one that is not a hex digit. Section 7 of the organization's
+    standard, *A refusal carries no secret*, wins over Core here
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     if len(value) != 64:  # noqa: PLR2004
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"{name} must be of length 64 (not {len(value)}, for '{value}')",
+            f"{name} must be of length 64 (not {len(value)}, for '...')",
         )
     if not is_hex(value):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"{name} must be hexadecimal string (not '{value}')",
+            f"{name} must be hexadecimal string (not '...')",
         )
     return bytes.fromhex(value)
+
+
+def decode_failed_for(index: int) -> str:
+    """Return the refusal of the transaction at `index` that does not decode.
+
+    Core's `combinerawtransaction` refuses it with these words
+    (`src/rpc/rawtransaction.cpp:645`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). Its `testmempoolaccept` and `submitpackage` quote the
+    string instead, as `TX decode failed: <rawtx> Make sure the tx has at
+    least one input.` (`src/rpc/mempool.cpp:390` and `:1461`, same tag),
+    and here answer with this text: a string that does not decode may be a
+    key. Section 7 of the organization's standard, *A refusal carries no
+    secret*, wins over Core there, and names the item that failed by its
+    index (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    return f"TX decode failed for tx {index}. Make sure the tx has at least one input."
 
 
 def bool_mismatch(

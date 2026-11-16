@@ -81,7 +81,7 @@ directions:
    child, the author answers it twice and resolves it once.
 1. **The tree at that sha**, checked out and gated. `gh pr checkout <N>`,
    and whatever this repository's `CONTRIBUTING.md` says builds its
-   environment; `CONTRIBUTING.md` has the worktree procedure.
+   environment.
 
 Read the whole diff before writing the first comment. A comment on line
 5 that line 60 answers costs the author a reply and the reviewer their
@@ -332,11 +332,11 @@ is not evidence that the diff is right.
 
 **CI is not the reviewer's concern.** Do not wait for a workflow run, do
 not read one, do not report a check as a finding, do not withhold a
-review because something is pending or red. A run is cancelled by the
-next push to the same branch, so a red or missing check is as likely to
-be the concurrency group as the diff; whether CI is green is the
-author's problem at landing time, and the local run is the evidence
-either way.
+review because something is pending or red. A pull request's run is
+cancelled by the next push to its branch, so a red or missing check is
+as likely to be the concurrency group as the diff; whether CI is green
+is the author's problem at landing time, and the local run is the
+evidence either way.
 
 ## What every review here also checks
 

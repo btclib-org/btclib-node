@@ -32,6 +32,7 @@ from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 from btclib_node import clock
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
+from btclib_node.rpc.jsonrpc import _refuse_past_max_depth
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -456,10 +457,17 @@ class BanMan:
             self._sweep()
 
     def _read(self, path: Path) -> dict[Subnet, BanEntry]:
-        """Core's `CBanDB::Read` and `BanMapFromJson`."""
-        settings = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_JsonObject
-        )
+        """Core's `CBanDB::Read` and `BanMapFromJson`.
+
+        A file with more than `MAX_JSON_DEPTH` arrays and objects open at
+        once is refused, as `UniValue::read` refuses it, before
+        `json.loads` reads it: `json.loads` raises `RecursionError`, which
+        is not a `ValueError`, on a file nested deeper than the stack
+        holds.
+        """
+        text = path.read_text(encoding="utf-8")
+        _refuse_past_max_depth(text)
+        settings = json.loads(text, object_pairs_hook=_JsonObject)
         if not isinstance(settings, _JsonObject):
             raise _BanlistError(path)
         # `ReadSettings` refuses a top-level key the file holds twice

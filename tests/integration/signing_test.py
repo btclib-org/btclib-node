@@ -5,7 +5,8 @@
 """The signing RPCs' answers, this node's against a real bitcoind's.
 
 Each case and each refusal `tests/unit/rpc/signing_test.py` holds is put to
-both, and the answers are held to be equal, signature for signature: ECDSA
+both, and the answers are held to be equal, signature for signature, a
+refusal in `departed`'s words where this node departs from bitcoind's: ECDSA
 signatures are deterministic and so are the BIP340 ones with no auxiliary
 data. Outputs found on the chain are read from a block mined to them.
 """
@@ -18,6 +19,7 @@ from bitcoin_core_rpc import HttpError, RpcError
 from btclib.script.witness import Witness
 from btclib.tx import Tx, TxOut
 
+from tests.integration import departed
 from tests.unit.rpc.signing_test import (
     ADDRESS,
     CASES,
@@ -56,7 +58,7 @@ def test_every_case_is_signed_as_bitcoind_signs_it(bitcoind: Bitcoind) -> None:
 
 
 def test_every_refusal_is_bitcoinds(bitcoind: Bitcoind) -> None:
-    """The same code and the same message."""
+    """The same code and the same message, but where `departed` says."""
     for method, params, code, message in REFUSALS:
         if code == PARSE_ERROR:
             # answered with HTTP 500, which the client raises as it is
@@ -66,10 +68,8 @@ def test_every_refusal_is_bitcoinds(bitcoind: Bitcoind) -> None:
         with pytest.raises(RpcError) as raised:
             bitcoind.rpc(method, params)
         # past the url, which names bitcoind's own port
-        assert (raised.value.code, raised.value.args[0].split(": ", 1)[1]) == (
-            code,
-            message,
-        ), params
+        theirs = departed(raised.value.args[0].split(": ", 1)[1])
+        assert (raised.value.code, theirs) == (code, message), params
 
 
 def test_the_refusals_of_master_are_bitcoinds(bitcoind: Bitcoind) -> None:

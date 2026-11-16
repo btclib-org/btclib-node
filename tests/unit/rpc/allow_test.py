@@ -13,8 +13,17 @@ import re
 import pytest
 
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 _LOOPBACK = ("127.0.0.0/8", "::1/128")
+_REFUSAL = (
+    "Invalid -rpcallowip subnet specification: '...' (value {} of -rpcallowip). "
+    "Valid values are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. "
+    "1.2.3.4/255.255.255.0), a network/CIDR (e.g. 1.2.3.4/24), all ipv4 "
+    "(0.0.0.0/0), or all ipv6 (::/0). RFC4193 is allowed only if "
+    "-cjdnsreachable=0."
+)
 _ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
 _I2P = "ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p"
 # `inet_aton`'s forms, which Windows' `getaddrinfo` need not read
@@ -92,16 +101,34 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
     ],
 )
 def test_a_value_naming_no_subnet_is_refused_in_core_s_words(value: str) -> None:
-    """ISS 1268: `InitHTTPAllowList`'s message, naming the value."""
-    message = (
-        f"Invalid -rpcallowip subnet specification: {value}. Valid values are a "
-        "single IP (e.g. 1.2.3.4), a network/netmask (e.g. "
-        "1.2.3.4/255.255.255.0), a network/CIDR (e.g. 1.2.3.4/24), all ipv4 "
-        "(0.0.0.0/0), or all ipv6 (::/0). RFC4193 is allowed only if "
-        "-cjdnsreachable=0."
-    )
-    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+    """ISS 1268, ISS 2517: `InitHTTPAllowList`'s message, `'...'` for it."""
+    with pytest.raises(ValueError, match=f"^{re.escape(_REFUSAL.format(2))}$"):
         allowed_subnets(("1.2.3.4", value))
+
+
+@pytest.mark.parametrize(
+    ("values", "position"),
+    [((LEAK_WIF,), 1), (("1.2.3.4", "::/0", LEAK_WIF, "bogus"), 3)],
+)
+def test_a_key_given_as_a_value_is_named_by_its_position(
+    values: tuple[str, ...], position: int
+) -> None:
+    """ISS 2517: a WIF given in a subnet's place is not in the refusal."""
+    with pytest.raises(ValueError, match="subnet specification") as raised:
+        allowed_subnets(values)
+    assert str(raised.value) == _REFUSAL.format(position)
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
+def test_values_refused_at_two_positions_are_told_apart() -> None:
+    """ISS 2517: the refusal of the first value is not that of the third."""
+    with pytest.raises(ValueError, match="subnet specification") as first:
+        allowed_subnets((LEAK_WIF, "1.2.3.4", "bogus"))
+    with pytest.raises(ValueError, match="subnet specification") as third:
+        allowed_subnets(("1.2.3.4", "::/0", LEAK_WIF))
+    assert str(first.value) != str(third.value)
+    for raised in (first, third):
+        assert_secret_free(raised.value, [LEAK_WIF])
 
 
 @pytest.mark.parametrize(

@@ -1,13 +1,15 @@
 # Repository guidance
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution, worktree,
-setup, and cleanup steps. Read [REPOSITORY.md](./REPOSITORY.md) before
-changing repository settings. Read [ARCHITECTURE.md](./ARCHITECTURE.md)
-before changing the P2P or RPC design.
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution and setup
+steps. Read [REPOSITORY.md](./REPOSITORY.md) before changing repository
+settings. Read [ARCHITECTURE.md](./ARCHITECTURE.md) before changing the
+P2P or RPC design.
 
-Keep the primary checkout clean and on `main`; use a separate worktree
-for each task, following the setup and cleanup commands in
-`CONTRIBUTING.md`.
+When an agent works here, a separate worktree per task keeps the
+contributor's own checkout clean: hooks and agents change files where
+they run. For example, `git worktree add` a directory outside the
+checkout, on a new branch from `origin/main`, and `git worktree remove`
+it when done.
 
 Choose the least capable model that can reliably complete the task: use
 a fast model for straightforward execution, a reasoning-focused model

@@ -215,7 +215,7 @@ class Chain:
     def magic(self) -> bytes:
         """The network's four-byte magic, the octets a message starts with."""
         # bytes, and the four octets that go on the wire: a hex string
-        # here is what made the resynchronisation in
+        # here would make the resynchronisation in
         # p2p.connection.Connection.parse_messages hunt for ASCII inside
         # a binary buffer.
         #

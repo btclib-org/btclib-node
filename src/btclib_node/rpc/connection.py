@@ -190,8 +190,16 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _json_text(body: object, *, ensure_ascii: bool = True) -> str:
-    """Encode `body` as one line of JSON, each `RawJSON` as its own text."""
+def _json_text(body: object) -> str:
+    r"""Encode `body` as one line of JSON, each `RawJSON` as its own text.
+
+    Each string is written as Core's `json_escape` writes it
+    (`src/univalue/lib/univalue_write.cpp` and the `escapes` table of
+    `src/univalue/include/univalue_escapes.h`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): a control character, `"`, `\` and DEL as an escape,
+    and every other character as itself. `json.dumps` with `ensure_ascii`
+    off writes the same escapes for the same characters, DEL excepted.
+    """
     # A fresh token per call, not a fixed word: RawJSON's own
     # docstring has why -- a legitimate string value containing a
     # guessable mark once, unpaired, corrupts a fixed-word
@@ -201,13 +209,27 @@ def _json_text(body: object, *, ensure_ascii: bool = True) -> str:
     text = json.dumps(
         body,
         separators=(",", ":"),
-        ensure_ascii=ensure_ascii,
+        ensure_ascii=False,
         cls=JSONEncoder,
         mark=mark,
     )
+    # outside a string `json.dumps` writes no DEL, and a `RawJSON` holds
+    # a number
+    text = text.replace("\x7f", "\\u007f")
     # RawJSON's own placeholder, quotes and all, unquoted to the
     # exact text it carries
     return re.sub(f'"{mark}(.*?){mark}"', r"\1", text)
+
+
+def _json_body(body: object) -> bytes:
+    """Return `body` as `_json_text` writes it, and a line end, in UTF-8.
+
+    A lone surrogate is written as the byte `surrogateescape` decoded it
+    from. A setting read from the command line or a configuration file
+    holds one where its bytes are not UTF-8, and Core's `json_escape`
+    writes those bytes as they are.
+    """
+    return (_json_text(body) + "\n").encode("utf-8", "surrogateescape")
 
 
 # `HTTPStatusReasonString` (`src/rpc/protocol.h`, at bitcoin/bitcoin@f0de87f040,
@@ -575,7 +597,7 @@ def _content_length(head: RequestHead) -> int:
         raise MalformedRequestHeadError(detail)
     length = _uint64(values[0], 10)
     if length is None:
-        detail = f"Content-Length {values[0]!r}"
+        detail = f"Content-Length of {len(values[0])} octets"
         raise MalformedRequestHeadError(detail)
     if length > MAX_BODY_BYTES:
         detail = f"Content-Length past {MAX_BODY_BYTES}"
@@ -728,10 +750,12 @@ class RpcConnection:
         self.id = connection_id
         self.rpc_id = ""
         self.messages: list[Any] = []
-        # A `bytearray`, not `bytes`: `_recv`'s own `+=` below is
-        # an in-place, amortised extend on this type and a full copy of
-        # everything held so far on the other -- btclib-org/btclib-node#466,
-        # the same shape btclib-org/btclib-node#438 fixed on the p2p side.
+        # A `bytearray`, not `bytes`: `_recv`'s own `+=` below is an
+        # in-place, amortised extend on this type and a full copy of
+        # everything held so far on the other --
+        # btclib-org/btclib-node#466. The p2p transport's own `_buffer`
+        # is a `bytearray` for the same reason
+        # (btclib-org/btclib-node#438).
         self.buffer = bytearray()
         self.idle_timeout = idle_timeout
         # When the connection was last active, a `time.monotonic()`
@@ -785,21 +809,21 @@ class RpcConnection:
     def close(self) -> None:
         """Close `client`.
 
-        Cancelling whatever this connection is doing -- reading a request,
-        writing a reply -- is `RpcManager.stop`'s own job: its
-        `asyncio.all_tasks(self.loop)` sweep already reaches whichever task
-        is actually live for this connection, cancelled and driven to
-        completion before this is ever called, so this method does not need
-        a handle of its own to end one -- an earlier version kept one anyway
-        (`self.task`), set once at accept and never again, so past a
-        connection's first request it named a long-finished `Future` and
-        cancelled nothing (issue #714). Core's own per-connection object,
-        `HTTPRemoteClient`, carries no such handle either:
-        `HTTPServer::ClearConnectedClients` (`src/httpserver.cpp:1213-1220`,
-        at bitcoin/bitcoin@f0de87f040, the v32.1 tag), its own shutdown-time
-        sweep, drops whatever is left in `m_connected` the same
-        unconditional way, once its own socket-handling thread has already
-        been joined, rather than reaching into a live worker to end it.
+        Cancelling whatever this connection is doing -- reading a
+        request, writing a reply -- is `RpcManager.stop`'s own job: its
+        `asyncio.all_tasks(self.loop)` sweep already reaches whichever
+        task is actually live for this connection, cancelled and driven
+        to completion before this is ever called, so this method does
+        not need a handle of its own to end one: one set once at accept
+        would, past a connection's first request, name a long-finished
+        `Future` and cancel nothing (issue #714). Core's own
+        per-connection object, `HTTPRemoteClient`, carries no such
+        handle either: `HTTPServer::ClearConnectedClients`
+        (`src/httpserver.cpp:1213-1220`, at bitcoin/bitcoin@f0de87f040,
+        the v32.1 tag), its own shutdown-time sweep, drops whatever is
+        left in `m_connected` the same unconditional way, once its own
+        socket-handling thread has already been joined, rather than
+        reaching into a live worker to end it.
         """
         self.client.close()
 
@@ -1084,24 +1108,21 @@ class RpcConnection:
             # turn later rather than this one, where `create_task`
             # makes it exist synchronously.
             #
-            # Left in `manager.connections` rather than popped here,
-            # so that `stop`'s own socket-closing sweep of that dict
-            # can still reach this connection even on a turn where
-            # the task above never gets to run at all; `async_send`
-            # below pops it once it does, on the branch that closes
-            # rather than keeps this connection. `rpc.main.handle_rpc`
-            # carried a pop of its own once, on `Node`'s thread, that
-            # this comment used to be contrasted against as the
-            # thread-safe side of the same dict -- issue #688 is where
-            # that pop turned out not to be safe after all, racing not
-            # `stop` but `async_send`'s own re-entry into `run` for
-            # this same connection's next request, and removed it.
-            # Assigned to `self._parse_error_reply` (its own
-            # docstring above has why) rather than left a bare
-            # statement: unlike `_hand_reply` elsewhere in this
-            # class, `_start_reply` returns an `Awaitable`, which
-            # mypy's own `unused-awaitable` flags as a likely-missing
-            # `await` when discarded outright.
+            # Left in `manager.connections` rather than popped here, so
+            # that `stop`'s own socket-closing sweep of that dict can
+            # still reach this connection even on a turn where the task
+            # above never gets to run at all; `async_send` below pops it
+            # once it does, on the branch that closes rather than keeps
+            # this connection. `rpc.main.handle_rpc` pops nothing, on
+            # `Node`'s thread: a pop there would race `async_send`'s own
+            # re-entry into `run` for this same connection's next
+            # request (issue #688). Assigned to
+            # `self._parse_error_reply` (its own docstring above has
+            # why) rather than left a bare statement: unlike
+            # `_hand_reply` elsewhere in this class, `_start_reply`
+            # returns an `Awaitable`, which mypy's own
+            # `unused-awaitable` flags as a likely-missing `await` when
+            # discarded outright.
             self._parse_error_reply = self._start_reply(
                 self.async_send(
                     error_reply(RPCErrorCode.PARSE_ERROR, "Parse error"),
@@ -1210,7 +1231,7 @@ class RpcConnection:
     async def async_send(self, reply: HttpReply, *, close: bool = False) -> None:
         """Write `reply` back as one JSON-RPC HTTP reply.
 
-        Encodes it as `_json_text` does, and frames the result as `_frame`
+        Encodes it as `_json_body` does, and frames the result as `_frame`
         does, which also decides what happens once the reply is on the
         wire: `client` closes, or this reads another request off the same
         socket (issue #640). A reply with no body is `rpc.jsonrpc.NO_CONTENT`,
@@ -1222,7 +1243,7 @@ class RpcConnection:
                 self._frame(reply.status, b"", close=close), on_worker=True
             )
             return
-        body = (_json_text(reply.body) + "\n").encode()
+        body = _json_body(reply.body)
         fields = ("Content-Type: application/json",)
         await self._write(
             self._frame(reply.status, body, fields, close=close), on_worker=True
@@ -1268,8 +1289,7 @@ class RpcConnection:
         body = b""
         if refusal.body is not None:
             fields = ("Content-Type: application/json",)
-            text = _json_text(refusal.body, ensure_ascii=False)
-            body = (text + "\n").encode()
+            body = _json_body(refusal.body)
         await self._write(
             self._frame(refusal.status, body, fields, close=self._shutting_down()),
             on_worker=True,
@@ -1380,14 +1400,14 @@ class RpcConnection:
         task = asyncio.current_task()
         self.manager.reply_ended(None if task is None else task.get_coro())
         if self.keep_alive:
-            # No re-insertion into `manager.connections` here: unlike an
-            # earlier version of this method, nothing removed this id on
-            # the way to this point. `create_connection` puts it in once,
-            # at accept, and the only things that ever take it back out
-            # are this method's own close branch below, `run`'s own
-            # `except Exception` and `RpcManager.stop`'s shutdown sweep --
-            # `rpc.main.handle_rpc`'s own docstring is where the earlier,
-            # racy alternative (an eager pop there, compensated by a
+            # No re-insertion into `manager.connections` here: nothing
+            # removed this id on the way to this point.
+            # `create_connection` puts it in once, at accept, and the
+            # only things that ever take it back out are this method's
+            # own close branch below, `run`'s own `except Exception` and
+            # `RpcManager.stop`'s shutdown sweep --
+            # `rpc.main.handle_rpc`'s own docstring is where the racy
+            # alternative (an eager pop there, compensated by a
             # re-insertion here) is argued against (issue #688).
             await self.run()
             return
@@ -1396,14 +1416,14 @@ class RpcConnection:
                 await self._answer_past_a_close(wait=whole)
         finally:
             self.client.close()
-            # The only place besides `run`'s own `except Exception` above
-            # and `RpcManager.stop`'s shutdown sweep that removes this id
-            # from `manager.connections`: the parse-error branch of `run`
-            # above pops nothing itself, deliberately, so this is what
-            # removes its entry once this connection is actually done
-            # rather than only kept reachable for `RpcManager.stop`'s own
-            # socket-closing sweep in the meantime (issue #640 review
-            # round 2).
+            # The only place besides `run`'s own `except Exception`
+            # above and `RpcManager.stop`'s shutdown sweep that removes
+            # this id from `manager.connections`: the parse-error branch
+            # of `run` above pops nothing itself, deliberately, so this
+            # is what removes its entry once this connection is actually
+            # done rather than only kept reachable for
+            # `RpcManager.stop`'s own socket-closing sweep in the
+            # meantime (issue #640).
             self.manager.forget_connection(self.id)
 
     async def _answer_past_a_close(self, *, wait: bool) -> None:
