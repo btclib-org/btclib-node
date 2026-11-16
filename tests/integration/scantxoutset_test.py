@@ -66,6 +66,8 @@ _MUSIG = f"musig({_K},{_K2})"
 # of _UNCOMPRESSED's private key
 _HYBRID = f"07{_UNCOMPRESSED[2:]}"
 _UNCOMPRESSED_WIF = wif_from_prv_key(1, "regtest", compressed=False)
+# a compressed WIF of another network, which Core reads as no key
+_MAINNET_WIF = wif_from_prv_key(1, "mainnet", compressed=True)
 
 # a multisig whose key at one index is the other's at the next, so its
 # origin is the first index's, and a leaf at two depths of a taproot
@@ -206,6 +208,18 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", [f"wsh(and_v(v:pk({_UNCOMPRESSED}),older(10)))"]], True),
     (["start", [f"tr(musig({_UNCOMPRESSED},{_K2}))"]], True),
     (["start", [f"wpkh({_UNCOMPRESSED_WIF})"]], True),
+    (["start", [f"tr(musig({_MUSIG},{_K}))"]], True),
+    (["start", [f"tr({_X},pk(musig({_K},{_MUSIG})))"]], True),
+    (["start", [f"tr({_X},pk({_MUSIG}/0/*))"]], True),
+    (["start", [f"tr(musig({_TPUB},{_K})/0/*)"]], True),
+    (["start", ["wpkh()"]], True),
+    (["start", [f"and_v(v:pk({_UNCOMPRESSED}),pk({_K}))"]], True),
+    (["start", [f"tr({_X},{{raw(51),foo(1)}})"]], True),
+    (["start", [f"tr({_X},{{raw(51),{_MUSIG}/<0;1>/*}})"]], True),
+    (["start", [f"sh(and_v(v:rawpkh({_H160}),pk({_K})))"]], True),
+    (["start", [f"and_v(v:rawpkh({_H160}),pk({_K}))"]], False),
+    (["start", [f"{_MUSIG}/<0;1>/*"]], False),
+    (["start", [f"[deadbeef]{_MUSIG}"]], False),
 ]
 
 
@@ -333,6 +347,40 @@ def test_a_key_that_is_no_point_is_refused_as_bitcoind_does(
         theirs = _refusal(bitcoind.rpc, ["start", [text]])
         assert isinstance(theirs, tuple), text
         unquoted = re.sub(r"Pubkey '[0-9a-f]+'", "Pubkey '...'", theirs[1])
+        assert _refusal(client.call, ["start", [text]]) == (theirs[0], unquoted), text
+
+
+# Each a key bitcoind cannot read, which it quotes, or the text it reads as one
+_KEY_DESCRIPTORS = [
+    f"pk({_H160})",
+    f"wsh(multi(1,{_H160},{_K}))",
+    f"tr({_X},pk({_H160}))",
+    f"pk({_K[:-1]})",
+    f"wpkh([deadbeef]{_MUSIG})",
+    f"tr({_X},pk([deadbeef]{_MUSIG}))",
+    f"wpkh( {_K})",
+    f"wsh(multi(1,{_K}, {_K2}))",
+    f"tr(musig( {_K},{_K2}))",
+    f"pk({_MAINNET_WIF})",
+    f"sh(multi(1,{_K},{_MAINNET_WIF}))",
+    f"tr({_MAINNET_WIF},{{raw(51),foo(1)}})",
+    "wpkh(foo)",
+    f"wpkh({_K}/0)",
+    f"wsh(multi(1,{_K},foo))",
+    f"wpkh({_XPUB}/0/*)",
+]
+
+
+def test_a_key_bitcoind_cannot_read_is_refused_as_bitcoind_does(
+    both: tuple[Bitcoind, Node],
+) -> None:
+    """Held to bitcoind's refusal, its quote of the key aside (SECURITY.md)."""
+    bitcoind, node = both
+    client = rpc_client(node)
+    for text in _KEY_DESCRIPTORS:
+        theirs = _refusal(bitcoind.rpc, ["start", [text]])
+        assert isinstance(theirs, tuple), text
+        unquoted = re.sub(r"([Kk]ey|Pubkey) '[^']*'", r"\1 '...'", theirs[1])
         assert _refusal(client.call, ["start", [text]]) == (theirs[0], unquoted), text
 
 
