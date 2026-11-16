@@ -1895,7 +1895,11 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
         # answers it byte for byte) rather than a one-line usage string
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
 
-    if not node_arg.strip():
+    # Core's `TrimStringView(node_arg).empty()` (`rpc/net.cpp:372-376`), whose
+    # default pattern is " \f\n\r\t\v" (`util/string.h:163`), both at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag: a bare `str.strip()` also
+    # trims Unicode whitespace such as `\xa0`, which Core accepts as a node
+    if not node_arg.strip(" \f\n\r\t\v"):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
