@@ -186,12 +186,11 @@ def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
 
 def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
     """A directory with sqlite3's own `index.sqlite` raises, not opens."""
-    # a sqlite3 datadir, which this store cannot read. Starting an
-    # empty chain over the top of one is the wrong failure: it looks
-    # like a node that has never synced rather than one that cannot.
-    # The marker inverted with the engine: RocksDB writes CURRENT,
-    # the file the LevelDB-shaped marker this replaced used to refuse
-    # -- db.py's own module docstring argues the swap.
+    # a sqlite3 datadir, which this store cannot read. Starting an empty
+    # chain over the top of one is the wrong failure: it looks like a
+    # node that has never synced rather than one that cannot. No marker
+    # refuses CURRENT, which RocksDB writes too -- db.py's own module
+    # docstring argues this.
     directory = tmp_path / "old"
     directory.mkdir()
     (directory / "index.sqlite").write_bytes(b"SQLite format 3\x00")
@@ -206,10 +205,10 @@ def test_a_pre_versioning_store_with_data_is_refused(tmp_path: Path) -> None:
     anything has stamped it -- `kv` (the default column family) already
     holding a row is what tells the two apart, `db.py`'s own module
     docstring argument for keeping the version out of it in the first
-    place. A store from before this class ever stamped one is simulated
-    here rather than fixture data, since nothing this class writes today
-    can produce it: `_check_schema_version` stamps the version before
-    `__init__` ever hands the object back.
+    place. A version-less store holding a row is simulated here rather
+    than fixture data, since nothing this class writes can produce it:
+    `_check_schema_version` stamps the version before `__init__` ever
+    hands the object back.
     """
     store = a_store(tmp_path)
     store.put(b"k", b"v")

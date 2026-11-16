@@ -72,7 +72,7 @@ def test_add_tx(rpc_node: Node) -> None:
     )
     assert body["error"]["code"] == -22
     assert body["error"]["message"] == (
-        "TX decode failed: 00 Make sure the tx has at least one input."
+        "TX decode failed for tx 0. Make sure the tx has at least one input."
     )
 
     result = accept(invalid_tx.serialize(include_witness=True).hex())

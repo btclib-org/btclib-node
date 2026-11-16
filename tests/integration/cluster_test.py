@@ -6,7 +6,8 @@
 
 Both mempools hold the same transactions, and each answer is held equal
 to bitcoind's: the cluster of every transaction, its entry, the feerate
-diagram and `optimal`, before and after fee deltas, and the refusals.
+diagram and `optimal`, before and after fee deltas, and the refusals, in
+`departed`'s words where this node departs from bitcoind's.
 Both mempools are trimmed alike by a reorg that passes the limits.
 """
 
@@ -19,7 +20,7 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
-from tests.integration.prioritise_test import _FUNDED, _answer, _spend
+from tests.integration.prioritise_test import _FUNDED, _answer, _departed, _spend
 from tests.integration.reorg_test import a_chain, submit
 
 if TYPE_CHECKING:
@@ -137,7 +138,8 @@ def test_clusters_are_answered_as_bitcoind_does(
         ]
         for refused in refusals:
             ours = _answer(client.call, "getmempoolcluster", refused)
-            assert ours == _answer(bitcoind.rpc, "getmempoolcluster", refused), refused
+            theirs = _answer(bitcoind.rpc, "getmempoolcluster", refused)
+            assert ours == _departed(theirs), refused
     finally:
         node.stop()
         node.join()

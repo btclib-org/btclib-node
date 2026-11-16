@@ -36,6 +36,7 @@ from btclib_node.rpc.mining import generate_block
 from btclib_node.rpc.utxo_set import scan_tx_out_set
 from tests import finish
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -584,6 +585,17 @@ def test_the_refusals_are_core_s(
     got_code, got_message = refusal(node, *params)
     assert got_code == code
     assert message in got_message
+
+
+def test_a_key_as_action_is_refused_without_quoting_it(node: Node) -> None:
+    """ISS 2514: an action longer than a name is given by its length."""
+    with pytest.raises(RpcError) as caught:
+        scan_tx_out_set(node, CONN, [LEAK_WIF])
+    assert (int(caught.value.code), caught.value.message) == (
+        -8,
+        f"Invalid action '<{len(LEAK_WIF)} characters>'",
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
 
 
 H160 = "ab" * 20

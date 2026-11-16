@@ -6,7 +6,8 @@
 
 Both nodes hold the same chain and are asked the same call, in turn, and
 the answers are held equal key for key, in Core's order: each refusal with
-its code and words, and each shape of `tx-results`. The mempools are held
+its code and words, `departed`'s where this node departs from them, and
+each shape of `tx-results`. The mempools are held
 equal after each call, so a transaction one took in and the other refused
 is found where it happens.
 """
@@ -25,7 +26,11 @@ from btclib.tx.tx_out import TxOut
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
+from btclib_node.rpc.callbacks import arg_names, named_only
+from btclib_node.rpc.errors import RpcError as NodeRpcError
+from btclib_node.rpc.jsonrpc import transform_named_arguments
 from tests import get_random_port, rpc_client, wait_until, wait_until_listening
+from tests.integration import departed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -43,6 +48,24 @@ _SPENDS_IT = Witness([_OP_TRUE])
 _SUBSIDY = 50 * 10**8
 _COINS = 80
 _MATURITY = 100
+
+
+def _package(method: str, params: Any) -> list[Any]:
+    """Return the transactions `params` holds first, or none.
+
+    Named arguments, an `args` array among them, are first put in their
+    positions by `transform_named_arguments`, as the node puts them: they
+    hold none where it refuses them.
+    """
+    if isinstance(params, dict):
+        try:
+            params = transform_named_arguments(
+                params, arg_names[method], named_only.get(method, ())
+            )
+        except NodeRpcError:
+            return []
+    package = params[0] if params else None
+    return package if isinstance(package, list) else []
 
 
 class Coin(NamedTuple):
@@ -122,8 +145,12 @@ class Ctx:
         """Ask both, assert the answers are alike in value and key order."""
         ours, theirs = self.ask(method, params)
         if ours is not None:
-            assert ours == theirs, (method, params)
-            assert key_order(ours) == key_order(theirs), (method, params)
+            expected = theirs
+            if theirs[0] == "error":
+                transactions = _package(method, params)
+                expected = (*theirs[:2], departed(theirs[2], transactions))
+            assert ours == expected, (method, params)
+            assert key_order(ours) == key_order(expected), (method, params)
         return theirs
 
     def send(self, *txs: Tx) -> None:
@@ -262,6 +289,11 @@ def refusals(ctx: Ctx) -> None:
         ctx.agree("submitpackage", params)
     ctx.agree("submitpackage", {"package": [_hex(tx)], "maxfeerate": 0.1})
     ctx.agree("submitpackage", {"package": [_hex(tx)], "foo": 1})
+    ctx.agree("submitpackage", {"package": ["zz"]})
+    ctx.agree("submitpackage", {"package": [_hex(tx), "zz"], "maxfeerate": 0.1})
+    ctx.agree("submitpackage", {"args": [["zz"]]})
+    ctx.agree("submitpackage", {"args": [[_hex(tx), "zz"]], "maxfeerate": 0.1})
+    ctx.agree("submitpackage", {"args": [[_hex(tx)], 0.1], "package": ["zz"]})
     ctx.agree("submitpackage", [[_hex(tx)], None, None])
     ours, theirs = ctx.ask("help", ["submitpackage"])
     # `help` here answers without the newline that ends Core's text

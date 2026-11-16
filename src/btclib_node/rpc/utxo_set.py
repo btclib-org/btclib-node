@@ -39,6 +39,7 @@ from ecc.exceptions import EccException
 from ecc.ssa import point_from_bip340pub_key_var
 
 from btclib_node.block_db import Coin
+from btclib_node.constants import quoted_name
 from btclib_node.rpc.connection import btc_amount
 from btclib_node.rpc.errors import RpcError, json_type_name, type_errors
 from btclib_node.rpc.help import HELP_TEXT
@@ -432,7 +433,14 @@ def scan_tx_out_set(
         return True
     if action == "start":
         return _start(node, params)
-    raise RpcError(RPCErrorCode.INVALID_PARAMETER, f"Invalid action '{action}'")
+    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+    # Core"; section 7 of the organization's standard, *A refusal carries
+    # no secret*)
+    raise RpcError(
+        RPCErrorCode.INVALID_PARAMETER, f"Invalid action '{quoted_name(action)}'"
+    )
 
 
 def _start(node: Node, params: list[Any]) -> Generator[bool, None, dict[str, Any]]:

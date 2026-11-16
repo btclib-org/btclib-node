@@ -165,7 +165,7 @@ def test_a_length_past_the_bound_is_refused_without_its_octets() -> None:
     with pytest.raises(BTClibValueError) as refusal:
         V1Transport(MAGIC).received_bytes(memoryview(header))
     expected = f"at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
-    assert str(refusal.value) == f"invalid payload length: {expected}"
+    assert str(refusal.value) == f"Size too large: {expected}"
     assert list(chained(refusal.value)) == [refusal.value]
     assert_secret_free(refusal.value, [_KEY, fed, str(length)])
 
@@ -182,6 +182,29 @@ def test_a_bad_checksum_is_rejected_and_the_next_message_is_taken() -> None:
         transport.get_received_message()
     assert raised.value.size == len(tampered)
     assert [m.command for m in feed_all(transport, bytes(data))] == ["verack"]
+
+
+def test_a_rejected_message_is_refused_without_its_size() -> None:
+    """The text names no size; `size` keeps it, for the caller to count.
+
+    The payload-length field is made a key's octets, looked for with the
+    decimal of that length and of the size. `size` is the one attribute
+    allowed to hold it, so it is checked and then taken off before the
+    search.
+    """
+    fed = _KEY[:2] + bytes(2)
+    length = int.from_bytes(fed, "little")
+    # a checksum that is not the payload's
+    tampered = wire("ping")[:16] + fed + bytes(4) + bytes(length)
+    transport = V1Transport(MAGIC)
+    rest = transport.received_bytes(memoryview(tampered))
+    transport.received_bytes(rest)
+    with pytest.raises(RejectedMessageError) as refusal:
+        transport.get_received_message()
+    assert refusal.value.size == len(tampered)
+    del refusal.value.size
+    assert_secret_free(refusal.value, [_KEY, fed, str(length), str(len(tampered))])
+    assert str(refusal.value) == "message rejected"
 
 
 def test_an_invalid_command_is_rejected_when_its_payload_is_in() -> None:

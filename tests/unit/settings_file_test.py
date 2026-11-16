@@ -24,6 +24,8 @@ from btclib_node.settings_file import (
     write_json,
     write_settings,
 )
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,9 +47,10 @@ def _quote(key: str) -> str:
 
 
 def _read(tmp_path: Path, content: str | bytes) -> dict[str, Json]:
+    """Read `content` from a file at its default path, so a refusal names it."""
     path = tmp_path / "settings.json"
     path.write_bytes(content.encode() if isinstance(content, str) else content)
-    return read_settings(str(path), quote=_quote)
+    return read_settings(str(path), quote=_quote, default_path=str(path))
 
 
 def _refusal(tmp_path: Path, content: str | bytes) -> str:
@@ -436,7 +439,7 @@ def test_a_file_that_cannot_be_opened_asks_for_its_permissions(
 
     monkeypatch.setattr("builtins.open", refuse)
     with pytest.raises(ValueError, match=r"\. Please check permissions\.$") as refused:
-        read_settings(str(path), quote=_quote)
+        read_settings(str(path), quote=_quote, default_path=str(path))
     assert str(refused.value) == f"{path}. Please check permissions."
 
 
@@ -524,7 +527,7 @@ def test_write_refuses_where_the_tmp_file_cannot_be_opened(tmp_path: Path) -> No
     """A missing directory, as for `-settings=sub/s.json` in `bitcoind`."""
     path = tmp_path / "sub" / "s.json"
     with pytest.raises(ValueError, match=r".") as refused:
-        write_settings(str(path), {})
+        write_settings(str(path), {}, default_path=str(path))
     assert str(refused.value) == (
         f"Error: Unable to open settings file {path}.tmp for writing"
     )
@@ -555,7 +558,7 @@ def test_write_refuses_a_write_that_fails(
 
     monkeypatch.setattr("builtins.open", lambda *_a, **_k: FullDisk())
     with pytest.raises(ValueError, match=r".") as refused:
-        write_settings(str(path), {})
+        write_settings(str(path), {}, default_path=str(path))
     assert str(refused.value) == f"Error: Unable to write settings file {path}.tmp"
 
 
@@ -570,6 +573,72 @@ def test_write_refuses_a_rename_that_fails_and_leaves_the_tmp_file(
 
     monkeypatch.setattr("os.replace", refuse)
     with pytest.raises(ValueError, match=r".") as refused:
-        write_settings(str(path), {})
+        write_settings(str(path), {}, default_path=str(path))
     assert str(refused.value) == f"Failed renaming settings file {path}.tmp to {path}\n"
     assert (tmp_path / "settings.json.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "words"),
+    [
+        ("x", "Settings file {} " + _INVALID),
+        ('"x"', "Found non-object value of type string in settings file {}"),
+        ('{"a": 1, "a": 2}', "Found duplicate key [a] in settings file {}"),
+    ],
+    ids=["not JSON", "not an object", "a key twice"],
+)
+def test_a_path_an_option_gave_is_not_in_a_read_refusal(
+    tmp_path: Path, content: str, words: str
+) -> None:
+    """ISS 2533: a key given as the file's path is given by its length."""
+    path = tmp_path / LEAK_WIF
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match=r".") as refused:
+        read_settings(str(path), quote=_quote)
+    assert str(refused.value).startswith(words.format(f"<{len(str(path))} characters>"))
+    assert_secret_free(refused.value, [LEAK_WIF])
+
+
+def test_a_path_an_option_gave_is_not_in_an_open_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: nor where the file cannot be opened, nothing chained."""
+    path = tmp_path / LEAK_WIF
+    path.write_text("{}", encoding="utf-8")
+
+    def refuse(name: str, *_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", name)
+
+    monkeypatch.setattr("builtins.open", refuse)
+    with pytest.raises(ValueError, match=r".") as refused:
+        read_settings(str(path), quote=_quote)
+    assert str(refused.value) == (
+        f"<{len(str(path))} characters>. Please check permissions."
+    )
+    assert_secret_free(refused.value, [LEAK_WIF])
+
+
+def test_a_path_an_option_gave_is_not_in_a_write_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2533: each write refusal gives both paths by their length."""
+    path = tmp_path / LEAK_WIF
+    tmp = f"<{len(str(path)) + 4} characters>"
+    with pytest.raises(ValueError, match=r".") as refused:
+        write_settings(str(path / "sub"), {})
+    shown = f"<{len(str(path / 'sub')) + 4} characters>"
+    assert str(refused.value) == (
+        f"Error: Unable to open settings file {shown} for writing"
+    )
+    assert_secret_free(refused.value, [LEAK_WIF])
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr("os.replace", refuse)
+    with pytest.raises(ValueError, match=r".") as refused:
+        write_settings(str(path), {})
+    assert str(refused.value) == (
+        f"Failed renaming settings file {tmp} to <{len(str(path))} characters>\n"
+    )
+    assert_secret_free(refused.value, [LEAK_WIF])

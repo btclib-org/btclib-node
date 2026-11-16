@@ -7,19 +7,25 @@
 The same calls go to both, in the same order, and each has to answer
 the same result or the same error. The ban list each is left holding
 has to name the same subnets, in the same order, and the `banlist.json`
-bitcoind wrote has to load here as the list bitcoind lists.
+bitcoind wrote has to load here as the list bitcoind lists. A
+`banlist.json` written for both at start has to load here as bitcoind
+lists it too.
 """
 
+import json
 import shutil
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 from bitcoin_core_rpc import RpcError
 
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.constants import MAX_JSON_DEPTH
 from btclib_node.log import Logger
 from btclib_node.p2p.banman import BanMan
 from tests import get_random_port, rpc_client, wait_until_listening
+from tests.integration.conftest import _started_bitcoind
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -124,3 +130,32 @@ def test_setban_answers_as_bitcoind_does(bitcoind: Bitcoind, tmp_path: Path) -> 
     finally:
         node.stop()
         node.join()
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH, MAX_JSON_DEPTH + 1, 100_000])
+def test_a_nested_banlist_loads_as_bitcoind_loads_it(
+    bitcoind_path: str, tmp_path: Path, depth: int
+) -> None:
+    """ISS 2486: both keep the ban to `MAX_JSON_DEPTH`, and drop it past it.
+
+    The file holds one ban and a key nothing reads, nested in arrays, with
+    `depth` arrays and objects open at once.
+    """
+    entry = {"version": 1, "ban_created": 1, "banned_until": _FAR}
+    arrays = depth - 1
+    document = (
+        json.dumps({"banned_nets": [{**entry, "address": "1.2.3.4"}]})[:-1]
+        + ', "x": '
+        + "[" * arrays
+        + "]" * arrays
+        + "}"
+    )
+    for directory in (tmp_path / "bitcoind" / "regtest", tmp_path / "node"):
+        directory.mkdir(parents=True)
+        (directory / "banlist.json").write_text(document, encoding="utf-8")
+    with _started_bitcoind(bitcoind_path, tmp_path) as bitcoind:
+        listed = cast("list[dict[str, Any]]", bitcoind.rpc("listbanned"))
+    theirs = [ban["address"] for ban in listed]
+    loaded = BanMan(tmp_path / "node" / "banlist.json", Logger())
+    assert [str(subnet) for subnet, _ in loaded.banned()] == theirs
+    assert theirs == (["1.2.3.4/32"] if depth <= MAX_JSON_DEPTH else [])

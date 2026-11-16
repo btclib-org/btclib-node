@@ -322,20 +322,28 @@ def _string_item(value: object) -> str:
 
 
 def _generateblock_transaction(node: Node, text: str) -> Tx:
-    """Return one transaction of `generateblock`'s list, a txid or a raw one."""
+    """Return one transaction of `generateblock`'s list, a txid or a raw one.
+
+    Core's two refusals write the string bare (`src/rpc/mining.cpp:391`
+    and `:400`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), and these
+    write `'...'` in its place: a txid not in the mempool may be a raw key,
+    and a string that does not decode may be a key of any encoding.
+    Section 7 of the organization's standard, *A refusal carries no
+    secret*, wins over Core here (SECURITY.md, "Where this node departs
+    from Bitcoin Core").
+    """
     if len(text) == 64 and is_hex(text):  # noqa: PLR2004
         tx = node.mempool.get_tx(bytes.fromhex(text))
         if tx is None:
             raise RpcError(
-                RPCErrorCode.INVALID_ADDRESS_OR_KEY,
-                f"Transaction {text} not in mempool.",
+                RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction '...' not in mempool."
             )
         return tx
     tx = _parse_hex_tx(text)
     if tx is None:
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR,
-            f"Transaction decode failed for {text}. "
+            "Transaction decode failed for '...'. "
             "Make sure the tx has at least one input.",
         )
     return tx
@@ -555,7 +563,17 @@ def _atoi(text: str) -> int:
     match = _ATOI_DIGITS.match(digits)
     if match is None:
         return 0
-    return min(max(int(match.group()), _INT64_MIN), _INT64_MAX)
+    number = match.group()
+    negative = number.startswith("-")
+    magnitude = number[1:] if negative else number
+    magnitude = magnitude.lstrip("0") or "0"
+    limit = str(-_INT64_MIN if negative else _INT64_MAX)
+    if len(magnitude) > len(limit) or (
+        len(magnitude) == len(limit) and magnitude > limit
+    ):
+        return _INT64_MIN if negative else _INT64_MAX
+    value = int(magnitude)
+    return -value if negative else value
 
 
 def _long_poll_id(node: Node, long_poll_id: object) -> tuple[bytes, int]:
@@ -571,15 +589,17 @@ def _long_poll_id(node: Node, long_poll_id: object) -> tuple[bytes, int]:
         return tip, node.template_transactions_updated
     raw = long_poll_id.encode()
     head = raw[:64].decode(errors="replace")
+    # `...` where Core quotes the string, as `errors.parse_hash_v` writes it
+    # and says why
     if len(raw) < 64:  # noqa: PLR2004
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"longpollid must be of length 64 (not {len(raw)}, for '{head}')",
+            f"longpollid must be of length 64 (not {len(raw)}, for '...')",
         )
     if not is_hex(head):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"longpollid must be hexadecimal string (not '{head}')",
+            "longpollid must be hexadecimal string (not '...')",
         )
     counter = _atoi(raw[64:].decode(errors="replace")) & _UINT32_MASK
     return bytes.fromhex(head), counter

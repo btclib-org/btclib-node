@@ -48,9 +48,8 @@ answered with nothing, as in Core (`p2p.callbacks._log_missing_filters`).
 `-reindex-chainstate` wipes the chainstate and keeps this store, as Core
 does (`src/init.cpp`, same commit). Core wipes it on `-reindex`, which
 this node lacks (btclib-org/btclib-node#1415). A corrupt filter is
-rebuilt by deleting the directory. A datadir from before the store
-existed keeps its filters in the chainstate's store: `adopt_legacy`
-moves them.
+rebuilt by deleting the directory. Where a datadir keeps its filters in
+the chainstate's store, `adopt_legacy` moves them here.
 
 BIP157 asks for exactly this: "Nodes SHOULD NOT generate filters
 dynamically on request, as malicious peers may be able to perform DoS
@@ -99,13 +98,13 @@ class FilterIndex:
     locator, the write-batch discipline and the lack of a reorg-time undo
     are all argued. `best_block` is the locator as last written.
 
-    `pending` now survives more than one trial of `main.update_chain`,
-    the same way `UtxoIndex`'s own staging does, so `rollback` cannot
-    stay a blanket wipe either: `add_block` only ever adds a hash that
-    was not already a key (its own guard, checking `get_filter` first),
-    so `_trial_log` needs to remember only which hashes a trial added,
-    not what they replace -- `UtxoIndex`'s own `_undo_log` carries a
-    prior value for exactly the mutations here that never happen.
+    `pending` survives more than one trial of `main.update_chain`, the
+    same way `UtxoIndex`'s own staging does, so `rollback` cannot stay a
+    blanket wipe either: `add_block` only ever adds a hash that was not
+    already a key (its own guard, checking `get_filter` first), so
+    `_trial_log` needs to remember only which hashes a trial added, not
+    what they replace -- `UtxoIndex`'s own `_undo_log` carries a prior
+    value for exactly the mutations here that never happen.
     """
 
     def __init__(self, db: KeyValueStore, chain: Chain, logger: Logger) -> None:
@@ -131,9 +130,9 @@ class FilterIndex:
     def adopt_legacy(legacy: KeyValueStore, db: KeyValueStore, logger: Logger) -> int:
         """Move the filters a chainstate store holds into `db`, if it holds any.
 
-        A datadir from before the filters had a store of their own keeps
-        them in the chainstate's, under the same keys. They are copied,
-        then removed there, so a stop in between copies them again on the
+        A datadir an older release of this node wrote keeps them in the
+        chainstate's store, under the same keys. They are copied, then
+        removed there, so a stop in between copies them again on the
         next start, and one after leaves nothing to do. A header with no
         filter is dropped, as is a filter with no header, which
         `finalize` never wrote. The locator is left to `catch_up`, which
@@ -232,8 +231,8 @@ class FilterIndex:
         `RevBlock.to_add` is the output every input of the block spent,
         which is what a filter needs and a block does not carry --
         `prevout_scripts_from_utxos` wants a bare `TxOut` per outpoint,
-        one step short of what `RevBlock.to_add` now carries alongside
-        it (`Coin`'s own docstring, `block_db/__init__.py`), so it is
+        one step short of what `RevBlock.to_add` carries alongside it
+        (`Coin`'s own docstring, `block_db/__init__.py`), so it is
         unwrapped here rather than asking that function to know about a
         type outside its own package.
         """

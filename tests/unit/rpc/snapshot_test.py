@@ -31,6 +31,8 @@ from btclib_node.rpc.mining import generate_block
 from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.stored_block import read_held_block
 from tests import finish
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -422,7 +424,7 @@ def test_a_chain_with_pruned_blocks_cannot_be_counted(node: Node) -> None:
         (
             ["a.dat", "", {"rollback": "zz"}],
             -8,
-            "hash_or_height must be of length 64 (not 2, for 'zz')",
+            "hash_or_height must be of length 64 (not 2, for '...')",
         ),
         (
             ["a.dat", "", {"rollback": "zz" * 32}],
@@ -447,11 +449,40 @@ def test_a_chain_with_pruned_blocks_cannot_be_counted(node: Node) -> None:
 def test_the_refusals_are_core_s(
     node: Node, params: list[object], code: int, message: str
 ) -> None:
-    """Each has Core's code and message."""
+    """Each has Core's code and message, `...` where Core quotes a string."""
     mine(node, 1)
     got_code, got_message = refusal(node, *params)
     assert got_code == code
     assert message in got_message
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        (
+            ["a.dat", LEAK_WIF],
+            f'Invalid snapshot type "<{len(LEAK_WIF)} characters>" specified.',
+        ),
+        (
+            ["a.dat", LEAK_WIF, {"rollback": 0}],
+            f'Invalid snapshot type "<{len(LEAK_WIF)} characters>" specified with',
+        ),
+        (
+            ["a.dat", "", {"rollback": LEAK_WIF}],
+            f"hash_or_height must be of length 64 (not {len(LEAK_WIF)}, for '...')",
+        ),
+    ],
+)
+def test_a_key_in_place_of_a_name_or_a_hash_is_not_quoted(
+    node: Node, params: list[object], message: str
+) -> None:
+    """ISS 2514: a key passed as the type or as `rollback` is not quoted."""
+    mine(node, 1)
+    with pytest.raises(RpcError) as caught:
+        dump(node, *params)
+    assert int(caught.value.code) == -8
+    assert caught.value.message.startswith(message)
+    assert_secret_free(caught.value, [LEAK_WIF])
 
 
 def test_a_block_off_the_active_chain_cannot_be_rolled_back_to(node: Node) -> None:

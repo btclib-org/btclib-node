@@ -156,18 +156,21 @@ def _tasks(
     one precomputation per transaction -- because its checks share a raw
     `PrecomputedTransactionData*` into a per-block
     `std::vector<PrecomputedTransactionData> txsdata(block.vtx.size())`
-    across the threads its `CCheckQueue` runs them on (`validation.cpp`'s
-    `ConnectBlock` and `validation.h`'s `CScriptCheck::txdata`,
-    at bitcoin/bitcoin@f0de87f040). Under `_pool_factory`'s process arm
-    nothing here can be shared by pointer the way Core's threads share
-    `txdata`: what a thread reads through it a process has to receive as
-    its own pickled copy, one per task. That copy is a handful of
-    hashes, cheap next to the whole transaction every task already
-    carries and far cheaper than the re-serialization per input it
-    replaces (btclib-org/btclib-node#385). Under the thread arm, this
-    generator's own `precomputed` is that pointer: every task built from
-    one iteration of the loop below shares the identical object, exactly
-    as Core's `CScriptCheck`s share `txdata[i]` (btclib-org/btclib-node#388).
+    across the threads its `CCheckQueue` runs them on
+    (`validation.cpp`'s `ConnectBlock` and `validation.h`'s
+    `CScriptCheck::txdata`, at bitcoin/bitcoin@f0de87f040). Under
+    `_pool_factory`'s process arm nothing here can be shared by pointer
+    the way Core's threads share `txdata`: what a thread reads through
+    it a process has to receive as its own pickled copy, one per chunk
+    of tasks `starmap` hands a worker: pickle keeps the tasks of one
+    transaction within a chunk on one copy. That copy is a handful of
+    hashes, cheap next to the whole transaction a chunk already carries
+    and far cheaper than re-serializing the transaction per input
+    (btclib-org/btclib-node#385). Under the thread arm, this generator's
+    own `precomputed` is that pointer: every task built from one
+    iteration of the loop below shares the identical object, exactly as
+    Core's `CScriptCheck`s share `txdata[i]`
+    (btclib-org/btclib-node#388).
 
     Built once per transaction and shared, by reference, across that
     transaction's own tasks -- never rebuilt per input, which would be
@@ -180,8 +183,8 @@ def _tasks(
     whether it does", `PrecomputedTxData`'s own says why -- a hash
     computed lazily out of a mutable `Tx` can change under its caller
     (btclib-org/btclib#140) -- and `_pool_factory`'s own docstring is
-    where that claim was established for the thread arm rather than
-    assumed of it (btclib-org/btclib-node#388).
+    where that claim is shown for the thread arm rather than assumed of
+    it (btclib-org/btclib-node#388).
     """
     for prevouts, tx in transaction_data:
         tx_outs = [coin.tx_out for coin in prevouts]
@@ -302,7 +305,7 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
-    # than editing the one it was handed. What the copy paid for was a
+    # than editing the one it was handed. A copy would guard against a
     # defect that is not there, once per mempool acceptance.
     precomputed = PrecomputedTxData(tx, prevouts)
     for i, tx_in in enumerate(tx.vin):

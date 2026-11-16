@@ -200,7 +200,7 @@ def test_a_txid_of_the_wrong_length_is_invalid_parameter(method: Any) -> None:
     with pytest.raises(RpcError) as raised:
         method(a_node(), _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
 def test_a_prevout_is_answered_by_the_tx_spending_it() -> None:
@@ -378,7 +378,7 @@ _OUT = {"txid": _ZERO, "vout": 1}
         (
             [[{"txid": "aa", "vout": 1}]],
             RPCErrorCode.INVALID_PARAMETER,
-            "txid must be of length 64 (not 2, for 'aa')",
+            "txid must be of length 64 (not 2, for '...')",
         ),
         (
             [[{"txid": _ZERO, "vout": -1}]],
@@ -427,7 +427,10 @@ _OUT = {"txid": _ZERO, "vout": 1}
 def test_the_refusals_are_cores(
     params: list[Any], code: RPCErrorCode, message: str
 ) -> None:
-    """Each was measured against bitcoind: its code and its message."""
+    """Each was measured against bitcoind: its code and its message.
+
+    The message writes `...` where bitcoind quotes the string.
+    """
     error = refusal(params)
     assert error.code == code
     assert error.message == message

@@ -35,9 +35,9 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
-from btclib_node.constants import CLIENT_NAME
+from btclib_node.constants import CLIENT_NAME, MAX_JSON_DEPTH, shown_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -58,10 +58,6 @@ SETTINGS_FILENAME = "settings.json"
 
 # `SETTINGS_WARN_MSG_KEY` (`src/common/settings.cpp`)
 _WARNING_KEY = "_warning_"
-
-# `MAX_JSON_DEPTH` (`src/univalue/lib/univalue_read.cpp`): the most arrays
-# and objects open at once
-_MAX_DEPTH = 512
 
 _WHITESPACE = " \t\n\r"
 _DIGITS = "0123456789"
@@ -357,7 +353,7 @@ def _parse(text: str) -> Json:  # noqa: C901, PLR0912 -- the one state machine
             raise _InvalidJsonError
         elif kind in {"{", "["}:
             stack.append(_Open(is_object=kind == "{"))
-            if len(stack) > _MAX_DEPTH + 1:
+            if len(stack) > MAX_JSON_DEPTH + 1:
                 raise _InvalidJsonError
             expect = _NAME_OR_END if kind == "{" else _ELEMENT
             continue
@@ -416,7 +412,9 @@ def write_json(value: Json, *, indent: int = 0) -> str:
     return "".join(out)
 
 
-def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
+def read_settings(
+    path: str, *, quote: Callable[[str], str], default_path: str | None = None
+) -> dict[str, Json]:
     """Return the settings in the file at `path`; none where it is absent.
 
     `common::ReadSettings`. Raises `ValueError` where the file cannot be
@@ -430,7 +428,10 @@ def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
     implementation weaknesses"). Core writes both whole
     (`src/common/settings.cpp:101` and `:110`, at
     bitcoin/bitcoin@f0de87f040). `cli.py`, which knows the sensitive
-    options, passes `_quoted_line` as `quote`.
+    options, passes `_quoted_line` as `quote`. Core writes `path` whole in
+    each refusal (`:81`, `:88`, `:101` and `:110`, same sha), and these
+    write it as `shown_path` does, `default_path` being where the file is
+    when no option names it, since a path an option gave may hold a key.
 
     Core opens a directory and reads nothing from it, so a directory is not
     valid JSON; opening one fails here with `IsADirectoryError`, and with a
@@ -446,47 +447,56 @@ def read_settings(path: str, *, quote: Callable[[str], str]) -> dict[str, Json]:
         return {}
     except NotADirectoryError:
         return {}
+    data: bytes | None
     try:
         with open(path, "rb") as file:  # noqa: PTH123
             data = file.read()
     except IsADirectoryError:
         data = b""
     except OSError:
-        err_msg = f"{path}. Please check permissions."
-        raise ValueError(err_msg) from None
+        data = None
+    # raised past the `except`, whose `OSError` names the path whole
+    if data is None:
+        err_msg = f"{shown_path(path, default_path)}. Please check permissions."
+        raise ValueError(err_msg)
     try:
         value = _parse(data.decode("latin-1"))
     except _InvalidJsonError:
+        shown = shown_path(path, default_path)
         err_msg = (
-            f"Settings file {path} does not contain valid JSON. This may be "
+            f"Settings file {shown} does not contain valid JSON. This may be "
             "caused by a crash, power loss, full disk, or storage error, and can "
             "be fixed by removing the file, which will reset settings to default "
             "values."
         )
         raise ValueError(err_msg) from None
     if not isinstance(value, Object):
-        err_msg = (
-            f"Found non-object value of type {type_name(value)} in settings file {path}"
-        )
+        shown = shown_path(path, default_path)
+        err_msg = f"Found non-object value of type {type_name(value)} in settings file {shown}"
         raise ValueError(err_msg)  # noqa: TRY004 -- a refusal of the file
     values: dict[str, Json] = {}
     for key, item in value.pairs:
         if key in values:
-            err_msg = f"Found duplicate key {quote(key)} in settings file {path}"
+            shown = shown_path(path, default_path)
+            err_msg = f"Found duplicate key {quote(key)} in settings file {shown}"
             raise ValueError(err_msg)
         values[key] = item
     values.pop(_WARNING_KEY, None)
     return dict(sorted(values.items()))
 
 
-def write_settings(path: str, values: Mapping[str, Json]) -> None:
+def write_settings(
+    path: str, values: Mapping[str, Json], *, default_path: str | None = None
+) -> None:
     """Write `values` to the file at `path`, under the `_warning_` key.
 
     `ArgsManager::WriteSettingsFile` over `common::WriteSettings`: `<path>.tmp`
     is written and renamed over `path`, and a failure of either raises
     `ValueError` in Core's words, the `.tmp` left where it is. Core's
     "Unable to write" and "Unable to close" are one failure here, Python
-    writing a buffer at the close.
+    writing a buffer at the close. Core writes the paths whole
+    (`src/common/settings.cpp:137` and `:142`, `src/common/args.cpp:499`,
+    same sha), and these write them as `read_settings` does.
     """
     warning = (
         f"This file is automatically generated and updated by {CLIENT_NAME}. "
@@ -495,19 +505,29 @@ def write_settings(path: str, values: Mapping[str, Json]) -> None:
     )
     document = Object(((_WARNING_KEY, warning), *values.items()))
     tmp = f"{path}.tmp"
+    shown_tmp = shown_path(tmp, None if default_path is None else f"{default_path}.tmp")
+    # each refusal raised past its `except`, whose `OSError` names the path
+    # whole
+    err_msg = ""
+    file: TextIO | None
     try:
         file = open(tmp, "w", encoding="utf-8")  # noqa: PTH123, SIM115
     except OSError:
-        err_msg = f"Error: Unable to open settings file {tmp} for writing"
-        raise ValueError(err_msg) from None
+        file = None
+    if file is None:
+        err_msg = f"Error: Unable to open settings file {shown_tmp} for writing"
+        raise ValueError(err_msg)
     try:
         with file:
             file.write(f"{write_json(document, indent=4)}\n")
     except OSError:
-        err_msg = f"Error: Unable to write settings file {tmp}"
-        raise ValueError(err_msg) from None
+        err_msg = f"Error: Unable to write settings file {shown_tmp}"
+    if err_msg:
+        raise ValueError(err_msg)
     try:
         os.replace(tmp, path)  # noqa: PTH105
     except OSError:
-        err_msg = f"Failed renaming settings file {tmp} to {path}\n"
-        raise ValueError(err_msg) from None
+        shown = shown_path(path, default_path)
+        err_msg = f"Failed renaming settings file {shown_tmp} to {shown}\n"
+    if err_msg:
+        raise ValueError(err_msg)

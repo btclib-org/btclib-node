@@ -184,9 +184,9 @@ no defence against them.
 **The caller and the RPC surface.** `src/btclib_node/rpc/` is where a
 local caller's request crosses in. `RpcConnection` bounds what it will
 read before decoding anything — `MAX_HEADER_BYTES` and `MAX_BODY_BYTES`
-in `rpc/connection.py` — and a body `json.loads` cannot parse answers
-`bitcoind`'s own `PARSE_ERROR` rather than closing the socket with
-nothing said. Before that decoding, `RpcConnection.run` checks the
+in `rpc/connection.py` — and a body `rpc/jsonrpc.py`'s `decode` refuses
+answers `bitcoind`'s own `PARSE_ERROR` rather than closing the socket
+with nothing said. Before that decoding, `RpcConnection.run` checks the
 request's credential against `rpc/auth.py`'s `RpcAuth` and answers one
 it does not accept with a 401, so no handler sees a request from a
 caller without an accepted credential; once the body is decoded,
@@ -401,9 +401,9 @@ and what counters each.
   `cli.py`'s `_quoted_line` quotes a configuration line or key, a section
   name, a command-line argument or a `settings.json` name up to the first
   sensitive option's name and the first `=`, and only where that has at
-  most `_MAX_QUOTED_NAME` characters; a longer one is given by its length.
-  Refusals, warnings and logs quote them this way, the refusal of a line
-  that fails to parse among them. `settings_file.py`'s `read_settings`
+  most `constants.MAX_QUOTED_NAME` characters; a longer one is given by its
+  length. Refusals, warnings and logs quote them this way, the refusal of a
+  line that fails to parse among them. `settings_file.py`'s `read_settings`
   takes it as `quote` for a key named twice. The settings log writes a
   `settings.json` value only where its name is a known option that is not
   sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr

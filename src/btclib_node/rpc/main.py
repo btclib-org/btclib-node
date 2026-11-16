@@ -102,8 +102,7 @@ def _execute(
     `IsValidNumArgs` compares `num_args` against. The refusal itself is
     `HelpResult{ToString()}`, caught by `ExecuteCommand`
     (`src/rpc/server.cpp:879-892`, same sha) and turned into
-    `RPC_MISC_ERROR` carrying the method's own full help text, matching
-    `disconnect_node`'s own such check before this function carried it for
+    `RPC_MISC_ERROR` carrying the method's own full help text, for
     every method (btclib-org/btclib-node#1424).
 
     A method that waits returns a generator, which this runs to its end,

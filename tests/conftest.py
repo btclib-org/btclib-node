@@ -51,8 +51,8 @@ from collections import deque
 # not under TYPE_CHECKING (TC003's own suggestion): pluggy inspects a
 # hookimpl's signature with annotations forced to evaluate, ahead of
 # ever running it, and `pytest_runtest_protocol` below is one -- a name
-# only `TYPE_CHECKING` had put in scope raised `NameError` there, at
-# collection, before any test ran.
+# only `TYPE_CHECKING` puts in scope would raise `NameError` there, at
+# collection, before any test runs.
 from collections.abc import Iterator  # noqa: TC003
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -119,18 +119,17 @@ threading.Thread.start = _record_thread_origin  # type: ignore[method-assign]
 def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
     """Point `_CURRENT_TEST_NODEID` at `item.nodeid` before anything else runs.
 
-    Not an autouse fixture, which this carried until a review round of
-    btclib-org/btclib-node#1002 found the gap: a fixture's own scope
-    decides when pytest builds it relative to the other fixtures the
-    same test needs, and a module-, class- or session-scoped fixture a
-    test depends on is always built ahead of a function-scoped one,
-    autouse or not -- so a thread a higher-scoped fixture starts, on the
-    first test of its own scope, starts before that function-scoped
-    fixture has run at all, and got recorded against whichever earlier,
-    unrelated test's own copy of it had run last. Measured directly
-    against a module fixture starting a thread on the first test of a
-    second module: the origin came back naming the previous module's
-    last test.
+    Not an autouse fixture, which has a gap
+    (btclib-org/btclib-node#1002): a fixture's own scope decides when
+    pytest builds it relative to the other fixtures the same test needs,
+    and a module-, class- or session-scoped fixture a test depends on is
+    always built ahead of a function-scoped one, autouse or not -- so a
+    thread a higher-scoped fixture starts, on the first test of its own
+    scope, starts before that function-scoped fixture has run at all,
+    and is recorded against whichever earlier, unrelated test's own copy
+    of it ran last. Measured directly against a module fixture starting
+    a thread on the first test of a second module: the origin comes back
+    naming the previous module's last test.
 
     A hookwrapper on `pytest_runtest_protocol` does not have this gap:
     its own code ahead of `yield` runs before every non-wrapper

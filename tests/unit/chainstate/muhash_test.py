@@ -5,12 +5,12 @@
 """Unit tests for `btclib_node.chainstate.muhash`.
 
 The accumulator itself, `btclib.muhash.MuHash3072`, is btclib's own to
-test, and so now is the arithmetic `CoinStats.insert`/`.remove` carry,
-`is_unspendable` and `tx_out_ser` included --
-`tests/coinstats_test.py` and `tests/muhash_test.py` in that repository
-are where each is checked against Core. What is tested here is what
-stayed: `is_bip30_unspendable`'s own two mainnet blocks, this store's
-own on-disk round trip `UtxoIndex.finalize`/`__init__` rely on, and the
+test, and so is the arithmetic `CoinStats.insert`/`.remove` carry,
+`is_unspendable` and `tx_out_ser` included -- `tests/coinstats_test.py`
+and `tests/muhash_test.py` in that repository are where each is checked
+against Core. What is tested here is this tree's own:
+`is_bip30_unspendable`'s own two mainnet blocks, this store's own
+on-disk round trip `UtxoIndex.finalize`/`__init__` rely on, and the
 divergence between `tx_out_ser`'s own encoding and `Coin.serialize`'s.
 """
 
