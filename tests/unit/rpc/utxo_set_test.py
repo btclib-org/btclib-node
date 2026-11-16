@@ -771,6 +771,12 @@ def test_a_key_that_is_no_point_is_refused_with_core_s_message(
         (f"tr(musig({NOT_A_POINT_X},{X_ONLY}))", f"tr(): musig(): {INVALID}"),
         (f"rawtr(musig({NOT_A_POINT_X},{X_ONLY}))", f"rawtr(): musig(): {INVALID}"),
         (f"tr(musig({X_ONLY},{X_ONLY2}))", f"tr(): musig(): {INVALID}"),
+        (f"tr(musig({NOT_A_POINT},{KEY}))", f"tr(): musig(): {INVALID}"),
+        (f"tr({X_ONLY},pk(musig({X_ONLY2},{KEY})))", f"pk(): musig(): {INVALID}"),
+        (
+            f"tr({X_ONLY},multi_a(1,musig({NOT_A_POINT},{KEY})))",
+            f"Multi: musig(): {INVALID}",
+        ),
         (f"pk({X_ONLY})", f"pk(): {INVALID}"),
         (f"wsh(pk({X_ONLY}))", f"pk(): {INVALID}"),
         (f"unused({X_ONLY})", INVALID),

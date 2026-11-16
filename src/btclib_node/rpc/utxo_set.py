@@ -101,6 +101,12 @@ _HEX_KEY = re.compile(
 )
 _X_ONLY_KEY_BYTES = 32
 
+# what bip32_descriptors raises as BTClibValueError, not ecc's
+# EccException, for a key Core refuses with `ParsePubkeyInner`'s message:
+# an x-only key outside `tr()` and `rawtr()`, and a `musig()` participant
+# that is no point
+_BTCLIB_KEY_REFUSALS = ("x-only public keys", "musig(): not a public key")
+
 # the functions `ParseScript` reads a key in, naming themselves in its
 # message
 _KEY_FUNCTIONS = {"pk", "pkh", "combo", "wpkh", "tr", "rawtr"}
@@ -261,17 +267,10 @@ def _key_prefix(calls: list[str]) -> str:
     The function they hold then names itself, as `Multi` for one of
     `_MULTI_FUNCTIONS`, unless miniscript reads it, which names nothing.
     """
-    holder = calls[-1].rpartition(":")[2]
-    if holder == "musig":
-        owner = next(
-            (
-                call.rpartition(":")[2]
-                for call in reversed(calls[:-1])
-                if call.rpartition(":")[2] in {"rawtr", "tr"}
-            ),
-            "",
-        )
-        return f"{owner}(): musig(): " if owner else "musig(): "
+    # `ParsePubkey` writes `musig(): ` before a participant's message, and
+    # the function that holds the `musig()` writes its own before that
+    if calls[-1].rpartition(":")[2] == "musig":
+        return f"{_key_prefix(calls[:-1])}musig(): "
 
     depth = 0
     while calls[depth] in {"sh", "wsh"} or (
@@ -311,7 +310,7 @@ def _invalid_key_refusal(text: str) -> str | None:
             key_bytes = bytes.fromhex(key["key"])
             holder = calls[-1].rpartition(":")[2]
             invalid_x_only = len(key_bytes) == _X_ONLY_KEY_BYTES and (
-                holder == "musig" or not any(call in {"rawtr", "tr"} for call in calls)
+                holder == "musig" or all(call not in {"rawtr", "tr"} for call in calls)
             )
             if holder in _KEY_HOLDERS and (not _is_point(key_bytes) or invalid_x_only):
                 return f"{_key_prefix(calls)}Pubkey '...' is invalid"
@@ -336,16 +335,13 @@ def _parse(node: Node, text: str) -> list[_Source]:
             _Source(parse_descriptor(one, node.chain.name, prv_keys), prv_keys)
             for one in multipath_descriptors(stripped)
         ]
-    except BTClibValueError as err:
-        parse_error = str(err)
-        message = (
-            _invalid_key_refusal(stripped)
-            if stripped is not None and "x-only public keys" in parse_error
-            else None
-        ) or parse_error
-        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     except BTClibException as err:
-        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, str(err)) from err
+        message = str(err)
+        if stripped is not None and any(
+            refused in message for refused in _BTCLIB_KEY_REFUSALS
+        ):
+            message = _invalid_key_refusal(stripped) or message
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     except EccException as err:
         message = _invalid_key_refusal(strip_checksum(text)) or str(err)
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
