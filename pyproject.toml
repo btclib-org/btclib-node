@@ -376,6 +376,9 @@ test = [
     # tests/docs_conf_test.py executes docs/source/conf.py, which imports
     # it; the floor is `docs`'s, below
     "sphinx>=9.1.0",
+    # tests/docs_conf_test.py builds the Markdown pages with the same parser
+    # the docs group uses, so keep that parser in the test environment too.
+    "myst-parser>=5.1.0",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
