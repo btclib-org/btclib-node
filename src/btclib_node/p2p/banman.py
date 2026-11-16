@@ -338,6 +338,23 @@ def _prefix(mask: IPv4Address | IPv6Address) -> int | None:
     return mask.max_prefixlen - inverted.bit_length()
 
 
+def _prefix_length(suffix: str) -> int | None:
+    """Core's `ToIntegral<uint8_t>` of a CIDR suffix, or `None`.
+
+    ASCII digits alone, leading zeros dropped, at most three remaining,
+    and the value at most 255. A longer or larger suffix is a netmask,
+    not a prefix -- and must not be handed to `int`, which refuses a
+    text past CPython's digit limit (issue #2461).
+    """
+    if not (suffix.isascii() and suffix.isdigit()):
+        return None
+    digits = suffix.lstrip("0") or "0"
+    if len(digits) > 3:  # noqa: PLR2004
+        return None
+    value = int(digits)
+    return value if value <= 0xFF else None  # noqa: PLR2004
+
+
 def lookup_subnet(text: str) -> Subnet | None:
     """Core's `LookupSubNet`: an address, then a CIDR prefix or a netmask.
 
@@ -356,9 +373,8 @@ def lookup_subnet(text: str) -> Subnet | None:
     if isinstance(ip, SpecialAddress):
         return None
     suffix = text[slash + 1 :]
-    # `ToIntegral<uint8_t>`: ASCII digits alone, and at most 255
-    if suffix.isascii() and suffix.isdigit() and int(suffix) <= 0xFF:  # noqa: PLR2004
-        prefix = int(suffix)
+    prefix = _prefix_length(suffix)
+    if prefix is not None:
         return Subnet.of(ip, prefix) if prefix <= ip.max_prefixlen else None
     mask = lookup_host(suffix)
     if mask is None or isinstance(mask, SpecialAddress) or mask.version != ip.version:
