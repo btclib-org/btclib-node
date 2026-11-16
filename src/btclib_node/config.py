@@ -50,8 +50,13 @@ from btclib_node.constants import (
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
     MAX_TIP_AGE,
     default_data_dir,
+    shown_path,
 )
-from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.exceptions import (
+    InvalidChainTypeError,
+    JsonIntegerOutOfRangeError,
+    UnknownChainError,
+)
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
 from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
 from btclib_node.rpc.auth import (
@@ -82,6 +87,8 @@ __all__ = [
     "WhitebindAddress",
     "default_onion_bind",
     "get_path_arg",
+    "has_valid_port",
+    "invalid_port_message",
     "listen_port",
     "lookup_host_port",
     "lookup_service",
@@ -188,12 +195,11 @@ _MIN_CORE_FDS = _MIN_LEVELDB_FDS + _NUM_FDS_MESSAGE_CAPTURE
 # shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
 # reason.
 DEFAULT_CHAIN = Main()
-# Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`,
-# at bitcoin/bitcoin@f0de87f040, the v32.1 tag) in seconds, which is what
-# `-maxtipage`'s own default is measured in: `constants.py`'s `MAX_TIP_AGE`
-# is the same span as a `timedelta`, for `update_ibd_status`'s own
-# unoverridden default before this option existed, and is read here
-# rather than restated.
+# Core's own `DEFAULT_MAX_TIP_AGE`
+# (`src/kernel/chainstatemanager_opts.h`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag) in seconds, which is what `-maxtipage`'s own default is
+# measured in: `constants.py`'s `MAX_TIP_AGE` is the same span as a
+# `timedelta`, and is read here rather than restated.
 DEFAULT_MAX_TIP_AGE = int(MAX_TIP_AGE.total_seconds())
 
 
@@ -264,12 +270,36 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's own
     default P2P port this way. This is for a caller whose option Core
     checks at init, `-rpcbind`; a peer spec is `lookup_host_port`'s.
+
+    The refusal gives `spec` by its length: a spec that names no valid
+    port may be a key.
     """
     host, port, valid = _split(spec, default_port)
     if not valid:
-        err_msg = f"{spec!r} names an invalid port"
+        err_msg = f"a host and port of {len(spec)} characters names an invalid port"
         raise ValueError(err_msg)
     return host, port
+
+
+def has_valid_port(spec: str) -> bool:
+    """Return Core's `SplitHostPort` of "host[:port]": no port, or a valid one.
+
+    `CheckHostPortOptions` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) refuses a `-bind`, `-rpcbind` or `-whitebind` value
+    where it is false.
+    """
+    return _split(spec, 0)[2]
+
+
+def invalid_port_message(name: str, position: int) -> str:
+    """Return the refusal of value `position` of `-name`, whose port is invalid.
+
+    Core's `InvalidPortErrMsg` (`src/common/messages.cpp:150`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), with `'...'` for the value,
+    which may be a key, and `position`, its place among the option's values,
+    counted from 1 (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
+    return f"Invalid port specified in -{name}: '...' (value {position} of -{name})"
 
 
 def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:
@@ -334,7 +364,7 @@ def default_onion_bind(default_port: int) -> BindAddress:
     return BindAddress(IPv4Address("127.0.0.1"), onion_port(default_port), onion=True)
 
 
-def parse_bind(arg: str, default_port: int) -> BindAddress:
+def parse_bind(arg: str, default_port: int, *, position: int) -> BindAddress:
     """Return the address `-bind=<arg>` names, as `InitBinds`' caller reads it.
 
     Core's warning for a bad port (`BadPortWarning`, same sha) is not
@@ -344,7 +374,12 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
     v32.1 tag) looks a numeric address up, at `default_port` where the
     value names none; one tagged `=onion` takes `onion_port` instead, and
     any other tag resolves nothing. Raises `ValueError` in Core's words
-    where the address is none.
+    where the address is none, with `'...'` for `arg` and `position`, its
+    place among the `-bind` values counted from 1.
+
+    Core's `ResolveErrMsg` quotes `arg` (`src/common/messages.cpp:145`,
+    same sha), and a value that names no address may be a key
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
     """
     head, equals, tag = arg.rpartition("=")
     onion = bool(equals) and tag == "onion"
@@ -354,7 +389,7 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
         port = onion_port(default_port) if onion else default_port
         service = lookup_service(head if equals else arg, port)
     if service is None:
-        err_msg = f"Cannot resolve -bind address: '{arg}'"
+        err_msg = f"Cannot resolve -bind address: '...' (value {position} of -bind)"
         raise ValueError(err_msg)
     return BindAddress(*service, onion)
 
@@ -368,17 +403,25 @@ class WhitebindAddress:
     flags: NetPermissionFlags
 
 
-def parse_whitebind(arg: str) -> WhitebindAddress:
+def parse_whitebind(arg: str, *, position: int) -> WhitebindAddress:
     """Return the address and permissions `-whitebind=<arg>` names.
 
     `NetWhitebindPermissions::TryParse` (`src/net_permissions.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): a numeric address, which
-    has to name a port. Raises `ValueError` in Core's words.
+    has to name a port. Raises `ValueError` in Core's words, with `'...'`
+    for an address that resolves to nothing and `position`, the value's
+    place among the `-whitebind` values counted from 1, as `parse_bind`
+    does and for its reason (`src/net_permissions.cpp:114`, same sha).
+    The refusal of an address that resolves but names no port quotes it,
+    as Core does (SECURITY.md, "Where this node departs from Bitcoin Core",
+    says why).
     """
-    flags, spec = parse_whitebind_permissions(arg)
+    flags, spec = parse_whitebind_permissions(arg, position=position)
     service = lookup_service(spec, 0)
     if service is None:
-        err_msg = f"Cannot resolve -whitebind address: '{spec}'"
+        err_msg = (
+            f"Cannot resolve -whitebind address: '...' (value {position} of -whitebind)"
+        )
         raise ValueError(err_msg)
     if service[1] == 0:
         err_msg = f"Need to specify a port with -whitebind: '{spec}'"
@@ -402,9 +445,9 @@ def listen_port(
         service = lookup_service(value, 0)
         if service is not None and service[1] != 0:
             return service[1]
-    for value in whitebind:
+    for position, value in enumerate(whitebind, 1):
         try:
-            address = parse_whitebind(value)
+            address = parse_whitebind(value, position=position)
         except ValueError:
             continue
         if NetPermissionFlags.NO_BAN not in address.flags:
@@ -437,8 +480,7 @@ def _cap_max_connections(max_connections: int) -> tuple[int, str]:
     and logs. The warning is `""` where nothing is capped.
     """
     if not -(2**31) <= max_connections < 2**31:
-        err_msg = "JSON integer out of range"
-        raise ValueError(err_msg)
+        raise JsonIntegerOutOfRangeError
     if max_connections < 0:
         # Core's own wording, fatal there too
         err_msg = "-maxconnections must be greater or equal than zero"
@@ -465,8 +507,7 @@ def _refuse_rpcmaxconnections(rpcmaxconnections: float) -> int:
         not isinstance(rpcmaxconnections, int)
         or not -(2**31) <= rpcmaxconnections < 2**31
     ):
-        err_msg = "JSON integer out of range"
-        raise ValueError(err_msg)
+        raise JsonIntegerOutOfRangeError
     if rpcmaxconnections < 1:
         err_msg = (
             "-rpcmaxconnections must be greater than zero. "
@@ -1117,26 +1158,25 @@ class Config:
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
-    # not `data_dir`'s business, `rpc_host` is not `debug`'s, and nesting
-    # them into sub-objects would only move each still-independent knob
-    # behind one more name for every caller, all of which already read
-    # this constructor by keyword (`grep -rn "Config(" tests/
-    # src/btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
-    # count this object's whole purpose is to be flat, not a shape it
-    # backed into. Keyword-only throughout (issue #341's own FBT round)
-    # for the same reason: `allow_p2p`/`allow_rpc`/`pruned`/`debug` are
-    # what that round's own findings are, but every other parameter here
-    # is already keyword at every call site the grep above found, so
-    # making only the booleans keyword-only would leave the same
-    # constructor answering `Config("regtest")` for one parameter and
-    # refusing it for the next -- which also drops PLR0917 (too many
-    # positional arguments) below to zero, keyword-only meaning there
-    # is no longer a positional count to measure. PLR0915 (too many
-    # statements) measures the same flatness from the body's side: one
-    # assignment per independent setting, which is what grows with every
-    # field this object carries rather than a body that wants splitting.
-    # Sourcery's low-code-quality reads the same length, and is skipped
-    # for the same reason.
+    # not `data_dir`'s business, `rpc_host` is not `debug`'s, and
+    # nesting them into sub-objects would only move each
+    # still-independent knob behind one more name for every caller, all
+    # of which already read this constructor by keyword (`grep -rn
+    # "Config(" tests/ src/btclib_node/` finds no positional call).
+    # PLR0913/PLR0917 measure a count this object's whole purpose is to
+    # be flat, not a shape it backed into. Keyword-only throughout
+    # (issue #341) for the same reason: ruff's FBT rules ask it of
+    # `allow_p2p`/`allow_rpc`/`pruned`/`debug`, and every other
+    # parameter here is already keyword at every call site the grep
+    # above found, so making only the booleans keyword-only would leave
+    # the same constructor answering `Config("regtest")` for one
+    # parameter and refusing it for the next. Keyword-only also leaves
+    # PLR0917 (too many positional arguments) nothing to count. PLR0915
+    # (too many statements) measures the same flatness from the body's
+    # side: one assignment per independent setting, which is what grows
+    # with every field this object carries rather than a body that wants
+    # splitting. Sourcery's low-code-quality reads the same length, and
+    # is skipped for the same reason.
     def __init__(  # noqa: PLR0913, PLR0915  # sourcery skip: low-code-quality
         self,
         *,
@@ -1241,11 +1281,14 @@ class Config:
             # there too, not a silent `mkdir` -- unlike `data_dir` above,
             # which every caller here is content to have created on first
             # use. The path asked about is `get_path_arg`'s, as
-            # `GetBlocksDirPath` reads `GetPathArg`, and the message names
-            # the value as given, as Core names `GetArg("-blocksdir")`.
+            # `GetBlocksDirPath` reads `GetPathArg`. Core names the value
+            # whole, `GetArg("-blocksdir")`, and the message gives its
+            # length, as `shown_path` writes a path an option gave
+            # (SECURITY.md, "Where this node departs from Bitcoin Core").
             resolved = Path(get_path_arg(str(blocks_dir))).absolute()
             if not resolved.is_dir():
-                err_msg = f'Specified blocks directory "{blocks_dir}" does not exist.'
+                shown = shown_path(blocks_dir)
+                err_msg = f"Specified blocks directory {shown} does not exist."
                 raise ValueError(err_msg)
             self.blocks_dir = resolved / self.chain.name
 

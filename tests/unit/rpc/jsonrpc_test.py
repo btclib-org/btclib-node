@@ -4,16 +4,33 @@
 
 """What `decode` refuses as JSON, and what `get_real` refuses as a double.
 
+A number whose text `float` or `int` loses is decoded with its text kept,
+and so is an integer past CPython's digit limit.
+
 Overflow and the constants are held to bitcoind, the release
 `integration-bitcoind.yml` pins, by `tests/integration/json_double_test.py`.
+Nesting is held to it by `tests/integration/json_depth_test.py`.
 Underflow follows Core's Linux release, as `get_real`'s docstring says why.
 """
+
+import json
+import sys
+import tracemalloc
+from typing import TYPE_CHECKING
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import MAX_JSON_DEPTH
 from btclib_node.rpc.errors import RpcError
-from btclib_node.rpc.jsonrpc import decode, get_real
+from btclib_node.rpc.jsonrpc import LongInteger, decode, get_real
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# ISS 2456: past CPython's digit limit, the length measured on the
+# `bitcoind` `integration-bitcoind.yml` pins
+_PAST_DIGIT_LIMIT = "9" * 5000
 
 
 @pytest.mark.parametrize(
@@ -68,3 +85,99 @@ def test_a_constant_json_has_not_is_a_parse_error(text: str, shape: str) -> None
     """Core's `UniValue::read` refuses them wherever they stand."""
     with pytest.raises(ValueError, match=text):
         decode(shape.format(text).encode())
+
+
+@pytest.mark.parametrize("sign", ["", "-"], ids=["positive", "negative"])
+def test_an_integer_past_the_digit_limit_is_a_long_integer(sign: str) -> None:
+    """ISS 2456: infinite, refused as a double, and its text kept."""
+    text = sign + _PAST_DIGIT_LIMIT
+    (value,) = decode(f"[{text}]".encode())
+    assert isinstance(value, LongInteger)
+    assert value.text == text
+    assert value == float(f"{sign}inf")
+    with pytest.raises(RpcError) as raised:
+        get_real(value)
+    assert raised.value.message == "JSON double out of range"
+
+
+def test_an_integer_at_the_digit_limit_is_an_int() -> None:
+    """The control: `int` reads an integer as long as the limit."""
+    (value,) = decode(f"[{'9' * sys.get_int_max_str_digits()}]".encode())
+    assert type(value) is int
+
+
+@pytest.mark.parametrize("text", ["1.50", "1e2", "-0.0", "1E400", "1E-400", "1.0E+2"])
+def test_a_number_with_a_fraction_or_an_exponent_keeps_its_text(text: str) -> None:
+    """ISS 2469: read as `float` reads it, and its text kept."""
+    (value,) = decode(f"[{text}]".encode())
+    assert value.text == text
+    assert value == float(text)
+
+
+def test_minus_zero_is_an_integer_zero_that_keeps_its_text() -> None:
+    """ISS 2469: `0` to a reader of a signed integer, and `-0` to a reply."""
+    (value,) = decode(b"[-0]")
+    assert value.text == "-0"
+    assert isinstance(value, int)
+    assert value == 0
+
+
+@pytest.mark.parametrize(
+    ("after", "refusal"),
+    [
+        ("NaN", "NaN"),
+        ('"\\ud800"', "surrogates not allowed"),
+        ("", "Illegal trailing comma"),
+    ],
+    ids=["constant", "surrogate", "syntax"],
+)
+def test_a_long_integer_hides_no_refusal_after_it(after: str, refusal: str) -> None:
+    """What follows the integer is refused as it is in a body without one."""
+    with pytest.raises(ValueError, match=refusal):
+        decode(f"[{_PAST_DIGIT_LIMIT},{after}]".encode())
+
+
+def _arrays(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+def _objects(depth: int) -> str:
+    return '{"a":' * (depth - 1) + "{}" + "}" * (depth - 1)
+
+
+@pytest.mark.parametrize("shape", [_arrays, _objects])
+def test_a_body_as_deep_as_core_reads_is_decoded(shape: Callable[[int], str]) -> None:
+    """ISS 2468: `MAX_JSON_DEPTH` containers open at once are read."""
+    text = shape(MAX_JSON_DEPTH)
+    assert decode(text.encode()) == json.loads(text)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH + 1, 100_000])
+@pytest.mark.parametrize("shape", [_arrays, _objects])
+def test_a_body_deeper_than_core_reads_is_a_parse_error(
+    shape: Callable[[int], str], depth: int, encoding: str
+) -> None:
+    """ISS 2468: refused at any depth, as `UniValue::read` refuses it."""
+    with pytest.raises(ValueError, match="arrays and objects open"):
+        decode(shape(depth).encode(encoding))
+
+
+def test_a_bracket_in_a_string_is_not_counted() -> None:
+    """Brackets after an escaped quote are still inside the string."""
+    text = '["\\"' + "[{" * MAX_JSON_DEPTH + '"]'
+    assert decode(text.encode()) == json.loads(text)
+
+
+def test_the_depth_count_holds_no_state_for_each_escape() -> None:
+    """Memory stays within a few times the body, however many escapes."""
+    brackets = "[" * (MAX_JSON_DEPTH + 1)
+    escapes = "\\\\" * 100_000
+    body = f'{{"method":"x","y":"{brackets}","x":"{escapes}"}}'.encode()
+    tracemalloc.start()
+    try:
+        decode(body)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * len(body)

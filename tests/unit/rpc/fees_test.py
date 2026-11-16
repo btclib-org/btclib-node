@@ -42,7 +42,9 @@ from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.fees import _bucket, estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT
 from tests import LogLines
+from tests.secret_free import assert_secret_free
 from tests.unit.fee_estimator_test import _busy
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -294,6 +296,17 @@ def test_options_are_refused_as_core_s(
     node = an_empty_node(tmp_path)
     call = lambda: estimate_smart_fee(node, NO_CONN, [1, None, options])  # noqa: E731
     assert refusal(call) == expected
+
+
+def test_a_key_as_an_option_name_is_refused_without_quoting_it(
+    tmp_path: Path,
+) -> None:
+    """ISS 2514: an unexpected key longer than a name is given by its length."""
+    node = an_empty_node(tmp_path)
+    with pytest.raises(RpcError) as caught:
+        estimate_smart_fee(node, NO_CONN, [1, None, {LEAK_WIF: 2}])
+    assert caught.value.message == f"Unexpected key <{len(LEAK_WIF)} characters>"
+    assert_secret_free(caught.value, [LEAK_WIF])
 
 
 def test_conf_target_is_checked_before_options(tmp_path: Path) -> None:

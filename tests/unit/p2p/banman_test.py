@@ -32,7 +32,7 @@ import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 import btclib_node.p2p.banman as banman_module
-from btclib_node.constants import CLIENT_NAME
+from btclib_node.constants import CLIENT_NAME, MAX_JSON_DEPTH
 from btclib_node.log import Logger
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import (
@@ -542,6 +542,52 @@ def test_an_entry_core_would_drop_is_dropped(tmp_path: Path) -> None:
     ]
 
 
+def test_an_unread_integer_past_python_s_digit_limit_keeps_the_ban(
+    tmp_path: Path,
+) -> None:
+    """Keep an entry with an unread number instead of failing its JSON."""
+    path = tmp_path / "banlist.json"
+    huge = "9" * 5000
+    path.write_text(
+        f'{{"banned_nets": [{{{_ENTRY[1:-1]}, "x": {huge}}}]}}',
+        encoding="utf-8",
+    )
+
+    assert [str(subnet) for subnet, _ in BanMan(path, _LOGGER).banned()] == [
+        "1.2.3.4/32"
+    ]
+
+
+@pytest.mark.parametrize("key", ["version", "ban_created", "banned_until"])
+def test_a_read_integer_past_python_s_digit_limit_is_a_core_style_refusal(
+    tmp_path: Path, key: str
+) -> None:
+    """Fail a read field by name, without CPython's digit-limit text."""
+    path = tmp_path / "banlist.json"
+    log_path = tmp_path / "history.log"
+    huge = "9" * 5000
+    values = {
+        "version": huge if key == "version" else "1",
+        "ban_created": huge if key == "ban_created" else "1",
+        "banned_until": huge if key == "banned_until" else "1800000000",
+    }
+    entry = (
+        f'{{"version": {values["version"]}, '
+        f'"ban_created": {values["ban_created"]}, '
+        f'"banned_until": {values["banned_until"]}, "address": "1.2.3.4"}}'
+    )
+    path.write_text(f'{{"banned_nets": [{entry}]}}', encoding="utf-8")
+    logger = Logger(log_path)
+    try:
+        assert BanMan(path, logger).banned() == []
+    finally:
+        logger.close()
+
+    warning = log_path.read_text(encoding="utf-8")
+    assert key in warning
+    assert "Exceeds the limit" not in warning
+
+
 def test_a_key_twice_in_an_entry_is_read_as_univalue_reads_it(
     tmp_path: Path,
 ) -> None:
@@ -595,6 +641,12 @@ def test_an_expired_entry_is_swept_on_loading(tmp_path: Path) -> None:
         '{"banned_nets": [{"version": true}]}',
         '{"banned_nets": [{"version": 4294967296}]}',
         '{"banned_nets": [{"version": 1, "address": 1}]}',
+        # `get_str` refuses a number too long for an int64 as any number,
+        # and the ban read before it goes with the file
+        (
+            f'{{"banned_nets": [{_ENTRY}, {{"version": 1, "ban_created": 1,'
+            f' "banned_until": 1800000000, "address": {"9" * 20}}}]}}'
+        ),
         '{"banned_nets": [{"version": 1, "address": "1.2.3.4"}]}',
         # `ReadSettings` refuses a top-level key held twice, whatever it holds
         '{"banned_nets": [%s], "banned_nets": [%s]}' % ((_ENTRY,) * 2),
@@ -608,6 +660,26 @@ def test_a_file_core_cannot_read_is_recreated_empty(
     path.write_text(document, encoding="utf-8")
     assert BanMan(path, _LOGGER).banned() == []
     assert read(path)["banned_nets"] == []
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_DEPTH, MAX_JSON_DEPTH + 1, 100_000])
+def test_a_file_nested_past_max_json_depth_is_recreated_empty(
+    tmp_path: Path, depth: int
+) -> None:
+    """ISS 2486: `MAX_JSON_DEPTH` arrays and objects open at once are read.
+
+    One more is a file `UniValue::read` refuses, however deep. The
+    top-level object holds the ban and a key nothing reads, nested in
+    arrays.
+    """
+    path = tmp_path / "banlist.json"
+    arrays = depth - 1
+    path.write_text(
+        f'{{"banned_nets": [{_ENTRY}], "x": ' + "[" * arrays + "]" * arrays + "}",
+        encoding="utf-8",
+    )
+    kept = ["1.2.3.4/32"] if depth <= MAX_JSON_DEPTH else []
+    assert [str(subnet) for subnet, _ in BanMan(path, _LOGGER).banned()] == kept
 
 
 def test_a_list_unchanged_is_not_written_again(tmp_path: Path) -> None:

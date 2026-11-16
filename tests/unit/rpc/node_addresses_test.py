@@ -26,6 +26,9 @@ from btclib_node.rpc.callbacks import (
 )
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
+from btclib_node.rpc.jsonrpc import NegativeZero
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -155,14 +158,34 @@ def test_getnodeaddresses_keeps_to_the_network_asked_for() -> None:
     assert get_node_addresses(node, _CONN, [0, "onion"]) == []
 
 
-@pytest.mark.parametrize("network", ["tor", "", "not_publicly_routable"])
-def test_getnodeaddresses_refuses_a_network_it_does_not_know(network: str) -> None:
-    """ISS 1443: `ParseNetwork` answers `NET_UNROUTABLE`, which is refused."""
+@pytest.mark.parametrize(
+    ("network", "shown"),
+    [("tor", "tor"), ("", ""), ("not_publicly_routable", "<21 characters>")],
+)
+def test_getnodeaddresses_refuses_a_network_it_does_not_know(
+    network: str, shown: str
+) -> None:
+    """ISS 1443: `ParseNetwork` answers `NET_UNROUTABLE`, which is refused.
+
+    A name longer than `constants.MAX_QUOTED_NAME` is given by its length.
+    """
     node, _ = a_node()
     with pytest.raises(RpcError) as raised:
         get_node_addresses(node, _CONN, [1, network])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"Network not recognized: {network}"
+    assert raised.value.message == f"Network not recognized: {shown}"
+
+
+def test_getnodeaddresses_refuses_a_key_as_network_without_quoting_it() -> None:
+    """ISS 2514: a `network` longer than a name is given by its length."""
+    node, _ = a_node()
+    with pytest.raises(RpcError) as raised:
+        get_node_addresses(node, _CONN, [1, LEAK_WIF])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        f"Network not recognized: <{len(LEAK_WIF)} characters>"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 @pytest.mark.parametrize(
@@ -279,9 +302,12 @@ def test_addpeeraddress_refuses_a_host_it_cannot_read() -> None:
     assert raised.value.message == "Invalid IP address"
 
 
-@pytest.mark.parametrize("port", [-1, 65536, 8333.5])
+@pytest.mark.parametrize("port", [-1, 65536, 8333.5, NegativeZero()])
 def test_addpeeraddress_refuses_a_port_out_of_range(port: float) -> None:
-    """ISS 1443: `getInt<uint16_t>`, "JSON integer out of range"."""
+    """ISS 1443: `getInt<uint16_t>`, "JSON integer out of range".
+
+    `-0` included, which `from_chars` refuses for an unsigned type (ISS 2491).
+    """
     node, _ = a_node()
     with pytest.raises(RpcError) as raised:
         add_peer_address(node, _CONN, ["1.2.3.4", port])

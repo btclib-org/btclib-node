@@ -4,12 +4,8 @@
 
 """A run through the console script stays one process (issue #579).
 
-`tests/unit/scripts_test.py` used to answer this statically, for the
-three now-deleted `scripts/chains/*.py`; this is the dynamic half ISS
-579 itself asked for -- "a run through the command is shown to stay one
-process past the start of block download" -- and it did not exist for
-any entry point before this branch, static or dynamic, this one
-included.
+This is the dynamic check ISS 579 asks for -- "a run through the command
+is shown to stay one process past the start of block download".
 
 `btclib-node`, not `python -m btclib_node`: a spawned pool worker whose
 parent was started through `-m` never re-executes `__main__.py`'s body
@@ -22,14 +18,18 @@ worker re-executes it under `_fixup_main_from_path`, and what stops
 `main()` running a second time there is that generated shim's own
 `if __name__ == "__main__":` guard (`cli.py`'s own module docstring).
 
-The measurement is ISS 579's own: `Node.warm_worker_pool`'s only caller
-is `download_manager.block_download`, right before the first real
-`GetData`, so a subprocess started through the console script and
-pointed at a peer that actually has blocks to serve is carried past the
-same point the original defect fired on. `history.log`'s own
-`"Start Index initialization"` count is what ISS 579 measured a second
-`Node` by -- nine of them, once, unguarded -- and `"Address already in
-use"` is the other half, the two ports the second `Node` collided on.
+`Node.warm_worker_pool` runs where a block is requested --
+`DownloadManager._request_blocks`, and
+`p2p.callbacks._queue_compact_block` for a compact block -- so a
+subprocess started through the console script and pointed at a peer that
+actually has blocks to serve is carried past the point where its pool
+spawns workers (ISS 579). Past the shim's guard, two backstops stop a
+worker that runs `main()` again before it builds a second `Node`: `main`
+takes the directory locks first, and refuses a data directory another
+process holds (`DirectoryLockError`), and `Node.__init__` refuses a
+spawned worker (`ReimportedMainProcessError`). The test asserts that the
+run's `history.log` holds one `"Start Index initialization"` and no
+`"Address already in use"`.
 """
 
 import importlib.metadata

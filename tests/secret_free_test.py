@@ -12,6 +12,8 @@ every planted case has to fail.
 
 from __future__ import annotations
 
+from functools import partial
+from timeit import repeat
 from typing import TYPE_CHECKING, override
 
 import pytest
@@ -357,6 +359,87 @@ def test_whitespace_inside_bytes_holding_a_backslash_does_not_hide_them(
     split = secret[:3] + separator + secret[3:]
     with pytest.raises(AssertionError):
         assert_secret_free(SHOWN[shown](f"bad key {split!r}"), [secret])
+
+
+@pytest.mark.parametrize("separator", [b"\t", b"\n", b"\r"])
+@pytest.mark.parametrize("at", [3, 4, 5])
+@pytest.mark.parametrize("shown", SHOWN)
+def test_whitespace_inside_bytes_holding_a_tab_does_not_hide_them(
+    shown: str, at: int, separator: bytes
+) -> None:
+    r"""Whitespace inside bytes holding a tab, shown by `!r`, is found.
+
+    The spelling of those bytes holds `\t`, and the whitespace byte is written
+    as an escape beside it or a letter away.
+
+    :param shown: how the refusal shows the message, by name.
+    :param at: where the whitespace byte goes.
+    :param separator: the whitespace byte that splits them.
+    """
+    secret = b"vel\tvet"
+    split = secret[:at] + separator + secret[at:]
+    with pytest.raises(AssertionError):
+        assert_secret_free(SHOWN[shown](f"bad key {split!r}"), [secret])
+
+
+@pytest.mark.parametrize("separator", [b"\t", b"\n", b"\r"])
+def test_whitespace_inside_bytes_a_key_error_holds_does_not_hide_them(
+    separator: bytes,
+) -> None:
+    """Whitespace inside bytes holding a tab, as a `KeyError`'s key, is found.
+
+    :param separator: the whitespace byte that splits them.
+    """
+    secret = b"vel\tvet"
+    split = secret[:5] + separator + secret[5:]
+    with pytest.raises(AssertionError):
+        assert_secret_free(raised(KeyError, split), [secret])
+
+
+@pytest.mark.parametrize("shown", SHOWN)
+def test_a_piece_s_own_whitespace_changed_does_not_match(shown: str) -> None:
+    """Bytes holding a tab, shown with a newline in its place, are not found.
+
+    :param shown: how the refusal shows the message, by name.
+    """
+    changed = b"vel\nvet"
+    assert_secret_free(SHOWN[shown](f"bad key {changed!r}"), [b"vel\tvet"])
+
+
+@pytest.mark.parametrize("separator", [" ", "\t", "\n", "\r"])
+@pytest.mark.parametrize("shown", SHOWN)
+def test_whitespace_after_a_string_s_own_backslash_does_not_hide_it(
+    shown: str, separator: str
+) -> None:
+    r"""Whitespace between a string's backslash and the `n` after it is found.
+
+    In a string, a backslash and the `n` after it are two characters, not the
+    `\n` escape. The string holds a space of its own, so dropping whitespace
+    from the text does not find it.
+
+    :param shown: how the refusal shows the split string, by name.
+    :param separator: the whitespace put between them.
+    """
+    noted = "my old\\notes"
+    split = noted[:7] + separator + noted[7:]
+    with pytest.raises(AssertionError):
+        assert_secret_free(SHOWN[shown](split), [noted])
+
+
+def test_a_run_of_tabs_holds_no_piece_with_a_letter_among_tabs() -> None:
+    """Tabs, as a `KeyError`'s key, pass a piece needing a letter among tabs.
+
+    The search is timed against a piece with no tab, which the run cannot
+    slow: a gap that can hold the piece's own tab backtracks through the run,
+    far past the bound. Section 7's *A test that bounds time bounds a ratio*
+    says why the bound is a ratio.
+    """
+    tabs = raised(KeyError, b"\t" * 100)
+    among, control = (
+        min(repeat(partial(assert_secret_free, tabs, [piece]), number=1, repeat=5))
+        for piece in (b"\t\t\t\tx\t", b"vvvvxv")
+    )
+    assert among < 100 * control
 
 
 @pytest.mark.parametrize("shown", SHOWN)

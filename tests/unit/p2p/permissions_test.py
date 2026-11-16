@@ -18,6 +18,8 @@ from btclib_node.p2p.permissions import (
     parse_whitebind_permissions,
     permission_names,
 )
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 # what a value naming no permission is granted, with `-whitelistrelay` on
 _DEFAULT = ["noban", "relay", "mempool", "download"]
@@ -72,22 +74,66 @@ def test_a_value_grants_core_s_permissions_in_core_s_order(
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        # measured on bitcoind
+        # measured on bitcoind, which quotes the value where these write
+        # `'...'` and its position (ISS 2521)
         ("bogus@1.2.3.4", "Invalid P2P permission: 'bogus'"),
         ("noban,Relay@1.2.3.4", "Invalid P2P permission: 'Relay'"),
-        ("in@1.2.3.4", "Only direction was set, no permissions: 'in@1.2.3.4'"),
-        ("out,in@1.2.3.4", "Only direction was set, no permissions: 'out,in@1.2.3.4'"),
-        ("noban@nothing", "Invalid netmask specified in -whitelist: 'nothing'"),
-        ("1.2.3.4/33", "Invalid netmask specified in -whitelist: '1.2.3.4/33'"),
-        ("", "Invalid netmask specified in -whitelist: ''"),
+        (
+            "in@1.2.3.4",
+            "Only direction was set, no permissions: '...' (value 2 of -whitelist)",
+        ),
+        (
+            "out,in@1.2.3.4",
+            "Only direction was set, no permissions: '...' (value 2 of -whitelist)",
+        ),
+        (
+            "noban@nothing",
+            "Invalid netmask specified in -whitelist: '...' (value 2 of -whitelist)",
+        ),
+        (
+            "1.2.3.4/33",
+            "Invalid netmask specified in -whitelist: '...' (value 2 of -whitelist)",
+        ),
+        ("", "Invalid netmask specified in -whitelist: '...' (value 2 of -whitelist)"),
     ],
 )
 def test_a_value_core_refuses_is_refused_with_core_s_message(
     value: str, message: str
 ) -> None:
     """ISS 1320: the refusals of `TryParsePermissionFlags` and `TryParse`."""
-    with pytest.raises(ValueError, match=f"^{message}$"):
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         Whitelist.parse(["noban@5.6.7.8", value])
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (
+            LEAK_WIF,
+            "Invalid netmask specified in -whitelist: '...' (value 3 of -whitelist)",
+        ),
+        (
+            f"noban@{LEAK_WIF}",
+            "Invalid netmask specified in -whitelist: '...' (value 3 of -whitelist)",
+        ),
+        (
+            f"in@{LEAK_WIF}",
+            "Only direction was set, no permissions: '...' (value 3 of -whitelist)",
+        ),
+        (
+            f"{LEAK_WIF}@1.2.3.4",
+            f"Invalid P2P permission: '<{len(LEAK_WIF)} characters>'",
+        ),
+    ],
+)
+def test_a_key_given_in_a_whitelist_value_is_not_in_the_refusal(
+    value: str, message: str
+) -> None:
+    """ISS 2521: Core quotes the netmask, the value or the permission."""
+    with pytest.raises(ValueError, match=r"whitelist|P2P permission") as raised:
+        Whitelist.parse(["noban@5.6.7.8", "1.2.3.4", value])
+    assert str(raised.value) == message
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_the_first_refused_value_is_the_one_named() -> None:
@@ -196,15 +242,16 @@ def test_whitebind_permissions_are_split_from_the_address(
     text: str, names: list[str], address: str
 ) -> None:
     """ISS 1625: `TryParsePermissionFlags`' prefix, then the address."""
-    flags, rest = parse_whitebind_permissions(text)
+    flags, rest = parse_whitebind_permissions(text, position=1)
     assert permission_names(flags) == names
     assert rest == address
 
 
 def test_a_whitebind_naming_no_permission_holds_implicit() -> None:
     """ISS 1625: only `@` makes the permissions explicit, even empty ones."""
-    assert NetPermissionFlags.IMPLICIT in parse_whitebind_permissions("1.2.3.4:5")[0]
-    assert not parse_whitebind_permissions("@1.2.3.4:5")[0]
+    implicit = parse_whitebind_permissions("1.2.3.4:5", position=1)[0]
+    assert NetPermissionFlags.IMPLICIT in implicit
+    assert not parse_whitebind_permissions("@1.2.3.4:5", position=1)[0]
 
 
 @pytest.mark.parametrize(
@@ -215,19 +262,22 @@ def test_a_whitebind_naming_no_permission_holds_implicit() -> None:
             'whitebind may only be used for incoming connections ("out" was passed)',
         ),
         ("bogus,out@1.2.3.4:5", "Invalid P2P permission: 'bogus'"),
-        ("in@1.2.3.4:5", "Only direction was set, no permissions: 'in@1.2.3.4:5'"),
+        (
+            "in@1.2.3.4:5",
+            "Only direction was set, no permissions: '...' (value 1 of -whitebind)",
+        ),
     ],
 )
 def test_whitebind_permissions_are_refused_in_core_s_words(
     text: str, message: str
 ) -> None:
-    """ISS 1625: the texts are those of `bitcoind`.
+    """ISS 1625: `bitcoind`'s texts, `'...'` for a value it quotes (ISS 2521).
 
     `out` is refused where it is read, so a permission named before it
     that is none is refused first, and `-whitelist` still accepts `out`.
     """
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-        parse_whitebind_permissions(text)
+        parse_whitebind_permissions(text, position=1)
     if text.startswith("out"):
         assert Whitelist.parse(["out,noban@1.2.3.4"]).outgoing
 

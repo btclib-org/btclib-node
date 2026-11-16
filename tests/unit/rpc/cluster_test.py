@@ -114,7 +114,7 @@ def test_a_tx_not_held_is_not_in_mempool() -> None:
         (
             ["aa"],
             RPCErrorCode.INVALID_PARAMETER,
-            "txid must be of length 64 (not 2, for 'aa')",
+            "txid must be of length 64 (not 2, for '...')",
         ),
     ],
 )

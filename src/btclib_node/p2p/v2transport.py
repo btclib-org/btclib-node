@@ -40,7 +40,8 @@ from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from ecc import ellswift
 from ecc.curves import secp256k1
 
-from btclib_node.exceptions import RejectedMessageError
+from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.exceptions import RejectedMessageError, TransportError
 from btclib_node.p2p.transport import (
     BytesToSend,
     NetMessage,
@@ -73,10 +74,20 @@ _V1_VERSION_COMMAND = b"version\x00\x00\x00\x00\x00"
 # Core's `MAX_CONTENTS_LEN` for a packet: the long type's 0x00 and its
 # 12 bytes, and the largest payload
 _MAX_CONTENTS_LEN = 1 + 12 + MAX_PROTOCOL_MESSAGE_LENGTH
+# the magics the chains `btclib_node.chains` defines: a refusal names the
+# magic it received only where it holds one of these values. Section 7 of
+# the organization's standard, *A refusal carries no secret*: a refused
+# magic is by definition not this node's, so it may hold anything, key
+# bytes included.
+_KNOWN_MAGICS = frozenset(
+    chain().magic for chain in (Main, TestNet, TestNet4, SigNet, RegTest)
+)
 
 
-class V2TransportError(BTClibValueError):
+class V2TransportError(TransportError):
     """Bytes received are invalid: the transport cannot be used anymore."""
+
+    prefix = "V2 transport error"
 
 
 class V1PeerRefusedError(V2TransportError):
@@ -252,7 +263,9 @@ class V2Transport(Transport):
                 self._start_sending_handshake()
         elif len(self._recv_buffer) == _V1_PREFIX_LEN:
             if not self._allow_v1:
-                err_msg = "V1 peer refused"
+                # this node's own refusal, which SECURITY.md's *Where this
+                # node departs from Bitcoin Core* argues
+                err_msg = "V1 peer refused (see -v1transport)"
                 raise V1PeerRefusedError(err_msg)
             with self._send_lock:
                 self._v1.received_bytes(memoryview(bytes(self._recv_buffer)))
@@ -276,8 +289,12 @@ class V2Transport(Transport):
             and buffer[offset : offset + len(_V1_VERSION_COMMAND)]
             == _V1_VERSION_COMMAND
         ):
-            err_msg = f"V1 peer with wrong MessageStart {bytes(buffer[:offset]).hex()}"
-            raise V2TransportError(err_msg)
+            wrong_magic = bytes(buffer[:offset])
+            # `_KNOWN_MAGICS` says why any other magic is not printed
+            suffix = f" {wrong_magic.hex()}" if wrong_magic in _KNOWN_MAGICS else ""
+            err_msg = f"V1 peer with wrong MessageStart{suffix}"
+            # Core's line names no peer
+            raise V2TransportError(err_msg, names_peer=False)
         if len(buffer) < _KEY_LEN:
             return
         assert self._prv_key is not None  # noqa: S101 -- None only after this state
@@ -313,11 +330,20 @@ class V2Transport(Transport):
             raise V2TransportError(err_msg)
 
     def _process_packet_bytes(self) -> None:
+        # Neither refusal prints the length decrypted, which Core's log
+        # does (`src/net.cpp:1229` and `:1244`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Section 7 of the
+        # organization's standard, *A refusal carries no secret*: the
+        # length is the peer's octets XORed with this session's keystream,
+        # so a reader of the refusal who holds one of the two learns the
+        # other.
         buffer = self._recv_buffer
         if len(buffer) == LENGTH_LEN:
             self._recv_len = self._cipher.decrypt_length(bytes(buffer))
             if self._recv_len > _MAX_CONTENTS_LEN:
-                err_msg = f"packet too large ({self._recv_len} bytes)"
+                err_msg = (
+                    f"packet too large: at most {_MAX_CONTENTS_LEN} bytes expected"
+                )
                 raise V2TransportError(err_msg)
         elif len(buffer) > LENGTH_LEN and len(buffer) == self._recv_len + EXPANSION:
             try:
@@ -325,7 +351,7 @@ class V2Transport(Transport):
                     bytes(buffer[LENGTH_LEN:]), self._recv_aad
                 )
             except BTClibValueError as e:
-                err_msg = f"packet decryption failure ({self._recv_len} bytes)"
+                err_msg = "packet decryption failure"
                 raise V2TransportError(err_msg) from e
             # a packet decrypted with the AAD expected: it is not expected again
             self._recv_aad = b""

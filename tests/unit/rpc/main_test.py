@@ -9,7 +9,8 @@ answer has to end the request rather than the node. The answers are
 `bitcoind`'s, whose envelope and HTTP status follow the version a
 request names (`rpc.jsonrpc`).
 
-`bitcoind` here is the release `integration-bitcoind.yml` pins.
+`bitcoind` here is the release `integration-bitcoind.yml` pins. A test
+that follows Core's master instead says so.
 """
 
 import threading
@@ -31,6 +32,8 @@ from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.main import get_connection, handle_rpc, resume_rpc
 from tests import LogLines, generate_random_chain, generate_random_transaction
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -250,29 +253,58 @@ def test_an_empty_batch_answers_an_empty_array() -> None:
 
 
 def test_a_batch_is_answered_200_whatever_its_members_versions() -> None:
-    """Every member of a batch is answered inside HTTP 200.
-
-    A member that is not an object is refused before its own `id` is
-    read, so it carries the previous member's `id` and version, as
-    `bitcoind` answers `[{"id":7,...},5,...]`.
-    """
-    node, sent, _, stopped = make_node(
-        [LEGACY_PING, "garbage", {"id": "b", "method": "nosuch"}]
-    )
+    """Every member of a batch is answered inside HTTP 200."""
+    node, sent, _, stopped = make_node([LEGACY_PING, {"id": "b", "method": "nosuch"}])
     handle_rpc(node)
-    invalid = error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
     not_found = error(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
     assert sent == [
         HttpReply(
             OK,
             [
                 {"result": None, "error": None, "id": "a"},
-                {"result": None, "error": invalid, "id": "a"},
                 {"result": None, "error": not_found, "id": "b"},
             ],
         )
     ]
     assert not stopped
+
+
+def test_a_member_that_is_not_an_object_carries_nothing_of_the_one_before() -> None:
+    """A member that is not an object is answered legacy, with a null `id`.
+
+    This follows Core's master (`rpc.main._answer_batch`). The first two
+    batches take the shapes of `test_batch_invalid_element_reply` in Core's
+    `test/functional/interface_rpc.py` (at bitcoin/bitcoin@a527a0077a).
+    The third has a member with no method, answered with its own `id`.
+    """
+    invalid = error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
+    missing = error(RPCErrorCode.INVALID_REQUEST, "Missing method")
+    count = {"jsonrpc": "2.0", "method": "getblockcount", "id": "X"}
+    notification = {"jsonrpc": "2.0", "method": "getblockcount"}
+    for body, replies in (
+        (
+            [count, 2],
+            [
+                {"jsonrpc": "2.0", "result": 0, "id": "X"},
+                {"result": None, "error": invalid, "id": None},
+            ],
+        ),
+        ([notification, 2], [{"result": None, "error": invalid, "id": None}]),
+        (
+            [count, {"jsonrpc": "2.0", "id": "Y"}],
+            [
+                {"jsonrpc": "2.0", "result": 0, "id": "X"},
+                {"jsonrpc": "2.0", "error": missing, "id": "Y"},
+            ],
+        ),
+    ):
+        node, sent, _, _ = make_node(body)
+        # the genesis block alone: a height of 0
+        node.chainstate = SimpleNamespace(
+            block_index=SimpleNamespace(active_chain=[None])
+        )
+        handle_rpc(node)
+        assert sent == [HttpReply(OK, replies)]
 
 
 def test_each_batch_member_is_answered_in_its_own_version() -> None:
@@ -301,13 +333,9 @@ def test_a_batch_leaves_out_its_notifications() -> None:
 
 
 def test_a_batch_of_notifications_is_answered_no_content() -> None:
-    """A non-empty batch with nothing to answer is 204, as in Core.
-
-    The member refused after a notification carries that notification's
-    missing `id` and version, so it is left out too.
-    """
+    """A non-empty batch with nothing to answer is 204, as in Core."""
     notification = {"jsonrpc": "2.0", "method": "ping"}
-    node, sent, _, _ = make_node([notification, "garbage"])
+    node, sent, _, _ = make_node([notification, notification])
     handle_rpc(node)
     assert sent == [HttpReply(NO_CONTENT, None)]
 
@@ -593,6 +621,27 @@ def test_a_named_params_refusal_is_invalid_parameter(
         )
 
 
+def test_a_key_as_a_parameter_name_is_refused_without_quoting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2514: a name longer than a parameter's is given by its length."""
+    key = LEAK_WIF.encode()
+    shown = f"<{len(LEAK_WIF)} characters>"
+    for params, message in (
+        (
+            b'{"%s":1,"%s":2}' % (key, key),
+            f"Parameter {shown} specified multiple times",
+        ),
+        (b'{"a":1,"%s":2}' % key, f"Unknown named parameter {shown}"),
+    ):
+        seen, answer = _named(
+            monkeypatch, b'{"id":1,"method":"named","params":%s}' % params
+        )
+        assert not seen
+        assert answer.body["error"] == error(RPCErrorCode.INVALID_PARAMETER, message)
+        assert_secret_free(ValueError(answer.body), [LEAK_WIF])
+
+
 def test_named_params_to_a_method_there_is_not_are_not_read() -> None:
     """The method is looked up first, as `CRPCTable::execute` looks it up."""
     node, sent, _, _ = make_node(
@@ -713,12 +762,12 @@ def test_a_lone_stop_waits_for_its_reply() -> None:
 def test_a_refused_stop_in_a_batch_does_not_stop_the_node() -> None:
     """A batch member refusing `stop` does not run `node.stop()` (ISS 1441).
 
-    `_answer_batch` used to set `stop` from a member's own method name as
-    soon as it was parsed, before `_exec` ever ran it, so a member that
-    asked to `stop` but was refused -- too many positional arguments,
-    here -- still reached `node.stop()`. The refused member is answered
-    inside the batch's own 200 reply, through `send`, exactly like the
-    ping beside it.
+    `_answer_batch` setting `stop` from a member's own method name as
+    soon as it is parsed, before `_exec` ever runs it, would let a
+    member that asks to `stop` but is refused -- too many positional
+    arguments, here -- still reach `node.stop()`. The refused member is
+    answered inside the batch's own 200 reply, through `send`, exactly
+    like the ping beside it.
     """
     refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
     node, sent, waited, stopped = make_node([refused_stop, PING])
@@ -814,21 +863,19 @@ def test_a_batch_stop_with_wait_schedules_a_delay_too() -> None:
 
 
 def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:
-    """handle_rpc leaves a connection's own entry for `async_send` to remove.
+    """handle_rpc leaves a connection's own entry for `RpcConnection` to remove.
 
-    `handle_rpc` used to pop this entry itself, right after scheduling
-    `conn.send`, on the theory that every reply eventually closes --
-    every request growing `connections` without bound otherwise, since
-    nothing else shrank it (issue #64). Once a reply could keep the
-    connection open instead (issue #640), that pop could run after
-    `RpcConnection.async_send` had already read the *next* request off
+    A pop here, right after scheduling `conn.send`, would keep
+    `connections` bounded (issue #64), but a reply can keep the
+    connection open (issue #640), so that pop could run after
+    `RpcConnection.async_send` has already read the *next* request off
     the same, still-open connection and queued it, on `RpcManager`'s own
-    thread -- removing the entry that next request's own answer needed
-    rather than the one this call was meant to retire, and losing that
-    next request's answer with nothing logged on either side (issue
-    #688). `RpcConnection.async_send` is the sole owner of this dict's
-    membership now: this test pins `handle_rpc`'s own side of that, that
-    it touches `connections` not at all.
+    thread -- removing the entry that next request's own answer needs
+    rather than the one this call means to retire, and losing that next
+    request's answer with nothing logged on either side (issue #688).
+    `RpcConnection`'s own close paths remove this entry
+    (`RpcManager.forget_connection`): this test pins `handle_rpc`'s side
+    of that, that it touches `connections` not at all.
     """
     node, _, _, _ = make_node(PING)
     assert 0 in node.rpc_manager.connections

@@ -91,7 +91,7 @@ def test_download(tmp_path: Path) -> None:
     # Python state, never written to the store, so a copy taken without
     # this call would carry nothing past genesis -- measured directly,
     # `Chainstate.flush` runs zero times over the loop above without it
-    # (closes #710). Called here rather than through `close()`:
+    # (issue #710). Called here rather than through `close()`:
     # `bootstrap_node` stays running and is never closed, so nothing
     # here reopens btclib-org/btclib-node#703's own Windows question.
     # Core's own `TestFramework._initialize_chain`
@@ -117,13 +117,14 @@ def test_download(tmp_path: Path) -> None:
 
         download_nodes = [bootstrap_node]
         for i in range(1, 10):
-            # Not `LOCK`: `bootstrap_node` is running and holds it open, and
-            # RocksDB re-creates it fresh on every `Rdict` open regardless of
-            # what -- if anything -- was there before, so a copy carries no
-            # state a fresh open would not already write itself. Copying it
-            # anyway is what raised `shutil.Error: [WinError 32]` on
-            # `windows-latest`, Windows refusing to copy a file another
-            # handle still holds where POSIX does not (closes #683).
+            # Not `LOCK`: `bootstrap_node` is running and holds it open,
+            # and RocksDB re-creates it fresh on every `Rdict` open
+            # regardless of what -- if anything -- was there before, so
+            # a copy carries no state a fresh open would not already
+            # write itself. Copying it anyway raises `shutil.Error:
+            # [WinError 32]` on `windows-latest`, Windows refusing to
+            # copy a file another handle still holds where POSIX does
+            # not (issue #683).
             shutil.copytree(
                 tmp_path / "node0",
                 tmp_path / f"node{i}",
@@ -138,11 +139,11 @@ def test_download(tmp_path: Path) -> None:
                 )
             )
             node.load()
-            # Each copy is asserted whole on its own, before it ever talks
-            # to a peer: `main_node`'s own final assertion below is
-            # satisfiable through `bootstrap_node` alone, so it cannot
-            # answer whether the other nine copies carry the chain they are
-            # meant to (closes #710).
+            # Each copy is asserted whole on its own, before it ever
+            # talks to a peer: `main_node`'s own final assertion below
+            # is satisfiable through `bootstrap_node` alone, so it
+            # cannot answer whether the other nine copies carry the
+            # chain they are meant to (issue #710).
             assert len(node.chainstate.block_index.active_chain) == length + 1
             node.start()
             stack.callback(node.stop)

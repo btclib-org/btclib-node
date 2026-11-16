@@ -26,7 +26,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from btclib_node.constants import CLIENT_NAME
+from btclib_node.constants import CLIENT_NAME, shown_path
 from btclib_node.exceptions import DirectoryLockError
 
 if TYPE_CHECKING:
@@ -70,10 +70,12 @@ class DirectoryLock:
     Raises `DirectoryLockError` with Core's own message: "Cannot write
     to directory ..." where the lock file cannot be opened, "Cannot
     obtain a lock on directory ..." where another process holds it
-    (`LockDirectory` in `src/init.cpp`, same sha).
+    (`LockDirectory` in `src/init.cpp:1235` and `:1237`, same sha). Core
+    writes the directory whole, and these write it as `shown_path` does,
+    `default_path` being where the directory is when no option names it.
     """
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, default_path: Path | None = None) -> None:
         """Lock `directory`, which has to exist already."""
         self._holding = False
         self.directory = directory
@@ -91,17 +93,25 @@ class DirectoryLock:
                 # sets it here, so a library caller's umask could widen it
                 # and let another user hold a shared lock on the file
                 fd = os.open(self._key, os.O_RDWR | os.O_CREAT, 0o600)
-            except OSError as error:
-                err_msg = f"Cannot write to directory '{directory}'; "
+            except OSError:
+                fd = -1
+            # each refusal raised past the `except`, neither chained nor
+            # left as its context: the `OSError` names the path whole
+            if fd < 0:
+                shown = shown_path(directory, default_path, lambda text: f"'{text}'")
+                err_msg = f"Cannot write to directory {shown}; "
                 err_msg += "check permissions."
-                raise DirectoryLockError(err_msg) from error
+                raise DirectoryLockError(err_msg)
             try:
                 _try_lock(fd)
-            except OSError as error:
+            except OSError:
                 os.close(fd)
-                err_msg = f"Cannot obtain a lock on directory {directory}. "
+                fd = -1
+            if fd < 0:
+                shown = shown_path(directory, default_path)
+                err_msg = f"Cannot obtain a lock on directory {shown}. "
                 err_msg += f"{CLIENT_NAME} is probably already running."
-                raise DirectoryLockError(err_msg) from error
+                raise DirectoryLockError(err_msg)
             _held[self._key] = [fd, 1]
             self._holding = True
 
@@ -125,19 +135,21 @@ class DirectoryLock:
         self.release()
 
 
-def lock_directories(*directories: Path) -> tuple[DirectoryLock, ...]:
+def lock_directories(
+    *directories: tuple[Path, Path | None],
+) -> tuple[DirectoryLock, ...]:
     """Lock each of `directories` in turn, Core's own `LockDirectories`.
 
-    Where one is refused, those before it are released before the refusal
-    propagates, rather than left to the collector for a caller that tries
-    again.
+    Each is a directory and its `DirectoryLock`'s `default_path`. Where one
+    is refused, those before it are released before the refusal propagates,
+    rather than left to the collector for a caller that tries again.
     """
     locks: list[DirectoryLock] = []
     try:
         # a loop and not `extend`: each lock taken is in `locks` before
         # the next is asked for, which is what the refusal below releases
-        for directory in directories:
-            lock = DirectoryLock(directory)
+        for directory, default_path in directories:
+            lock = DirectoryLock(directory, default_path=default_path)
             locks.append(lock)
     except DirectoryLockError:
         for lock in locks:

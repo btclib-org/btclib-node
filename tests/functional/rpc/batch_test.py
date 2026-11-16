@@ -56,14 +56,13 @@ def test_a_one_member_batch_still_answers_as_an_array(rpc_node: Node) -> None:
     """A batch of exactly one member's own reply stays an array.
 
     `call_batch`'s own `_batch_reply_array` raises `FetchError` where
-    the reply is not a json array (`bitcoin_core_rpc.client`) -- this
-    used to be exactly that, `RpcConnection.async_send` unwrapping a
-    one-member batch's reply the same way it unwraps a lone request's,
-    with nothing left by then to tell the two apart. Matches Core's own
-    `ExecuteHTTPRPC`, which answers an array of any size as an array
-    (`src/httprpc.cpp:135-169`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag) -- never unwrapped for having only one
-    member (issue #653).
+    the reply is not a json array (`bitcoin_core_rpc.client`), as it
+    would be where `RpcConnection.async_send` unwrapped a one-member
+    batch's reply the same way it unwraps a lone request's. Matches
+    Core's own `ExecuteHTTPRPC`, which answers an array of any size as
+    an array (`src/httprpc.cpp:135-169`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) -- never unwrapped for having only one member (issue
+    #653).
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)

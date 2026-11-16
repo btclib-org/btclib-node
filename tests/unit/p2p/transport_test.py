@@ -15,7 +15,7 @@ from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
 from btclib_node.p2p.transport import (
     HEADER_SIZE,
@@ -26,6 +26,7 @@ from btclib_node.p2p.transport import (
     V1Transport,
     frame_message_bytes,
 )
+from tests.secret_free import assert_secret_free, chained
 
 MAGIC = RegTest().magic
 
@@ -146,6 +147,29 @@ def test_a_length_past_the_bound_is_refused_at_the_header(
         assert not transport.received_message_complete()
 
 
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("90613d08a6bf29e30e96f1f684ae088d38685b772367c106254a02ef69022846")
+
+
+def test_a_length_past_the_bound_is_refused_without_its_octets() -> None:
+    """The refusal names the bound, never the length it read.
+
+    `assert_secret_free` looks for pieces whose length `WINDOW` gives, so
+    the four octets fed and the length they read as, in decimal, are
+    looked for as secrets of their own.
+    """
+    fed = _KEY[:4]
+    length = int.from_bytes(fed, "little")
+    assert length > MAX_PROTOCOL_MESSAGE_LENGTH
+    header = wire("ping")[:16] + fed + bytes(4)
+    with pytest.raises(BTClibValueError) as refusal:
+        V1Transport(MAGIC).received_bytes(memoryview(header))
+    expected = f"at most {MAX_PROTOCOL_MESSAGE_LENGTH} bytes expected"
+    assert str(refusal.value) == f"Size too large: {expected}"
+    assert list(chained(refusal.value)) == [refusal.value]
+    assert_secret_free(refusal.value, [_KEY, fed, str(length)])
+
+
 def test_a_bad_checksum_is_rejected_and_the_next_message_is_taken() -> None:
     """Core's `reject_message`: the whole message is dropped, size reported."""
     transport = V1Transport(MAGIC)
@@ -158,6 +182,29 @@ def test_a_bad_checksum_is_rejected_and_the_next_message_is_taken() -> None:
         transport.get_received_message()
     assert raised.value.size == len(tampered)
     assert [m.command for m in feed_all(transport, bytes(data))] == ["verack"]
+
+
+def test_a_rejected_message_is_refused_without_its_size() -> None:
+    """The text names no size; `size` keeps it, for the caller to count.
+
+    The payload-length field is made a key's octets, looked for with the
+    decimal of that length and of the size. `size` is the one attribute
+    allowed to hold it, so it is checked and then taken off before the
+    search.
+    """
+    fed = _KEY[:2] + bytes(2)
+    length = int.from_bytes(fed, "little")
+    # a checksum that is not the payload's
+    tampered = wire("ping")[:16] + fed + bytes(4) + bytes(length)
+    transport = V1Transport(MAGIC)
+    rest = transport.received_bytes(memoryview(tampered))
+    transport.received_bytes(rest)
+    with pytest.raises(RejectedMessageError) as refusal:
+        transport.get_received_message()
+    assert refusal.value.size == len(tampered)
+    del refusal.value.size
+    assert_secret_free(refusal.value, [_KEY, fed, str(length), str(len(tampered))])
+    assert str(refusal.value) == "message rejected"
 
 
 def test_an_invalid_command_is_rejected_when_its_payload_is_in() -> None:
@@ -276,3 +323,23 @@ def test_frame_message_bytes_refuses_octets_ending_inside_a_message(cut: int) ->
     """Whatever the cut, short octets are `IncompleteMessageError`."""
     with pytest.raises(IncompleteMessageError):
         frame_message_bytes(wire("ping", b"\x01" * 8)[:cut])
+
+
+def test_a_wrong_network_magic_refusal_does_not_echo_unknown_octets() -> None:
+    """Section 7: a refusal carries no secret, and a refused magic may hold any.
+
+    A magic that is not one of the chains this package defines is never
+    printed; a magic one of them defines still names the network.
+    """
+    transport = V1Transport(MAGIC)
+    secret = bytes.fromhex(
+        "3a0f9c8d1e7b2a4f6c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a1b2c3d4"
+    )
+    with pytest.raises(WrongNetworkMagicError) as exc_info:
+        transport.received_bytes(memoryview(secret[:4] + bytes(20)))
+    assert_secret_free(exc_info.value, [secret[:4]])
+
+    other = Main().magic
+    assert other != MAGIC
+    with pytest.raises(WrongNetworkMagicError, match=other.hex()):
+        V1Transport(MAGIC).received_bytes(memoryview(other + bytes(20)))

@@ -148,9 +148,9 @@ from btclib_node.rpc.callbacks import (
 # aliased: pytest collects a module-level `test*` as a test, and this
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
-from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
+from btclib_node.rpc.jsonrpc import NegativeZero, RawJSON, decode
 from tests import (
     ambiguous_tx,
     build_block,
@@ -160,7 +160,9 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.secret_free import assert_secret_free
 from tests.unit.main_test import a_dusty_spend, connect, locked_spend, spend
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1224,10 +1226,9 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
     """`getrawmempool` with no flags, or both false, answers a plain array.
 
     Matches `MempoolToJSON`'s own default shape
-    (`src/rpc/mempool.cpp:657-667`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), not the `{"txids": [...]}` object this node used to answer
-    regardless of what was asked for -- that shape is owed only where
-    mempool_sequence is true, below (issue #219).
+    (`src/rpc/mempool.cpp:657-667`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), not the `{"txids": [...]}` object -- that shape is owed
+    only where mempool_sequence is true, below (issue #219).
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
@@ -1272,11 +1273,11 @@ def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
 def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
     """`getrawmempool`'s mempool_sequence flag attaches the mempool's counter.
 
-    `mempool_sequence` used to be silently ignored; `MempoolToJSON`'s own
-    shape for it is an object carrying both the array and the count
-    (`src/rpc/mempool.cpp:666-673`, at bitcoin/bitcoin@f0de87f040, the v32.1
-    tag), and the count advances with every addition, starting at 1 like
-    Core's own `m_sequence_number` (issue #219).
+    `mempool_sequence` is not ignored; `MempoolToJSON`'s own shape for
+    it is an object carrying both the array and the count
+    (`src/rpc/mempool.cpp:666-673`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), and the count advances with every addition, starting at
+    1 like Core's own `m_sequence_number` (issue #219).
     """
     mempool = Mempool(Logger(debug=True))
     node = a_node(mempool=mempool)
@@ -1705,6 +1706,18 @@ def test_tx_out_set_info_refuses_an_unknown_hash_type_by_name() -> None:
     assert raised.value.message == "'not_a_real_type' is not a valid hash_type"
 
 
+def test_tx_out_set_info_refuses_a_key_as_hash_type_without_quoting_it() -> None:
+    """ISS 2514: a `hash_type` longer than a name is given by its length."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, [LEAK_WIF])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        f"'<{len(LEAK_WIF)} characters>' is not a valid hash_type"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
+
+
 def test_tx_out_set_info_hash_type_of_the_wrong_json_type_is_named() -> None:
     """A non-string `hash_type` is named the way `type_error` names it."""
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
@@ -1996,11 +2009,7 @@ def test_get_tx_out_answers_rawtr_desc_for_a_p2tr_coin(
 def test_get_tx_out_answers_nonstandard_type_and_raw_desc_for_an_odd_script(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A script no template matches is `nonstandard`, its `desc` `raw(...)`.
-
-    The shape every fixture's output had before it was made standard
-    (btclib-org/btclib-node#1382), kept here on purpose.
-    """
+    """A script no template matches is `nonstandard`, its `desc` `raw(...)`."""
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
     connect(node, chain)
@@ -2077,7 +2086,7 @@ def test_get_tx_out_refuses_a_non_hexadecimal_txid(
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{not_hex}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
@@ -2095,14 +2104,17 @@ def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, ["aabb", 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
-@pytest.mark.parametrize("n", [-1, 2**32, 1.5])
+@pytest.mark.parametrize("n", [-1, 2**32, 1.5, NegativeZero()])
 def test_get_tx_out_refuses_n_out_of_uint32_range(
     regtest_node: Callable[..., Node], n: float
 ) -> None:
-    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`."""
+    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`.
+
+    `-0` included, which `from_chars` refuses for an unsigned type (ISS 2491).
+    """
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, [(b"\x11" * 32).hex(), n])
@@ -2441,10 +2453,11 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded(
 def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
     """`getrawtransaction` answers 'Block not available (pruned data)' pruned.
 
-    The same missing block as the test above, except `block_db.pruned_up_to`
-    now covers its own height -- `BlockDB.prune_up_to`'s own doing on a
-    real store, stood in here by setting the field directly the way
-    `a_tx_lookup_node`'s own default already does for the unpruned case.
+    The same missing block as the test above, except
+    `block_db.pruned_up_to` covers its own height --
+    `BlockDB.prune_up_to`'s own doing on a real store, stood in here by
+    setting the field directly the way `a_tx_lookup_node`'s own default
+    already does for the unpruned case.
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
@@ -2479,13 +2492,16 @@ def test_a_txid_of_the_wrong_json_type_is_named() -> None:
     )
 
 
-def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getrawtransaction`'s txid that fails to decode as hex is echoed back."""
+def test_a_txid_that_is_not_a_hash_is_refused_without_quoting_it() -> None:
+    """ISS 2514: a key passed as `getrawtransaction`'s txid is not quoted."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
-        get_raw_transaction(node, _CONN, ["zz"])
+        get_raw_transaction(node, _CONN, [LEAK_WIF])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == (
+        f"parameter 1 must be of length 64 (not {len(LEAK_WIF)}, for '...')"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
@@ -2499,9 +2515,7 @@ def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == "parameter 1 must be of length 64 (not 4, for 'aabb')"
-    )
+    assert raised.value.message == "parameter 1 must be of length 64 (not 4, for '...')"
 
 
 def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
@@ -2516,13 +2530,16 @@ def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     )
 
 
-def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getrawtransaction`'s blockhash that fails to decode as hex is echoed."""
+def test_a_blockhash_that_is_not_a_hash_is_refused_without_quoting_it() -> None:
+    """ISS 2514: a key as `getrawtransaction`'s blockhash is not quoted."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
-        get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
+        get_raw_transaction(node, _CONN, ["11" * 32, False, LEAK_WIF])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == (
+        f"parameter 3 must be of length 64 (not {len(LEAK_WIF)}, for '...')"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
@@ -2531,9 +2548,7 @@ def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> No
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == "parameter 3 must be of length 64 (not 4, for 'aabb')"
-    )
+    assert raised.value.message == "parameter 3 must be of length 64 (not 4, for '...')"
 
 
 def test_a_null_blockhash_is_the_same_as_none_given() -> None:
@@ -2629,7 +2644,7 @@ def test_get_rpc_info_answers_an_empty_logpath_with_no_log_file() -> None:
 def test_stop_never_sleeps_here_whatever_wait_is(
     monkeypatch: pytest.MonkeyPatch, params: list[Any]
 ) -> None:
-    """ISS 1467/1441 review: `wait` is validated here, never slept on here.
+    """ISS 1467, ISS 1441: `wait` is validated here, never slept on here.
 
     `stop`'s own docstring is where the reason is argued: a `time.sleep`
     in this callback would run on `Node`'s single thread before
@@ -2764,23 +2779,65 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
         mempool_accept(a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]])
 
 
-def decode_failure(rawtx: str) -> str:
-    """Core's own `-22` message for a `rawtx` that does not decode."""
-    return f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+def decode_failure(index: int) -> str:
+    """Return the `-22` message for an undecoded `rawtx` at `index`."""
+    return f"TX decode failed for tx {index}. Make sure the tx has at least one input."
 
 
 def test_an_unparsable_transaction_ends_the_call() -> None:
     """A `rawtx` that does not decode is `-22` for the call, as in Core.
 
-    `bitcoind` on regtest: `testmempoolaccept '["zz","00"]'` is
-    `-22` "TX decode failed: zz Make sure the tx has at least one input.",
-    where this reported each entry "Invalid serialization"
-    (btclib-org/btclib-node#1329).
+    `bitcoind` on regtest: `testmempoolaccept '["zz","00"]'` is `-22`
+    "TX decode failed: zz Make sure the tx has at least one input.", for
+    the whole call, as this answers it (btclib-org/btclib-node#1329).
+    The message names `zz` by its index, `errors.decode_failed_for`'s
+    departure from Core.
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [["zz", "00"]])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-    assert raised.value.message == decode_failure("zz")
+    assert raised.value.message == decode_failure(0)
+
+
+@pytest.mark.parametrize("rawtx", [LEAK_WIF, LEAK_HEX])
+def test_a_rawtx_that_does_not_decode_is_refused_without_quoting_it(
+    rawtx: str,
+) -> None:
+    """ISS 2514: a key passed as a `rawtx` is named by its index alone.
+
+    A WIF is not hex, and a raw key is hex that decodes as no transaction.
+    """
+    valid = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[valid, rawtx]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure(1)
+    assert_secret_free(raised.value, [rawtx])
+
+
+@pytest.mark.parametrize("rawtx", [LEAK_WIF, LEAK_HEX])
+def test_decode_hex_tx_refuses_a_key_without_quoting_it(rawtx: str) -> None:
+    """ISS 2514: `_decode_hex_tx` and the refusals it chains under quote no key.
+
+    `decoderawtransaction` and `sendrawtransaction` raise its refusal as
+    their cause, which `assert_secret_free` reads too.
+    """
+    with pytest.raises(BTClibValueError) as raised:
+        cb._decode_hex_tx(rawtx)
+    assert_secret_free(raised.value, [rawtx])
+    for call in (cb.decode_raw_transaction, send_raw_transaction):
+        with pytest.raises(RpcError) as refused:
+            call(a_node(), _CONN, [rawtx])
+        assert refused.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert refused.value.__cause__ is not None
+        assert_secret_free(refused.value, [rawtx])
+
+
+def test_decode_hex_tx_gives_a_string_that_is_not_hex_by_its_length() -> None:
+    """The length is what section 7 of the standard lets a refusal print."""
+    with pytest.raises(BTClibValueError) as raised:
+        cb._decode_hex_tx(LEAK_WIF)
+    assert str(raised.value) == f"invalid hex string of {len(LEAK_WIF)} characters"
 
 
 def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
@@ -2819,10 +2876,10 @@ def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -
 def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
     """`testmempoolaccept` with no arguments is refused with its own usage.
 
-    An empty `params` used to reach `params[0]` unguarded and raise
-    `IndexError`, which `handle_rpc` answers `-32603 Internal Error` --
-    the code this node owes its own fault, not a call short of a
-    required argument (issue #443).
+    Not the `-32603 Internal Error` `rpc.main._execute` answers for an
+    `IndexError` from reaching `params[0]` of an empty `params` -- the
+    code this node owes its own fault, not a call short of a required
+    argument (issue #443).
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [])
@@ -2833,11 +2890,10 @@ def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
 def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
     """`testmempoolaccept`'s `rawtxs` of the wrong JSON type is named.
 
-    `rawtxs` used to be handed straight to a `for` loop, so a JSON
-    string -- itself iterable in Python -- was walked one character at a
-    time instead of being refused (issue #443). Core declares this
-    argument `RPCArg::Type::ARR`, type-checked before the handler body
-    runs.
+    `rawtxs` handed straight to a `for` loop would let a JSON string --
+    itself iterable in Python -- be walked one character at a time
+    instead of being refused (issue #443). Core declares this argument
+    `RPCArg::Type::ARR`, type-checked before the handler body runs.
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, ["not an array"])
@@ -2864,12 +2920,11 @@ def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
 ) -> None:
     """A `rawtx` that is not a string ends the call with Core's own message.
 
-    `bitcoind` on regtest answers `-3` "JSON value of type number
-    is not of expected type string" to `testmempoolaccept [[5]]`, and
-    the same for the other JSON types, where this answered `-32603
-    Internal Error` (btclib-org/btclib-node#1253). The valid entry ahead
-    of the bad one is not validated: Core reads every element before it
-    validates any.
+    `bitcoind` on regtest answers `-3` "JSON value of type number is not
+    of expected type string" to `testmempoolaccept [[5]]`, and the same
+    for the other JSON types, as this does
+    (btclib-org/btclib-node#1253). The valid entry ahead of the bad one
+    is not validated: Core reads every element before it validates any.
     """
     verified: list[object] = []
     monkeypatch.setattr(
@@ -2895,7 +2950,7 @@ def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [[truncated]])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-    assert raised.value.message == decode_failure(truncated)
+    assert raised.value.message == decode_failure(0)
 
 
 def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
@@ -2915,7 +2970,7 @@ def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
         with pytest.raises(RpcError) as raised:
             mempool_accept(a_node(), _CONN, [[spaced]])
         assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
-        assert raised.value.message == decode_failure(spaced)
+        assert raised.value.message == decode_failure(0)
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
@@ -3016,10 +3071,10 @@ def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
 def test_send_raw_transaction_with_no_params_is_answered_the_usage() -> None:
     """`sendrawtransaction` with no arguments is refused with its own usage.
 
-    An empty `params` used to reach `params[0]` unguarded and raise
-    `IndexError`, which `handle_rpc` answers `-32603 Internal Error` --
-    the code this node owes its own fault, not a call short of a
-    required argument (issue #443).
+    Not the `-32603 Internal Error` `rpc.main._execute` answers for an
+    `IndexError` from reaching `params[0]` of an empty `params` -- the
+    code this node owes its own fault, not a call short of a required
+    argument (issue #443).
     """
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [])
@@ -3066,11 +3121,11 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     """
     # bytesize_limit at zero makes this transaction the only, and so the
     # worst, entry held: Mempool._evict_to_limit takes it right back out
-    # once add_tx has added it provisionally (btclib-org/btclib-node#294),
-    # the same silent no-op a full mempool's outright refusal used to be.
-    # Answering with tx.id.hex() regardless would tell the caller this
-    # transaction was kept when it was not, the same defect #277 fixed on
-    # the peer-to-peer path. btclib-org/btclib-node#293
+    # once add_tx has added it provisionally
+    # (btclib-org/btclib-node#294). Answering with tx.id.hex()
+    # regardless would tell the caller this transaction was kept when it
+    # was not, the same defect #277 names on the peer-to-peer path.
+    # btclib-org/btclib-node#293
     monkeypatch.setattr(
         cb,
         "verify_mempool_acceptance",
@@ -3173,7 +3228,7 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # resubmitted object's: broadcast_raw_transaction reads .hash off
     # whatever it is given, and add_tx never stored resubmitted's wtxid
     # -- announcing it would be a wtxid a getdata for it answers with
-    # notfound, the defect #277 closed on the peer-to-peer path
+    # notfound, the defect #277 names on the peer-to-peer path
     assert broadcast == [held]
     assert mempool.get_tx(broadcast[0].hash, wtxid=True) is held
 
@@ -3216,12 +3271,12 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
 def test_hex_with_whitespace_is_refused_like_core(
     callback: Callable[[Any, Any, list[Any]], Any],
 ) -> None:
-    """A rawtx with whitespace is a decode failure, where it used to decode.
+    """A rawtx with whitespace is a decode failure, as in `bitcoind`.
 
-    `bitcoind` on regtest refuses a rawtx with an embedded space
-    or a leading/trailing one with `-22` "TX decode failed"; this used
-    to decode it, `bytes.fromhex` tolerating exactly the whitespace
-    `IsHex` refuses. btclib-org/btclib-node#1372
+    `bitcoind` on regtest refuses a rawtx with an embedded space or a
+    leading/trailing one with `-22` "TX decode failed", where
+    `bytes.fromhex` alone tolerates exactly the whitespace `IsHex`
+    refuses. btclib-org/btclib-node#1372
     """
     raw = a_tx().serialize(include_witness=True).hex()
     # two spaces, not one: an odd-length probe would already be refused
@@ -3352,12 +3407,12 @@ def test_a_transaction_violating_two_rules_answers_cores_own_first_one() -> None
     `CheckTransaction` (`src/consensus/tx_check.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) checks `vout.empty()`
     well ahead of the coinbase/prevout-null rule, so it answers
-    `bad-txns-vout-empty`, not `bad-txns-prevout-null`. `Tx.assert_valid`
-    (btclib 2026.9.30) checks in the same order since
-    btclib-org/btclib#2417 and btclib-org/btclib#2422, so
-    `_reject_reason`'s plain message match -- whichever rule
-    `assert_valid` raises first -- now answers the same reason Core
-    does, with no reordering of its own. btclib-org/btclib-node#1375
+    `bad-txns-vout-empty`, not `bad-txns-prevout-null`.
+    `Tx.assert_valid` checks in the same order (btclib-org/btclib#2417,
+    btclib-org/btclib#2422), so `_reject_reason`'s plain message match
+    -- whichever rule `assert_valid` raises first -- answers the same
+    reason Core does, with no reordering of its own.
+    btclib-org/btclib-node#1375
     """
     tx = a_malformed_tx(
         vin=[
@@ -3390,18 +3445,18 @@ def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> N
     """A transaction whose only fault is its size is refused as Core refuses it.
 
     `CheckTransaction` (`src/consensus/tx_check.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag) checks `bad-txns-oversize`
-    -- a transaction's own stripped size, times `WITNESS_SCALE_FACTOR`,
-    over `MAX_BLOCK_WEIGHT` -- ahead of the per-output amount checks;
-    `Tx.assert_valid` (btclib 2026.9.30) raises its own message for the
-    same rule at the same point (btclib-org/btclib#2420), which
-    `_reject_reason` now matches by its fixed prefix. 101 individually
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) checks
+    `bad-txns-oversize` -- a transaction's own stripped size, times
+    `WITNESS_SCALE_FACTOR`, over `MAX_BLOCK_WEIGHT` -- ahead of the
+    per-output amount checks; `Tx.assert_valid` raises its own message
+    for the same rule at the same point (btclib-org/btclib#2420), which
+    `_reject_reason` matches by its fixed prefix. 101 individually
     small, positive-value outputs, none of them triggering any other
     rule (no empty vin/vout, no duplicate input, a coinbase-free single
-    ordinary prevout, a total well under `MAX_MONEY`): before this
-    translation existed, `_reject_reason` fell through to `raise error`
-    on `Tx.assert_valid`'s own oversize message, which
-    `rpc.main._execute`'s uniform catch turned into `-32603` "Internal
+    ordinary prevout, a total well under `MAX_MONEY`): without that
+    match, `_reject_reason` would fall through to `raise error` on
+    `Tx.assert_valid`'s own oversize message, which
+    `rpc.main._execute`'s uniform catch turns into `-32603` "Internal
     Error" rather than Core's own `-26` `bad-txns-oversize`.
     btclib-org/btclib-node#1447
     """
@@ -3672,11 +3727,11 @@ def test_decoderawtransaction_decodes_what_it_would_later_refuse() -> None:
 
 
 def test_decoderawtransaction_is_served() -> None:
-    """`decoderawtransaction` dispatches, once `Method not found`.
+    """`decoderawtransaction` has its entry in the dispatch table.
 
-    btclib-org/btclib-node#1398: the RPC answered `-32601` for want of
-    an entry in `callbacks`, so this is the entry itself, and not merely
-    a function this file happens to define.
+    btclib-org/btclib-node#1398: without an entry in `callbacks` the RPC
+    answers `-32601`, so this asserts the entry itself, and not merely a
+    function this file happens to define.
     """
     assert cb.callbacks["decoderawtransaction"] is cb.decode_raw_transaction
 
@@ -3914,8 +3969,7 @@ def a_block_index(
     where `get_block_info` answers for every header the node has indexed
     -- the losing side of a fork, and a header whose block was never
     downloaded, included. A fake keying both off one list can hold
-    neither, which is why btclib-org/btclib-node#87 and #178 were issues
-    rather than tests.
+    neither (btclib-org/btclib-node#87, #178).
 
     A height is the parent's plus one, which is how `BlockInfo.index` is
     built, so a header off the active chain is at the height its own fork
@@ -3985,13 +4039,13 @@ def test_a_block_header_names_the_ones_either_side_of_it() -> None:
 
 
 def test_a_block_header_s_chainwork_is_hex_and_zero_padded_to_64() -> None:
-    """`chainwork` is hex here (closes #658), not the plain int used to pin it.
+    """`chainwork` is hex here, zero-padded, not a plain int (issue #658).
 
     `a_block_index`'s own fake chainwork is `index + 1`, so the middle
     block of a 3-header chain answers `2` -- unpadded hex is one digit,
-    the `2` the un-corrected version of this test used to assert
-    against directly, so this exercises exactly the difference padding
-    to 64 makes rather than a value long enough to hide it.
+    the same `2` as the plain int, so this exercises exactly the
+    difference padding to 64 makes rather than a value long enough to
+    hide it.
     """
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     node = cast(
@@ -4059,8 +4113,7 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
 def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> None:
     """`getblockheader` verbose false answers the same hex sent to a peer.
 
-    Where this node used to ignore `params[1]` and answer the object
-    regardless of what was asked for (issue #215).
+    `params[1]` is read, not ignored for the object (issue #215).
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = cast(
@@ -4079,7 +4132,7 @@ def test_verbose_false_answers_a_version_zero_or_negative_header(version: int) -
     node's own index only ever stores one past `add_headers`'s
     height-gated `bad-version` check, so `header.serialize()` here never
     has cause to refuse one, and needs no bypass for it -- btclib's own
-    `BlockHeader.assert_valid` doesn't either, since btclib 2026.9.29
+    `BlockHeader.assert_valid` doesn't either
     (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
     btclib-org/btclib-node#1511).
     """
@@ -4235,26 +4288,48 @@ def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
     assert raised.value.message == "Block not found"
 
 
-def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """`getblockheader`'s block hash that fails to decode as hex is echoed."""
+@pytest.mark.parametrize(
+    ("block_hash", "secret", "message"),
+    [
+        (
+            LEAK_WIF,
+            LEAK_WIF,
+            f"hash must be of length 64 (not {len(LEAK_WIF)}, for '...')",
+        ),
+        (
+            f"z{LEAK_HEX[1:]}",
+            LEAK_HEX[1:],
+            "hash must be hexadecimal string (not '...')",
+        ),
+    ],
+)
+def test_a_block_hash_that_is_not_a_hash_is_refused_without_quoting_it(
+    block_hash: str, secret: str, message: str
+) -> None:
+    """ISS 2514: a key passed as `getblockheader`'s hash is not quoted.
+
+    A WIF has the wrong length, and a raw key with a character that is not
+    a hex digit has the right one: `parse_hash_v` refuses each.
+    """
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
         "Node",
         SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
     with pytest.raises(RpcError) as raised:
-        get_block_header(node, _CONN, ["zz"])
+        get_block_header(node, _CONN, [block_hash])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert "zz" in raised.value.message
+    assert raised.value.message == message
+    assert_secret_free(raised.value, [secret])
 
 
 def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
     """`getblockheader`'s block hash of the wrong type is named, not faulted.
 
     `bytes.fromhex(5)` raises `TypeError`, not the `ValueError` the hex
-    check above catches, so a non-string blockhash used to fall through
-    to the -32603 this node owes its own fault rather than the client's
-    (issue #212).
+    check above catches, so a non-string blockhash is checked first, not
+    left to fall through to the -32603 this node owes its own fault
+    rather than the client's (issue #212).
     """
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
@@ -4302,7 +4377,7 @@ def test_get_block_header_refuses_a_hash_that_is_not_hexadecimal() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [not_hex])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"hash must be hexadecimal string (not '{not_hex}')"
+    assert raised.value.message == "hash must be hexadecimal string (not '...')"
 
 
 def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
@@ -4320,7 +4395,7 @@ def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "hash must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "hash must be of length 64 (not 4, for '...')"
 
 
 def test_two_wrongly_typed_arguments_are_both_named_at_once() -> None:
@@ -4909,11 +4984,11 @@ def a_chain_index_node(chain: list[bytes]) -> Node:
 def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> None:
     """`getblockhash` refuses a negative height, not reading from the chain end.
 
-    A negative index used to count from the end of `active_chain`, Python's
-    own list semantics, silently answering the tip's hash for a height
-    nothing asked for. Core refuses `nHeight < 0` outright
-    (`src/rpc/blockchain.cpp:630-631`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag; issue #234).
+    A negative index would count from the end of `active_chain`,
+    Python's own list semantics, silently answering the tip's hash for a
+    height nothing asked for. Core refuses `nHeight < 0` outright
+    (`src/rpc/blockchain.cpp:630-631`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag; issue #234).
     """
     node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
     with pytest.raises(RpcError) as raised:
@@ -4931,12 +5006,31 @@ def test_a_height_past_the_tip_is_refused() -> None:
     assert raised.value.message == "Block height out of range"
 
 
+@pytest.mark.parametrize(
+    ("height", "code", "message"),
+    [
+        (-(2**31), RPCErrorCode.INVALID_PARAMETER, "Block height out of range"),
+        (2**31 - 1, RPCErrorCode.INVALID_PARAMETER, "Block height out of range"),
+        (-(2**31) - 1, RPCErrorCode.MISC_ERROR, "JSON integer out of range"),
+        (2**31, RPCErrorCode.MISC_ERROR, "JSON integer out of range"),
+    ],
+)
+def test_get_block_hash_reads_height_as_a_32_bit_int(
+    height: int, code: RPCErrorCode, message: str
+) -> None:
+    """ISS 2470: Core reads the height as an `int` before the chain lookup."""
+    node = a_chain_index_node([b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [height])
+    assert raised.value.code == code
+    assert raised.value.message == message
+
+
 def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
     """`getblockhash`'s height of any wrong JSON type is named, not faulted.
 
-    `int(None)` raises `TypeError`, `int("x")` raises `ValueError`,
-    neither caught before this fix, both reaching -32603 Internal Error
-    (issue #234).
+    `int(None)` raises `TypeError`, `int("x")` raises `ValueError`, and
+    either, uncaught, would reach -32603 Internal Error (issue #234).
     """
     node = a_chain_index_node([b"\x11" * 32])
     for bad, type_name in (
@@ -6361,7 +6455,7 @@ def test_setban_answers_the_usage(
 ) -> None:
     """Too few arguments, or a command Core has no case for, is refused.
 
-    A call carrying too many is `rpc.main._execute`'s own refusal now,
+    A call carrying too many is `rpc.main._execute`'s own refusal,
     generic across every method (`main_test.py`'s own coverage of it),
     not `set_ban`'s -- this direct call bypasses that layer entirely.
     """
@@ -6792,10 +6886,7 @@ def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message
-        == f"blockhash must be hexadecimal string (not '{not_hex}')"
-    )
+    assert raised.value.message == "blockhash must be hexadecimal string (not '...')"
 
 
 def test_get_block_refuses_a_blockhash_holding_whitespace(
@@ -6812,9 +6903,7 @@ def test_get_block_refuses_a_blockhash_holding_whitespace(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [spaced, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert (
-        raised.value.message == f"blockhash must be hexadecimal string (not '{spaced}')"
-    )
+    assert raised.value.message == "blockhash must be hexadecimal string (not '...')"
 
 
 def test_get_block_refuses_a_blockhash_of_the_wrong_length(
@@ -6825,7 +6914,7 @@ def test_get_block_refuses_a_blockhash_of_the_wrong_length(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, ["aabb", 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "blockhash must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "blockhash must be of length 64 (not 4, for '...')"
 
 
 def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
@@ -7833,15 +7922,14 @@ def test_submit_block_offers_the_block_to_new_pow_valid_block(
     assert offered == [chain[1].header.hash]
 
 
-def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
+def test_submit_block_stores_a_block_of_less_work_than_the_tip_as_inconclusive(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A valid block extending a known block that is not the tip answers `None`.
+    """A valid block on a branch lighter than the tip answers `"inconclusive"`.
 
-    Its own parent is indexed already (genesis), so this never reaches
-    `prev-blk-not-found`; not extending the active chain's own tip, it
-    also never reaches `_validate_extending_tip`, and is merely stored --
-    the active chain itself does not move.
+    Its parent is indexed (genesis), so this never reaches
+    `prev-blk-not-found`. It does not outrank the tip, so nothing
+    connects it and the active chain does not move.
     """
     node = regtest_node()
     chain = generate_random_chain(2, node.chain.genesis.hash)
@@ -7850,10 +7938,155 @@ def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
 
     result = submit_block(node, _CONN, [fork.serialize(check_validity=False).hex()])
 
-    assert result is None
+    assert result == "inconclusive"
     block_info = node.chainstate.block_index.get_block_info(fork.header.hash)
     assert block_info.downloaded
     assert node.block_db.get_block(fork.header.hash) is not None
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_answers_inconclusive_for_a_block_tying_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2419: a block of the tip's work is stored, `"inconclusive"`.
+
+    Measured against the bitcoind `integration-bitcoind.yml` pins, on
+    regtest: a second block at the tip's height, on the tip's parent,
+    answers `"inconclusive"`, and the tip stays the block received first.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+
+    result = submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    assert result == "inconclusive"
+    block_index = node.chainstate.block_index
+    assert block_index.get_block_info(rival.header.hash).downloaded
+    assert block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_reorgs_onto_a_heavier_branch_before_it_answers(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2419: a block that makes its branch heavier is connected, `None`.
+
+    Core's `ProcessNewBlock` runs `ActivateBestChain` before
+    `submitblock` answers, so the reorg is done when the answer arrives.
+    Measured against the bitcoind `integration-bitcoind.yml` pins, on
+    regtest: the child of a block tying the tip answers `null`, and is
+    the tip right after.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    heavier = build_block(
+        rival.header.hash, [generate_coinbase(value=1, height=3)], height=3
+    )
+    submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    result = submit_block(node, _CONN, [heavier.serialize(check_validity=False).hex()])
+
+    assert result is None
+    assert node.chainstate.block_index.active_chain[-2:] == [
+        rival.header.hash,
+        heavier.header.hash,
+    ]
+
+
+def test_submit_block_answers_why_a_heavier_branch_does_not_connect(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block refused while its branch is tried answers the reason.
+
+    `ConnectBlock` runs on it, and `submitblock` answers the reason that
+    `BlockChecked` carries, as for a block extending the tip.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    # a coinbase claiming one satoshi more than the subsidy
+    greedy = build_block(
+        rival.header.hash, [generate_coinbase(value=50 * 10**8 + 1, height=3)], height=3
+    )
+    submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    result = submit_block(node, _CONN, [greedy.serialize(check_validity=False).hex()])
+
+    assert result == "bad-cb-amount"
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
+def test_submit_block_answers_none_for_a_block_connected_before_its_child_fails(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block passing the trial answers `None`, though its child fails.
+
+    The rival's header is known, and its child, refused at connection,
+    is stored first. The rival then makes the branch heavier than the
+    tip: Core's `ConnectTip` connects it, sends a valid `BlockChecked`,
+    then refuses the child and goes back to the old tip. Measured against
+    the bitcoind `integration-bitcoind.yml` pins, on regtest: `null` for
+    the rival.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    rival = build_block(
+        chain[0].header.hash, [generate_coinbase(value=1, height=2)], height=2
+    )
+    greedy = build_block(
+        rival.header.hash, [generate_coinbase(value=50 * 10**8 + 1, height=3)], height=3
+    )
+    submit_header(node, _CONN, [rival.header.serialize().hex()])
+    raw = greedy.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) == "inconclusive"
+
+    result = submit_block(node, _CONN, [rival.serialize(check_validity=False).hex()])
+
+    assert result is None
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == chain[1].header.hash
+    assert block_index.get_block_info(greedy.header.hash).status == BlockStatus.invalid
+
+
+def test_submit_block_answers_inconclusive_for_a_child_of_a_refused_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block above the one a step refuses is never connected.
+
+    A tie refused at connection is stored as `"inconclusive"`. Its child
+    makes the branch heavier, the trial refuses the tie, and the child
+    stays unchecked, as in Core. Measured against the bitcoind
+    `integration-bitcoind.yml` pins, on regtest: `"inconclusive"` for
+    both.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    greedy = build_block(
+        chain[0].header.hash,
+        [generate_coinbase(value=50 * 10**8 + 1, height=2)],
+        height=2,
+    )
+    child = build_block(
+        greedy.header.hash, [generate_coinbase(value=1, height=3)], height=3
+    )
+    raw = greedy.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) == "inconclusive"
+
+    result = submit_block(node, _CONN, [child.serialize(check_validity=False).hex()])
+
+    assert result == "inconclusive"
     assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
 
 
@@ -8136,7 +8369,9 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     The header is indexed first, through a `headers` announcement this
     node has already accepted -- a mismatched body under a header this
     node has never indexed leaves the header unindexed instead (ISS
-    1339), which is covered where that fix is.
+    1339), which
+    `test_submit_block_answers_check_block_failure_over_prev_blk_not_found`
+    covers.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
@@ -8310,17 +8545,16 @@ def test_disconnectnode_answers_what_bitcoind_answers(
 
 
 def test_disconnectnode_no_longer_checks_its_own_upper_bound() -> None:
-    """`rpc.main._execute` refuses a call over the count now, generically.
+    """`rpc.main._execute` refuses a call over the count, generically.
 
-    ISS 1424 moved the check every other callback lacked into `_execute`,
-    for every method `arg_names` declares -- `disconnect_node` dropped
-    the one it used to be the only callback here to carry, so calling it
-    directly, bypassing that layer, no longer refuses a third positional
-    argument on its own: the third position here is read by nothing,
-    and the call runs to completion on its first two, dropping the peer
-    `nodeid` names -- proving the callback's own body runs rather than
-    refusing on a count it no longer checks. `main_test.py`'s own
-    coverage of `_execute` is where that refusal is tested now.
+    ISS 1424: the check is in `_execute`, for every method `arg_names`
+    declares, and `disconnect_node` carries none of its own, so calling
+    it directly, bypassing that layer, does not refuse a third
+    positional argument on its own: the third position here is read by
+    nothing, and the call runs to completion on its first two, dropping
+    the peer `nodeid` names -- proving the callback's own body runs
+    rather than refusing on a count it does not check. `main_test.py`'s
+    own coverage of `_execute` is where that refusal is tested.
     """
     node, removed = a_disconnecting_node({1: a_peer()})
     disconnect_node(node, _CONN, ["", 1, None])
@@ -8358,15 +8592,25 @@ def test_submit_header_refuses_what_does_not_decode(hexdata: str) -> None:
 def test_submit_header_refuses_a_header_whose_parent_is_unknown(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `RPC_VERIFY_ERROR`, naming the parent to submit first."""
+    """Core's own `RPC_VERIFY_ERROR`, with `...` for the parent's hash."""
     node = regtest_node()
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     with pytest.raises(RpcError) as raised:
         submit_header(node, _CONN, [chain[1].serialize().hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
-    assert raised.value.message == (
-        f"Must submit previous header ({chain[0].hash.hex()}) first"
-    )
+    assert raised.value.message == "Must submit previous header (...) first"
+
+
+def test_submit_header_refuses_a_key_as_parent_without_quoting_it(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 2514: a parent field holding a key's bytes is not written back."""
+    node = regtest_node()
+    (header,) = generate_random_header_chain(1, bytes.fromhex(LEAK_HEX))
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [header.serialize().hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert_secret_free(raised.value, [bytes.fromhex(LEAK_HEX)])
 
 
 def test_submit_header_indexes_a_header_alone(
@@ -8561,7 +8805,7 @@ def test_submit_block_answers_a_contextual_failure_for_a_block_extending_the_tip
     nonfinal_spend: bool,  # noqa: FBT001
     phrase: str,
 ) -> None:
-    """ISS 1335: Core's own reasons, where btclib-node used to answer `None`.
+    """ISS 1335: Core's own reasons for a block this node refuses.
 
     Measured against bitcoind: `bad-cb-height` for a coinbase
     committing to no height, and `bad-txns-nonfinal` where that same
@@ -9291,6 +9535,36 @@ def test_an_amount_core_reads_is_read(value: object, amount: int) -> None:
     assert cb._amount_param([value], 0, name="maxfeerate", default=0) == amount
 
 
+@pytest.mark.parametrize("text", ["1.00000000000000000001", "0.10000000000000000001"])
+def test_an_amount_number_is_parsed_from_its_text(text: str) -> None:
+    """ISS 2494: Core parses the text, which a `float` reads as 1.0 and 0.1."""
+    with pytest.raises(RpcError) as raised:
+        cb._amount_param(decode(f"[{text}]".encode()), 0, name="maxfeerate", default=0)
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+@pytest.mark.parametrize(
+    ("text", "amount"),
+    [
+        ("1.50", 150_000_000),
+        ("1e-8", 1),
+        ("-0", 0),
+        ("0.0", 0),
+        pytest.param(f"0.{'0' * 5000}1e5001", 100_000_000, id="leading-zeros"),
+    ],
+)
+def test_an_amount_number_core_reads_is_read_from_its_text(
+    text: str, amount: int
+) -> None:
+    """ISS 2494: the control for the refusals above.
+
+    Leading zeros past `int`'s digit limit are read, as Core reads them.
+    """
+    params = decode(f"[{text}]".encode())
+    assert cb._amount_param(params, 0, name="maxfeerate", default=0) == amount
+
+
 @pytest.mark.parametrize("text", ["-1", "-0.00000001", "21000000.00000001"])
 def test_an_amount_outside_money_range_is_out_of_range(text: str) -> None:
     """A well-formed amount past `MoneyRange` keeps its own message."""
@@ -9485,7 +9759,7 @@ def test_get_mempool_entry_a_non_hex_txid_is_invalid_parameter() -> None:
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, ["z" * 64])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{'z' * 64}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_mempool_entry_a_txid_of_the_wrong_length_is_invalid_parameter() -> None:
@@ -9493,7 +9767,7 @@ def test_get_mempool_entry_a_txid_of_the_wrong_length_is_invalid_parameter() -> 
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, ["aabb"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+    assert raised.value.message == "txid must be of length 64 (not 4, for '...')"
 
 
 def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> None:
@@ -9502,7 +9776,7 @@ def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> N
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, [spaced])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == f"txid must be hexadecimal string (not '{spaced}')"
+    assert raised.value.message == "txid must be hexadecimal string (not '...')"
 
 
 def test_get_mempool_entry_answers_core_s_own_shape() -> None:

@@ -1,24 +1,21 @@
 ---
 name: lint
 
-# the gate this repository did not have. Issue #33 records that
-# .github/workflows held one file, the review workflow, and that its
-# branch protection therefore waits on nothing; this is that issue's
-# first step and no more of it.
+# the lint gate: the hooks .pre-commit-config.yaml declares, run on
+# every pull request and every push to main (issue #33).
 #
 # The checkout, the uv setup, the runner-image step, the hook cache and
 # the pre-commit run are btclib-org/.github's: reusable-lint.yml, called
 # at a tagged commit (section 10 of the organization's standard). What runs
-# is still `.pre-commit-config.yaml` itself rather than a second list of tools
+# is `.pre-commit-config.yaml` itself rather than a second list of tools
 # and versions to keep in step, the called job checking this tree out before it
 # runs pre-commit against it: CI therefore enforces exactly what a local run of
 # it enforces, every hook included, and no hook is gated by pre-commit.ci alone
 # (btclib-org/.github#35).
 #
-# It exists now because the mypy hook stopped being one pre-commit.ci
-# can run. That hook shells out to uv, which is absent there, so it is
-# named in the `ci:` skip list -- and until this file, a skipped hook
-# was a hook nothing ran at all.
+# pre-commit.ci cannot run the mypy hook: it shells out to uv, which is
+# absent there, so it is named in the `ci:` skip list, and this file is
+# what runs a skipped hook at all.
 
 on:
   push:
@@ -48,20 +45,26 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs: the subject is the commit, which a newer one
-# supersedes. Named literally rather than through github.workflow, which
-# in a called workflow is the caller's name -- release.yml calls both
-# this and test.yml, and with that expression the two would share a
-# group and cancel each other. By the pull request's own number rather
-# than by github.ref, which for a closed, merged pull request resolves
-# to the base branch's ref and would put that run in the push trigger's
-# group. The suffix is what keeps a release call out of the branch
-# groups: see test.yml's own concurrency block for the fuller reasoning,
-# which applies here unchanged
+# cancel a pull request's superseded runs: the subject is the commit,
+# which a newer one supersedes. Named literally rather than through
+# github.workflow, which in a called workflow is the caller's name --
+# release.yml calls both this and test.yml, and with that expression the
+# two would share a group and cancel each other. By the pull request's
+# own number rather than by github.ref, which for a closed, merged pull
+# request resolves to the base branch's ref: that is the group of a
+# dispatch on main, which the closed pull request's run would cancel.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
+# The suffix is what keeps a release call out of the branch groups: see
+# test.yml's own concurrency block for the fuller reasoning, which
+# applies here unchanged
 concurrency:
   group: >-
-    lint-${{ github.event.pull_request.number || github.ref
-    }}${{ inputs.concurrency-suffix }}
+    lint-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:

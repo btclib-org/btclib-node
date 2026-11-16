@@ -34,7 +34,9 @@ of those — a block this node accepts that Bitcoin Core would reject or
 the reverse, a p2p message that can wedge a connection or exhaust memory
 before its own length is even read, a UTXO index a reorg leaves
 inconsistent, an RPC handler that trusts a parameter it should bound — is
-this repository's to fix.
+this repository's to fix. A flaw that lets funds be stolen, lost or
+locked is a vulnerability to report here too, and an output consensus can
+spend but standard relay policy refuses counts as locked.
 
 What belongs to [btclib](https://github.com/btclib-org/btclib/security/policy)
 is the primitives and the wire serialization this node calls rather than
@@ -177,6 +179,75 @@ whole, a private key in it included (`ParseScript` in
 `src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
 tag). This node's refusal quotes none of its arguments, as in
 `'rawnode(...)' is not a valid descriptor function`.
+
+Core's `scantxoutset` refusal of a hex key that is not a point quotes the
+key, which may be a private key given by mistake (`ParsePubkeyInner` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). Where ecc refuses the key, this node's refusal writes `...` in its
+place, as in `pk(): Pubkey '...' is invalid`. Where bip32_descriptors
+refuses it, as a `musig()` participant or an x-only key outside `tr()`,
+the refusal names the key by its index alone.
+
+Core's RPC refusals quote what a caller gave where a hash, a hex string or
+a name belongs, a key given by mistake in its place included (`ParseHashV`
+and `ParseHexV` in `src/rpc/util.cpp` among them, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
+`...` where Core writes such a string or its bytes, and keeps Core's other
+words, as in `txid must be of length 64 (not 52, for '...')` and `Must
+submit previous header (...) first`. `generateblock` writes `'...'`, as in
+`Transaction '...' not in mempool.`, since Core's sentence there has no
+quotes around the string. A name, such as a network, a hash type or a
+named parameter, is quoted where it has at most `MAX_QUOTED_NAME`
+characters (`btclib_node/constants.py`) and is given by its length
+otherwise, as in `Network not recognized: <52 characters>`. A transaction
+that `testmempoolaccept` or `submitpackage` cannot decode is named by its
+index, in the words of Core's `combinerawtransaction`: `TX decode failed
+for tx 1. Make sure the tx has at least one input.`
+
+Core's start-up refusals of an `-rpccookieperms` and an `-rpcallowip` value
+quote the value whole, a key given by mistake in its place included
+(`InitRPCAuthentication` in `src/httprpc.cpp:260` and `InitHTTPAllowList`
+in `src/httpserver.cpp:103`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+This node keeps Core's other words. An `-rpccookieperms` value stands where
+a mode's name belongs, so it is quoted as the paragraph above quotes a
+name, as in `Invalid -rpccookieperms=<52 characters>; must be one of
+'owner', 'group', or 'all'.` An `-rpcallowip` value stands where a subnet
+belongs, so the refusal writes `'...'` in its place and names the value by
+its position among the `-rpcallowip` values, counted from 1 in the order
+Core's `GetArgs` lists them: `Invalid -rpcallowip subnet specification:
+'...' (value 3 of -rpcallowip). Valid values are ...`.
+
+Core's other start-up refusals of an option's value, and its refusal of an
+argument that is not an option, quote the value whole too
+(`InvalidPortErrMsg`, `ResolveErrMsg` and `AmountErrMsg` in
+`src/common/messages.cpp` among them, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag). This node keeps Core's other words. A value that stands where a
+name belongs, as a chain, a logging category or a P2P permission, is quoted
+as a name is above, as in `Unknown chain <52 characters>.` Any other value
+but a path is written `'...'`, or `...` where Core's sentence puts it in
+parentheses, as in `Invalid minimum work specified (...), must be up to 64
+hex digits` and `Command line contains unexpected token '...', see
+btclib-node -h for a list of options.` Such a value of an option that takes
+several is also named by its position, as an `-rpcallowip` value is: `Cannot
+resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind` address that
+resolves and names no port is quoted, as Core quotes it: what resolves is a
+numeric, onion or I2P address, which a key's usual encodings are not.
+
+Core's start-up refusals of a path write it whole, a key given by mistake
+in place of an option's value included (`InitConfig` in
+`src/common/init.cpp:22`, `ReadConfigFiles` in `src/common/config.cpp:152`
+and `LockDirectory` in `src/init.cpp:1237` among them, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words. A path built from defaults alone, as the default data directory's
+`settings.json`, is written as Core writes it. A path that holds an option's
+value, as a `-datadir`, `-blocksdir`, `-conf`, `includeconf`, `-settings` or
+`-rpccookiefile` value, is given by its length: `Specified data directory
+<52 characters> does not exist.` An `includeconf` value is also named by its
+position, counted from 1 in the order the files are read: `Failed to include
+configuration file <13 characters> (value 2 of -includeconf)`. Python's error
+text for such a path, the warnings a configuration file's reading writes, and
+the log's `Config file:` and `Generated RPC authentication cookie` lines take
+the same form.
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,

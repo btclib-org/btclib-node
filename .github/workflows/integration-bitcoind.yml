@@ -35,19 +35,17 @@ name: integration-bitcoind
 # and it is the price of the question.
 #
 # The checkout, the node install, the test run and the report upload
-# move into btclib-org/.github's reusable-integration-bitcoind.yml,
+# are btclib-org/.github's reusable-integration-bitcoind.yml,
 # called at a tagged commit (section 10 of the organization's standard).
 # `btclib` calls the same file. What stays here is the trigger, the schedule
 # minute, the concurrency group, and this tree's own pinned release, digest and
 # environment-variable names.
 #
-# A reusable workflow changes the check context a required check reports
-# under -- GitHub composes it from the calling job's own id and the
-# called job's `name:`, joined by " / " -- so the required check on main
-# that named this job's own `name:` receives no run once this call
-# lands. The called workflow's own header has why; updating the setting
-# and REPOSITORY.md's record of it is this repository's own to do,
-# outside this pull request and before it is relied on.
+# A reusable workflow's check context is composed by GitHub from the
+# calling job's own id and the called job's `name:`, joined by " / ",
+# so the check main requires of this file is
+# "regtest / Regtest against Bitcoin Core". REPOSITORY.md's *Required
+# checks on main* reads that setting back.
 #
 # A schedule too, like every other unattended question here, and it is
 # not about the tree: the job below asks the same node the same question
@@ -96,24 +94,31 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs. Named literally rather than through
-# github.workflow, as everywhere else here: in a called workflow that
-# expression is the caller's name.
+# cancel a pull request's superseded runs. Named literally rather than
+# through github.workflow, as everywhere else here: in a called workflow
+# that expression is the caller's name.
 # the key is the pull request's own number, not the head branch's name:
-# head_ref carries no fork namespace, so two forks each pushing a
-# branch of the same name compute one group and cancel each other's
-# runs, which the pull request number does not repeat across. It falls
-# back to ref rather than standing bare because it is set only for
-# pull_request events, so a push run (ref refs/heads/main) still gets
-# its own group, and a pull_request run -- closed and merged ones
-# included -- never collides with a push's group the way a bare ref
-# would. The suffix keeps a release call out of the branch groups: inside
-# a called workflow `github.ref` is the caller's, so a rehearsal from a
+# head_ref carries no fork namespace, so two forks each pushing a branch
+# of the same name compute one group and cancel each other's runs, which
+# the pull request number does not repeat across. It falls back to ref
+# rather than standing bare because it is set only for pull_request
+# events, so a dispatch and a scheduled run are grouped by their ref,
+# and on main the two share one group. The number keeps a closed,
+# merged pull request out of that group: github.ref for it resolves to
+# the base branch's ref, so with a bare ref its run would cancel a
+# scheduled or dispatched run on main.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
+# The suffix keeps a release call out of the branch groups: inside a
+# called workflow `github.ref` is the caller's, so a rehearsal from a
 # branch would otherwise share that branch's group
 concurrency:
   group: >-
-    integration-bitcoind-${{ github.event.pull_request.number ||
-    github.ref }}${{ inputs.concurrency-suffix }}
+    integration-bitcoind-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:

@@ -32,6 +32,7 @@ from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 from btclib_node import clock
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
+from btclib_node.rpc.jsonrpc import _refuse_past_max_depth
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -337,6 +338,23 @@ def _prefix(mask: IPv4Address | IPv6Address) -> int | None:
     return mask.max_prefixlen - inverted.bit_length()
 
 
+def _prefix_length(suffix: str) -> int | None:
+    """Core's `ToIntegral<uint8_t>` of a CIDR suffix, or `None`.
+
+    ASCII digits alone, leading zeros dropped, at most three remaining,
+    and the value at most 255. A longer or larger suffix is a netmask,
+    not a prefix -- and must not be handed to `int`, which refuses a
+    text past CPython's digit limit (issue #2461).
+    """
+    if not (suffix.isascii() and suffix.isdigit()):
+        return None
+    digits = suffix.lstrip("0") or "0"
+    if len(digits) > 3:  # noqa: PLR2004
+        return None
+    value = int(digits)
+    return value if value <= 0xFF else None  # noqa: PLR2004
+
+
 def lookup_subnet(text: str) -> Subnet | None:
     """Core's `LookupSubNet`: an address, then a CIDR prefix or a netmask.
 
@@ -355,9 +373,8 @@ def lookup_subnet(text: str) -> Subnet | None:
     if isinstance(ip, SpecialAddress):
         return None
     suffix = text[slash + 1 :]
-    # `ToIntegral<uint8_t>`: ASCII digits alone, and at most 255
-    if suffix.isascii() and suffix.isdigit() and int(suffix) <= 0xFF:  # noqa: PLR2004
-        prefix = int(suffix)
+    prefix = _prefix_length(suffix)
+    if prefix is not None:
         return Subnet.of(ip, prefix) if prefix <= ip.max_prefixlen else None
     mask = lookup_host(suffix)
     if mask is None or isinstance(mask, SpecialAddress) or mask.version != ip.version:
@@ -397,6 +414,24 @@ class _JsonObject(list[tuple[str, Any]]):
     def get(self, key: str) -> Any:  # noqa: ANN401
         """UniValue's `operator[]`: the first value under `key`."""
         return next((value for k, value in self if k == key), None)
+
+
+@dataclass(frozen=True)
+class _LongJsonInt:
+    """A JSON integer too long for an int64.
+
+    It is neither `int` nor `str`, as UniValue's `getInt` and `get_str`
+    both refuse it.
+    """
+
+    text: str
+
+
+def _parse_json_int(text: str) -> int | _LongJsonInt:
+    """Keep an integer too long for an int64 out of Python's ``int`` parser."""
+    if len(text.removeprefix("-")) > len(str(_INT64_END)):
+        return _LongJsonInt(text)
+    return int(text)
 
 
 def _json_int(entry: _JsonObject, key: str, bits: int) -> int:
@@ -456,9 +491,18 @@ class BanMan:
             self._sweep()
 
     def _read(self, path: Path) -> dict[Subnet, BanEntry]:
-        """Core's `CBanDB::Read` and `BanMapFromJson`."""
+        """Core's `CBanDB::Read` and `BanMapFromJson`.
+
+        A file with more than `MAX_JSON_DEPTH` arrays and objects open at
+        once is refused, as `UniValue::read` refuses it, before
+        `json.loads` reads it: `json.loads` raises `RecursionError`, which
+        is not a `ValueError`, on a file nested deeper than the stack
+        holds.
+        """
+        text = path.read_text(encoding="utf-8")
+        _refuse_past_max_depth(text)
         settings = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_JsonObject
+            text, object_pairs_hook=_JsonObject, parse_int=_parse_json_int
         )
         if not isinstance(settings, _JsonObject):
             raise _BanlistError(path)

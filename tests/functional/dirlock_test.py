@@ -48,6 +48,7 @@ def test_a_second_node_over_the_same_data_directory_exits_with_cores_refusal(
     assert result.returncode == 1
     assert not result.stdout
     assert result.stderr == (
-        f"Error: Cannot obtain a lock on directory {tmp_path / 'regtest'}."
+        "Error: Cannot obtain a lock on directory "
+        f"<{len(str(tmp_path / 'regtest'))} characters>."
         " btclib-node is probably already running.\n"
     )

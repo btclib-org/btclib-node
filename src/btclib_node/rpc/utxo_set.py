@@ -35,8 +35,11 @@ from bip32_descriptors.descriptors import (
 from bip32_descriptors.descriptors import parse as parse_descriptor
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.exceptions import BTClibException, BTClibValueError
+from ecc.exceptions import EccException
+from ecc.ssa import point_from_bip340pub_key_var
 
 from btclib_node.block_db import Coin
+from btclib_node.constants import quoted_name
 from btclib_node.rpc.connection import btc_amount
 from btclib_node.rpc.errors import RpcError, json_type_name, type_errors
 from btclib_node.rpc.help import HELP_TEXT
@@ -85,6 +88,42 @@ _NEEDED = {
     _P2SH: "A function is needed within P2SH",
     _P2WSH: "A function is needed within P2WSH",
 }
+
+# what splits a descriptor into the functions it opens and closes, and
+# the arguments between them
+_DELIMITER = re.compile(r"([(),{}])")
+
+# a key `ParsePubkeyInner` reads as hex, x-only, compressed or not, after
+# its origin if it has one
+_HEX_KEY = re.compile(
+    r"(?:\[[^\]]*\])?"
+    r"(?P<key>[0-9a-fA-F]{64}(?:[0-9a-fA-F]{2}(?:[0-9a-fA-F]{64})?)?)"
+)
+_X_ONLY_KEY_BYTES = 32
+
+# what bip32_descriptors raises as BTClibValueError, not ecc's
+# EccException, for a key Core refuses with `ParsePubkeyInner`'s message:
+# an x-only key outside `tr()` and `rawtr()` or in a `musig()`, and a
+# `musig()` participant that is no point
+_BTCLIB_KEY_REFUSALS = ("x-only public keys", "musig(): not a public key")
+
+# the functions `ParseScript` reads a key in, naming themselves in its
+# message
+_KEY_FUNCTIONS = {"pk", "pkh", "combo", "wpkh", "tr", "rawtr"}
+_MULTI_FUNCTIONS = {"multi", "sortedmulti", "multi_a", "sortedmulti_a"}
+
+# every function whose argument may be a key Core refuses with
+# `ParsePubkeyInner`'s message, miniscript's and `musig()` included
+_KEY_HOLDERS = (
+    _KEY_FUNCTIONS
+    | _MULTI_FUNCTIONS
+    | {
+        "musig",
+        "pk_k",
+        "pk_h",
+        "unused",
+    }
+)
 
 
 @dataclass
@@ -211,15 +250,89 @@ def _tree_refusal(args: str) -> str | None:
     return None
 
 
+def _is_point(key: bytes) -> bool:
+    """Say whether `key`, x-only or SEC, is a point of secp256k1."""
+    try:
+        point_from_bip340pub_key_var(key)
+    except EccException:
+        return False
+    return True
+
+
+def _key_prefix(calls: list[str]) -> str:
+    """Return what `ParseScript` writes before the message of a key.
+
+    `calls` are the functions open around the key, outermost first.
+    `sh()`, `wsh()` and the tree of `tr()` pass the message on as it is.
+    The function they hold then names itself, as `Multi` for one of
+    `_MULTI_FUNCTIONS`, unless miniscript reads it, which names nothing.
+    """
+    # `ParsePubkey` writes `musig(): ` before a participant's message, and
+    # the function that holds the `musig()` writes its own before that
+    if calls[-1].rpartition(":")[2] == "musig":
+        return f"{_key_prefix(calls[:-1])}musig(): "
+
+    depth = 0
+    while calls[depth] in {"sh", "wsh"} or (
+        calls[depth] == "tr" and depth < len(calls) - 1
+    ):
+        depth += 1
+    name = calls[depth]
+    if name in _MULTI_FUNCTIONS:
+        return "Multi: "
+    # `pkh()` in a tree is miniscript's
+    if name in _KEY_FUNCTIONS and (name != "pkh" or "tr" not in calls[:depth]):
+        return f"{name}(): "
+    return ""
+
+
+def _invalid_key_refusal(text: str) -> str | None:
+    """Return Core's message for the first such hex key in `text`.
+
+    Such a key is no point, or is x-only outside `tr()` and `rawtr()` or in
+    a `musig()`; Core refuses each. ecc refuses a key that is no point
+    with `EccException`. bip32_descriptors refuses those x-only keys, and a
+    `musig()` participant that is no point, with `BTClibValueError`. Both
+    name the key by its index. Core's
+    `ParsePubkeyInner` (`Pubkey '%s' is invalid`) quotes the key, where
+    this writes `...` (SECURITY.md, "Where this node departs from Bitcoin
+    Core"), and `ParseScript` puts `_key_prefix` before it, both in
+    `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag. None where `text` holds no such key.
+    """
+    calls: list[str] = []
+    word = ""
+    for part in _DELIMITER.split(text):
+        if part == "(":
+            calls.append(word)
+        elif part == ")":
+            if not calls:
+                return None
+            calls.pop()
+        elif (key := _HEX_KEY.fullmatch(part)) and calls:
+            key_bytes = bytes.fromhex(key["key"])
+            holder = calls[-1].rpartition(":")[2]
+            invalid_x_only = len(key_bytes) == _X_ONLY_KEY_BYTES and (
+                holder == "musig" or all(call not in {"rawtr", "tr"} for call in calls)
+            )
+            if holder in _KEY_HOLDERS and (not _is_point(key_bytes) or invalid_x_only):
+                return f"{_key_prefix(calls)}Pubkey '...' is invalid"
+        word = part
+    return None
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
     Core's `Parse`. Its message names what it found wrong and is
     bip32_descriptors' here, which words it differently, except for what
     `_core_refusal` refuses, whose message is Core's, shortened where Core
-    quotes the expression.
+    quotes the expression. The message for a hex key that ecc refuses as no
+    point, or that bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says,
+    is `_invalid_key_refusal`'s.
     """
     prv_keys: dict[str, str] = {}
+    stripped: str | None = None
     try:
         stripped = strip_checksum(text)
         sources = [
@@ -227,7 +340,15 @@ def _parse(node: Node, text: str) -> list[_Source]:
             for one in multipath_descriptors(stripped)
         ]
     except BTClibException as err:
-        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, str(err)) from err
+        message = str(err)
+        if stripped is not None and any(
+            refused in message for refused in _BTCLIB_KEY_REFUSALS
+        ):
+            message = _invalid_key_refusal(stripped) or message
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
+    except EccException as err:
+        message = _invalid_key_refusal(strip_checksum(text)) or str(err)
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)
     return sources
@@ -312,7 +433,14 @@ def scan_tx_out_set(
         return True
     if action == "start":
         return _start(node, params)
-    raise RpcError(RPCErrorCode.INVALID_PARAMETER, f"Invalid action '{action}'")
+    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+    # Core"; section 7 of the organization's standard, *A refusal carries
+    # no secret*)
+    raise RpcError(
+        RPCErrorCode.INVALID_PARAMETER, f"Invalid action '{quoted_name(action)}'"
+    )
 
 
 def _start(node: Node, params: list[Any]) -> Generator[bool, None, dict[str, Any]]:

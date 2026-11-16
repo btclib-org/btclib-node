@@ -2,11 +2,8 @@
 name: os-macos
 
 # The platform the merge gate does not wait for. pyproject.toml claims
-# macOS in its classifiers, and until this file nothing here ran a line
-# of this package on it.
-#
-# That much is a small argument: a classifier is a claim about where
-# this runs, and nothing here had run it there.
+# macOS in its classifiers, a claim about where this package runs, and
+# this file runs the suite there to check it.
 #
 # What differs beneath the suite is how a worker process comes into
 # being. `src/btclib_node/__init__.py` builds a `multiprocessing.pool.Pool`
