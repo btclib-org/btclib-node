@@ -357,11 +357,10 @@ def test_a_rev_block_that_restores_a_written_output_unmarks_it_removed(
     The prevout was durable (on disk, not in `updated_utxo_set`) when
     the block being undone spent it, so `add_block` staged that spend
     with `_mark_removed`. `apply_rev_block`'s own `to_add` loop restores
-    it into `updated_utxo_set`, and used to stop there -- leaving the
-    same outpoint bytes in `removed_utxos` too, a stale flag nothing
-    then erased, because staging now survives across trial boundaries
-    (btclib-org/btclib-node#586) rather than being wiped by a per-trial
-    `finalize` the way it used to be. A block later, legitimately
+    it into `updated_utxo_set` and unmarks it: stopping at the restore
+    would leave the same outpoint bytes in `removed_utxos` too, a stale
+    flag nothing then erases, because staging survives across trial
+    boundaries (btclib-org/btclib-node#586). A block later, legitimately
     re-spending the restored output must not be refused as a double
     spend by `add_block`'s own `removed_utxos` guard, which is what this
     pins directly, one level below the reorg that reaches it.
@@ -465,13 +464,13 @@ def test_add_blocks_own_creation_loops_keep_the_two_dicts_disjoint(
     once. Fund an output and finalize it, spend it -- staged only, via
     `_mark_removed`, with no finalize or rev block in between -- then
     add a later block whose own transaction shares that spent output's
-    exact txid. Before `add_block`'s own two creation loops called
-    `_unmark_removed` themselves, the recreated outpoint's `_put`
-    landed in `updated_utxo_set` while `removed_utxos` still carried it
-    from the spend, and a later `apply_rev_block` undoing that
-    recreation raised `ChainstateInconsistencyError("output already
-    removed")` on a coin that was legitimately staged and unspent
-    (btclib-org/btclib-node#586).
+    exact txid. `add_block`'s own two creation loops reach
+    `_unmark_removed` through `_stage_added` and then `_stage_creation`;
+    without that, the recreated outpoint's `_put` would land in
+    `updated_utxo_set` while `removed_utxos` still carried it from the
+    spend, and a later `apply_rev_block` undoing that recreation would
+    raise `ChainstateInconsistencyError("output already removed")` on a
+    coin legitimately staged and unspent (btclib-org/btclib-node#586).
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
@@ -487,7 +486,7 @@ def test_add_blocks_own_creation_loops_keep_the_two_dicts_disjoint(
     assert key in utxo_index.removed_utxos
 
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x1a" * 32), 3)
-    assert not (key in utxo_index.removed_utxos and key in utxo_index.updated_utxo_set)
+    assert key not in utxo_index.removed_utxos or key not in utxo_index.updated_utxo_set
 
     # undoing the recreation does not trip "output already removed" on a
     # coin that is legitimately staged and unspent
@@ -843,13 +842,13 @@ def test_apply_rev_block_hashes_in_a_non_coinbase_restore_via_to_add(
 ) -> None:
     """`to_add` must still hash in a non-coinbase coin at the exempt height.
 
-    The `to_remove` side above is what the reviewed reorg actually
-    reaches; this isolates `to_add`'s own identical conjunction
-    directly, the way the sibling coinbase test above isolates the
-    coinbase case -- a synthetic `RevBlock` naming a non-coinbase coin
-    at `_BIP30_ORIGINAL_HEIGHT`/`_BIP30_ORIGINAL_HASH`, the only
-    combination `is_bip30_unspendable` alone cannot tell from the
-    exempt coinbase itself.
+    The `to_remove` side above is what a reorg reaches; this isolates
+    `to_add`'s own identical conjunction directly, the way the sibling
+    coinbase test above isolates the coinbase case -- a synthetic
+    `RevBlock` naming a non-coinbase coin at
+    `_BIP30_ORIGINAL_HEIGHT`/`_BIP30_ORIGINAL_HASH`, the only
+    combination `is_bip30_unspendable` alone cannot tell from the exempt
+    coinbase itself.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
@@ -874,10 +873,9 @@ def test_apply_rev_block_reads_a_flushed_coin_for_coin_stats_too(
 
     Every earlier `apply_rev_block` test above undoes a still-staged
     creation; this one finalizes first, so `to_remove` finds nothing in
-    `updated_utxo_set` and has to `Coin.parse` the stored record --
-    the branch `coin_stats`'s own removal now also depends on, since
-    the parsed `Coin` (its height and coinbase bit) is what
-    `_hash_remove` needs.
+    `updated_utxo_set` and has to `Coin.parse` the stored record -- the
+    branch `coin_stats`'s own removal also depends on, since the parsed
+    `Coin` (its height and coinbase bit) is what `_hash_remove` needs.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index

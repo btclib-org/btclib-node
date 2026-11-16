@@ -13,7 +13,7 @@ name: os-ubuntu
 # takes the newest interpreter its dependencies allow, which is what
 # issue #507 settled, so the axis has nothing else to hold and a second
 # column would schedule a weekly re-run of the cell every pull request
-# already spends. Widening this back to the sibling shape means giving
+# already spends. Widening this to the sibling shape means giving
 # that axis versions this package does not claim.
 #
 # What the second image buys is not the pure Python, which is the same
@@ -93,7 +93,7 @@ jobs:
     # two lists below, which are this tree's own claim about the images and the
     # interpreter it sweeps rather than a value the called workflow could
     # default (btclib-org/.github#35)
-    uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       runners: '["ubuntu-latest", "ubuntu-24.04-arm"]'
       python-versions: '["3.14"]'

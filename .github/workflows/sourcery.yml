@@ -28,8 +28,11 @@ permissions:
 
 concurrency:
   # named literally rather than through github.workflow, as everywhere
-  # else here. No push trigger, so the merged run is not cancelled: it
-  # is the last reading the merged files get
+  # else here. A merge does not cancel the run in flight: with no push
+  # trigger, it reads the merged files only where it started on the
+  # last head. Where the last head's run is still pending instead, the
+  # merge's run replaces it and declines closed, so the merged files
+  # get no reading
   group: sourcery-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
@@ -39,4 +42,4 @@ jobs:
   # trigger
   sourcery:
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    uses: btclib-org/.github/.github/workflows/reusable-sourcery.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-sourcery.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12

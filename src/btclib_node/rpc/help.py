@@ -4,18 +4,17 @@
 
 """Every served RPC's own Core help text, and `help` itself.
 
-`HELP_TEXT` is `RPCMethod::ToString`'s own literal answer for each method
-this node serves (`src/rpc/blockchain.cpp`, `src/rpc/net.cpp`,
-`src/rpc/mempool.cpp`, `src/rpc/mining.cpp`, `src/rpc/server.cpp`,
-at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- read back from a regtest
-bitcoind's own `help <command>`, at that release, the way
-`disconnectnode`'s own help text already was before this module existed
+`HELP_TEXT` is `RPCMethod::ToString`'s own literal answer for each
+method this node serves (`src/rpc/blockchain.cpp`, `src/rpc/net.cpp`,
+`src/rpc/mempool.cpp`, `src/rpc/mining.cpp`, `src/rpc/server.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- read back from a regtest
+bitcoind's own `help <command>`, at that release
 (btclib-org/btclib-node#1193). `rpc.main._execute` raises this same text
 under `RPC_MISC_ERROR` for a call outside its method's declared argument
 count -- `RPCMethod::HandleRequest`'s own `HelpResult`, caught by
 `ExecuteCommand` (`src/rpc/server.cpp:879-892`, same sha) -- and every
-callback in `rpc.callbacks` raises it in place of its own former one-line
-usage string for a call short of a required argument or carrying a value
+callback in `rpc.callbacks` raises it, rather than a one-line usage
+string, for a call short of a required argument or carrying a value
 `self.ToString()` refuses in Core, both being the identical
 `std::runtime_error(self.ToString())` shape (measured against `addnode`
 and `setban`'s own invalid-command refusal, byte for byte). `help_rpc`

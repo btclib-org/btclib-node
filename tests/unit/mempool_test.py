@@ -94,11 +94,11 @@ def test_workflow() -> None:
 
     prev_size = mempool.size
     prev_bytesize = mempool.bytesize
-    # Every entry so far pays no fee, so eviction (`Mempool._evict_to_limit`)
-    # takes one of the 101, whichever Core's order puts last: size and
-    # bytesize both come back to what they were, not because the add
-    # refused (the old `is_full()` wall this replaces) but because eviction
-    # undid what the add did. btclib-org/btclib-node#294
+    # Every entry so far pays no fee, so eviction
+    # (`Mempool._evict_to_limit`) takes one of the 101, whichever Core's
+    # order puts last: size and bytesize both come back to what they
+    # were, not because the add refused but because eviction undid what
+    # the add did. btclib-org/btclib-node#294
     mempool.bytesize_limit = mempool.bytesize
     new_tx = generate_random_transaction()
     mempool.add_tx(new_tx)
@@ -116,14 +116,14 @@ def test_workflow() -> None:
 
 def test_a_bytesize_limit_of_zero_evicts_every_add_right_back_out() -> None:
     """At `bytesize_limit=0`, `add_tx` evicts its own add; returns `False`."""
-    # bytesize_limit at zero means every add is immediately the only, and so
-    # the worst, entry held: `_evict_to_limit` takes it right back out,
-    # giving the same outcome the old `is_full()` outright refusal gave,
-    # reached now through eviction rather than a pre-check. get_missing no
-    # longer short-circuits on `is_full()` either -- download.tx_download's
-    # own eviction-aware membership check (`Mempool.transactions`) is what
+    # bytesize_limit at zero means every add is immediately the only,
+    # and so the worst, entry held: `_evict_to_limit` takes it right
+    # back out, the outcome of an outright refusal, reached through
+    # eviction rather than a pre-check. get_missing does not
+    # short-circuit on `is_full()` either -- download.tx_download's own
+    # eviction-aware membership check (`Mempool.transactions`) is what
     # keeps a request for something this mempool cannot hold from being
-    # announced now, not a blanket "nothing is missing" answer that used to
+    # announced, not a blanket "nothing is missing" answer that would
     # stop every request even for something worth holding.
     # btclib-org/btclib-node#294
     mempool = Mempool(Logger(debug=True))
@@ -342,10 +342,10 @@ def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() ->
     chunk where the grandchild pays for the others, and eviction takes
     all four out.
     """
-    # btclib-org/btclib-node#441: the spend index `_descendants` now
-    # walks, `spent_by`, has one entry per (parent txid, spending wtxid)
-    # pair, so a transaction reachable through two parents at once --
-    # this is what a diamond exercises -- has to land in the walk's own
+    # btclib-org/btclib-node#441: the spend index `_descendants` walks,
+    # `spent_by`, has one entry per (parent txid, spending wtxid) pair,
+    # so a transaction reachable through two parents at once -- this is
+    # what a diamond exercises -- has to land in the walk's own
     # `descendants` set once, not be visited or queued twice.
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()
@@ -471,7 +471,7 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
     # victim paid nothing, so the rolling minimum lands on the incremental
     # relay fee rate itself -- Core's own DEFAULT_INCREMENTAL_RELAY_FEE
     assert mempool._rolling_min_fee_rate == 100
-    assert mempool._block_since_last_rolling_fee_bump is False
+    assert not mempool._block_since_last_rolling_fee_bump
 
 
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
@@ -508,7 +508,7 @@ def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:
     mempool._block_since_last_rolling_fee_bump = True
     mempool._track_package_removed(1000.0)
     assert mempool._rolling_min_fee_rate == 5000.0
-    assert mempool._block_since_last_rolling_fee_bump is True
+    assert mempool._block_since_last_rolling_fee_bump
 
 
 def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() -> None:
@@ -518,7 +518,7 @@ def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() 
     mempool._block_since_last_rolling_fee_bump = True
     mempool._track_package_removed(5000.0)
     assert mempool._rolling_min_fee_rate == 5000.0
-    assert mempool._block_since_last_rolling_fee_bump is False
+    assert not mempool._block_since_last_rolling_fee_bump
 
 
 def test_note_block_connected_restarts_the_decay_clock() -> None:
@@ -527,7 +527,7 @@ def test_note_block_connected_restarts_the_decay_clock() -> None:
     mempool._block_since_last_rolling_fee_bump = False
     before = time.time()
     mempool.note_block_connected()
-    assert mempool._block_since_last_rolling_fee_bump is True
+    assert mempool._block_since_last_rolling_fee_bump
     assert mempool._last_rolling_fee_update >= before
 
 
@@ -715,7 +715,8 @@ def a_spend_of(outpoints: list[tuple[bytes, int]], value: int = 1) -> Tx:
 def test_a_second_spend_of_one_outpoint_is_not_added() -> None:
     """`add_tx` keeps one spender per outpoint, and forgets it once gone.
 
-    btclib-org/btclib-node#1244: two spends of one outpoint were both kept.
+    btclib-org/btclib-node#1244: a second spend of one outpoint is
+    refused, not kept beside the first.
     """
     mempool = Mempool(Logger(debug=True))
     coin = (secrets.token_bytes(32), 3)

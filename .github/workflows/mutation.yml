@@ -64,7 +64,7 @@ jobs:
   # A run that prints `never run N` has outgrown the budget: resize it
   # from the rate above.
   mutation:
-    uses: btclib-org/.github/.github/workflows/reusable-mutation.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-mutation.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     with:
       profiles: >-
         [{"profile": "the consensus entry point", "slug": "interpreter",

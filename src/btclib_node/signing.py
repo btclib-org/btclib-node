@@ -472,13 +472,11 @@ class _Production:
         satisfaction needs, its lock times being the transaction's and the
         input's.
 
-        `from_script` refuses a key off the curve with ecc's `EccException`,
-        not btclib's, and the input is left unsigned. Core reads any key of
-        33 bytes starting 02 or 03 there (`WshSatisfier::FromPKBytes`,
+        `from_script` reads any key of 33 bytes starting 02 or 03, a point
+        or not, as Core does (`WshSatisfier::FromPKBytes`,
         `src/script/sign.cpp:489-493`, at bitcoin/bitcoin@f0de87f040, the
-        v32.1 tag), so it still signs a script that never needs that key's
-        signature, such as `or_b(pk(A),s:pk(X))`:
-        ISS btclib-org/bip32-descriptors#292.
+        v32.1 tag), so a script that never needs such a key's signature,
+        such as `or_b(pk(A),s:pk(X))`, is signed.
         """
         found = ((key_id, pair[0]) for key_id, pair in self.sigdata.signatures.items())
         key_hashes: dict[Octets, Octets] = dict(

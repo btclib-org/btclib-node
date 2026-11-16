@@ -4,13 +4,13 @@
 
 """What the node's own loop does with what it is handed.
 
-Nearly all of `Node.run` was reached only by the functional tests: two
-real nodes, or an HTTP client, and a race to win before the loop is
-asked anything at all. That is #97 -- a run where no test failed and
-the coverage floor went red all the same, on `run`'s own `except
-Exception`. The managers below are stand-ins, so the loop is handed its
-messages directly and what it does with them does not depend on
-scheduling.
+A test that starts a real `Node` reaches `Node.run` through real
+managers and a race to win before the loop is asked anything at all, so
+a run where no test fails can still leave the `except Exception` of
+`_drain_message_queues`, which `run`'s loop calls, uncovered and the
+coverage floor red (#97). The managers below are stand-ins, so the loop
+is handed its messages directly and what it does with them does not
+depend on scheduling.
 
 `bitcoind` here is the release `integration-bitcoind.yml` pins.
 """
@@ -857,13 +857,13 @@ def test_a_config_omitted_is_constructed_rather_than_shared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`Node()` with no config gets a fresh `Config()`, field for field."""
-    # `Node`'s own `config` used to default to `Config()`, built once at
-    # `def`-time and handed to every caller that left it out (B008) --
-    # nothing here relied on that sharing, so `None` plus a construction
-    # in the body is the fix. `Path.home` is patched rather than left
-    # alone: `Config()`'s own default `data_dir` is under it, and this
-    # node is never started, so nothing else here would stop it from
-    # writing under this session's real home directory.
+    # `Node`'s own `config` defaults to `None` and is built in the body:
+    # a `Config()` default would be built once at `def`-time and handed
+    # to every caller that left it out (B008). `Path.home` is patched
+    # rather than left alone: `Config()`'s own default `data_dir` is
+    # under it, and this node is never started, so nothing else here
+    # would stop it from writing under this session's real home
+    # directory.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     node = Node()
     node.load()
@@ -897,8 +897,8 @@ def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None
     assert not node.is_alive()
     assert node.chainstate.db.closed
     assert node.block_db.db.closed
-    # closed by the end of run(), which is what stop() now waits for:
-    # there is no handler left for a late record to be written to
+    # closed by the end of run(), which is what stop() waits for: there
+    # is no handler left for a late record to be written to
     assert not node.logger.handlers
 
 
@@ -945,7 +945,7 @@ def test_a_signal_asks_the_node_to_stop(
     tmp_path: Path, signal_number: signal.Signals
 ) -> None:
     """`SIGTERM`/`SIGINT` reach a handler that stops the node once installed."""
-    # installed explicitly -- `Node.__init__` no longer does this on its
+    # installed explicitly -- `Node.__init__` does not do this on its
     # own behalf (issue #436) -- by the one caller in a process that
     # wants an operator's interrupt to reach this node at all
     node = a_node(tmp_path)
@@ -1288,15 +1288,14 @@ def test_node_refuses_to_build_inside_a_reimported_main(
     through a real `Pool`: a real one reproduces the shape correctly
     only when the caller *lacks* a module-body `if __name__ ==
     "__main__":` guard around its own `Node(...)` call -- issue #579's
-    own shape, which `cli.py`'s own module docstring is where the
-    guard's two live places are named now that `scripts/chains/*.py`
-    is gone -- and building one here to prove that would fork-bomb the
-    machine for no more information than these two calls already give.
-    `SpawnPoolWorker-3` and `spawn` are measured, not invented -- a
-    real `multiprocessing.get_context("spawn").Pool` worker reports
-    exactly that shape for `current_process().name`, and a real
-    `ctx.Process` re-importing this module raises exactly this error
-    before ever reaching a target function.
+    own shape, and `cli.py`'s own module docstring is where the guard's
+    two live places are named -- and building one here to prove that
+    would fork-bomb the machine for no more information than these two
+    calls already give. `SpawnPoolWorker-3` and `spawn` are measured,
+    not invented -- a real `multiprocessing.get_context("spawn").Pool`
+    worker reports exactly that shape for `current_process().name`, and
+    a real `ctx.Process` re-importing this module raises exactly this
+    error before ever reaching a target function.
     """
     monkeypatch.setattr(
         multiprocessing,
@@ -1334,7 +1333,7 @@ def test_node_allows_a_deliberate_reimported_main_opt_in(
 ) -> None:
     """`allow_reimported_main=True` opts a caller out of the refusal above.
 
-    The reviewer's own counter-case for issue #589: a supervisor that
+    The counter-case to issue #589's refusal: a supervisor that
     deliberately builds a `Node` inside its own pool worker looks
     identical, from `__init__`'s own two calls, to the accident the
     refusal exists for -- there is no way to tell them apart from in
@@ -1368,11 +1367,11 @@ def test_node_allows_a_deliberate_reimported_main_opt_in(
 
 def test_a_second_node_does_not_disown_the_first(tmp_path: Path) -> None:
     """A second `Node` leaves a handler already installed for the first."""
-    # this is the failure #436 reports: a second `Node()` used to replace
-    # every handler with one bound to itself, on construction alone, so
-    # the first node's own interrupt silently stopped reaching it. Now
-    # that only `install_signal_handlers` touches process signal state,
-    # a second `Node()` that never calls it leaves the first alone.
+    # the failure #436 reports is a second `Node()` replacing every
+    # handler with one bound to itself, on construction alone, so that
+    # the first node's own interrupt silently stops reaching it. Only
+    # `install_signal_handlers` touches process signal state, so a
+    # second `Node()` that never calls it leaves the first alone.
     node1 = a_node(tmp_path / "node1")
     install_signal_handlers(node1)
     node1.start()
@@ -1405,7 +1404,7 @@ def test_a_node_over_a_data_directory_another_process_holds_opens_nothing(
         with pytest.raises(DirectoryLockError) as excinfo:
             a_node(tmp_path)
         assert str(excinfo.value) == (
-            f"Cannot obtain a lock on directory {data_dir}."
+            f"Cannot obtain a lock on directory <{len(str(data_dir))} characters>."
             " btclib-node is probably already running."
         )
     assert sorted(path.name for path in data_dir.iterdir()) == [".lock", "blocks"]
@@ -1428,7 +1427,7 @@ def test_a_node_over_a_blocks_directory_another_process_holds_frees_its_data_dir
         with pytest.raises(DirectoryLockError) as excinfo:
             Node(config=config)
         assert str(excinfo.value) == (
-            f"Cannot obtain a lock on directory {blocks_dir}."
+            f"Cannot obtain a lock on directory <{len(str(blocks_dir))} characters>."
             " btclib-node is probably already running."
         )
         assert lock_from_another_process(config.data_dir) == "locked"
@@ -1468,10 +1467,10 @@ def test_a_node_creates_its_locks_and_directories_owner_only_under_any_umask(
 
 
 def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
-    """`Node()` no longer raises on a plain `threading.Thread` (issue #436).
+    """`Node()` does not raise on a plain `threading.Thread` (issue #436).
 
-    `signal.signal` -- called from `Node.__init__` before the fix --
-    raises `ValueError: signal only works in main thread of the main
+    `signal.signal`, which `Node.__init__` does not call, raises
+    `ValueError: signal only works in main thread of the main
     interpreter` anywhere but the main thread of the main interpreter.
     `ThreadPoolExecutor.result` re-raises onto this thread whatever the
     worker thread raised, rather than this test having to collect it
@@ -1930,7 +1929,7 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
             debug=True,
         )
     )
-    (node.data_dir / (COOKIE_FILE + ".tmp")).mkdir()
+    (node.data_dir / f"{COOKIE_FILE}.tmp").mkdir()
     try:
         node.start()
         wait_until(lambda: not node.is_alive())
@@ -1965,7 +1964,9 @@ def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
     finally:
         node.stop()
     first, second = node.init_errors
-    assert first.startswith("Invalid -rpcallowip subnet specification: bogus. ")
+    assert first.startswith(
+        "Invalid -rpcallowip subnet specification: '...' (value 1 of -rpcallowip). "
+    )
     assert second == btclib_node.RPC_INIT_ERROR
 
 
@@ -2319,15 +2320,14 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A queued entry of the wrong shape is logged; the loop keeps answering."""
-    # #97's line. This test's own trigger used to be a method that is
-    # not a string: `request["method"] not in callbacks` raised
-    # TypeError: unhashable, outside handle_rpc's own try. #63 makes
-    # handle_rpc refuse that shape before the lookup runs, answered
-    # rather than raised -- tests/unit/rpc/main_test.py covers that
-    # shape now. What is left to exercise here is `run`'s own guard,
-    # not that one particular cause of it firing: a queued entry of the
-    # wrong shape unpacks nowhere handle_rpc's own try reaches,
-    # `body, conn_id = ...popleft()` being the function's first line.
+    # #97's line. A method that is not a string is not the trigger:
+    # handle_rpc refuses that shape before the lookup runs, answered
+    # rather than raised (#63), and tests/unit/rpc/main_test.py covers
+    # it. What is exercised here is the `except Exception` of
+    # `_drain_message_queues`, which `run`'s loop calls, not that one
+    # particular cause of it firing: a queued entry of the wrong shape
+    # fails to unpack at `body, conn_id = ...popleft()`, handle_rpc's
+    # first line, and handle_rpc has no handler of its own.
     node = a_networked_node
     rpc_manager = cast("AManager", node.rpc_manager)
     answered: list[Any] = []
@@ -2354,7 +2354,7 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
 ) -> None:
     """`run`'s loop must not reach `_step_chain` once a pass has set the flag.
 
-    `rpc.callbacks._validate_extending_tip` sets `terminate_flag` and
+    `rpc.callbacks._activate_and_answer` sets `terminate_flag` and
     re-raises where `update_chain`'s own trial does not swallow the
     exception -- but `rpc.main._execute` still turns that into
     `INTERNAL_ERROR` before it ever reaches this loop, so the flag,
@@ -2371,7 +2371,7 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
     `update_chain`'s own mid-fork loop already refuses to touch a block
     once `terminate_flag` reads set (`main.py`'s own comment above that
     check), which is a second, narrower guard and not the one under test
-    here. `rpc.callbacks._validate_extending_tip` imports `update_chain`
+    here. `rpc.callbacks._activate_and_answer` imports `update_chain`
     under a name of its own, so patching this module's copy leaves the
     first, fault-triggering call untouched and only counts a second one
     reached through `_step_chain`.
@@ -2600,10 +2600,10 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A second `warm_worker_pool` call is a no-op once the pool is built."""
-    # download_manager.block_download calls this once per dispatched
-    # batch of blocks, not once per node, so the guard the call site
-    # used to get for free from headers()'s own status transition now
-    # lives here instead: btclib-org/btclib-node#262
+    # download_manager.block_download reaches this, through
+    # `_request_blocks`, once per dispatched batch of blocks, not once
+    # per node, so the guard against a second thread lives here:
+    # btclib-org/btclib-node#262
     built: list[Any] = []
 
     def make_pool(processes: int) -> ARecordingPool:

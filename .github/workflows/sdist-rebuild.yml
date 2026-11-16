@@ -17,13 +17,11 @@ name: sdist-rebuild
 # permissions, the concurrency group and the calling job's `if:` and
 # `permissions:`, which the callee does not carry and says so in its own
 # header.
-# No input is named below: this tree's own build was a bare `uv build`, which
-# the callee's default (`sdist-builder: uv`, running `uv build --sdist`)
-# replaces -- the wheel that bare `uv build` also wrote was read by nothing in
-# this file and this tree stops building it here. `submodules` and
-# `setup-python` are likewise left at the callee's own defaults, `""` and
-# `false`: this tree's checkout named no submodules and its build ran no
-# setup-python step.
+# No input is named below: the callee's default (`sdist-builder: uv`,
+# running `uv build --sdist`) builds the sdist alone, and nothing in this
+# file reads a wheel. `submodules` and `setup-python` are likewise left at
+# the callee's own defaults, `""` and `false`: this tree has no submodules
+# and uv fetches the interpreter itself.
 #
 # The sdist alone: section 10 of the organization's standard makes
 # the row the sdist's. A red run is an issue against this tree. It gates
@@ -63,7 +61,7 @@ jobs:
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed' }}
-    uses: btclib-org/.github/.github/workflows/reusable-sdist-rebuild.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-sdist-rebuild.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     # a called workflow's own permissions: block can only downgrade, not
     # restore, what this calling job grants -- README.md section 11's
     # "the bound refuses rather than trims", measured in

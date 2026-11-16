@@ -323,11 +323,14 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
 
     Core's `ProcessMessage` calls `Misbehaving` for an `addr`, `addrv2`,
     `inv`, `getdata` or `headers` holding more entries than its bound
-    allows, with the message this raises. A `count` of zero raises
-    nothing, `_count_past` answering zero within the bound.
+    allows. Core's message goes on to print the count, and this one does
+    not: the count is octets the peer wrote, which section 7 of the
+    organization's standard, *A refusal carries no secret*, keeps out of
+    a refusal. A `count` of zero raises nothing, `_count_past` answering
+    zero within the bound.
     """
     if count:
-        err_msg = f"{msg_type} message size = {count}"
+        err_msg = f"{msg_type} message size past its bound"
         raise MisbehavingError(err_msg)
 
 
@@ -365,9 +368,7 @@ def _version_fields(msg: bytes) -> bytes:
     to refuse.
     """
     size, pos = _compact_size(msg, _VERSION_HEAD_SIZE)
-    if pos < 0:
-        return msg
-    return msg[: pos + size + _START_HEIGHT_SIZE + _RELAY_SIZE]
+    return msg if pos < 0 else msg[: pos + size + _START_HEIGHT_SIZE + _RELAY_SIZE]
 
 
 def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bool:
@@ -654,16 +655,17 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.address = address
         node.p2p_manager.peer_db.add_active_address(address)
 
-    # relay_tx, which is the attribute Connection defines: the name this
-    # wrote before was one letter different, so what the peer asked for
-    # landed on an attribute nothing reads and the connection's own flag
-    # stayed true for its whole life. is_relay_requested and not relay
-    # because an absent flag means true, which is BIP37's default and
-    # Core's. A block-relay-only connection or a feeler relays no
-    # transaction whatever the peer asked for: Core's `VERSION` handler
-    # builds no `TxRelay` for either (`net_processing.cpp`,
-    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is announced
-    # to it and a `getdata` of its for a transaction goes unanswered.
+    # relay_tx, which is the attribute Connection defines: a name one
+    # letter different would put what the peer asked for on an attribute
+    # nothing reads, and leave the connection's own flag true for its
+    # whole life. is_relay_requested and not relay because an absent
+    # flag means true, which is BIP37's default and Core's. A
+    # block-relay-only connection or a feeler relays no transaction
+    # whatever the peer asked for: Core's `VERSION` handler builds no
+    # `TxRelay` for either (`net_processing.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is
+    # announced to it and a `getdata` of its for a transaction goes
+    # unanswered.
     conn.relay_tx = (
         version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
     )
@@ -871,7 +873,10 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError(err_msg)
     announce = msg[0]
     if announce > 1:
-        err_msg = f"invalid sendcmpct announce field: {announce}"
+        # Core's text, which prints no value: the octet is the peer's, and
+        # section 7 of the organization's standard, *A refusal carries no
+        # secret*, lets a refusal print no byte of what it refuses
+        err_msg = "invalid sendcmpct announce field"
         raise MisbehavingError(err_msg)
     if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
         return
@@ -1218,7 +1223,7 @@ def _store_gossip(
     # port aside -- from the batch's flat two-hour penalty,
     # `add_addresses`' own default; `add_addresses`'s own docstring is
     # where the port is argued out of the comparison
-    # (btclib-org/btclib-node#1380, review round 2).
+    # (btclib-org/btclib-node#1380).
     manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
         node.logger.log_debug("net", "addrfetch connection completed, peer=%s", conn.id)
@@ -1231,8 +1236,8 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # less. Stored on the connection, the same shape relay_tx above
     # already is; read by DownloadManager.tx_download, through
     # Mempool.meets_fee_rate, against the fee
-    # main.verify_mempool_acceptance now hands back and Mempool keeps
-    # per transaction. btclib-org/btclib-node#260
+    # main.verify_mempool_acceptance hands back and Mempool keeps per
+    # transaction. btclib-org/btclib-node#260
     #
     # Core assigns a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
@@ -1666,7 +1671,6 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
 
 def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
     """Refuse what Core refuses of a `block` before its header is indexed."""
-    block_hash = block.header.hash
     block_index = node.chainstate.block_index
     # Core's `BLOCK` arm refuses a mutated body before the header is
     # looked at, once the parent is known, and punishes the peer without
@@ -1677,16 +1681,18 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
         parent.index + 1 >= node.chain.consensus.segwit_height
     )
     if parent is not None and is_block_mutated(block, check_witness_root=segwit):
-        err_msg = f"mutated block {block_hash.hex()}"
+        # Core's text, with no hash: no proof of work is asked yet, so the
+        # merkle root is 32 octets the peer chose, and the block's hash
+        # would confirm a guess at them (section 7 of the organization's
+        # standard, *A refusal carries no secret*)
+        err_msg = "mutated block"
         raise MisbehavingError(err_msg)
     _check_block(node, block, conn, via_compact_block=False)
 
 
 def _block_refusal(err_msg: str, *, punish: bool) -> BTClibValueError:
     """Return a block's refusal: a `MisbehavingError` where the peer pays."""
-    if punish:
-        return MisbehavingError(err_msg)
-    return BTClibValueError(err_msg)
+    return MisbehavingError(err_msg) if punish else BTClibValueError(err_msg)
 
 
 def _check_block(
@@ -1834,10 +1840,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
             node.logger.error("AcceptBlock FAILED (%s)", e)  # noqa: TRY400
             return
         if tip is None:
-            err_msg = (
-                f"block {block_hash.hex()} has prev block not found: "
-                f"{block.header.previous_block_hash.hex()}"
-            )
+            # Core's reject reason, where its debug line prints the block's
+            # hash and the parent's: the parent field is 32 octets the peer
+            # chose, and the block's hash, taken over them, would confirm a
+            # guess at them (section 7 of the organization's standard, *A
+            # refusal carries no secret*)
+            err_msg = "prev-blk-not-found"
             raise MisbehavingError(err_msg)
     _accept_block(node, block, conn, requested=requested, via_compact_block=False)
 
@@ -2436,11 +2444,9 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 
     A peer holding `NO_BAN` skips the work check, as in Core.
 
-    A batch with a transaction count other than zero after any of its
-    headers is dropped, and its peer kept. Core's `HEADERS` handler, at
-    the same tag, reads that count and ignores it up to `MAX_SIZE`,
-    taking the batch. The refusal is btclib's `Headers.parse`, and lasts
-    until a btclib release closes btclib-org/btclib#2992.
+    The transaction count after each header is read and ignored, as
+    Core's `HEADERS` handler does at the same tag: a batch whose counts
+    are not zero is taken. btclib's `Headers.parse` reads it so.
 
     While the stored blocks connect, the message is dropped unread, its
     count included (`_ignored_while_reindexing`).
@@ -2452,16 +2458,14 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
     # Unchecked, as Core's own `CBlockHeader` read checks nothing:
     # btclib's `BlockHeader.assert_valid` refuses a time before genesis,
-    # which Core leaves to `ContextualCheckBlockHeader`'s `time-too-old`,
-    # a `Misbehaving`, and that alone is reason enough to keep this
-    # unchecked. It used to also refuse a version of zero or below on
-    # its own, where Core leaves that to the same function's
-    # `bad-version` -- fixed
-    # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
-    # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The count
-    # and the transaction counts are bounded either way, and
-    # `add_headers` checks the work and both of Core's own contextual
-    # refusals.
+    # which Core leaves to `ContextualCheckBlockHeader`'s
+    # `time-too-old`, a `Misbehaving`, and that alone is reason enough
+    # to keep this unchecked. It accepts a version of zero or below,
+    # which Core leaves to the same function's `bad-version`
+    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    # btclib-org/btclib-node#1511). The count and the transaction counts
+    # are bounded either way, and `add_headers` checks the work and both
+    # of Core's own contextual refusals.
     headers: Sequence[BlockHeader] = Headers.parse(
         _fields(msg), check_validity=False
     ).headers
@@ -2811,13 +2815,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(Headers([]))
         return
     stop = getheaders.hash_stop
-    if not getheaders.locator:
-        if stop not in block_index.header_dict or not _block_request_allowed(
-            node, stop
-        ):
-            return
-        to_send = [stop]
-    else:
+    if getheaders.locator:
         fork = _find_fork_in_global_index(node, getheaders.locator)
         start = block_index.get_block_info(fork).index + 1
         end = start + MAX_HEADERS_RESULTS
@@ -2825,6 +2823,10 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
         if stop_height is not None and start <= stop_height < end:
             end = stop_height + 1
         to_send = active_chain[start:end]
+    elif stop not in block_index.header_dict or not _block_request_allowed(node, stop):
+        return
+    else:
+        to_send = [stop]
     conn.block_availability.best_header_sent = to_send[-1] if to_send else tip
     conn.send(
         Headers(
@@ -2948,15 +2950,15 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
 ) -> int | None:
     """Validate a BIP157 filter request, answering the stop block's height.
 
-    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3518-3565`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag): each of the four
-    checks below disconnects the peer rather than answering silently,
-    logging the line Core logs for it (ISS 1477). A fifth check of
-    Core's, the filter index for a supported type not existing, is not
-    one of these -- it is this node's own configuration rather than a
-    fault the peer caused, and every type `node.config.peerblockfilters`
-    lets through here has an index, so it never reaches this function at
-    all.
+    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3518-3565`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): each of the four checks
+    below disconnects the peer rather than answering silently, logging the
+    line Core logs for it, less the fields the peer chose (ISS 1477). A
+    fifth check of Core's, the filter index for a supported type not
+    existing, is not one of these -- it is this node's own configuration
+    rather than a fault the peer caused, and every type
+    `node.config.peerblockfilters` lets through here has an index, so it
+    never reaches this function at all.
 
     `not node.config.peerblockfilters` joins the first count rather than
     opening a fifth: Core's own `PrepareBlockFilterRequest` folds
@@ -2972,11 +2974,11 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     `PrepareBlockFilterRequest` calls it at (ISS 1476).
     """
     if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
+        # Core's line goes on to print the type octet the peer chose,
+        # which section 7 of the organization's standard, *A refusal
+        # carries no secret*, keeps out of a log line
         node.logger.log_debug(
-            "net",
-            "peer requested unsupported block filter type: %s, peer=%s",
-            int(filter_type),
-            conn.id,
+            "net", "peer requested unsupported block filter type, peer=%s", conn.id
         )
         conn.stop()
         return None
@@ -2984,11 +2986,11 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     if stop_hash not in block_index.header_dict or not _block_request_allowed(
         node, stop_hash
     ):
+        # Core's line goes on to print the stop hash, 32 octets the peer
+        # chose where this node does not know them, which section 7 keeps
+        # out of a log line
         node.logger.log_debug(
-            "net",
-            "peer requested invalid block hash: %s, peer=%s",
-            stop_hash.hex(),
-            conn.id,
+            "net", "peer requested invalid block hash, peer=%s", conn.id
         )
         conn.stop()
         return None
@@ -2999,11 +3001,13 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # always parsed, so a negative start cannot arrive; `get_cfcheckpt`'s
     # own `start_height` is always zero, so this never trips for it.
     if start_height > stop_height:
+        # Core's line also prints the start height, four octets the peer
+        # chose, which section 7 keeps out of a log line; the stop
+        # height is this node's
         node.logger.log_debug(
             "net",
             "peer sent invalid getcfilters/getcfheaders with start height "
-            "%d and stop height %d, peer=%s",
-            start_height,
+            "above stop height %d, peer=%s",
             stop_height,
             conn.id,
         )
@@ -3014,10 +3018,12 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # (`_NO_HEIGHT_DIFF_LIMIT` above). Strictly, so a range whose ends
     # differ by exactly the bound is one block too many.
     if stop_height - start_height >= max_height_diff:
+        # Core's line also prints how many were asked for, from which the
+        # start height the peer chose is read back, which section 7 keeps
+        # out of a log line
         node.logger.log_debug(
             "net",
-            "peer requested too many cfilters/cfheaders: %d / %d, peer=%s",
-            stop_height - start_height + 1,
+            "peer requested too many cfilters/cfheaders: at most %d, peer=%s",
             max_height_diff,
             conn.id,
         )

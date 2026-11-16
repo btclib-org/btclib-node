@@ -253,8 +253,8 @@ def anyone_can_spend_redeem_script() -> bytes:
 def anyone_can_spend() -> bytes:
     """Return a P2SH script_pub_key that `anyone_can_spend_script_sig` spends.
 
-    A P2SH output is one of `Solver`'s own templates, where the
-    `<rand32> OP_2DROP OP_1` this replaced was `NONSTANDARD` and, spent,
+    A P2SH output is one of `Solver`'s own templates, where a bare
+    `<rand32> OP_2DROP OP_1` is `NONSTANDARD` and, spent,
     `ValidateInputsStandardness`'s `bad-txns-nonstandard-inputs`
     (`policy.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). The
     spend stays standard throughout: push-only, minimal pushes, a clean
@@ -848,16 +848,15 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     """Poll `func` until truthy, or raise `WaitTimeoutError` after `timeout`."""
     # The timeout bounds a failure, not a success: the loop returns as
     # soon as func() holds, so a generous limit costs a passing run
-    # nothing and only delays one that was going to fail. Almost every
-    # wait returns immediately; what moves under load is the tail, and
-    # the longest single wait is always `test_download`'s wait for the
-    # active chain to reach the downloaded length -- 7.64s on an idle
-    # ten-core machine and 12.60s at twenty times its core count, and
-    # past this default on `macos-latest`, which is why that wait passes
-    # a bound of its own (btclib-org/btclib-node#1037). The
-    # wait above it in that test is `wait_until_listening`, which is a
-    # loop of its own with a deadline of its own and is not bounded by
-    # anything here.
+    # nothing and only delays one that fails. Almost every wait returns
+    # immediately; what moves under load is the tail, and the longest
+    # single wait is always `test_download`'s wait for the active chain
+    # to reach the downloaded length -- 7.64s on an idle ten-core
+    # machine and 12.60s at twenty times its core count, and past this
+    # default on `macos-latest`, which is why that wait passes a bound
+    # of its own (btclib-org/btclib-node#1037). The wait above it in
+    # that test is `wait_until_listening`, which is a loop of its own
+    # with a deadline of its own and is not bounded by anything here.
     #
     # This has to be a timeout on the node rather than on the scheduler,
     # and under `-n auto` a node's background thread competes for the
@@ -1022,7 +1021,7 @@ def cookie_path(data_dir: Path) -> Path:
 def authorization(data_dir: Path) -> str:
     """Return the `Authorization` value the cookie in `data_dir` makes."""
     cookie = cookie_path(data_dir).read_bytes()
-    return "Basic " + base64.b64encode(cookie).decode()
+    return f"Basic {base64.b64encode(cookie).decode()}"
 
 
 def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:
@@ -1132,15 +1131,15 @@ def local_addr(
     """Return a `NetworkAddressV2` naming `127.0.0.1` and `port`, to dial it.
 
     A test helper building an address to hand `P2pManager.connect`, not
-    a socket bind. `0.0.0.0` until ISS 681's own Windows evidence: a
-    POSIX kernel remaps a client connect to `0.0.0.0` onto loopback, but
-    Windows' `ConnectEx` refuses it outright -- `OSError(22, 'The format
-    of the specified network name is invalid', None, 1214, None)`,
-    synchronous and immediate, measured in btclib-org/btclib-node run
-    33271519023 -- so every two-node functional test dialling through
-    this helper timed out there rather than connecting. `127.0.0.1`
-    reaches the same local listener on every platform this node runs
-    tests on, with no remapping for either kernel to differ over.
+    a socket bind. `127.0.0.1` rather than `0.0.0.0`: a POSIX kernel
+    remaps a client connect to `0.0.0.0` onto loopback, but Windows'
+    `ConnectEx` refuses it outright -- `OSError(22, 'The format of the
+    specified network name is invalid', None, 1214, None)`, synchronous
+    and immediate, measured in btclib-org/btclib-node run 33271519023
+    (ISS 681) -- so a two-node functional test dialling `0.0.0.0` would
+    time out there rather than connect. `127.0.0.1` reaches the same
+    local listener on every platform this node runs tests on, with no
+    remapping for either kernel to differ over.
     """
     assert port is not None
     return peer_address("127.0.0.1", port, timestamp, services)

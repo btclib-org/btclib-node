@@ -42,6 +42,8 @@ from btclib_node.rpc.signing import (
     verify_message,
 )
 from btclib_node.signing import _push_all, _script_sig_stack
+from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -572,11 +574,11 @@ REFUSALS: list[tuple[str, list[Any], int, str]] = [
         -3,
         "JSON value of type string for field vout is not of expected type number",
     ),
-    prev_refusal(entry(txid="ab"), -8, "txid must be of length 64 (not 2, for 'ab')"),
+    prev_refusal(entry(txid="ab"), -8, "txid must be of length 64 (not 2, for '...')"),
     prev_refusal(
         entry(txid="zz" * 32),
         -8,
-        f"txid must be hexadecimal string (not '{'zz' * 32}')",
+        "txid must be hexadecimal string (not '...')",
     ),
     prev_refusal(entry(vout=1.5), -1, "JSON integer out of range"),
     prev_refusal(entry(vout=2**31), -1, "JSON integer out of range"),
@@ -584,7 +586,7 @@ REFUSALS: list[tuple[str, list[Any], int, str]] = [
     prev_refusal(
         entry(scriptPubKey="zz"),
         -8,
-        "scriptPubKey must be hexadecimal string (not 'zz')",
+        "scriptPubKey must be hexadecimal string (not '...')",
     ),
     prev_refusal({**PREV, "amount": None}, -3, "Amount is not a number or string"),
     prev_refusal(entry(amount=True), -3, "Amount is not a number or string"),
@@ -608,12 +610,12 @@ REFUSALS: list[tuple[str, list[Any], int, str]] = [
     prev_refusal(
         entry(scriptPubKey=SCRIPT_HASH, redeemScript="zz"),
         -8,
-        "redeemScript must be hexadecimal string (not 'zz')",
+        "redeemScript must be hexadecimal string (not '...')",
     ),
     prev_refusal(
         entry(scriptPubKey=p2wsh(THREE).hex(), witnessScript="zz"),
         -8,
-        "witnessScript must be hexadecimal string (not 'zz')",
+        "witnessScript must be hexadecimal string (not '...')",
     ),
     prev_refusal(
         entry(scriptPubKey=SCRIPT_HASH, redeemScript=THREE.hex(), witnessScript="51"),
@@ -699,8 +701,27 @@ MASTER_REFUSALS: list[tuple[str, list[Any], int, str]] = [
 def test_a_call_is_refused_as_core_refuses_it(
     method: str, params: list[Any], code: int, message: str
 ) -> None:
-    """The code and the message are Core's."""
+    """The code and the message are Core's, `...` where it quotes a string."""
     assert refusal(method, params) == (code, message)
+
+
+@pytest.mark.parametrize(
+    ("params", "secret"),
+    [
+        ([RAW, [], [PREV], LEAK_WIF], LEAK_WIF),
+        ([RAW, [], [entry(txid=LEAK_WIF)]], LEAK_WIF),
+        ([RAW, [], [entry(txid=f"z{LEAK_HEX[1:]}")]], LEAK_HEX[1:]),
+        ([RAW, [], [entry(scriptPubKey=LEAK_WIF)]], LEAK_WIF),
+        ([RAW, [], [entry(scriptPubKey=SCRIPT_HASH, redeemScript=LEAK_WIF)]], LEAK_WIF),
+    ],
+)
+def test_a_key_in_place_of_a_string_is_refused_without_quoting_it(
+    params: list[Any], secret: str
+) -> None:
+    """ISS 2514: a sighash, a txid or a script that is a key is not quoted."""
+    with pytest.raises(RpcError) as raised:
+        call("signrawtransactionwithkey", params)
+    assert_secret_free(raised.value, [secret])
 
 
 @pytest.mark.parametrize("name", sorted(VECTORS))
@@ -990,16 +1011,13 @@ def test_a_miniscript_with_a_key_off_the_curve_leaves_the_next_input_signed() ->
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_unsigned(
+def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_signed(
     *, nested: bool
 ) -> None:
-    """`or_b(pk(A),s:pk(X))`, `X` being `OFF_CURVE`, is left unsigned.
+    """`or_b(pk(A),s:pk(X))`, `X` being `OFF_CURVE`, is signed with A alone.
 
-    This departs from Core, which signs it with A alone, in wsh and in
-    sh(wsh): bip32-descriptors' `from_script` refuses `X`, which Core
-    reads (`_Production.satisfy_miniscript`'s docstring,
-    ISS btclib-org/bip32-descriptors#292). The test pins the departure, so
-    it fails once bip32-descriptors reads such a key.
+    As Core signs it, in wsh and in sh(wsh) (ISS 2412): the witness is
+    the empty push that fails `pk(X)`, A's signature, and the script.
     """
     script = b"\x21" + PUB_A + b"\xac\x7c\x21" + OFF_CURVE + b"\xac\x9b"
     extra = {"witnessScript": script.hex()}
@@ -1008,10 +1026,13 @@ def test_a_miniscript_needing_no_signature_of_a_key_off_the_curve_is_unsigned(
         extra["redeemScript"] = spent.hex()
         spent = p2sh(spent)
     result = call("signrawtransactionwithkey", [RAW, [KA], [prevtx(spent, extra)]])
-    assert result["complete"] is False
-    assert [e["error"] for e in result["errors"]] == [
-        "Unable to sign input, invalid stack size (possibly missing key)"
-    ]
+    # what `bitcoind` v32.1 answered for the same call
+    core = {
+        False: "0200000000010101010101010101010101010101010101010101010101010101010101010101010000000000fdffffff01b882010000000000160014362995a6e6922a04e0b832a80bc56c33709a42d2030047304402204529a2ff39d489a3249f5d985bbe705248b7d6043c34818cbda9ae081b50a517022010e3503d75a3532fc4e219354817333927d402c7a134db3113871ca9a7e70fc901482103774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac7c21020000000000000000000000000000000000000000000000000000000000000005ac9b00000000",
+        True: "0200000000010101010101010101010101010101010101010101010101010101010101010101010000000023220020d31bbe4387eac9d5420dfbf475aabb81baba09e34572ed5a1b2653a337b77d39fdffffff01b882010000000000160014362995a6e6922a04e0b832a80bc56c33709a42d2030047304402204529a2ff39d489a3249f5d985bbe705248b7d6043c34818cbda9ae081b50a517022010e3503d75a3532fc4e219354817333927d402c7a134db3113871ca9a7e70fc901482103774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac7c21020000000000000000000000000000000000000000000000000000000000000005ac9b00000000",
+    }[nested]
+    assert result == {"hex": core, "complete": True}
+    assert accepted(result["hex"], spent)
 
 
 def test_a_redeem_script_over_65535_bytes_is_pushed_with_pushdata4() -> None:
@@ -1033,17 +1054,28 @@ def test_prevtxs_replace_the_amount_of_the_coin_found() -> None:
 
 
 def test_prevtxs_of_another_script_than_the_coin_are_refused() -> None:
-    """The two scripts are shown as `ScriptToAsmStr` writes them."""
+    """Core's message, with `...` where it writes each script."""
     node = a_node({(FUNDING, 0): TxOut(AMOUNT, PKH_A)})
-    key_hash = hash160(PUB_A).hex()
     assert refusal("signrawtransactionwithkey", [RAW, [KA], [PREV]], node) == (
         -22,
-        (
-            "Previous output scriptPubKey mismatch:\n"
-            f"OP_DUP OP_HASH160 {key_hash} OP_EQUALVERIFY OP_CHECKSIG\n"
-            f"vs:\n0 {key_hash}"
-        ),
+        "Previous output scriptPubKey mismatch:\n...\nvs:\n...",
     )
+
+
+def test_a_key_as_a_mismatched_script_is_refused_without_quoting_it() -> None:
+    """ISS 2514: an entry's script, and an earlier one's, are not quoted.
+
+    The script pushes the key, so its asm would spell the key in hex.
+    """
+    pushed = f"20{LEAK_HEX}"
+    node = a_node({(FUNDING, 0): TxOut(AMOUNT, PKH_A)})
+    with pytest.raises(RpcError) as raised:
+        call("signrawtransactionwithkey", [RAW, [], [entry(scriptPubKey=pushed)]], node)
+    assert_secret_free(raised.value, [LEAK_HEX])
+    twice = [entry(scriptPubKey=pushed), PREV]
+    with pytest.raises(RpcError) as raised:
+        call("signrawtransactionwithkey", [RAW, [], twice])
+    assert_secret_free(raised.value, [LEAK_HEX])
 
 
 def test_a_null_argument_is_the_default() -> None:

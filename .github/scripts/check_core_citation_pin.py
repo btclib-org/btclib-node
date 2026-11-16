@@ -14,27 +14,21 @@ pin, so a bump is a one-line diff that leaves every citation reading a
 bitcoind the suite no longer runs -- the argument is
 btclib-org/btclib-node#856.
 
-#856's own fix enumerated one file and one citation form rather than the
-pattern, and btclib-org/btclib-node#1014 is the same trap closing a
-second time: `rpc/callbacks.py` grew an identical release-annotated
-citation that neither the reorg-test check nor a hardcoded tuple of
-files named, so a future bump would have left it stale with this gate
-exiting 0 throughout. So the tree-wide half of this reads every file
-`git` tracks (`git ls-files`, in place of a directory walk that would
-need its own exclude list for `.venv`, `.git` and build output) rather
-than a named few: a release-annotated citation is checked wherever it is
-written, and a citation site gained later needs no entry added here to
-be covered.
+The tree-wide half of this reads every file `git` tracks but those
+excluded below (`git ls-files`, in place of a directory walk that would
+need its own exclude list for `.venv`, `.git` and build output), rather
+than a named few, so that a citation site gained later needs no entry
+added here to be covered.
 
 What stays scoped to `reorg_test.py` alone is its own convention of
 citing one commit several times and annotating it only once -- every
 bare citation in that module names the commit its own annotated citation
 already established, which is a property of how that one module is
-written and not a second instance of the file-enumeration bug: a bare
-citation elsewhere in the tree (a `CHANGELOG.md` entry, one of
-`rpc/callbacks.py`'s own citations of Core's unreleased `master`) names
-a commit unrelated to the others and to the pin on purpose, so requiring
-tree-wide agreement between arbitrary bare citations would be wrong.
+written and not a gap in the tree-wide read: a bare citation elsewhere
+in the tree (a `CHANGELOG.md` entry, one of `rpc/callbacks.py`'s own
+citations of Core's unreleased `master`) names a commit unrelated to the
+others and to the pin on purpose, so requiring tree-wide agreement
+between arbitrary bare citations would be wrong.
 
 Outside `reorg_test.py`, only the release-annotated form is read: "--
 vX.Y, the release `integration-bitcoind.yml` pins", which says what the
@@ -145,7 +139,7 @@ def _pinned_version() -> str:
 
 
 def _tracked_files() -> list[Path]:
-    """Every path `git` tracks, minus this check's own source and test.
+    """Every path `git` tracks, minus `_EXCLUDED_FROM_SCAN`.
 
     `git ls-files` is the file set rather than a directory walk: a walk
     would need its own exclude list for `.venv`, `.git` and build
@@ -208,12 +202,10 @@ def _sha_problems(pinned_version: str) -> list[str]:
 def _tree_problems(pinned_version: str) -> list[str]:
     """Every release-annotated citation, tree-wide.
 
-    Unlike `_sha_problems` above, this does not care which file it is
-    reading or whether the tree already knew to name it: it is what
-    would have caught `rpc/callbacks.py`'s own citation without anybody
-    adding it to a list (btclib-org/btclib-node#1014). It necessarily
-    re-reads `reorg_test.py` and the workflow too -- harmless, since a
-    citation already checked above is still just as much a citation.
+    Unlike `_sha_problems` above, which reads `reorg_test.py` alone, this
+    reads every file `_tracked_files` returns. It necessarily re-reads
+    `reorg_test.py` and the workflow too -- harmless, since a citation
+    already checked above is still just as much a citation.
     """
     problems = []
     for path in _tracked_files():

@@ -16,18 +16,26 @@ request with no `id` is a notification, run and answered with no body.
 
 import json
 import math
-from typing import Any, NamedTuple, NoReturn, override
+import re
+from functools import partial
+from itertools import accumulate
+from typing import Any, NamedTuple, NoReturn, Self, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import MAX_JSON_DEPTH, quoted_name
 from btclib_node.rpc.errors import RpcError
 
 __all__ = [
     "NO_CONTENT",
     "OK",
     "HttpReply",
+    "JsonNumber",
     "JsonObject",
     "JsonRpcRequest",
+    "LongInteger",
+    "NegativeZero",
+    "RawJSON",
     "decode",
     "error_reply",
     "error_status",
@@ -67,6 +75,111 @@ class JsonObject(dict[str, Any]):
         return self._pairs
 
 
+class RawJSON:
+    """A JSON number written to the wire exactly as given, not from a `float`.
+
+    Core's own `UniValue(UniValue::VNUM, "<string>")` does the same: the
+    value is built from a string and written out verbatim, whatever that
+    string was, rather than round-tripped through a floating-point type on
+    the way out. `ValueFromAmount` (`src/core_io.cpp:283-293`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag) is one caller --
+    `rpc.callbacks.get_mempool_info`'s own `mempoolminfee`, an exact
+    eight-decimal BTC amount a Python `float` cannot always carry: `repr`
+    fixes no decimal places and emits exponent notation (`1e-06`) at a
+    magnitude ordinary for a feerate, which Core's own `%d.%08d` format
+    never does.
+
+    `JsonRpcRequest.reply` is another: it writes a number in a request's
+    `id` back as the text it was read from, as Core does.
+
+    `json.JSONEncoder.default` cannot return this directly -- its
+    return value is re-encoded through the same machinery rather than
+    written as-is, and Python's `json` has no hook for a raw literal.
+    `rpc.connection.JSONEncoder.default` returns a marked placeholder
+    instead, and `rpc.connection` substitutes it, quotes and all, for
+    `text` once encoding has already run.
+
+    The mark is not a fixed word: a fixed one is not actually safe -- a
+    plain string value that happens to contain it once, unpaired (an
+    error message echoing back a client's own malformed method name,
+    say), lets a regex substitution's own non-greedy match run past
+    that string's closing quote and merge it with an unrelated
+    placeholder later in the same response, corrupting both.
+    `rpc.connection` passes a fresh random token instead, one
+    per call, so a legitimate value colliding with it is not a
+    realistic risk the way colliding with a guessable word is.
+    """
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        """Wrap `text`, the exact number `JSONEncoder` writes back out."""
+        self.text = text
+
+
+class JsonNumber(float):
+    """A JSON number held as `float` reads it, and the text it was written as.
+
+    Core's `UniValue` holds a number as its text, and writes that text
+    back (`src/univalue/lib/univalue_read.cpp` and `univalue_write.cpp`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `float` keeps no
+    text: `1.50` reads as `1.5`, `1e2` as `100.0`, and `1E400` as
+    infinity. `decode` reads a number with a fraction or an exponent as
+    a `JsonNumber`, and `text` is what a reply writes back.
+    """
+
+    __slots__ = ("text",)
+    text: str
+
+    def __new__(cls, text: str) -> Self:
+        """Read `text` as a float, and keep it."""
+        number = super().__new__(cls, text)
+        number.text = text
+        return number
+
+
+class LongInteger(JsonNumber):
+    """A JSON integer of more digits than `int` reads, held as `float` reads it.
+
+    `int` refuses a text past CPython's digit limit
+    (`sys.get_int_max_str_digits()`). Core's `UniValue` holds a number as
+    its text (`src/univalue/lib/univalue_read.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `bitcoind` reads the
+    request, and refuses such a number only where a method reads it:
+    `getInt` as "JSON integer out of range", `get_real` as "JSON double
+    out of range". Here a reader of an integer refuses any float, and
+    `get_real` an infinite one, which this is: a limit in force is at
+    least `sys.int_info.str_digits_check_threshold` digits, more than the
+    largest double has.
+    """
+
+    __slots__ = ()
+
+
+class NegativeZero(int):
+    """The JSON integer `-0`, which `int` reads as `0`.
+
+    It is `0` to a reader of a signed integer, as it is to a signed
+    `UniValue::getInt` (`src/univalue/include/univalue.h`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); an unsigned one refuses
+    it (ISS btclib-org/btclib-node#2491). `text` is what a reply writes
+    back, as `UniValue` writes the text it read.
+    """
+
+    __slots__ = ()
+    text = "-0"
+
+
+def _integer(text: str) -> int | LongInteger:
+    """Read a JSON integer, keeping the text `int` loses or refuses."""
+    if text == "-0":
+        return NegativeZero()
+    try:
+        return int(text)
+    except ValueError:  # the digit limit: `json` has matched the syntax
+        return LongInteger(text)
+
+
 def get_real(value: float) -> float:
     """Return a JSON number as `UniValue::get_real` does.
 
@@ -90,6 +203,31 @@ def get_real(value: float) -> float:
     return real
 
 
+# A JSON string. The closing quote is optional, so a string left open
+# takes the rest of the text in one match: `json.loads` stops at its
+# opening quote, and a pattern needing the quote would try again from each
+# later one. The quantifiers are possessive, so that `re` keeps no state
+# to backtrack to for each escape.
+_STRING = re.compile(r'"[^"\\]*+(?:\\.[^"\\]*+)*+"?', re.DOTALL)
+_NOT_A_BRACKET = re.compile(r"[^\[\]{}]+")
+_NESTING = {"[": 1, "{": 1, "]": -1, "}": -1}
+
+
+def _refuse_past_max_depth(text: str) -> None:
+    """Raise `ValueError` where more than `MAX_JSON_DEPTH` containers are open.
+
+    The containers are arrays and objects, and a bracket in a string
+    is not one.
+    """
+    if text.count("[") + text.count("{") <= MAX_JSON_DEPTH:
+        return
+    brackets = _NOT_A_BRACKET.sub("", _STRING.sub("", text))
+    depths = accumulate(map(_NESTING.__getitem__, brackets))
+    if max(depths, default=0) > MAX_JSON_DEPTH:
+        message = f"more than {MAX_JSON_DEPTH} arrays and objects open"
+        raise ValueError(message)
+
+
 def _no_constant(name: str) -> NoReturn:
     """Refuse `NaN`, `Infinity` and `-Infinity`, which JSON does not have."""
     raise ValueError(name)
@@ -98,17 +236,51 @@ def _no_constant(name: str) -> NoReturn:
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     r"""Decode a request body, each object a `JsonObject`.
 
-    Raises `ValueError` where `json.loads` does, where the text holds
-    `NaN`, `Infinity` or `-Infinity`, which `json.loads` reads and Core's
-    `UniValue::read` does not, and where a string or an object key holds
-    a lone surrogate. `json.loads` reads `"\ud800"`
-    with no low surrogate after it, and a UTF-8 encoding of one, as a
-    one-character string. Core's `JSONUTF8StringFilter` refuses both
+    A number with a fraction or an exponent is a `JsonNumber`, and `-0` a
+    `NegativeZero`, so that each keeps the text it was written as.
+
+    Raises `ValueError` where `json.loads` does, except on an integer
+    past the interpreter's digit limit, which it reads as a
+    `LongInteger`. It also raises where the text holds `NaN`, `Infinity`
+    or `-Infinity`, which `json.loads` reads and Core's `UniValue::read`
+    does not, and where a string or an object key holds a lone
+    surrogate. `json.loads` reads `"\ud800"` with no low surrogate after
+    it, and a UTF-8 encoding of one, as a one-character string. Core's
+    `JSONUTF8StringFilter` refuses both
     (`src/univalue/include/univalue_utffilter.h`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag), and `HTTPReq_JSONRPC`
     answers the whole body as a parse error.
+
+    It also raises where more than `MAX_JSON_DEPTH` arrays and objects
+    are open at once, which `UniValue::read` refuses
+    (`src/univalue/lib/univalue_read.cpp`, same sha). It counts them
+    before `json.loads` reads the text: `json.loads` raises
+    `RecursionError`, which is not a `ValueError`, on a text nested
+    deeper than the stack holds.
     """
-    value = json.loads(body, object_pairs_hook=JsonObject, parse_constant=_no_constant)
+    # decoded as `json.loads` decodes bytes, so the depth is counted on
+    # the text it reads
+    text = body.decode(json.detect_encoding(body), "surrogatepass")
+    _refuse_past_max_depth(text)
+    read = partial(
+        json.loads,
+        text,
+        object_pairs_hook=JsonObject,
+        parse_float=JsonNumber,
+        parse_constant=_no_constant,
+    )
+    kept = False  # whether `value` holds `-0` as a `NegativeZero`
+    try:
+        # with `json`'s own `int`: a `parse_int` slows a body of many integers
+        value = read()
+    except json.JSONDecodeError:
+        raise
+    except ValueError:
+        # `int` refused an integer for its length, or the text holds a
+        # refusal the read below raises again
+        value = read(parse_int=_integer)
+        kept = True
+    zero = False
     pending = [value]
     while pending:
         item = pending.pop()
@@ -119,6 +291,11 @@ def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
         elif isinstance(item, JsonObject):
             for key, member in item.items():
                 pending.extend((key, member))
+        elif type(item) is int and not item:
+            zero = True
+    if zero and not kept and "-0" in text:
+        # `int` reads `-0` as `0`, and a text that holds no `-0` has none
+        return read(parse_int=_integer)
     return value
 
 
@@ -148,10 +325,8 @@ class JsonRpcRequest:
     where Core throws, so what a refused request is answered with is
     what `parse` had read by then. A fresh request has a null `id` and
     reads as legacy, which is what a body that is not a request object
-    at all is answered with. Core parses every member of a batch into
-    one `JSONRPCRequest`, so a member refused before its own `id` is
-    read is answered with the previous member's `id` and version;
-    `handle_rpc` reuses one of these across a batch for that reason.
+    at all is answered with, and a batch member that is not one
+    (`rpc.main._answer_batch`).
     """
 
     def __init__(self) -> None:
@@ -220,7 +395,7 @@ class JsonRpcRequest:
                 reply["result"] = None
             reply["error"] = {"code": error.code.value, "message": error.message}
         if self.has_id:
-            reply["id"] = self.id
+            reply["id"] = _written(self.id)
         return reply
 
 
@@ -269,11 +444,17 @@ def transform_named_arguments(
     matches Core's: `bitcoind`, the release `integration-bitcoind.yml` pins,
     on macOS names the last of them in the request's own order for some sets
     of keys and not for others. The last is the one named here.
+
+    A key named twice, and a key no position names, are quoted through
+    `quoted_name`, where Core quotes them whole (`src/rpc/server.cpp:757`
+    and `:843`, same tag): SECURITY.md, "Where this node departs from
+    Bitcoin Core", and section 7 of the organization's standard, *A refusal
+    carries no secret*.
     """
     args_in: dict[str, Any] = {}
     for key, value in params.items():
         if key in args_in:
-            message = f"Parameter {key} specified multiple times"
+            message = f"Parameter {quoted_name(key)} specified multiple times"
             raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
         args_in[key] = value
     out: list[Any] = []
@@ -303,9 +484,43 @@ def transform_named_arguments(
             raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
         out = positional + out[len(positional) :]
     if args_in:
-        message = f"Unknown named parameter {next(reversed(args_in))}"
+        message = f"Unknown named parameter {quoted_name(next(reversed(args_in)))}"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
     return out
+
+
+def _written(value: object) -> object:
+    """Return `value` with each number that keeps its text a `RawJSON` of it.
+
+    A loop rather than a recursion, as in `decode`.
+    """
+    containers: list[list[Any] | JsonObject] = []
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, list):
+            containers.append(item)
+            pending.extend(item)
+        elif isinstance(item, JsonObject):
+            containers.append(item)
+            # every pair's value, where `values` holds a key's first only
+            pending.extend(pair[1] for pair in item.items())
+    built: dict[int, object] = {}
+
+    def rebuilt(item: object) -> object:
+        if isinstance(item, JsonNumber | NegativeZero):
+            return RawJSON(item.text)
+        return built.get(id(item), item)
+
+    # `containers` lists a container before those it holds, so in reverse
+    # each is built after them
+    for item in reversed(containers):
+        if isinstance(item, list):
+            built[id(item)] = [rebuilt(member) for member in item]
+        else:
+            pairs = [(key, rebuilt(member)) for key, member in item.items()]
+            built[id(item)] = JsonObject(pairs)
+    return rebuilt(value)
 
 
 def error_reply(code: RPCErrorCode, message: str) -> HttpReply:

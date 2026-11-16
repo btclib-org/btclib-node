@@ -127,7 +127,8 @@ def a_cluster_at_the_limit(ctx: Ctx) -> None:
     """Refuse a replacement that joins a full cluster, `too-large-cluster`."""
     chain = [_pay(ctx.coin(), 1_000)]
     for _ in range(63):
-        chain.append(_pay(_coin(chain[-1]), 1_000))
+        child = _pay(_coin(chain[-1]), 1_000)
+        chain.append(child)
     coin = ctx.coin()
     ctx.send(*chain, _pay(coin, 1_000))
     spent = [coin, _coin(chain[-1])]

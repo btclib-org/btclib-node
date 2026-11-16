@@ -12,8 +12,7 @@
 # `private-vulnerability-reporting` answers `enabled: true` here, so the
 # route is open. SECURITY.md is the policy behind it and gives an email
 # address for anyone who would rather not use the form, and carries this
-# node's known limitations, which used to be README.md's to say back
-# when this tree kept no policy of its own.
+# node's known limitations.
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability

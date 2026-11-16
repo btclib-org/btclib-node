@@ -50,11 +50,10 @@ on:
   # request is not open yet, which the trigger above cannot reach
   workflow_dispatch:
 
-# The pull_request trigger is a trade in the direction opposite to the
-# one this file made while the push and the schedule were the whole of
-# it: two more cells on every push to a branch, against the ceiling on
-# the organization's concurrent jobs that REPOSITORY.md's *Plan-gated
-# settings* measures and btclib-org/.github#85 argues.
+# The pull_request trigger is a trade: two more cells on every push to a
+# branch, against the ceiling on the organization's concurrent jobs that
+# REPOSITORY.md's *Plan-gated settings* measures and
+# btclib-org/.github#85 argues.
 # What buys it back is that a finding arrives while the branch can still
 # answer it, rather than on the commit a merge creates -- which is
 # already the default branch. The OpenSSF Scorecard's SAST check reads
@@ -70,14 +69,21 @@ on:
 permissions:
   contents: read
 
-# cancel superseded runs. Named literally rather than through
-# github.workflow, as everywhere else here. By the pull request's own
-# number where there is one: github.ref for a closed, merged pull
-# request resolves to the base branch's ref, so a group built from it
-# alone would put that run in the push trigger's group and cancel the
-# analysis of the merge commit
+# cancel a pull request's superseded runs. Named literally rather than
+# through github.workflow, as everywhere else here. By the pull
+# request's own number where there is one: github.ref for a closed,
+# merged pull request resolves to the base branch's ref, so a group
+# built from it alone would put that run in the push trigger's group and
+# cancel the analysis of the merge commit.
+# A push run is keyed on its commit and its ref instead, so each push to
+# main has a group of its own, and a run that no later push cancels or
+# replaces: section 10 of the organization's standard has why
+# cancel-in-progress: false and queue: max do not give that.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    codeql-${{ github.event_name == 'push'
+    && format('{0}-{1}', github.sha, github.ref)
+    || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -89,7 +95,7 @@ jobs:
   # not inherit through a call, so the write the analysis needs is declared on
   # this job rather than assumed from the read-only default above
   analyze:
-    uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@5be4b0fbb5231cff001a3ee0eaa8f7d82bffef11 # v2026.11.5
+    uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
     permissions:
       security-events: write # the SARIF upload, and nothing else needs it
       contents: read
@@ -119,16 +125,16 @@ jobs:
     # not success(): a job whose dependencies failed is skipped, and a
     # skipped check reports "skipped", which a ruleset counts as
     # satisfied. Not always() either: a cancellation of this run itself
-    # -- the concurrency group superseding it with a newer push -- would
-    # reach this job and fail it, turning a cancellation the newer run
-    # already speaks for into a red check with no defect behind it. The
-    # draft flag is not part of this condition: a skipped required check
-    # reads as passing, and this job's own check run does not exist
-    # until analyze has settled, so declining it here while draft would
-    # leave the draft's skip as the only check of this name on the sha
-    # until a later run's own aggregate exists. The closed condition
-    # stays: a closed pull request has nothing left to become ready
-    # (btclib-org/.github#1327)
+    # -- the concurrency group superseding it with a newer push to its
+    # pull request -- would reach this job and fail it, turning a
+    # cancellation the newer run already speaks for into a red check
+    # with no defect behind it. The draft flag is not part of this
+    # condition: a skipped required check reads as passing, and this
+    # job's own check run does not exist until analyze has settled, so
+    # declining it here while draft would leave the draft's skip as the
+    # only check of this name on the sha until a later run's own
+    # aggregate exists. The closed condition stays: a closed pull
+    # request has nothing left to become ready (btclib-org/.github#1327)
     if: >-
       ${{ !cancelled()
       && github.event.action != 'closed' }}

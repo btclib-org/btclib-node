@@ -52,7 +52,7 @@ def test_a_wrong_password_is_refused(rpc_node: Node) -> None:
     """The cookie's own user, with a password that is not the cookie's."""
     wait_until_listening(rpc_node.rpc_manager)
     wrong = base64.b64encode(b"__cookie__:" + b"0" * 64).decode()
-    assert status_of(rpc_node, {"Authorization": "Basic " + wrong}) == 401
+    assert status_of(rpc_node, {"Authorization": f"Basic {wrong}"}) == 401
 
 
 def test_the_cookie_is_accepted(rpc_node: Node) -> None:
@@ -131,14 +131,14 @@ def test_rpcpassword_is_accepted_and_the_whitelist_refuses_stop(
         tmp_path,
         rpcuser=RPCAUTH_USER,
         rpcpassword=RPCAUTH_PASSWORD,
-        rpcwhitelist=[RPCAUTH_USER + ":getblockcount"],
+        rpcwhitelist=[f"{RPCAUTH_USER}:getblockcount"],
     )
     node.start()
     try:
         wait_until_listening(node.rpc_manager)
         assert not cookie_path(node.config.data_dir).exists()
         userpass = f"{RPCAUTH_USER}:{RPCAUTH_PASSWORD}".encode()
-        headers = {"Authorization": "Basic " + base64.b64encode(userpass).decode()}
+        headers = {"Authorization": f"Basic {base64.b64encode(userpass).decode()}"}
         stop = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "stop"}).encode()
         url = f"http://127.0.0.1:{node.rpc_port}"
         assert http_request(url, data=stop, headers=headers, timeout=5) == (403, b"")

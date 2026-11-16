@@ -102,15 +102,14 @@ _SUBSIDY = 50 * 10**8
 #
 # Just short of a megabyte, not a whole one: `a_block`'s one coinbase
 # carries this whole payload in its own output, and `Tx.assert_valid`
-# (btclib 2026.9.30) now refuses a transaction whose stripped
-# serialization, times `WITNESS_SCALE_FACTOR`, exceeds
-# `MAX_BLOCK_WEIGHT` -- Core's own `CheckTransaction`
-# `bad-txns-oversize` (`consensus/tx_check.cpp`,
-# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which already refused a
-# transaction this large (btclib-org/btclib#2417, btclib-org/btclib#2420).
-# A full megabyte crossed that bound by the coinbase's own ~100 bytes
-# of non-payload fields; this leaves headroom for them at every height
-# `blocks_of` below ever reaches.
+# refuses a transaction whose stripped serialization, times
+# `WITNESS_SCALE_FACTOR`, exceeds `MAX_BLOCK_WEIGHT` -- Core's own
+# `CheckTransaction` `bad-txns-oversize` (`consensus/tx_check.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which refuses a
+# transaction this large too (btclib-org/btclib#2417,
+# btclib-org/btclib#2420). A full megabyte crosses that bound by the
+# coinbase's own ~100 bytes of non-payload fields; this leaves headroom
+# for them at every height `blocks_of` below ever reaches.
 _SERVED_BLOCK_BYTES = 999_000
 
 # A connection's `send_buffer_max_size` unless `-maxsendbuffer` sets it.
@@ -122,7 +121,7 @@ _SEND_BUFFER_MAX_SIZE = 1000 * DEFAULT_MAXSENDBUFFER
 # `sock_sendall` returns), so octets a buffer swallows never stand
 # against `send_buffer_max_size`. Left to the kernel that is several
 # megabytes to a peer that never reads -- autotuned, and larger on some
-# runners -- which left the pause below unreached on CI. Fixed at this
+# runners -- which leaves the pause below unreached on CI. Fixed at this
 # size, the two ends together absorb well under
 # `_KERNEL_BUFFER_ALLOWANCE`, whatever the platform's default; the
 # kernel may round it up, Linux doubling it.

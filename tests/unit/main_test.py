@@ -274,9 +274,9 @@ def test_reject_block_that_prints_money(node: Node) -> None:
 
 def test_reject_block_with_a_failing_script(node: Node) -> None:
     """A block with an input that fails script validation fails to connect."""
-    # An input that does not verify has to fail the block. It used to be
-    # written to errors/ and swallowed, inside a worker pool, so nothing
-    # reached update_chain and the block was connected anyway. The chain
+    # An input that does not verify has to fail the block: written to
+    # errors/ and swallowed inside a worker pool instead, nothing would
+    # reach update_chain and the block would connect anyway. The chain
     # is COINBASE_MATURITY long and the spend is chain[0]'s own coinbase
     # for the same reason as the sibling test above.
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
@@ -305,8 +305,8 @@ def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
     node: Node,
 ) -> None:
     """A coinbase paying far more than subsidy plus fees fails to connect."""
-    # btclib-org/btclib-node#568: nothing used to compare a coinbase
-    # against what it is allowed to pay, so this connected.
+    # btclib-org/btclib-node#568: a coinbase is compared against what it
+    # is allowed to pay.
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
@@ -445,8 +445,8 @@ def test_a_block_over_the_sigop_cost_limit_is_refused(
 ) -> None:
     """One sigop more of any kind is `bad-blk-sigops`, and the block invalid.
 
-    btclib-org/btclib-node#1585: only `CheckBlock`'s legacy count was
-    bounded, so this connected. Each case adds to one term alone, so
+    btclib-org/btclib-node#1585: every term of the count is bounded, not
+    only `CheckBlock`'s legacy one. Each case adds to one term alone, so
     each proves that term is counted: a witness sigop costs one, a p2sh
     sigop and a coinbase's legacy one cost four.
     """
@@ -610,8 +610,8 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
     node: Node,
 ) -> None:
     """A coinbase committing to no height at all fails to connect (BIP34)."""
-    # btclib-org/btclib-node#571: Block.assert_valid_contextual was never
-    # called, so this connected -- regtest enforces BIP34 from height 1.
+    # btclib-org/btclib-node#571: Block.assert_valid_contextual is what
+    # refuses this -- regtest enforces BIP34 from height 1.
     chain = generate_random_chain(1, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
@@ -979,8 +979,8 @@ def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
 ) -> None:
     """Core's `ContextualCheckBlock` asks `bad-txns-nonfinal` before BIP34's.
 
-    ISS 1315's review measured it on bitcoind: a block failing both is
-    refused `bad-txns-nonfinal`.
+    Measured on bitcoind (ISS 1315): a block failing both is refused
+    `bad-txns-nonfinal`.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -2387,7 +2387,8 @@ def a_cluster(node: Node, root: Tx, count: int) -> list[Tx]:
     """Hold a chain of `count` transactions spending `root`, and return it."""
     chain = [root]
     for _ in range(count - 1):
-        chain.append(child_of(chain[-1]))
+        child = child_of(chain[-1])
+        chain.append(child)
     for tx in chain:
         assert node.mempool.add_tx(tx, FEE, tx.vsize)
     return chain
@@ -2642,10 +2643,10 @@ def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
     node: Node,
 ) -> None:
     """A complete branch connects while a separate, incomplete one is queued."""
-    # get_first_candidate used to ask only whether a candidate's own tip
-    # had arrived, so a branch missing a block *behind* its downloaded
-    # tip still passed it -- and then update_chain found the hole and
-    # gave up the whole pass, leaving that same candidate at the front
+    # a get_first_candidate asking only whether a candidate's own tip
+    # has arrived would pass a branch missing a block *behind* its
+    # downloaded tip -- and then update_chain would find the hole and
+    # give up the whole pass, leaving that same candidate at the front
     # of the queue next time: btclib-org/btclib-node#121
     block_index = node.chainstate.block_index
 
@@ -3237,7 +3238,7 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     second = generate_random_chain(3, RegTest().genesis.hash)
     connect(node, second)
 
-    assert node.mempool._block_since_last_rolling_fee_bump is True
+    assert node.mempool._block_since_last_rolling_fee_bump
     assert node.mempool._last_rolling_fee_update > 0.0
 
 
@@ -3278,13 +3279,13 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     reads no sync state (btclib-org/btclib-node#1144).
     """
     node.status = status
-    # #85's fix checks every re-added transaction rather than trusting
-    # it: this is the other side of that, a transaction that spent an
-    # output the reorg does not touch and is still good on the chain
-    # that replaces the one it was confirmed on. common is
-    # COINBASE_MATURITY long so that resurrectable, spending its own
-    # first block's coinbase once abandoned extends past the tip, is a
-    # spend this rule accepts rather than one it refuses on its own.
+    # every re-added transaction is checked rather than trusted (#85):
+    # this is the other side of that, a transaction that spent an output
+    # the reorg does not touch and is still good on the chain that
+    # replaces the one it was confirmed on. common is COINBASE_MATURITY
+    # long so that resurrectable, spending its own first block's
+    # coinbase once abandoned extends past the tip, is a spend this rule
+    # accepts rather than one it refuses on its own.
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
 
@@ -3717,7 +3718,6 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     node: Node,
 ) -> None:
     """A connected block reaches every peer: its headers, or the tip's `inv`."""
-    # an accepted block used to reach nobody, by either shape.
     # btclib-org/btclib-node#202
     first = generate_random_chain(1, RegTest().genesis.hash)
     connect(node, first)
@@ -3952,7 +3952,7 @@ def test_a_block_connected_with_an_empty_mempool_asks_it_nothing_per_tx(
     connect(node, chain[-1:])
     assert len(chain[-1].transactions) > 1
     assert not asked
-    assert node.mempool._block_since_last_rolling_fee_bump is True
+    assert node.mempool._block_since_last_rolling_fee_bump
 
 
 def test_a_reorg_during_initial_block_download_announces_nothing(
@@ -4837,18 +4837,16 @@ def test_a_reorg_restored_prevout_can_be_legitimately_spent_again(node: Node) ->
     """A reorg's own restore does not strand a later, heavier fork as invalid.
 
     `apply_rev_block` restoring a prevout that was durable when the
-    block being undone spent it left the outpoint marked in
-    `removed_utxos` even after putting it back into `updated_utxo_set` --
-    staging now survives across trial boundaries (this is ISS 586's own
-    point), so nothing erases that stale flag at the next trial's own
-    boundary the way the old, per-trial `finalize` used to. A later,
-    legitimate spend of the same output then hit `add_block`'s own
-    "prevout already spent in this batch" guard, and
-    `update_header_index` invalidated the block carrying it -- and
-    everything built on it -- for good, stranding the node on a fork it
-    could never leave (btclib-org/btclib-node#586). common is
-    COINBASE_MATURITY long so that common[0]'s own coinbase, `funding`,
-    is mature and spendable the moment a fork extends it.
+    block being undone spent it unmarks the outpoint in `removed_utxos`
+    as it puts it back into `updated_utxo_set`: staging survives across
+    trial boundaries (this is ISS 586's own point), so nothing else
+    erases that flag. Left set, a later, legitimate spend of the same
+    output would hit `add_block`'s own "prevout already spent in this
+    batch" guard, and `update_header_index` would invalidate the block
+    carrying it -- and everything built on it -- for good, stranding the
+    node on a fork it could never leave (btclib-org/btclib-node#586).
+    common is COINBASE_MATURITY long so that common[0]'s own coinbase,
+    `funding`, is mature and spendable the moment a fork extends it.
 
     Three forks off `common`'s own tip, each heavier than the last:
     `fork_a` spends `funding` and connects; `fork_b`, two blocks not
@@ -4966,10 +4964,11 @@ def test_update_ibd_status_stays_true_past_the_configured_max_tip_age() -> None:
 def test_update_ibd_status_reads_minimum_chain_work_off_config_not_the_chain() -> None:
     """A `-minimumchainwork` override is read, not the chain's own floor.
 
-    `an_ibd_node`'s `minimum_chain_work` stands in for `-minimumchainwork`:
-    `update_ibd_status` no longer reads `node.chain.consensus` at all
-    (btclib-org/btclib-node#1500), so a `node.chain` this node has no
-    `consensus` on would not be noticed by a test built the old way.
+    `an_ibd_node`'s `minimum_chain_work` stands in for
+    `-minimumchainwork`: `update_ibd_status` does not read
+    `node.chain.consensus` (btclib-org/btclib-node#1500), and this node
+    has no `chain` at all, so a read of it would raise here rather than
+    go unnoticed.
     """
     node = an_ibd_node(
         chainwork=100, minimum_chain_work=1000, tip_time=datetime.now(UTC)

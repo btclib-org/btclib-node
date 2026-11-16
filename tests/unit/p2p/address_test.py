@@ -32,6 +32,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
+from btclib_node import clock
 from btclib_node.db import KeyValueStore
 from btclib_node.p2p.address import (
     SEEDS_SERVICE_FLAGS,
@@ -109,9 +110,7 @@ class Coin(random.Random):
     @override
     def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
         """Return `face` for the coin, a real draw otherwise."""
-        if start == 2:
-            return self.face
-        return super().randrange(start, *args, **kwargs)
+        return self.face if start == 2 else super().randrange(start, *args, **kwargs)
 
 
 def side_rows(side: Any) -> list[NetworkAddressV2]:
@@ -180,16 +179,11 @@ def test_the_table_of_active_addresses_is_bounded() -> None:
 def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
     """Handshaking with the same endpoint three times leaves one active row.
 
-    #270: `add_active_address` used to run once per handshake with no
-    check for an endpoint already held, so a peer redialled inside the
-    active window grew one row per handshake instead of
-    settling on the latest, the way `add_addresses`'s own `by_endpoint`
-    already did for the known-address table.
+    #270: `add_active_address` checks for an endpoint already held, so a
+    peer redialled inside the active window settles on the latest row
+    rather than growing one per handshake, the way `add_addresses`'s own
+    `by_endpoint` does for the known-address table.
     """
-    # #270: add_active_address ran once per handshake, with no check for
-    # an endpoint already held, so a peer redialled inside the active
-    # window grew one row per handshake instead of settling on the
-    # latest the way add_addresses's own by_endpoint already does
     peer_db = a_peer_db()
     peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     for port in (18444, 18444, 18444):
@@ -203,19 +197,8 @@ def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
 
     #270: this many calls against the one endpoint is the same shape
     `test_the_table_of_active_addresses_is_bounded` puts the cap
-    through, without a distinct port spending it each time -- and it is
-    also the fix's own regression guard against a per-call scan of
-    `active_addresses`: `pyproject.toml`'s own per-test `timeout` is
-    what such a scan, repeated this many times, would fail on, not the
-    assertion below.
+    through, without a distinct port spending it each time.
     """
-    # #270: this many calls against the one endpoint is the same shape
-    # `test_the_table_of_active_addresses_is_bounded` puts the cap
-    # through, without a distinct port spending it each time. It is also
-    # this fix's own regression guard against reintroducing a per-call
-    # scan of `active_addresses`: `pyproject.toml`'s own per-test
-    # `timeout` is what a scan repeated this many times fails on, not the
-    # assertion below.
     peer_db = a_peer_db()
     peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     for _ in range(10010):
@@ -1390,12 +1373,11 @@ def test_an_onioncat_ipv6_record_is_not_kept() -> None:
     """An OnionCat-range `IPV6` record is dropped by `add_addresses` too.
 
     The other half of the same rule: `fd87:d87e:eb43::/48` is the
-    OnionCat range a TORv2 address used to be embedded in as a fake
-    IPv6 one, before BIP155 gave onion addresses a network of their
-    own.
+    OnionCat range that embeds a TORv2 address in a fake IPv6 one, where
+    BIP155 gives onion addresses a network of their own.
     """
     # the other half of the same rule: `fd87:d87e:eb43::/48` is where a
-    # TORv2 address used to be embedded in a fake IPv6 one
+    # TORv2 address is embedded in a fake IPv6 one
     peer_db = a_peer_db()
     peer_db.add_addresses([peer_address(_AN_ONIONCAT_ADDRESS, 8333)])
     assert not peer_db.addresses
@@ -1560,8 +1542,7 @@ def test_a_self_announcement_on_a_different_port_still_costs_no_penalty() -> Non
     == source` slices `addr`, a `CAddress`, down to its own `CNetAddr`
     base before `CNetAddr::operator==` ever runs (`src/addrman.cpp` and
     `src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
-    so the exemption still applies (btclib-org/btclib-node#1380, review
-    round 2).
+    so the exemption still applies (btclib-org/btclib-node#1380).
     """
     peer_db = a_peer_db()
     now = int(time.time())
@@ -2197,10 +2178,10 @@ def test_size_counts_a_gossiped_and_answered_address_once_each(
     This tree's own two-table split leaves the row in both `addresses`
     and `active_addresses` (`address_sampler`'s own docstring says so),
     so counting the union of their keys, not the sum of their lengths,
-    is what keeps this test's name true (ISS 1265: a `bitcoind` this
-    node has actually handshaken with, previously double-counted here,
-    is what pushed `PeerDB.size` past `_DNS_SEEDS_DELAY_PEER_THRESHOLD`
-    twice as fast as Core's own table would).
+    is what keeps this test's name true (ISS 1265: double-counting a
+    `bitcoind` this node has actually handshaken with would push
+    `PeerDB.size` past `_DNS_SEEDS_DELAY_PEER_THRESHOLD` twice as fast
+    as Core's own table would).
     """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
@@ -2316,11 +2297,11 @@ def test_an_unroutable_peer_is_not_recorded_as_answered(
 def test_an_unroutable_row_is_dropped_from_the_store_on_load(
     tmp_path: Path, prefix: bytes, address: NetworkAddressV2
 ) -> None:
-    """ISS 1140: a row neither table would take now is deleted, not loaded.
+    """ISS 1140: a row neither table would take is deleted, not loaded.
 
-    Written directly under the prefix, as a store filled before the
-    tables refused such an address holds it. A routable row beside it
-    is loaded and kept.
+    Written directly under the prefix, as a store an older release of
+    this node wrote can hold it. A routable row beside it is loaded and
+    kept.
     """
     now = int(time.time())
     routable = peer_address("1.2.3.4", 8333, timestamp=now)
@@ -2370,9 +2351,10 @@ def test_an_answered_row_with_no_known_row_is_dropped_on_load(
 ) -> None:
     """ISS 1189: a store holding an answered row alone loses it on load.
 
-    Written directly, as a store filled before `add_active_address`
-    asked for a known endpoint holds it. An answered row beside a known
-    one for the same endpoint is the control, and it is kept.
+    Written directly, as a store an older release of this node wrote can
+    hold it: `add_active_address` writes an answered row only for a
+    known endpoint. An answered row beside a known one for the same
+    endpoint is the control, and it is kept.
     """
     first = a_peer_db(data_dir=tmp_path)
     assert first.db is not None
@@ -3068,8 +3050,9 @@ _CORE_SLOTS = [
 def core_table(**kwargs: Any) -> PeerDB:
     """Build a `deterministic` table holding `_CORE_SLOTS`, as Core did."""
     peer_db = PeerDB(cast("Chain", None), None, deterministic=True, **kwargs)
+    now = int(clock.now())
     for host, port, tried, _ in _CORE_SLOTS:
-        address = peer_address(host, port, timestamp=int(time.time()))
+        address = peer_address(host, port, timestamp=now)
         assert peer_db.add_addresses([address], source=address)
         if tried:
             assert peer_db.add_active_address(address)
@@ -3110,6 +3093,9 @@ def test_a_store_s_key_wins_over_the_deterministic_one(tmp_path: Path) -> None:
 
 def test_a_deterministic_table_draws_the_same_on_every_build() -> None:
     """The draws of two tables built and called alike are the same."""
+    # one second for both builds: `core_table`'s stamp, and the answered
+    # rows `add_active_address` stamps
+    clock.set_mock_time(int(time.time()))
     first, second = core_table(), core_table()
     for table in (first, second):
         table._collisions.update(table._rows)

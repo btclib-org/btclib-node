@@ -788,7 +788,8 @@ class DownloadManager:
             for conn in manager.connections.copy().values()
             if conn.status == P2pConnStatus.Connected
             and conn.automatic
-            and not (conn.block_relay or conn.feeler)
+            and not conn.block_relay
+            and not conn.feeler
         ]
         if len(peers) <= manager.max_outbound_full_relay:
             return
@@ -1590,21 +1591,17 @@ class DownloadManager:
         a peer that old is sent none.
         """
         now = clock.now()
-        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
-        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
-        # decision on `m_chainman.IsInitialBlockDownload()`, which `main.
-        # update_ibd_status`'s own `node.is_initial_block_download`
-        # answers faithfully (btclib-org/btclib-node#575). An earlier
-        # version of this branch read `NodeStatus.BlockSynced` instead,
-        # a second, looser definition of the one Core concept living in
-        # this tree -- caught unsafe against `is_initial_block_download`
-        # only because the suite's own regtest fixtures dated every
-        # block `GENESIS_TIME`-relative, far older than `MAX_TIP_AGE`
-        # ever tolerates, which is a fixture defect and not a reason to
-        # carry two answers to Core's one flag: closed by giving the one
-        # caller that needs a recent tip a recent one
-        # (`tests/__init__.py`'s own `generate_random_chain`, `tip_time`)
-        # rather than reading `NodeStatus` here (btclib-org/btclib-node#661).
+        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
+        # decision on `m_chainman.IsInitialBlockDownload()`, which
+        # `main.update_ibd_status`'s own
+        # `node.is_initial_block_download` answers faithfully
+        # (btclib-org/btclib-node#575). `NodeStatus.BlockSynced` is not
+        # read in its place: it would be a second, looser definition of
+        # the one Core concept. A test that needs a tip younger than
+        # `MAX_TIP_AGE` builds one (`tests/__init__.py`'s own
+        # `generate_random_chain`, `tip_time`;
+        # btclib-org/btclib-node#661).
         ibd = self.node.is_initial_block_download
         current_filter = (
             self._max_feefilter

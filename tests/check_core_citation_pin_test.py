@@ -5,20 +5,19 @@
 """Tests for the bitcoind-pin-versus-Core-citation check of `.github/scripts`.
 
 The script's own module docstring is the argument for what it checks and
-why; this exercises both readings of it. `test_this_tree_agrees_with_itself`
-runs it unmodified, against this tree's own files, which is the same
-question the pre-commit hook asks on every commit. Most other tests point
-`_tracked_files` at a fixture directory instead of the real tree, so each
-can make exactly one of the ways the tree could stop agreeing true and
-check that the script says so -- a pin bumped alone, one citation edited
-and the rest left behind, a citation living in a file with no special
-name at all -- and that an unmodified fixture says nothing is wrong, a
-measurement naming an older release included.
-`test_a_citation_in_an_unlisted_file_is_caught` is the regression test
-for btclib-org/btclib-node#1014: `rpc/callbacks.py` carried the
-release-annotated form and was on no list, so a version-tuple check the
-way this module worked before #1014 would pass it silently, and the
-fixture in that test is built the same way.
+why; this exercises both readings of it.
+`test_this_tree_agrees_with_itself` runs it unmodified, against this
+tree's own files, which is the same question the pre-commit hook asks on
+every commit. Most other tests point `_tracked_files` at a fixture
+directory instead of the real tree, so each can make exactly one of the
+ways the tree could stop agreeing true and check that the script says so
+-- a pin bumped alone, one citation edited and the rest left behind, a
+citation living in a file with no special name at all -- and that an
+unmodified fixture says nothing is wrong, a measurement naming an older
+release included. `test_a_citation_in_an_unlisted_file_is_caught` covers
+btclib-org/btclib-node#1014: a citation in the release-annotated form,
+in a file on no list, which a check reading only the listed files would
+pass silently; the fixture in that test is built that way.
 
 `test_tracked_files_excludes_self_test_and_changelogs` and
 `test_a_stale_citation_in_changelog_is_not_flagged_end_to_end`

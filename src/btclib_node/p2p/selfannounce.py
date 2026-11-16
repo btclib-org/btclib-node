@@ -89,9 +89,7 @@ def _ours(ours: IPv4Address | IPv6Address) -> int:
     """Return the rank of `ours` for a peer that has no network of its own."""
     if isinstance(ours, IPv4Address):
         return _REACH_IPV4
-    if ours in _TEREDO:
-        return _REACH_TEREDO
-    return _REACH_IPV6_WEAK
+    return _REACH_TEREDO if ours in _TEREDO else _REACH_IPV6_WEAK
 
 
 def reachability(
@@ -146,10 +144,11 @@ def address_for_peer(  # noqa: PLR0913
     best = None
     best_rank = (-1, -1)
     for service in local.values():
-        if inbound_onion:
-            if not _onion(service.address):
-                continue
-        elif isinstance(service.address, SpecialAddress):
+        if (
+            not _onion(service.address)
+            if inbound_onion
+            else isinstance(service.address, SpecialAddress)
+        ):
             continue
         rank = (reachability(service.address, peer, routable=routable), service.score)
         if rank > best_rank:

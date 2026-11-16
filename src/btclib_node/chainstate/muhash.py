@@ -5,14 +5,14 @@
 """`CoinStats`: this store's own on-disk shape for the UTXO commitment.
 
 `btclib.coinstats.CoinStats` -- this tree's equivalent of Core's
-incrementally-maintained `CoinStatsIndex` (`src/index/coinstatsindex.cpp`)
--- is the accumulator, the three running counters beside it, the bytes
-a coin is committed to as (`tx_out_ser`) and the gate on what is
-committed to at all (`btclib.script.spendability.is_unspendable`).
-[btclib#1623](https://github.com/btclib-org/btclib/issues/1623) is
-where moving them out of this module was decided, and
-`btclib.coinstats`'s own module docstring is where the construction,
-the counters and the gate are all argued, `insert`/`remove` being each
+incrementally-maintained `CoinStatsIndex`
+(`src/index/coinstatsindex.cpp`) -- is the accumulator, the three
+running counters beside it, the bytes a coin is committed to as
+(`tx_out_ser`) and the gate on what is committed to at all
+(`btclib.script.spendability.is_unspendable`). They live in btclib
+([btclib#1623](https://github.com/btclib-org/btclib/issues/1623)), and
+`btclib.coinstats`'s own module docstring is where the construction, the
+counters and the gate are all argued, `insert`/`remove` being each
 other's exact inverses on the same bytes included. `UtxoIndex.rollback`
 relies on that inverse property to undo a staged insert with a remove
 and vice versa, without recording what the accumulator's own state was
@@ -58,26 +58,25 @@ never a scan of the `utxo-` namespace.
 
 `IsBIP30Unspendable` (`validation.cpp:6213-6217`, at
 bitcoin/bitcoin@f0de87f040) names two mainnet blocks, 91722 and 91812,
-each mined before BIP34 gave a coinbase's own outpoint a height it
-could never collide with, whose coinbase transaction was later
-duplicated verbatim by a different block (91842, 91880 --
-`IsBIP30Repeat`, the pair `btclib.consensus`'s own
-`Chain.consensus.bip30_exceptions` names, which is what `_check_bip30`
-on the *second* occurrence is waived against, not this one).
-`CoinStatsIndex::CustomAppend` skips a duplicated coinbase's own outputs
-entirely -- never inserted, so never later removed either -- on
-whichever of the two connects *first* carrying that flag: the first
+each mined before BIP34 gave a coinbase's own outpoint a height it could
+never collide with, whose coinbase transaction was later duplicated
+verbatim by a different block (91842, 91880 -- `IsBIP30Repeat`, the pair
+`btclib.consensus`'s own `Chain.consensus.bip30_exceptions` names, which
+is what `_check_bip30` on the *second* occurrence is waived against, not
+this one). `CoinStatsIndex::CustomAppend` skips a duplicated coinbase's
+own outputs entirely -- never inserted, so never later removed either --
+on whichever of the two connects *first* carrying that flag: the first
 occurrence is never hashed, so the second occurrence's own ordinary
 insertion is the only one the accumulator ever carries, and the
 outpoint's later spend correctly cancels exactly that one. Reproduced
 here as `_BIP30_UNSPENDABLE_ORIGINALS`, checked once per connecting
-block's own coinbase in `UtxoIndex.add_block` -- `chains.py` is other
-work's own region for this branch, so the pair is local rather than a
-new `Chain` attribute. Both blocks are ninety-odd thousand mainnet
-blocks deep and neither height nor hash is reachable on any chain this
-tree's own test suite runs (`Chain.consensus.bip30_exceptions` is empty
-on every chain but mainnet), so this exclusion is matched against
-Core's source rather than against a live run of it.
+block's own coinbase in `UtxoIndex.add_block`, the pair local here
+rather than a `Chain` attribute. Both blocks are ninety-odd thousand
+mainnet blocks deep and neither height nor hash is reachable on any
+chain this tree's own test suite runs
+(`Chain.consensus.bip30_exceptions` is empty on every chain but
+mainnet), so this exclusion is matched against Core's source rather than
+against a live run of it.
 """
 
 from __future__ import annotations

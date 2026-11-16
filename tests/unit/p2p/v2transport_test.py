@@ -42,6 +42,7 @@ from btclib_node.p2p.v2transport import (
     V2Transport,
     V2TransportError,
 )
+from tests.secret_free import assert_secret_free
 
 MAGIC = RegTest().magic
 KEY_LEN = 64
@@ -512,6 +513,22 @@ def test_the_wrong_network_is_refused_with_its_magic_named() -> None:
         feed(transport, Main().magic + b"version\x00\x00\x00\x00\x00" + bytes(8))
 
 
+def test_a_wrong_network_refusal_does_not_echo_unknown_octets() -> None:
+    """Section 7: a refusal carries no secret, and a refused magic may hold any.
+
+    A magic that is not one of the chains this package defines is never
+    printed; the test above checks that one of them defines still names
+    the network.
+    """
+    secret = bytes.fromhex(
+        "3a0f9c8d1e7b2a4f6c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a1b2c3d4"
+    )
+    transport = V2Transport(MAGIC, V1Transport(MAGIC), initiating=False)
+    with pytest.raises(V2TransportError) as exc_info:
+        feed(transport, secret[:4] + b"version\x00\x00\x00\x00\x00" + bytes(8))
+    assert_secret_free(exc_info.value, [secret[:4]])
+
+
 def test_an_initiator_does_not_take_a_v1_header_for_the_wrong_network() -> None:
     """Only a responder is spoken to first, so only it looks."""
     transport = V2Transport(MAGIC, V1Transport(MAGIC), initiating=True)
@@ -647,7 +664,7 @@ def test_without_a_key_or_garbage_given_both_are_random() -> None:
     assert to_send(first)[:KEY_LEN] != to_send(second)[:KEY_LEN]
 
 
-def test_a_packet_that_does_not_authenticate_is_an_error_naming_its_size() -> None:
+def test_a_packet_that_does_not_authenticate_is_an_error() -> None:
     """A version packet without the garbage as AAD fails to decrypt."""
     tester = Peer(random.Random(0), initiator=True)
     tester.send_key()
@@ -657,7 +674,7 @@ def test_a_packet_that_does_not_authenticate_is_an_error_naming_its_size() -> No
     tester.send_garbage_term()
     # a version packet that does not carry the garbage as AAD
     tester.send_packet(b"", b"not the garbage")
-    with pytest.raises(V2TransportError, match=r"decryption failure \(0 bytes\)"):
+    with pytest.raises(V2TransportError, match=r"^packet decryption failure$"):
         feed(tester.transport, bytes(tester.to_send))
 
 
@@ -677,8 +694,96 @@ def test_a_packet_is_refused_over_the_largest_message() -> None:
     assert out is not None
     assert [m.command for m in out if m] == ["big"]
     tester.send(tester.cipher.encrypt(bytes(1 + 12 + 4_000_001))[:LENGTH_LEN])
-    with pytest.raises(V2TransportError, match=r"packet too large \(4000014 bytes\)"):
+    expected = r"^packet too large: at most 4000013 bytes expected$"
+    with pytest.raises(V2TransportError, match=expected):
         feed(tester.transport, bytes(tester.to_send))
+
+
+# a fixed random key, as `assert_secret_free` asks of a secret it is fed
+_KEY = bytes.fromhex("5f2d9da4f2261a5ddc8cf18f1a2a8df7a1140bc21b12ff4ebbfcdf33aaab1eab")
+
+
+def encrypted_length(tester: Peer, length: bytes) -> bytes:
+    """Return the octets the transport decrypts as `length`, next packet.
+
+    The length of the empty packet encrypted, and dropped, is the
+    keystream the next length is read with.
+    """
+    keystream = tester.cipher.encrypt(b"")[:LENGTH_LEN]
+    return bytes(a ^ b for a, b in zip(keystream, length, strict=True))
+
+
+def handshaken() -> Peer:
+    """Return a tester whose transport has taken the version packet."""
+    tester = Peer(random.Random(0), initiator=True)
+    tester.send_key()
+    tester.send_garbage(0)
+    assert tester.interact() == []
+    tester.receive_key()
+    tester.send_garbage_term()
+    tester.send_version()
+    assert tester.interact() == []
+    return tester
+
+
+def test_a_length_past_the_bound_is_refused_without_it() -> None:
+    """The refusal names the bound, never the length it decrypted.
+
+    The length decrypted is made a key's octets, which are looked for with
+    their decimal and the octets on the wire they are decrypted from.
+    """
+    tester = handshaken()
+    length = _KEY[:LENGTH_LEN]
+    assert int.from_bytes(length, "little") > 1 + 12 + 4_000_000
+    wire = encrypted_length(tester, length)
+    with pytest.raises(V2TransportError) as refusal:
+        feed(tester.transport, wire)
+    decimal = str(int.from_bytes(length, "little"))
+    assert_secret_free(refusal.value, [_KEY, length, decimal, wire])
+    expected = "packet too large: at most 4000013 bytes expected"
+    assert str(refusal.value) == expected
+
+
+def test_a_packet_that_does_not_authenticate_is_refused_without_its_length() -> None:
+    """The refusal names the failure, never the length it decrypted.
+
+    The test above says how the length is looked for.
+    """
+    tester = handshaken()
+    length = _KEY[LENGTH_LEN : 2 * LENGTH_LEN]
+    size = int.from_bytes(length, "little")
+    assert size <= 1 + 12 + 4_000_000
+    wire = encrypted_length(tester, length)
+    # the rest of a packet whose contents are that long, which does not
+    # authenticate
+    wire += random.Random(0).randbytes(size + EXPANSION - LENGTH_LEN)
+    with pytest.raises(V2TransportError) as refusal:
+        feed(tester.transport, wire)
+    assert_secret_free(refusal.value, [_KEY, length, str(size), wire[:LENGTH_LEN]])
+    assert str(refusal.value) == "packet decryption failure"
+
+
+def test_a_rejected_message_is_refused_without_its_size() -> None:
+    """The text names no size; `size` keeps it, for the caller to count.
+
+    The contents' length is made a key's octets, looked for with the
+    decimal of that length and of the size. `size` is the one attribute
+    allowed to hold it, so it is checked and then taken off before the
+    search.
+    """
+    tester = handshaken()
+    length = _KEY[:2] + bytes(1)
+    contents = bytes([len(MESSAGE_IDS)]) + bytes(int.from_bytes(length, "little") - 1)
+    tester.send_packet(contents)
+    feed(tester.transport, bytes(tester.to_send))
+    assert tester.transport.received_message_complete()
+    with pytest.raises(RejectedMessageError) as refusal:
+        tester.transport.get_received_message()
+    size = len(contents) + EXPANSION
+    assert refusal.value.size == size
+    del refusal.value.size
+    assert_secret_free(refusal.value, [_KEY, length, str(len(contents)), str(size)])
+    assert str(refusal.value) == "message rejected"
 
 
 @pytest.mark.parametrize(

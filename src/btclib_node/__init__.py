@@ -35,7 +35,7 @@ from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import Config
-from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
+from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus, default_data_dir
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
@@ -133,11 +133,10 @@ STOP_DUMP_DELAY = 15
 # in one loop (`src/validation.cpp:3357-3491`,
 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 #
-# The figure it replaces, 0.0001, sat below the platform timer's own
-# granularity, so what set the pace of an idle node was the OS rather
-# than the number, and every one of those passes still ran
-# `download_manager.step()` and `update_chain()` in full
-# (btclib-org/btclib-node#440).
+# A figure below the platform timer's own granularity, as 0.0001, leaves
+# the pace of an idle node to the OS rather than the number, and every
+# one of those passes still runs `download_manager.step()` and
+# `update_chain()` in full (btclib-org/btclib-node#440).
 #
 # Core's own message loop takes this shape as a wait on a condition
 # variable that a producer signals, so a node with work is woken at
@@ -151,17 +150,17 @@ STOP_DUMP_DELAY = 15
 # so the gap stays and this is a divergence from what is cited above
 # rather than a match to it.
 #
-# 5 ms rather than a larger figure in the 5-20 ms range the issue
-# above named: an idle node's own CPU cost falls to about the same
-# small fraction of its former self at 5, 10 and 20 ms alike, measured
-# by comparing resource.getrusage across an idle run at each -- so
-# nothing past 5 ms buys back more of it. What does move past 5 ms is
-# the very latency the comment above says this sleep trades for that
-# CPU, measured end to end on a real RPC round trip: it grows with the
-# sleep, so the smallest figure that already captures the CPU win is
-# the one that pays least for it, and it still leaves comfortable
-# headroom under `tests/__init__.py`'s own 25 ms poll in `wait_until`
-# and `wait_until_listening`, so nothing in the suite can resolve it.
+# 5 ms rather than a larger figure in the 5-20 ms range the issue above
+# named: an idle node's own CPU cost falls to about the same small
+# fraction of its cost at 0.0001 at 5, 10 and 20 ms alike, measured by
+# comparing resource.getrusage across an idle run at each -- so nothing
+# past 5 ms buys back more of it. What does move past 5 ms is the very
+# latency the comment above says this sleep trades for that CPU,
+# measured end to end on a real RPC round trip: it grows with the sleep,
+# so the smallest figure that already captures the CPU win is the one
+# that pays least for it, and it still leaves comfortable headroom under
+# `tests/__init__.py`'s own 25 ms poll in `wait_until` and
+# `wait_until_listening`, so nothing in the suite can resolve it.
 IDLE_SLEEP_SECONDS = 0.005
 
 # Core's own `InitError` where `AppInitServers` fails (`src/init.cpp:1635-1636`,
@@ -206,9 +205,7 @@ def _default_worker_count() -> int:
         count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", ""))
     except ValueError:
         count = 0
-    if count < 1:
-        return 8
-    return max(1, (os.cpu_count() or 8) // count)
+    return 8 if count < 1 else max(1, (os.cpu_count() or 8) // count)
 
 
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute
@@ -226,20 +223,19 @@ def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
     `ThreadPool` constructs on a GIL build as readily as a `Pool` does,
     so a parametrized test exercises both without a second interpreter.
 
-    Two conditions license a `ThreadPool` at all, and both were
-    established by reading and by running rather than by trust of a
-    process-era comment (issue #388): `btclib.script.engine` never
+    Two conditions license a `ThreadPool` at all, both checked by
+    reading and by running (issue #388): `btclib.script.engine` never
     writes to the `Tx`, `TxIn` or `PrecomputedTxData` a task is handed
-    -- confirmed by a concurrent run over a real, mixed-flavour,
-    signed transaction with `Tx.__setattr__`/`TxIn.__setattr__`
-    instrumented to catch one, on both interpreters -- and
-    `btclib-secp256k1` verifies through one shared, read-only
-    libsecp256k1 context that its own "Thread safety" section documents
-    as safe for concurrent calls. Under a GIL build the choice does not
-    matter for correctness and matters for speed: the libsecp256k1 cffi
-    call releases the GIL but the Python around it does not, so a
-    `ThreadPool` there is threads taking turns behind a process pool's
-    own real parallelism, which is why the GIL build keeps `Pool`.
+    -- confirmed by a concurrent run over a real, mixed-flavour, signed
+    transaction with `Tx.__setattr__`/`TxIn.__setattr__` instrumented to
+    catch one, on both interpreters -- and `btclib-secp256k1` verifies
+    through one shared, read-only libsecp256k1 context that its own
+    "Thread safety" section documents as safe for concurrent calls.
+    Under a GIL build the choice does not matter for correctness and
+    matters for speed: the libsecp256k1 cffi call releases the GIL but
+    the Python around it does not, so a `ThreadPool` there is threads
+    taking turns behind a process pool's own real parallelism, which is
+    why the GIL build keeps `Pool`.
 
     Core's own `CCheckQueue` always shares one
     `PrecomputedTransactionData` by pointer across its worker threads
@@ -300,21 +296,19 @@ class Node(threading.Thread):
 
         # Every start method but `fork` re-imports `__main__` to find
         # what a worker was asked to run
-        # (`multiprocessing.spawn.import_main_path`), which is what
-        # made `scripts/chains/*.py` build a second `Node` on the same
-        # data directory inside every worker `warm_worker_pool` spawned,
-        # before those three scripts guarded their own module body
-        # (issue #579): nothing about that re-import is specific to
-        # them, so an unguarded caller this tree does not ship
-        # reproduces it exactly the same way, silently -- CPython raises
-        # nothing for it. `current_process().name` is `"MainProcess"`
-        # only for the process that was never bootstrapped through that
-        # re-import; measured directly (not assumed) under `spawn`, a
-        # `Pool` worker's own is `"SpawnPoolWorker-N"`, and under
-        # `forkserver` it is `"ForkServerPoolWorker-N"`. A `pytest-xdist`
-        # worker is a subprocess too, but `spawn`/`forkserver` never
-        # re-import `__main__` inside *it* -- xdist forks or spawns its
-        # own workers directly from a running interpreter rather than
+        # (`multiprocessing.spawn.import_main_path`), so a script that
+        # builds a `Node` in an unguarded module body builds a second
+        # one on the same data directory inside every worker
+        # `warm_worker_pool` spawns (issue #579), silently -- CPython
+        # raises nothing for it. `current_process().name` is
+        # `"MainProcess"` only for the process that was never
+        # bootstrapped through that re-import; measured directly (not
+        # assumed) under `spawn`, a `Pool` worker's own is
+        # `"SpawnPoolWorker-N"`, and under `forkserver` it is
+        # `"ForkServerPoolWorker-N"`. A `pytest-xdist` worker is a
+        # subprocess too, but `spawn`/`forkserver` never re-import
+        # `__main__` inside *it* -- xdist forks or spawns its own
+        # workers directly from a running interpreter rather than
         # bootstrapping them the way a `Pool` worker is -- so it reports
         # `"MainProcess"` the same way, measured the same way, which is
         # why every functional test can build a `Node` inside one
@@ -354,8 +348,12 @@ class Node(threading.Thread):
 
         # Core's own `AppInitLockDirectories`: the data directory, then the
         # blocks directory, both before the log or any store is opened
-        # (`src/init.cpp`, same sha)
-        self._directory_locks = lock_directories(self.data_dir, blocks_dir)
+        # (`src/init.cpp`, same sha); each refusal names the directory as
+        # `shown_path` does, given where it is when no option names it
+        default_dir = default_data_dir().absolute() / self.chain.name
+        self._directory_locks = lock_directories(
+            (self.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))
+        )
 
         self.terminate_flag = threading.Event()
         # set by `run` once the stores begin to close, which `stop`'s
@@ -716,11 +714,12 @@ class Node(threading.Thread):
 
     def _close_worker_pool(self) -> None:
         # read, not asked for: the property would build the pool this
-        # exists to take down. `terminate()` alone left `_worker_pool`
-        # referencing a pool whose worker processes and handler threads
-        # it had not waited for; `join()` waits for them here, and
-        # dropping the reference is what stops whatever collects the
-        # `Node` afterwards from finding one still to take down.
+        # exists to take down. `terminate()` joins the pool's handler
+        # threads, and its worker processes where it has processes
+        # (`Pool._terminate_pool`); `join()` then joins the worker
+        # threads a `ThreadPool` has, and dropping the reference is what
+        # stops whatever collects the `Node` afterwards from finding one
+        # still to take down.
         if self._worker_pool is not None:
             self._worker_pool.terminate()
             self._worker_pool.join()
@@ -735,12 +734,12 @@ class Node(threading.Thread):
         validation without a loop around it, and that builds a real
         `worker_pool` that `run`'s own teardown below never runs to take
         back down. Without this, that pool is still in `Pool.RUN` state
-        whenever something finally collects it, which is what made
+        whenever something finally collects it, which makes
         `Pool.__del__` warn and reach for a queue of its own on an xdist
-        worker's stderr, reported against btclib-org/btclib-node#195.
-        `getattr` rather than the attribute itself: `__init__` can raise
-        before `_worker_pool` is set, and a constructor's exception
-        should not come back paired with a second one out of here.
+        worker's stderr (btclib-org/btclib-node#195). `getattr` rather
+        than the attribute itself: `__init__` can raise before
+        `_worker_pool` is set, and a constructor's exception should not
+        come back paired with a second one out of here.
         """
         if getattr(self, "_worker_pool", None) is not None:
             self._close_worker_pool()
@@ -748,9 +747,9 @@ class Node(threading.Thread):
     def warm_worker_pool(self) -> None:
         """Build the worker pool now, on a thread of its own, and warm it.
 
-        `interpreter.check_transactions`' own first call used to be what
-        built and warmed `worker_pool`, on whatever thread called it -- `run`'s
-        own loop below, the same one that drains
+        Without it, `interpreter.check_transactions`' own first call is
+        what builds and warms `worker_pool`, on whatever thread calls it
+        -- `run`'s own loop below, the same one that drains
         `p2p_manager.handshake_messages` and promotes a connection once
         its `verack` arrives. Under `_pool_factory`'s process arm, each
         of the pool's own processes pays its own import of
@@ -1143,7 +1142,7 @@ class Node(threading.Thread):
             if self._drain_message_queues() and not chain_changed:
                 time.sleep(IDLE_SLEEP_SECONDS)
             # `_drain_message_queues` can itself set `terminate_flag`
-            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # mid-pass -- `rpc.callbacks._activate_and_answer`, run from
             # inside `handle_rpc`, does exactly that on an exception
             # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
             # than letting propagate -- and this loop must not run
@@ -1338,15 +1337,15 @@ def install_signal_handlers(node: Node) -> None:
     the same `signal.signal` the first call made, not a defect this
     function introduces.
 
-    Kept out of `Node.__init__` for two reasons (issue #436). A second
-    `Node` built in one process used to silently disown the first,
+    Kept out of `Node.__init__` for two reasons (issue #436). There, a
+    second `Node` built in one process would silently disown the first,
     every call installing a fresh handler bound to the newer node with
-    nothing to say the first one's databases were still open behind it
-    -- every functional p2p test builds two nodes, so the first node's
-    handlers survived only for the length of the second one's
-    constructor call. And `signal.signal` raises outside the main
-    thread of the main interpreter, so a `Node` could not be built at
-    all from a worker thread, whether or not that caller ever wanted a
+    nothing to say the first one's databases are still open behind it --
+    every functional p2p test builds two nodes, so the first node's
+    handlers would survive only for the length of the second one's
+    constructor call. And `signal.signal` raises outside the main thread
+    of the main interpreter, so a `Node` could not be built at all from
+    a worker thread, whether or not that caller ever wanted a
     process-wide interrupt.
 
     SIG_DFL/SIG_IGN are `signal.signal`'s own other two handler
@@ -1358,9 +1357,8 @@ def install_signal_handlers(node: Node) -> None:
     `SIGTSTP` attribute there, CPython's own `Lib/signal.py` defining it
     conditionally, so `hasattr` is what keeps the attribute access this
     call needs from raising before this function ever reaches its
-    `return` -- SIGINT and SIGTERM registering correctly ahead of it was
-    not enough to save a caller that let this propagate
-    (btclib-org/btclib-node#430).
+    `return` -- SIGINT and SIGTERM registering ahead of it does not save
+    a caller that lets this propagate (btclib-org/btclib-node#430).
 
     The handler also arms `faulthandler.dump_traceback_later`, so that a
     process still alive `STOP_DUMP_DELAY` seconds later writes the stack

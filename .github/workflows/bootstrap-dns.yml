@@ -11,14 +11,12 @@ name: bootstrap-dns
 #
 # Not a merge gate, for exactly links.yml's own reason: a host having a
 # bad afternoon would turn a red merge into a thing to re-run rather than
-# a thing to fix. issue #135 is where that was found true here too --
-# `pyproject.toml`'s `addopts` used to force the three tests that made
-# this same call live into every coverage run, and moved them here.
-# What replaced them in tests/unit/p2p/address_test.py stubs the resolver and
-# still covers `query_dns_seed`'s own logic -- the union over seeds,
-# the dedup, the `gaierror` skip, the IPv6 answer -- deterministically
-# and on every run. What is left for this file is the one thing a stub
-# cannot stand in for: whether the seeds this tree ships still answer.
+# a thing to fix (issue #135). tests/unit/p2p/address_test.py stubs
+# the resolver and covers `query_dns_seed`'s own logic -- the union over
+# seeds, the dedup, the `gaierror` skip, the IPv6 answer --
+# deterministically and on every run. What is left for this file is the
+# one thing a stub cannot stand in for: whether the seeds this tree
+# ships still answer.
 #
 # Weekly, per the row btclib-org/.github#201 gave this workflow in
 # section 10 of the organization's standard -- the calendar for every

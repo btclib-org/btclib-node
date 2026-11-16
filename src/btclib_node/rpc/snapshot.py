@@ -56,11 +56,12 @@ from btclib.hashes import sha256
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.utxo_index import UtxoIndex
+from btclib_node.constants import quoted_name
 from btclib_node.db import KeyValueStore
 from btclib_node.rpc.errors import (
     RpcError,
-    is_hex,
     json_type_name,
+    parse_hash_v,
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT
@@ -104,12 +105,18 @@ def _target(node: Node, snapshot_type: str, options: dict[str, Any]) -> int | No
     None is the tip, which is read when the dump starts to write: a block
     may arrive while the transactions are counted.
     """
+    # Core quotes the type whole in both refusals
+    # (`src/rpc/blockchain.cpp:3147` and `:3158`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
+    # Core"; section 7 of the organization's standard, *A refusal carries
+    # no secret*)
+    shown = quoted_name(snapshot_type)
     if "rollback" in options:
         if snapshot_type not in ("", "rollback"):
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER,
-                f'Invalid snapshot type "{snapshot_type}" '
-                "specified with rollback option",
+                f'Invalid snapshot type "{shown}" specified with rollback option',
             )
         return _hash_or_height(node, options["rollback"])
     if snapshot_type == "rollback":
@@ -118,7 +125,7 @@ def _target(node: Node, snapshot_type: str, options: dict[str, Any]) -> int | No
         return None
     raise RpcError(
         RPCErrorCode.INVALID_PARAMETER,
-        f'Invalid snapshot type "{snapshot_type}" specified. '
+        f'Invalid snapshot type "{shown}" specified. '
         'Please specify "rollback" or "latest"',
     )
 
@@ -153,20 +160,11 @@ def _hash_or_height(node: Node, value: object) -> int:
             f"JSON value of type {json_type_name(value)} "
             "is not of expected type string",
         )
-    if len(value) != 64:  # noqa: PLR2004
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"hash_or_height must be of length 64 (not {len(value)}, for '{value}')",
-        )
-    if not is_hex(value):
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"hash_or_height must be hexadecimal string (not '{value}')",
-        )
-    info = block_index.header_dict.get(bytes.fromhex(value))
+    block_hash = parse_hash_v("hash_or_height", value)
+    info = block_index.header_dict.get(block_hash)
     if info is None:
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found")
-    if active_chain[info.index : info.index + 1] != [bytes.fromhex(value)]:
+    if active_chain[info.index : info.index + 1] != [block_hash]:
         raise RpcError(RPCErrorCode.MISC_ERROR, "Block is not in the active chain")
     return info.index
 
@@ -286,7 +284,7 @@ def dump_tx_out_set(
     path = node.data_dir / path_arg
     if path.is_fifo():
         return (yield from _dump_to_pipe(node, path, target, options))
-    temp_path = path.with_name(path.name + ".incomplete")
+    temp_path = path.with_name(f"{path.name}.incomplete")
     if path.exists():
         raise _exists(path)
     chain_tx_count, height = yield from _counted(node, target)

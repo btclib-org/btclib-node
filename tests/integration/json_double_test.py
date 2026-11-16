@@ -89,7 +89,7 @@ def test_a_double_out_of_range_is_refused_as_bitcoind_refuses_it(
         wait_until_listening(node.rpc_manager)
         assert node.rpc_port is not None
         ours = authorization(node.config.data_dir)
-        theirs = "Basic " + base64.b64encode(bitcoind.cookie_path.read_bytes()).decode()
+        theirs = f"Basic {base64.b64encode(bitcoind.cookie_path.read_bytes()).decode()}"
         for dummy in _DUMMIES:
             for fee_delta in ("0", "1.5"):
                 body = (

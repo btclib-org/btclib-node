@@ -217,7 +217,7 @@ def test_what_is_written_is_the_mempool(tmp_path: Path) -> None:
     assert "Writing 1 unbroadcast transactions to file." in lines.messages
     size = path.stat().st_size
     pattern = rf"Dumped mempool: [0-9.]+s to copy, [0-9.]+s to dump, {size} bytes"
-    assert re.fullmatch(pattern + " dumped to file", lines.messages[-1])
+    assert re.fullmatch(f"{pattern} dumped to file", lines.messages[-1])
     assert dump_mempool(mempool, path, v1=True)
     assert read_mempool_file(path.read_bytes()).key is None
 

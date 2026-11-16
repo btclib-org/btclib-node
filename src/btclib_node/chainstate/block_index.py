@@ -133,13 +133,14 @@ def locator_entries(block_index: BlockIndex, block_hash: bytes) -> list[bytes]:
         if height == 0:
             return have
         height = max(height - step, 0)
-        if on_header_index:
-            block_hash = block_index.header_index[height]
-        else:
-            # always found: `height` is below `block_hash`'s own
-            block_hash = cast("bytes", block_index.get_ancestor(block_hash, height))
         if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
             step *= 2
+        # `get_ancestor` always finds it: `height` is below `block_hash`'s own
+        block_hash = (
+            block_index.header_index[height]
+            if on_header_index
+            else cast("bytes", block_index.get_ancestor(block_hash, height))
+        )
 
 
 def block_time(header: BlockHeader) -> int:
@@ -355,15 +356,15 @@ class BlockInfo:
     def serialize(self) -> bytes:
         """Serialize this record to the bytes stored under `blkinfo-<hash>`.
 
-        The header checked here now. It used to be serialized unchecked:
-        a header of a version zero or below is Core's to take below
-        BIP34's height, and btclib's `BlockHeader.assert_valid` refused
-        it on its own -- fixed at btclib 2026.9.29
-        (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
-        btclib-org/btclib-node#1511). A header reaches a `BlockInfo` only
-        past `add_headers`'s own height-gated `bad-version` check
-        (`_assert_valid_in_context`), so nothing `assert_valid` still
-        checks can refuse one that got here honestly.
+        `BlockHeader.serialize` checks the header here, through btclib's
+        `BlockHeader.assert_valid`. A header of a version zero or below
+        is Core's to take below BIP34's height, and `assert_valid`
+        accepts it (btclib-org/btclib@bbb1ad71, closing
+        btclib-org/btclib#2309; btclib-org/btclib-node#1511). A header
+        reaches a `BlockInfo` only past `add_headers`'s own height-gated
+        `bad-version` check (`_assert_valid_in_context`), so nothing
+        `assert_valid` still checks can refuse one that got here
+        honestly.
         """
         out = self.header.serialize()
         out += var_int.serialize(self.index)
@@ -626,9 +627,9 @@ class BlockIndex:
         return self._ancestor(block_hash, own_height, height)
 
     def _ancestor(self, block_hash: bytes, walk_height: int, height: int) -> bytes:
-        header_dict = self.header_dict
         skip = self.skip
         walk = block_hash
+        header_dict = self.header_dict
         while walk_height > height:
             skip_height = _skip_height(walk_height)
             skip_height_prev = _skip_height(walk_height - 1)
@@ -638,9 +639,8 @@ class BlockIndex:
                 skip_height == height
                 or (
                     skip_height > height
-                    and not (
-                        skip_height_prev < skip_height - 2
-                        and skip_height_prev >= height
+                    and (
+                        skip_height_prev >= skip_height - 2 or skip_height_prev < height
                     )
                 )
             ):
@@ -738,13 +738,13 @@ class BlockIndex:
         may now outrank the tip.
 
         `valid` is offered alongside `valid_header` so that a branch a
-        reorg has since displaced (`_finalize_fork`'s own `to_remove` loop
-        sets it) becomes a candidate again once whatever displaced it is
-        itself invalidated, and so that a block `leave_active_chain` took
-        off the chain connects again. Core's own `InvalidateBlock`
-        (`src/validation.cpp:3623-3644`, at bitcoin/bitcoin@f0de87f040,
-        the v32.1 tag) re-inserts such an out-of-chain header into
-        `setBlockIndexCandidates` only where
+        reorg has since displaced (`_finalize_fork`'s own `to_remove`
+        loop sets it) becomes a candidate again once whatever displaced
+        it is itself invalidated, and so that a block
+        `leave_active_chain` took off the chain connects again. Core's
+        own `InvalidateBlock` (`src/validation.cpp:3623-3644`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag) re-inserts such an
+        out-of-chain header into `setBlockIndexCandidates` only where
         `candidate->IsValid(BLOCK_VALID_TRANSACTIONS) &&
         candidate->HaveNumChainTxs()` both hold (`:3634-3637`) -- so a
         `valid` block this index still holds the data for is offered,
@@ -753,10 +753,9 @@ class BlockIndex:
         (`main.prune_up_to_height`) is not, matching Core rather than
         the un-downloaded `valid_header` candidates this deque already
         carries for a different reason: a `valid_header` was never
-        `BLOCK_VALID_TRANSACTIONS` in the first place, so it is not
-        this same reinsertion Core's source is arguing, and changing
-        that pre-existing, separately-argued divergence is out of
-        scope here. btclib-org/btclib-node#1561
+        `BLOCK_VALID_TRANSACTIONS` in the first place, so it is not this
+        same reinsertion Core's source is arguing, but a separate
+        divergence with its own ground. btclib-org/btclib-node#1561
 
         A block is offered where it outranks the active tip (`_outranks`),
         so one of the tip's own work is offered where its `sequence_id`
@@ -1101,11 +1100,10 @@ class BlockIndex:
                 and header_hash == chain[block_info.index - 1]
             ):
                 # the common ancestor is at block_info.index - 1, so
-                # what the fork replaces is the chain from its own
-                # index on. Returned here rather than after the loop:
-                # the break carried that index out in a name only this
-                # one path ever binds, and the read of it was three
-                # lines from anything saying so.
+                # what the fork replaces is the chain from its own index
+                # on. Returned here rather than after a `break`, which
+                # would carry that index out in a name only this one
+                # path binds.
                 return fork[::-1], chain[block_info.index :]
             fork.append(header_hash)
 
@@ -1179,7 +1177,7 @@ class BlockIndex:
         # every header already indexed by this same call is in
         # header_dict by the time a header built on it is reached, the
         # write below being immediate rather than deferred -- so this
-        # needs no fallback of its own the way the old pending dict did.
+        # needs no fallback of its own.
         def parent_of(header: BlockHeader) -> BlockHeader:
             return self.header_dict[header.previous_block_hash].header
 
@@ -1354,8 +1352,7 @@ class BlockIndex:
 
     # whether hash and everything back to the active chain has arrived,
     # not just hash itself -- a hole behind a downloaded tip is still a
-    # hole, and get_first_candidate used to ask only the tip:
-    # btclib-org/btclib-node#121
+    # hole: btclib-org/btclib-node#121
     def _branch_is_downloaded(self, block_hash: bytes) -> bool:
         to_add, _ = self.get_fork_details(block_hash)
         return all(self.get_block_info(h).downloaded for h in to_add)

@@ -28,7 +28,7 @@ def test_a_coin_is_height_and_coinbase_then_amount_then_script() -> None:
     """A coinbase of height 2 paying a key: `05 32` and the key."""
     out = TxOut(5_000_000_000, b"\x21" + KEY + b"\xac")
     coin = Coin(out, 2, is_coinbase=True)
-    assert serialize_coin(coin).hex() == "0532" + KEY.hex()
+    assert serialize_coin(coin).hex() == f"0532{KEY.hex()}"
     assert serialize_coin(Coin(out, 2, is_coinbase=False))[0] == 0x04
 
 
@@ -51,5 +51,5 @@ def test_the_metadata_is_magic_version_network_hash_and_count() -> None:
     """The hash is written in the order a transaction id is, not displayed."""
     base = bytes(range(32))
     assert serialize_metadata(b"\xfa\xbf\xb5\xda", base, 6).hex() == (
-        "7574786fff0200fabfb5da" + base[::-1].hex() + "0600000000000000"
+        f"7574786fff0200fabfb5da{base[::-1].hex()}0600000000000000"
     )

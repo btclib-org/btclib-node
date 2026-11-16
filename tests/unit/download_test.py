@@ -204,7 +204,7 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
     In `Mempool.graph` too, each a cluster of its own, which the trickle
     ranks by.
 
-    `tx_download` and `_send_due_announcements` now check
+    `tx_download` and `_send_due_announcements` check
     `Mempool.transactions` membership before queuing or sending an
     announcement (btclib-org/btclib-node#294), so a synthetic wtxid this
     file builds with `a_hash` needs an entry there too, or it is read as
@@ -825,10 +825,10 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule(
     """A first send fires at once; a second waits for the peer's own timer."""
     # a draw as short as the test takes would make the second send due
     monkeypatch.setattr(download_module._rng, "expovariate", lambda _: 1000.0)
-    # the first announcement goes at once, the peer's trickle being
-    # due, but once a new schedule is set, a transaction arriving before
-    # it comes due is queued rather than sent straight away, which is
-    # the change #141 is about
+    # the first announcement goes at once, the peer's trickle being due,
+    # but once a new schedule is set, a transaction arriving before it
+    # comes due is queued rather than sent straight away, which is what
+    # #141 asks for
     other = a_conn(1)
     manager = make_manager([other])
     hold(manager, a_hash(1), a_hash(2))
@@ -1039,8 +1039,8 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     manager.logger = cast("Any", SimpleNamespace(log_debug=record))
     inbound = manager._inbound_inv_bucket
     inbound.backlog = [paying(manager, fee=1000).hash for _ in range(100)]
-    inbound.count_bucket.value = -100.0
     now = 1_700_000_000.0
+    inbound.count_bucket.value = -100.0
     manager._process_inv_backlog(now, bumped=True)
     manager._process_inv_backlog(now + 1)
     manager._process_inv_backlog(now + 2)
@@ -1048,13 +1048,17 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     assert lines == [
         (
             "net",
-            prefix + "inbound=100 itok=-100.0 isz=12000000.0 "
-            "outbound=0 otok=420.0 osz=12000000.0",
+            (
+                f"{prefix}inbound=100 itok=-100.0 isz=12000000.0 "
+                "outbound=0 otok=420.0 osz=12000000.0"
+            ),
         ),
         (
             "net",
-            prefix + "inbound=100 itok=-72.0 isz=12040000.0 "
-            "outbound=0 otok=420.0 osz=12100000.0",
+            (
+                f"{prefix}inbound=100 itok=-72.0 isz=12040000.0 "
+                "outbound=0 otok=420.0 osz=12100000.0"
+            ),
         ),
     ]
     # a take with no peer to feed empties the backlog
@@ -1064,7 +1068,7 @@ def test_the_backlog_heartbeat_is_logged_as_core_logs_it() -> None:
     manager._process_inv_backlog(now + 4)
     manager._process_inv_backlog(now + 6)
     assert len(lines) == 3
-    assert lines[2][1].startswith(prefix + "inbound=0 itok=")
+    assert lines[2][1].startswith(f"{prefix}inbound=0 itok=")
     assert " outbound=0 otok=" in lines[2][1]
 
 
@@ -2939,7 +2943,7 @@ def test_extra_block_relay_only_peers_start_once_the_tip_is_close(
         p2p_manager.start_extra_block_relay_peers = False
         manager._next_extra_peer_check = 0
         manager._check_for_stale_tip_and_evict_peers()
-        assert p2p_manager.start_extra_block_relay_peers is False
+        assert not p2p_manager.start_extra_block_relay_peers
 
 
 def test_a_step_runs_the_extra_peer_check(monkeypatch: pytest.MonkeyPatch) -> None:

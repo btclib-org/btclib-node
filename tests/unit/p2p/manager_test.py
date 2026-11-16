@@ -76,7 +76,12 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
-from btclib_node.p2p.connection import AddrKnown, Connection, local_services
+from btclib_node.p2p.connection import (
+    AddrKnown,
+    Connection,
+    PeerStats,
+    local_services,
+)
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import (
@@ -89,6 +94,7 @@ from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
+from btclib_node.p2p.transport import TransportInfo, TransportProtocolType
 from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 from btclib_node.rpc.callbacks import add_connection
@@ -112,7 +118,9 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.secret_free import assert_secret_free
 from tests.unit.rolling_bloom_test import a_small_filter
+from tests.unit.rpc import LEAK_WIF
 
 
 def a_conn(
@@ -140,7 +148,8 @@ def a_conn(
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
-    `reconnect_v1` is what its transport answers `should_reconnect_v1`.
+    `reconnect_v1` is what its transport answers `should_reconnect_v1`,
+    and its `stats` count an octet each way, a peer heard from and sent to.
 
     `send_ping` on this double records a ping and stamps `ping_start`,
     and `ping_sent` too unless `protocol` is `BIP0031_VERSION` or below,
@@ -186,7 +195,11 @@ def a_conn(
         addr_fetch=addr_fetch,
         permissions=permissions,
         addr_name=addr_name,
-        transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
+        transport=SimpleNamespace(
+            should_reconnect_v1=lambda: reconnect_v1,
+            get_info=lambda: TransportInfo(TransportProtocolType.V1),
+        ),
+        stats=PeerStats(bytes_sent=1, bytes_recv=1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
         next_addr_send=0.0,
@@ -353,9 +366,9 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 exception=lambda *a: None,
                 warning=lambda *a: None,
             ),
-            # `broadcast_raw_transaction` no longer sends anything of its
-            # own: it hands the transaction to this, the same queue a
-            # relayed transaction goes through. btclib-org/btclib-node#141
+            # `broadcast_raw_transaction` sends nothing of its own: it
+            # hands the transaction to this, the same queue a relayed
+            # transaction goes through. btclib-org/btclib-node#141
             download_manager=SimpleNamespace(received_txs=[]),
             # `P2pManager.__init__` reads the `node.config` fields below
             # directly, not through `Config` itself: a plain namespace
@@ -462,8 +475,7 @@ async def one_pass(manager: P2pManager) -> bool:
     it runs, `_last_dial_pass` is already `_AUTOMATIC_DIAL_INTERVAL` in
     the past, which is what lets the dozens of tests below drive a
     single pass that still dials, without a production divergence
-    earning its keep only for them (btclib-org/btclib-node#1379, review
-    round 2).
+    earning its keep only for them (btclib-org/btclib-node#1379).
     """
 
     def armed_and_due() -> None:
@@ -842,12 +854,12 @@ def test_a_peer_that_cannot_be_dialled_is_not_kept(
     """A `dial` that comes back with nothing leaves no connection behind.
 
     Asserted on the message and not only on the branch running: the
-    whole point of this line is that a one-shot `connect` used to lose
+    whole point of this line is that a one-shot `connect` must not lose
     its dial with nothing in `debug.log` naming it (issue #1020), so a
-    test that exercises it without reading it would keep passing if it
-    ever went silent again. `caplog` cannot see this logger -- `#587`,
-    and `Node.logger` never reaching `logging.getLogger` -- so this
-    reads it the way `create_connection`'s own log line is read above.
+    test that exercises it without reading it would keep passing if the
+    line went silent. `caplog` cannot see this logger -- `#587`, and
+    `Node.logger` never reaching `logging.getLogger` -- so this reads it
+    the way `create_connection`'s own log line is read above.
     """
     logged, info = log_recorder()
 
@@ -876,9 +888,9 @@ def test_a_closed_connection_due_a_ping_is_not_pinged(
 ) -> None:
     """#435: removal does not fall through into the ping check below it.
 
-    A connection `Closed` and due a ping at once used to be removed by the
-    first check and then, still the loop variable, pinged by the
-    second: `send_ping` ran on a connection already out of both tables.
+    A connection `Closed` and due a ping at once is removed by the first
+    check and not, still the loop variable, pinged by the second:
+    `send_ping` would run on a connection already out of both tables.
     """
     conn = a_conn(1, status=P2pConnStatus.Closed, ping_start=time.time() - 200)
     manager = a_manager([conn])
@@ -1147,11 +1159,11 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
 ) -> None:
     """#357's first interleaving: a `pong` between two rereads of `ping_sent`.
 
-    `_prune_stale_connections` used to read `conn.ping_sent` twice -- once for
-    `if not conn.ping_sent` and again for the `elif` right after -- so a
-    `callbacks.pong` on the other thread clearing it to 0 between the two reads
-    made a just-cleared `ping_sent` read as an overdue pong, dropping a peer
-    that had just answered its ping.
+    `_prune_stale_connections` reading `conn.ping_sent` twice -- once
+    for `if not conn.ping_sent` and again for an `elif` right after --
+    would let a `callbacks.pong` on the other thread clearing it to 0
+    between the two reads make a just-cleared `ping_sent` read as an
+    overdue pong, dropping a peer that has just answered its ping.
 
     Driven deterministically rather than by timing an actual thread: a
     `ping_sent` that answers a recent timestamp on its first read and 0 -- what
@@ -1179,6 +1191,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         inbound = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
         addr_relay_enabled = False
+        stats = PeerStats(bytes_sent=1, bytes_recv=1)
 
         @property
         def ping_sent(self) -> float:
@@ -1253,6 +1266,203 @@ def test_a_connected_peer_outlives_the_handshake_timeout(
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert conn.id in manager.connections
+
+
+# A mock time the drops below are timed against, so the seconds each line
+# prints are exact
+DROP_TIME = 2_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("fields", "line"),
+    [
+        (
+            {"last_send": DROP_TIME - 1300.75},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"last_receive": DROP_TIME - 1300.75},
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"pause_send": True, "pause_send_since": DROP_TIME - 1300.75},
+            "send buffer full for 1300s, disconnecting peer=1",
+        ),
+        (
+            {"ping_sent": DROP_TIME - 1300.5},
+            "ping timeout: 1300.500000s, disconnecting peer=1",
+        ),
+        (
+            {"last_send": DROP_TIME - 1300, "ping_sent": DROP_TIME - 1300},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"last_send": DROP_TIME - 1300, "last_receive": DROP_TIME - 1300},
+            "socket sending timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {
+                "last_receive": DROP_TIME - 1300,
+                "pause_send": True,
+                "pause_send_since": DROP_TIME - 1300,
+            },
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            {"stats": PeerStats()},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+    ],
+    ids=[
+        "sending",
+        "receive",
+        "paused",
+        "ping",
+        "sending-and-ping",
+        "sending-and-receive",
+        "receive-and-paused",
+        "no-octets",
+    ],
+)
+def test_each_inactivity_drop_logs_cores_net_line(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    fields: dict[str, Any],
+    line: str,
+) -> None:
+    """ISS 2369: `_keep_alive` logs Core's `-debug=net` line for each drop.
+
+    `CConnman::InactivityCheck` and `MaybeSendPing` (`src/net.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag): whole seconds, cut, for the first three, and `%f` for the
+    `pong`. Where two checks hold, the line is the one Core checks first,
+    and a send is checked before a `pong`. A connected peer that has no
+    octet either way is dropped too, as Core drops one.
+    """
+    clock_module.set_mock_time(DROP_TIME)
+    conn = a_conn(
+        1,
+        last_receive=DROP_TIME,
+        last_send=DROP_TIME,
+        ping_start=DROP_TIME,
+        connected_time=DROP_TIME - 3600,
+    )
+    for name, value in fields.items():
+        setattr(conn, name, value)
+    manager = a_manager([conn])
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    asyncio.run(one_pass(manager))
+    assert 1 not in manager.connections
+    assert logged == [("net", line)]
+
+
+@pytest.mark.parametrize(
+    ("stats", "transport_type", "fields", "line"),
+    [
+        (
+            PeerStats(),
+            TransportProtocolType.V1,
+            {},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(),
+            TransportProtocolType.V1,
+            {"last_send": DROP_TIME - 1300},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " never sent to peer, disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_sent=1),
+            TransportProtocolType.V1,
+            {},
+            (
+                "socket no message in first 60 seconds, never received from peer,"
+                " disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_recv=1),
+            TransportProtocolType.DETECTING,
+            {},
+            (
+                "socket no message in first 60 seconds, never sent to peer,"
+                " disconnecting peer=1"
+            ),
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.V1,
+            {"last_receive": DROP_TIME - 1300},
+            "socket receive timeout: 1300s, disconnecting peer=1",
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.V1,
+            {},
+            "version handshake timeout, disconnecting peer=1",
+        ),
+        (
+            PeerStats(bytes_sent=1, bytes_recv=1),
+            TransportProtocolType.DETECTING,
+            {},
+            "V2 handshake timeout, disconnecting peer=1",
+        ),
+    ],
+    ids=[
+        "silent",
+        "silent-and-sending",
+        "never-heard",
+        "never-sent",
+        "receive",
+        "version",
+        "v2",
+    ],
+)
+def test_each_handshake_drop_logs_cores_net_line(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stats: PeerStats,
+    transport_type: TransportProtocolType,
+    fields: dict[str, Any],
+    line: str,
+) -> None:
+    """ISS 2369: a pending connection's drop logs Core's `-debug=net` line.
+
+    `CConnman::InactivityCheck` (`src/net.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), in its order: no octet
+    either way first, then the timeouts, then the handshake itself, `V2`
+    while the transport is still `DETECTING`.
+    """
+    clock_module.set_mock_time(DROP_TIME)
+    conn = a_conn(
+        1,
+        status=P2pConnStatus.Open,
+        last_receive=DROP_TIME,
+        last_send=DROP_TIME,
+        connected_time=DROP_TIME - PEER_CONNECT_TIMEOUT - 1,
+    )
+    conn.stats = stats
+    conn.transport.get_info = lambda: TransportInfo(transport_type)
+    for name, value in fields.items():
+        setattr(conn, name, value)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    asyncio.run(one_pass(manager))
+    assert not manager.pending_connections
+    assert logged == [("net", line)]
 
 
 async def _dial_call_count_over(manager: P2pManager, real_seconds: float) -> int:
@@ -1990,9 +2200,9 @@ def test_a_held_answered_peer_does_not_stop_the_dialling(
     class Coins(random.Random):
         @override
         def randrange(self, start: int, *args: Any, **kwargs: Any) -> int:
-            if start == 2:
-                return next(coins)
-            return super().randrange(start, *args, **kwargs)
+            return (
+                next(coins) if start == 2 else super().randrange(start, *args, **kwargs)
+            )
 
     held = a_full_node("1.2.3.4", 8333)
     gossiped = a_full_node("5.6.7.8", 8333)
@@ -2339,7 +2549,9 @@ def test_a_manager_whose_bind_names_nothing_ends_like_a_failed_bind(
     manager = a_manager(bind=["localhost"])
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert manager.bind_error == "Cannot resolve -bind address: 'localhost'"
+    assert (
+        manager.bind_error == "Cannot resolve -bind address: '...' (value 1 of -bind)"
+    )
 
 
 def test_run_with_bind_listens_where_asked_and_discovers_nothing(
@@ -2531,7 +2743,22 @@ def test_a_manager_whose_externalip_names_nothing_ends_like_a_failed_bind(
     manager = a_manager(externalip=[value], listen=listen)
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert manager.bind_error == f"Cannot resolve -externalip address: '{value}'"
+    assert manager.bind_error == (
+        "Cannot resolve -externalip address: '...' (value 1 of -externalip)"
+    )
+
+
+def test_a_key_given_as_an_externalip_is_not_in_the_refusal(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2521: Core's `ResolveErrMsg` quotes it; this names its place."""
+    manager = a_manager(externalip=["1.2.3.4", LEAK_WIF], listen=False)
+    with pytest.raises(ValueError, match="-externalip") as raised:
+        manager._add_externalip()
+    assert str(raised.value) == (
+        "Cannot resolve -externalip address: '...' (value 2 of -externalip)"
+    )
+    assert_secret_free(raised.value, [LEAK_WIF])
 
 
 def test_run_records_externalip_and_discovers_nothing_else(
@@ -3172,9 +3399,8 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
     `listen=False` alongside `connect`, matching what `-connect` alone
     resolves to without an explicit `-listen=1` (`cli.py`'s own
     `build_config`) -- so this is also where "no listener under
-    `-connect`" is pinned, in place of the `wait_until_listening` an
-    earlier version of this test waited on, which held regardless of
-    `-connect` and so proved nothing about it.
+    `-connect`" is pinned, rather than by a `wait_until_listening`,
+    which holds regardless of `-connect` and so proves nothing about it.
     """
     calls: list[int] = []
     peer_db = a_peer_db_stub(
@@ -3856,17 +4082,16 @@ def test_maybe_add_seednode_waits_the_interval_between_two_values(
 def test_maybe_add_seednode_does_not_fire_early_when_the_loop_starts_late(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1192 review round 2: a slow start must not pre-expire the timer.
+    """ISS 1192: a slow start must not pre-expire the timer.
 
-    The reviewer's own reproduction: build the manager, let real
-    wall-clock time pass before the dial loop's own `_arm_dial_loop`
-    ever runs -- as a slow `Node.__init__` would -- and only then call
-    `_maybe_add_seednode` for the first time. With `peer_db` already
-    holding something, the old code anchored `_next_seednode_at` to
-    construction time in `__init__`, so fifteen seconds of delay alone
-    was enough to let the ten-second `_ADD_SEEDNODE_INTERVAL` timer
-    expire before the loop's first pass, queuing a value immediately
-    where Core's own drip-feed would still wait.
+    Build the manager, let real wall-clock time pass before the dial
+    loop's own `_arm_dial_loop` ever runs -- as a slow `Node.__init__`
+    would -- and only then call `_maybe_add_seednode` for the first
+    time. With `peer_db` already holding something, `_next_seednode_at`
+    anchored to construction time in `__init__` would let fifteen
+    seconds of delay alone expire the ten-second
+    `_ADD_SEEDNODE_INTERVAL` timer before the loop's first pass, queuing
+    a value immediately where Core's own drip-feed would still wait.
     """
     manager = a_manager(
         peer_db=a_peer_db_stub(is_empty=False),
@@ -4138,8 +4363,8 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     bitcoin/bitcoin@f0de87f040, the v32.1 tag). The bad answer is a
     documentation-range one (RFC3849, `2001:db8::/32`) rather than an
     internal one: ISS 1466's `is_internal` filter drops an internal
-    answer before this pass ever runs, so it could no longer reach this
-    check at all, and this test wants an answer that still does.
+    answer before this pass ever runs, so it cannot reach this check at
+    all, and this test wants an answer that does.
     """
     dialled: list[NetworkAddressV2] = []
 
@@ -4332,11 +4557,11 @@ def test_manage_connections_does_not_touch_the_addr_fetch_queue(
 
     `async_connect_host` hangs on an `Event` nothing ever sets, standing
     in for a slow `getaddrinfo` or a slow `dial`; `_process_addr_fetch`
-    pops its entry before ever reaching that await, so a `manage_connections`
-    pass that still called it, as it did before #1366, would drain the
-    queue even while stuck. Nothing here ever runs `_open_addr_fetches`,
-    the loop that does own the queue since #1366 -- `one_pass` alone,
-    on `manage_connections`, is the whole scenario.
+    pops its entry before ever reaching that await, so a
+    `manage_connections` pass calling it would drain the queue even
+    while stuck. Nothing here ever runs `_open_addr_fetches`, the loop
+    that owns the queue (#1366) -- `one_pass` alone, on
+    `manage_connections`, is the whole scenario.
     """
     manager = a_manager()
     manager._addr_fetches.append(("seed.example", 18444))
@@ -4890,10 +5115,10 @@ def test_open_connect_peers_resolves_a_hostname(
 ) -> None:
     """ISS 1264: a `-connect` peer given by name is resolved here too.
 
-    Building the manager at all is already most of the regression test:
-    before that issue, `Config`, and then `_connect_peers`'s own
-    `peer_address` call, each raised on a hostname before a dial was
-    ever attempted.
+    Building the manager at all is already most of the test: `Config`
+    and `P2pManager.__init__` keep each `-connect` spec as a string,
+    unresolved, so building the manager resolves nothing and raises
+    nothing.
 
     ISS 1493: the spec names a port, `8333`, distinct from regtest's own
     -- `addr_name` keeps it, `dest` verbatim rather than the bare host
@@ -5034,8 +5259,8 @@ def test_open_added_peers_keeps_a_port_when_given(
 ) -> None:
     """ISS 1493: an `-addnode` spec naming a port keeps it on `addr_name`.
 
-    `addnode_args` already kept the raw spec before ISS 1493 (ISS 1224);
-    what is new is `addr_name` reflecting it end to end, port included.
+    `addnode_args` keeps the raw spec (ISS 1224), and `addr_name`
+    reflects it end to end, port included.
     """
     ours, theirs = socket.socketpair()
 
@@ -5093,14 +5318,13 @@ def test_the_added_loop_skips_a_literal_ip_held_by_a_different_route(
 ) -> None:
     """ISS 1498: a literal-IP `-addnode` is held by its resolved address.
 
-    ISS 1493's own regression: `held` was dialled by name (a `-connect`
-    or `onetry` spec naming a port), so its own `addr_name` is
-    `"1.2.3.4:<port>"`, never equal to the bare `-addnode=1.2.3.4`
-    spec's own raw string -- the check that regressed. Core's own
-    `mapConnected` (`GetAddedNodeInfo`, `src/net.cpp`, at
+    ISS 1493: `held` was dialled by name (a `-connect` or `onetry` spec
+    naming a port), so its own `addr_name` is `"1.2.3.4:<port>"`, never
+    equal to the bare `-addnode=1.2.3.4` spec's own raw string. Core's
+    own `mapConnected` (`GetAddedNodeInfo`, `src/net.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) keys on the resolved
-    address instead, whatever route opened the connection, which is
-    what this is held by here.
+    address instead, whatever route opened the connection, which is what
+    this is held by here.
     """
     port = RegTest().port
     held = a_conn(1, address=peer_address("1.2.3.4", port), addr_name=f"1.2.3.4:{port}")
@@ -5174,12 +5398,12 @@ def test_the_added_loop_dials_a_name_not_matched_by_resolved_address(
 def test_async_connect_host_skips_a_resolved_address_already_held(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`AlreadyConnectedToAddressPort` still holds, ISS 1498 untouched.
+    """`AlreadyConnectedToAddressPort` keys on the resolved address alone.
 
     `async_connect_host`'s own inner resolved-address check keys on
     `endpoint_key`, `PeerDB`'s own address identity, regardless of
     `addr_name` -- unlike `_added_held`/`_open_added_peers`'s own
-    literal/name split above, this one path is not changed by ISS 1498.
+    literal/name split above (ISS 1498).
     """
     logged, info = log_recorder()
 
@@ -5318,9 +5542,7 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
         address: NetworkAddressV2, scope_id: int = 0
     ) -> socket.socket | None:
         tried.append(address)
-        if address == survivor:
-            return ours
-        return None
+        return ours if address == survivor else None
 
     monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
     monkeypatch.setattr(
@@ -5807,8 +6029,8 @@ def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
     `send` reads `.get()`, one dict lookup, rather than an `in` check
     followed by a subscript -- a connection popped between the two
     (`remove_connection`, on this manager's own loop, on every pass of
-    `manage_connections`) reached the caller as a `KeyError` out of the
-    subscript before this.
+    `manage_connections`) would reach the caller as a `KeyError` out of
+    the subscript.
     """
 
     class PoppingOnContains(dict[int, Any]):
@@ -5816,9 +6038,8 @@ def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
         def __contains__(self, key: object) -> bool:
             found = dict.__contains__(self, key)
             if found:
-                # simulates `remove_connection` popping the instant
-                # `in` answers True, before the subscript that used to
-                # follow it
+                # simulates `remove_connection` popping the instant `in`
+                # answers True, before a subscript that would follow it
                 dict.pop(self, cast("int", key), None)
             return found
 
@@ -5826,9 +6047,9 @@ def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
     manager = a_manager()
     manager.connections = PoppingOnContains({1: conn})
 
-    # Both of `__contains__`'s own branches, the same two answers the
-    # old `in`-then-subscript shape got before this fix dropped the
-    # `in` step: found once, popping as a side effect, then not found.
+    # Both of `__contains__`'s own branches, the two answers an
+    # `in`-then-subscript shape would get: found once, popping as a side
+    # effect, then not found.
     assert 1 in manager.connections
     assert 1 not in manager.connections
 
@@ -6057,6 +6278,119 @@ def test_create_connection_keeps_the_bind_address_past_the_socket(
     with pytest.raises(OSError, match=rf"\[(Errno {errno.EBADF}|WinError 10038)\]"):
         ours.getsockname()
     assert conn.addr_bind == f"127.0.0.1:{bound}"
+
+
+@pytest.mark.parametrize("handshaken", [True, False], ids=["handshaken", "pending"])
+def test_a_peer_this_node_drops_leaves_the_tables_before_its_socket_closes(
+    a_manager: AManagerFactory, *, handshaken: bool
+) -> None:
+    """ISS 2416: once the peer sees the hangup, `getpeerinfo` has no entry.
+
+    Core's `DisconnectNodes` takes a node out of `m_nodes`, which
+    `GetNodeStats` and `GetNodeCount` read, before `CloseSocketDisconnect`
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). No
+    `_prune_stale_connections` pass runs here, so only `Connection._close`
+    can have dropped it.
+    """
+    manager = a_manager()
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+
+    async def drop() -> Connection:
+        manager.create_connection(ours, peer_address("127.0.0.1", port), inbound=True)
+        (conn,) = manager.pending_connections.values()
+        if handshaken:
+            manager.promote_connection(conn.id)
+        # what `DownloadManager.block_download` does to a staller
+        conn.stop()
+        # the peer's end reads the close
+        assert await manager.loop.sock_recv(theirs, 1) == b""
+        return conn
+
+    with ours, theirs:
+        # non-blocking, as `sock_recv` needs it
+        theirs.settimeout(0)
+        conn = manager.loop.run_until_complete(drop())
+    assert conn.status == P2pConnStatus.Closed
+    assert conn.id not in manager.connections
+    assert conn.id not in manager.pending_connections
+
+
+def test_a_connection_stopped_at_shutdown_is_finalized_once(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2416: `stop` empties the tables before it stops each connection.
+
+    Core's `StopNodes` swaps `m_nodes` out before it closes each node
+    (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so no
+    `DisconnectNodes` drops one again. Here `Connection._close` then finds
+    nothing to drop, and a full outbound peer is told to the table once.
+    """
+    peer_db = a_peer_db_stub(is_empty=True)
+    manager = a_manager(peer_db=peer_db, listen=False, max_connections=0)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+    address = peer_address("127.0.0.1", port)
+
+    async def connect() -> None:
+        manager.create_connection(ours, address, inbound=False)
+        (conn,) = manager.pending_connections.values()
+        manager.promote_connection(conn.id)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(connect())
+        manager.stop()
+        # `_close` ran: a closed socket's own fileno is -1
+        assert ours.fileno() == -1
+    assert peer_db.connected_to == [address]
+
+
+def test_a_dropped_peer_sees_the_close_where_the_table_refuses_the_write(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2416: a raise from `remove_connection` still closes the socket.
+
+    `_finalize` writes to the address table, a store that can fail. The
+    error reaches the loop's exception handler, and the peer reads the
+    close all the same.
+    """
+
+    def refuses(_: NetworkAddressV2) -> None:
+        raise OSError(errno.ENOSPC, "no space left")
+
+    peer_db = a_peer_db_stub(is_empty=True, connected=refuses)
+    manager = a_manager(peer_db=peer_db, listen=False, max_connections=0)
+    reported: list[object] = []
+    manager.loop.set_exception_handler(
+        lambda _, context: reported.append(context.get("exception"))
+    )
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        ours = socket.create_connection(("127.0.0.1", port), timeout=20)
+        theirs, _ = listener.accept()
+
+    async def drop() -> None:
+        manager.create_connection(ours, peer_address("127.0.0.1", port), inbound=False)
+        (conn,) = manager.pending_connections.values()
+        manager.promote_connection(conn.id)
+        conn.stop()
+        # the peer's end reads the close, where a socket left open would
+        # time out
+        read = manager.loop.sock_recv(theirs, 1)
+        assert await asyncio.wait_for(read, 10) == b""
+
+    with ours, theirs:
+        # non-blocking, as `sock_recv` needs it
+        theirs.settimeout(0)
+        manager.loop.run_until_complete(drop())
+        # a closed socket's own fileno is -1
+        assert ours.fileno() == -1
+    assert [type(error) for error in reported] == [OSError]
+    assert not manager.connections
 
 
 @pytest.mark.parametrize(
@@ -6833,25 +7167,25 @@ def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
     """
     port = get_random_port()
     manager = a_manager(port=port)
-    real_socket = socket.socket
+    real_bind_one = manager._bind_one
 
     def refuses_ipv6(
-        family: socket.AddressFamily, *args: Any, **kwargs: Any
+        family: socket.AddressFamily, host: str, port: int | None = None
     ) -> socket.socket:
-        # `*args, **kwargs` and not the two positional arguments `_bind`
-        # is given: a listening socket's own `accept()` builds the
-        # accepted connection through this same module-level name, with
-        # `fileno=` rather than a family and a kind, and a wrapper that
-        # only took `_bind`'s shape would refuse every inbound peer too
         if family == socket.AF_INET6:
             # OSError, not a class of this tree's own (TRY003): `_bind`
             # itself catches `OSError`, so a double standing in for what
             # the real socket module raises has to raise that type, not
-            # a lookalike `_bind` was never written to catch
+            # a lookalike `_bind` does not catch
             raise OSError("no ipv6 route")  # noqa: TRY003
-        return real_socket(family, *args, **kwargs)
+        return real_bind_one(family, host, port)
 
-    monkeypatch.setattr(socket, "socket", refuses_ipv6)
+    # `_bind_one` and not `socket.socket`: the Proactor loop's `recv` asks
+    # `isinstance(conn, socket.socket)`, so a function in that name ends
+    # every accepted connection on Windows with a `TypeError`.
+    # `test_a_failed_bind_says_which_call_failed_and_why_as_core_does`
+    # covers a socket that cannot be opened.
+    monkeypatch.setattr(manager, "_bind_one", refuses_ipv6)
     manager.start()
     wait_until_listening(manager)
     # held open across the stop rather than closed by a `with`, on
@@ -6893,12 +7227,12 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#88: a bind failure used to vanish into a future nobody read.
+    """#88: a bind failure does not vanish into a future nobody reads.
 
-    `server` bound inside itself, scheduled through
-    `run_coroutine_threadsafe`, whose returned `concurrent.futures.Future`
-    nobody read -- a taken port's `OSError` sat there unread, and the
-    manager thread ran on, `is_alive()` true over a listener that never
+    A `server` binding inside itself, scheduled through
+    `run_coroutine_threadsafe`, would leave a taken port's `OSError` in
+    a returned `concurrent.futures.Future` nobody reads, and the manager
+    thread would run on, `is_alive()` true over a listener that never
     came up. `_bind` runs in `run` itself, before `run_forever`, so the
     same `OSError` ends `run` -- this thread's own target -- and
     `start_listener` answers that it is not listening.
@@ -7621,11 +7955,11 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     coverage of the line below it: which side of that race actually
     happens is otherwise up to `run`'s own thread reaching
     `run_forever()` before or after this thread's own `stop()` schedules
-    `loop.stop`, and #917 found the gate at a 100% floor going red
-    whenever the scheduler happened to land on the side that skips it.
-    Forcing the loop to have taken this task's first step before `stop`
-    is ever called does not touch what the assertion below depends on:
-    it was already true regardless of that step, by the paragraph above.
+    `loop.stop`, and the gate at a 100% floor goes red whenever the
+    scheduler lands on the side that skips it (#917). Forcing the loop
+    to have taken this task's first step before `stop` is ever called
+    does not touch what the assertion below depends on: it holds
+    regardless of that step, by the paragraph above.
     """
     port = get_random_port()
     manager = a_manager(port=port)
@@ -7703,19 +8037,19 @@ def test_stop_closes_a_connection_queued_when_the_drain_begins(
 ) -> None:
     """#386: a connection queued as `stop`'s drain begins is still closed.
 
-    `server`'s own task is what `stop`'s blanket sweep over `asyncio.all_tasks`
-    reaches directly on every pass, `accept` no longer being a task of its own
-    for it to reach instead -- not only through `server`'s task cascading a
-    cancel onto it, which is what the neighbouring tests above and below this
-    one turn on instead.
+    `server`'s own task is what `stop`'s blanket sweep over
+    `asyncio.all_tasks` reaches directly on every pass, `accept` not
+    being a task of its own for it to reach instead -- not only through
+    `server`'s task cascading a cancel onto it, which is what the
+    neighbouring tests above and below this one turn on instead.
 
-    `Task.cancel` on a task whose own awaited future is already done cannot
-    cancel that future either: it forces `CancelledError` into the task's next
-    step regardless -- but the item this test lands is in `accepted`'s own
-    deque, not inside the future `Queue.get` awaits to be woken, so the discard
-    costs it nothing, unlike `loop.sock_accept`'s own future before this fix.
-    `server`'s own `finally` is what closes whatever the discard still leaves
-    behind.
+    `Task.cancel` on a task whose own awaited future is already done
+    cannot cancel that future either: it forces `CancelledError` into
+    the task's next step regardless -- but the item this test lands is
+    in `accepted`'s own deque, not inside the future `Queue.get` awaits
+    to be woken, so the discard costs it nothing, unlike a socket inside
+    `loop.sock_accept`'s own future. `server`'s own `finally` is what
+    closes whatever the discard still leaves behind.
 
     Landed into the live queue directly, via `P2pManager._accept_queues`,
     scheduled from the same window
@@ -7767,17 +8101,18 @@ def test_stop_does_not_raise_on_a_manager_whose_thread_was_never_started(
     A caller can create real tasks on `manager.loop` directly, without
     ever calling `start()`, and `asyncio.all_tasks(self.loop)` below
     reads non-empty regardless of whether `run_forever` was ever
-    entered. `stop()`'s own first line, `call_soon_threadsafe(self.loop.stop)`,
-    only schedules `loop.stop`; a loop that has never run has not
-    delivered it, so draining those tasks through `run_until_complete`
-    used to be this method's first ask of the loop since that scheduling,
-    raising `RuntimeError('Event loop stopped before Future completed.')`
-    -- the same failure a bind failure already produced through the
-    opposite precondition, `pending` empty rather than non-empty (#353).
-    `stop_handle.cancel()` is what removes that failure now, on this
-    precondition as on every other `run_until_complete` in this method
-    can be handed, cancelling the leftover scheduled call outright rather
-    than a guard answering which precondition makes one more step safe.
+    entered. `stop()`'s own first line,
+    `call_soon_threadsafe(self.loop.stop)`, only schedules `loop.stop`;
+    a loop that has never run has not delivered it, so draining those
+    tasks through `run_until_complete` as this method's first ask of the
+    loop since that scheduling would raise `RuntimeError('Event loop
+    stopped before Future completed.')` -- the same failure a bind
+    failure produces through the opposite precondition, `pending` empty
+    rather than non-empty (#353). `stop_handle.cancel()` is what removes
+    that failure, on this precondition as on every other
+    `run_until_complete` in this method can be handed, cancelling the
+    leftover scheduled call outright rather than a guard answering which
+    precondition makes one more step safe.
 
     The loop is stepped once directly before `stop()` is ever called, so
     that the reproduction is not merely "a fresh loop" but one `stop()`
@@ -7823,9 +8158,9 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     Neither #312's own regression test nor #368's (above in this file)
     builds a task shaped this way -- both use `asyncio.Event().wait()`,
     whose cancellation resolves inside that same first batch. This one
-    does, on a manager whose thread was never started, and used to raise
-    the identical `RuntimeError('Event loop stopped before Future
-    completed.')` out of this same drain loop.
+    does, on a manager whose thread was never started, where the drain
+    loop would otherwise raise the identical `RuntimeError('Event loop
+    stopped before Future completed.')`.
     """
     manager = a_manager()
     loop = manager.loop
@@ -7849,19 +8184,17 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
 ) -> None:
     """#380: `stop` does not raise where `run` never reached `run_forever`.
 
-    `self.ident is not None` -- #368's own guard on a grace step this
-    method no longer has -- is true from the moment `start()` is
+    `self.ident is not None` is true from the moment `start()` is
     called, well before `run()` reaches `run_forever()`. Where `run()`
     returns before that -- a bind failure being the ordinary way -- the
-    `loop.stop` `stop()` schedules at its own top is never delivered, and
-    `self.ident is not None` read `True` anyway: the grace step that
-    guard used to gate ran against a loop with nothing having ever
-    stepped it, raising the identical `RuntimeError('Event loop stopped
-    before Future completed.')` #368 exists to eliminate, through the
-    very guard meant to rule it out. `stop_handle.cancel()` is what
-    removes that failure outright now, on this precondition as on every
+    `loop.stop` `stop()` schedules at its own top is never delivered,
+    and `self.ident is not None` reads `True` anyway: a grace step gated
+    on it would run against a loop with nothing having ever stepped it,
+    raising the identical `RuntimeError('Event loop stopped before
+    Future completed.')` #368 is about. `stop_handle.cancel()` is what
+    removes that failure outright, on this precondition as on every
     other this method can be handed, so nothing downstream of it needs a
-    guard of its own to answer this scenario any more.
+    guard of its own to answer this scenario.
 
     A real bind failure, not a monkeypatched `_bind`, the same way
     `test_a_manager_that_cannot_bind_stops_being_alive` above gets one --
@@ -7895,35 +8228,36 @@ def test_server_closes_a_connection_queued_in_the_instant_it_is_cancelled(
 ) -> None:
     """#386: `server` closes a connection queued as its own task is cancelled.
 
-    A connection can already sit in `server`'s own accept queue when something
-    cancels the task waiting on it -- `Queue.get`'s own internal wakeup future
-    can be discarded by `Task.cancel` exactly as `loop.sock_accept`'s own future
-    used to be (#312), forcing `CancelledError` in on the task's next step
-    rather than letting it resume with the result. What that discards is only
-    the wakeup: the item itself lives in the queue's own deque and not inside
-    that future, so it is still there for `server`'s own `finally` to close once
-    the cancellation it raises unwinds through it -- unlike an accepted socket
-    held by nothing but a discarded future, which goes out with the frame that
+    A connection can already sit in `server`'s own accept queue when
+    something cancels the task waiting on it -- `Queue.get`'s own
+    internal wakeup future can be discarded by `Task.cancel` exactly as
+    `loop.sock_accept`'s own future can (#312), forcing `CancelledError`
+    in on the task's next step rather than letting it resume with the
+    result. What that discards is only the wakeup: the item itself lives
+    in the queue's own deque and not inside that future, so it is still
+    there for `server`'s own `finally` to close once the cancellation it
+    raises unwinds through it -- unlike an accepted socket held by
+    nothing but a discarded future, which goes out with the frame that
     unwinds and nothing else ever holding it.
 
     The two `call_soon` callbacks below are that instant, made deterministic:
     they run in the order they were scheduled, so the item has certainly landed
     by the time the cancel reaches the task.
 
-    `listening_socket` is bound and put into `listen`, matching what `_bind`
-    always hands `server` in production (#430): left merely constructed, as
-    an earlier revision of this test had it, `_accept_loop`'s own
-    `sock_accept` fails on it synchronously and every retry races this
-    test's own cancellation against Windows' Proactor allocating and
-    abandoning its own internal accept socket, which is a real leak but not
-    the one this test is for -- accepting nothing at all, bound and
-    listening, is the ordinary idle shutdown `_accept_loop` is cancelled out
-    of on every platform this node runs on, ceasing there without raising --
-    `settimeout(0.0)` beside it for the same reason `_bind_one` carries its
-    own: a blocking `accept()` reached synchronously, which is what a freshly
-    constructed socket still is, freezes this single thread's event loop for
-    the length of `pyproject.toml`'s own per-test ceiling rather than ever
-    reaching `_accept_loop`'s `await`.
+    `listening_socket` is bound and put into `listen`, matching what
+    `_bind` always hands `server` in production (#430): left merely
+    constructed, `_accept_loop`'s own `sock_accept` fails on it
+    synchronously and every retry races this test's own cancellation
+    against Windows' Proactor allocating and abandoning its own internal
+    accept socket, which is a real leak but not the one this test is for
+    -- accepting nothing at all, bound and listening, is the ordinary
+    idle shutdown `_accept_loop` is cancelled out of on every platform
+    this node runs on, ceasing there without raising --
+    `settimeout(0.0)` beside it for the same reason `_bind_one` carries
+    its own: a blocking `accept()` reached synchronously, which is what
+    a freshly constructed socket still is, freezes this single thread's
+    event loop for the length of `pyproject.toml`'s own per-test ceiling
+    rather than ever reaching `_accept_loop`'s `await`.
     """
     manager = a_manager()
     loop = manager.loop
@@ -7992,16 +8326,15 @@ def test_accept_loop_discards_the_kernel_accepted_socket_on_the_documented_race(
     unaccepted connection, not a repeat of the discard #904 answers.
     `asyncio.new_event_loop()` (`P2pManager.__init__`) returns exactly
     such a proactor loop under Windows' own default policy, which is
-    where this test crashed a worker instead of asserting
+    where this test would crash a worker instead of asserting
     (btclib-org/btclib-node#917): the two steps `race_once` expects in
     one `_run_once()` call happen in zero there, `task.cancel()` landing
-    on live overlapped state this hand-driven sequencing was never
-    written to reach. What that native crash's own cause is has not
-    been measured beyond that -- this skips the sequencing rather than
-    tracking it down. `_accept_loop` itself is not implicated: its
-    `sock_accept` retry on `BlockingIOError`/`InterruptedError` is
-    already documented, in its own docstring, to cover both loop
-    families.
+    on live overlapped state this hand-driven sequencing does not reach.
+    The native crash's cause is not measured beyond that; this skips the
+    sequencing rather than tracking it down. `_accept_loop` itself is
+    not implicated: its `sock_accept` retry on
+    `BlockingIOError`/`InterruptedError` is already documented, in its
+    own docstring, to cover both loop families.
 
     So the property below is asked of the loop actually in use, not of
     `sys.platform`: a platform is a proxy for which `_process_events`
@@ -8055,10 +8388,9 @@ def test_accept_loop_discards_the_kernel_accepted_socket_on_the_documented_race(
         sys, "unraisablehook", lambda ua: unraisable.append(ua.exc_value)
     )
 
-    # Without an ignore entry naming this warning -- what this tree would
-    # raise had #904 gone unanswered -- `warnings.warn` itself raises
-    # inside the socket's own `__del__`, and that raise is what reaches
-    # `sys.unraisablehook`.
+    # Without an ignore entry naming this warning (#904),
+    # `warnings.warn` itself raises inside the socket's own `__del__`,
+    # and that raise is what reaches `sys.unraisablehook`.
     with warnings.catch_warnings():
         warnings.simplefilter("error", ResourceWarning)
         race_once()
@@ -8090,15 +8422,15 @@ def test_accept_loop_logs_and_retries_on_a_refused_accept(
 
     `sock_accept` itself is monkeypatched to fail rather than handed a
     socket engineered to make the real one fail: a duck-typed stand-in
-    with a `fileno` of -1, this test's own shape before #430's Windows
-    run, reaches a selector loop's `sock.accept()` call harmlessly but
-    reaches Windows' Proactor at the raw `AcceptEx` level, on the real
-    fd it reads off that -1 rather than through any Python-level
-    `.accept()` call -- which is what crashed the worker process outright
-    rather than raising, on that platform only. What this test is for is
-    `_accept_loop`'s own retry-and-log arm, not the kernel's accept
-    machinery underneath `sock_accept`, so a fake replacing `sock_accept`
-    itself is the narrower fake and is what stays clear of it.
+    with a `fileno` of -1 reaches a selector loop's `sock.accept()` call
+    harmlessly but reaches Windows' Proactor at the raw `AcceptEx`
+    level, on the real fd it reads off that -1 rather than through any
+    Python-level `.accept()` call -- which crashes the worker process
+    outright rather than raising, on that platform only (#430). What
+    this test is for is `_accept_loop`'s own retry-and-log arm, not the
+    kernel's accept machinery underneath `sock_accept`, so a fake
+    replacing `sock_accept` itself is the narrower fake and is what
+    stays clear of it.
 
     The failure below is synchronous, so `loop.sock_accept`'s own
     internal future is already done the instant this loop's `await`
@@ -8413,15 +8745,14 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
 ) -> None:
     """`_report_server_failure`'s `isinstance` arm, `stop` never reaches.
 
-    `future.cancelled()` being true is what the test above covers, and
-    is the only way `stop`'s own sweep actually ends this task -- so
-    this arm has no path of its own through this class's ordinary use,
-    only through a `future` built to carry a `CancelledError` as its
-    stored exception rather than through `.cancel()`: what a `server`
-    coroutine that caught and re-raised one not thrown by `Task.cancel`
-    would leave behind, `Task.cancelled()` still false. Moved here
-    rather than removed, on the same reasoning the coverage floor
-    argues for a safety branch generally.
+    `future.cancelled()` being true is what the test above covers. A
+    `server` task that ends on a `CancelledError` is cancelled, whether
+    `Task.cancel` threw it in or the coroutine raised one of its own,
+    and `run_coroutine_threadsafe` cancels `future` with it, so this arm
+    has no path through this class's ordinary use. This test reaches it
+    with a `Future` given an `asyncio.CancelledError` through
+    `set_exception`. Kept and reached here, on the same reasoning the
+    coverage floor argues for a safety branch generally.
     """
     manager = a_manager()
     logged: list[BaseException | None] = []

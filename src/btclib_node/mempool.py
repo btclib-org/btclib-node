@@ -121,9 +121,7 @@ def _weight(tx: Tx, vsize: int | None) -> int:
     four. A sigop weight less than four units above `tx.weight` reads as
     `tx.weight`, so the callers that know the sigop cost pass the weight.
     """
-    if vsize is None or vsize == -(-tx.weight // 4):
-        return tx.weight
-    return 4 * vsize
+    return tx.weight if vsize is None or vsize == -(-tx.weight // 4) else 4 * vsize
 
 
 def format_money(amount: int) -> str:
@@ -266,14 +264,14 @@ class Mempool:
         # own `unbroadcastcount` is this set's size.
         # btclib-org/btclib-node#1421
         self.unbroadcast: set[bytes] = set()
-        # txid -> the wtxids, held in this mempool, of whatever spends an
-        # output of that txid -- kept up to date in `add_tx` and `_pop`
-        # rather than rebuilt at eviction time, `_descendants` below being
-        # the reader btclib-org/btclib-node#441 added it for. A txid this
-        # mempool never holds a spender of is simply absent, not mapped to
-        # an empty set: `_pop` deletes the entry once its last spender
-        # leaves rather than leaving an empty set behind for every
-        # confirmed parent a mempool transaction ever spent.
+        # txid -> the wtxids, held in this mempool, of whatever spends
+        # an output of that txid -- kept up to date in `add_tx` and
+        # `_pop` rather than rebuilt at eviction time, `_descendants`
+        # below being the reader it is for (btclib-org/btclib-node#441).
+        # A txid this mempool never holds a spender of is simply absent,
+        # not mapped to an empty set: `_pop` deletes the entry once its
+        # last spender leaves rather than leaving an empty set behind
+        # for every confirmed parent a mempool transaction ever spent.
         self.spent_by: dict[bytes, set[bytes]] = {}
         # (txid, vout) -> the wtxid, held in this mempool, spending that
         # outpoint: Core's own `mapNextTx` (`src/txmempool.h`,
@@ -291,20 +289,14 @@ class Mempool:
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
-        # (`src/kernel/mempool_options.h`, at bitcoin/bitcoin@f0de87f040) is
-        # 300, and this field carried 500 with no argument on record for
-        # the difference -- inert while nothing evicted, since the exact
-        # number only ever decided whether `add_tx` refused outright.
-        # `_evict_to_limit` below is what first makes it a real economic
-        # threshold rather than a wall, which is the reasoning this value
-        # needed and did not have: matching Core's own default is that
-        # reasoning, absent a measurement that says this tree's own
-        # traffic wants a different one. Not exposed on `Config`: making
+        # (`src/kernel/mempool_options.h`, at
+        # bitcoin/bitcoin@f0de87f040) is 300, and this matches it,
+        # absent a measurement that says this tree's own traffic wants a
+        # different one: `_evict_to_limit` below makes it an economic
+        # threshold rather than a wall. Not exposed on `Config`: making
         # it configurable is a widening (a new CLI/RPC-facing knob, its
         # own validation, its own interaction with a live-lowered limit)
-        # that eviction does not need to exist -- the wall this issue
-        # closes is the missing eviction, not the fixed ceiling.
-        # btclib-org/btclib-node#294
+        # that eviction does not need. btclib-org/btclib-node#294
         self.bytesize_limit: int = 300 * 1000**2  # 300vMB
         # Core's own external-tracking counter,
         # `CTxMemPool::m_sequence_number` (`src/txmempool.h:200-202`,
@@ -372,20 +364,19 @@ class Mempool:
         self, transactions: Iterable[bytes], *, wtxid: bool = False
     ) -> list[bytes]:
         """Return every id in `transactions` this mempool does not hold."""
-        # No `is_full` guard: that used to answer every request with
-        # nothing at all once past the limit, which was the wall
-        # `_evict_to_limit` now removes -- Core's own request tracking
-        # never consults mempool occupancy before asking either, letting
-        # `add_tx` decide per transaction instead. btclib-org/btclib-node#294
+        # No `is_full` guard: it would answer every request with nothing
+        # at all once past the limit, while `add_tx` evicts to make room
+        # (`_evict_to_limit`) -- Core's own request tracking never
+        # consults mempool occupancy before asking either, letting
+        # `add_tx` decide per transaction instead.
+        # btclib-org/btclib-node#294
         index = self.transactions if wtxid else self.txid_index
         return [tx_id for tx_id in transactions if tx_id not in index]
 
     def get_tx(self, txid: bytes, *, wtxid: bool = False) -> Tx | None:
         """Return the transaction stored under `txid` (or wtxid), or `None`."""
         key = txid if wtxid else self.txid_index.get(txid)
-        if key is None:
-            return None
-        return self.transactions.get(key)
+        return None if key is None else self.transactions.get(key)
 
     def get_tx_for_relay(
         self, txid: bytes, *, wtxid: bool, last_sequence: int
@@ -527,18 +518,16 @@ class Mempool:
         # other peer about, or that call answers its own `getdata` with
         # `notfound`. btclib-org/btclib-node#277
         #
-        # Past `is_full()`, this used to refuse outright, whatever the
-        # transaction paid. It now adds the transaction provisionally and
+        # Past `is_full()`, this does not refuse outright, whatever the
+        # transaction paid. It adds the transaction provisionally and
         # runs `_evict_to_limit`, Core's own `LimitMempoolSize` shape
-        # (`validation.cpp`, called right after a provisional add,
-        # at bitcoin/bitcoin@f0de87f040): if the trim reaches this
-        # transaction's chunk, eviction takes it right
-        # back out and the return value is `False` here exactly as it
-        # was for the old outright refusal -- `rpc/callbacks.py`'s own
-        # "mempool full", Core's, answers that case whether it is reached this
-        # way or the old way. A transaction already held under this
-        # txid, same witness or not, is still a no-op that never touches
-        # bytesize at all, for a caller that skipped
+        # (`validation.cpp`, called right after a provisional add, at
+        # bitcoin/bitcoin@f0de87f040): if the trim reaches this
+        # transaction's chunk, eviction takes it right back out and the
+        # return value is `False` -- `rpc/callbacks.py`'s own "mempool
+        # full", Core's, answers that case. A transaction already held
+        # under this txid, same witness or not, is a no-op that never
+        # touches bytesize at all, for a caller that skipped
         # `main.verify_mempool_acceptance`, which refuses it first.
         # btclib-org/btclib-node#294
         wtxid, txid = tx.hash, tx.id
@@ -816,10 +805,10 @@ class Mempool:
             return frozenset()
         suffix = "" if sibling is None else " (including sibling eviction)"
         replaced = self._all_conflicts(
-            tx.id, conflicts, "too many potential replacements" + suffix
+            tx.id, conflicts, f"too many potential replacements{suffix}"
         )
         fee += self.delta(tx.id)
-        self._check_pays_for(tx.id, replaced, fee, vsize, "insufficient fee" + suffix)
+        self._check_pays_for(tx.id, replaced, fee, vsize, f"insufficient fee{suffix}")
         weight = _weight(tx, vsize) if weight is None else weight
         added = [(tx.hash, FeeFrac(fee, weight), tx.id[::-1], self._parents(tx))]
         self._check_diagram(replaced, added, "replacement-failed", _NO_IMPROVEMENT)
@@ -846,22 +835,23 @@ class Mempool:
             return frozenset()
         failed = "package RBF failed: "
         if len(members) != 2:  # noqa: PLR2004 -- Core's "1-parent-1-child"
-            raise TxRejectedError(failed + "package must be 1-parent-1-child")
+            reason = f"{failed}package must be 1-parent-1-child"
+            raise TxRejectedError(reason)
         if any(self._parents(tx) for tx, *_ in members):
-            reason = failed + "new transaction cannot have mempool ancestors"
+            reason = f"{failed}new transaction cannot have mempool ancestors"
             raise TxRejectedError(reason)
         (parent, parent_fee, parent_vsize, parent_weight), child_member = members
         child, child_fee, child_vsize, child_weight = child_member
         replaced = self._all_conflicts(
-            child.id, conflicts, failed + "too many potential replacements"
+            child.id, conflicts, f"{failed}too many potential replacements"
         )
         parent_fee += self.delta(parent.id)
         child_fee += self.delta(child.id)
         fee, vsize = parent_fee + child_fee, parent_vsize + child_vsize
-        reason = failed + "insufficient anti-DoS fees"
+        reason = f"{failed}insufficient anti-DoS fees"
         self._check_pays_for(child.id, replaced, fee, vsize, reason)
         if fee * parent_vsize <= parent_fee * vsize:
-            reason = failed + "package feerate is less than or equal to parent feerate"
+            reason = f"{failed}package feerate is less than or equal to parent feerate"
             details = (
                 f"package feerate {_fee_rate_text(fee, vsize)} <= parent feerate "
                 f"is {_fee_rate_text(parent_fee, parent_vsize)}"
@@ -1451,10 +1441,9 @@ class Mempool:
         cost btclib-org/btclib-node#441 measured, `n` being every entry
         this mempool holds and `k` the size of the package being walked.
         A second index does mean a second place the accounting above
-        could drift, the risk the comment this replaces weighed against
-        the scan -- `_pop` being the single place every removal updates
-        it is what keeps that from happening, the same invariant that
-        already holds `txid_index` and `fees` to the dict they index.
+        could drift -- `_pop` being the single place every removal
+        updates it is what keeps that from happening, the same invariant
+        that holds `txid_index` and `fees` to the dict they index.
         `prev_out.tx_id` is a txid, matching what `txid_index` keys
         transactions by and what `verify_mempool_acceptance`'s own
         mempool lookup reads a prevout by. btclib-org/btclib-node#294

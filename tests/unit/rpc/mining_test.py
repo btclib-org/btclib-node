@@ -58,6 +58,7 @@ from tests import (
     generate_random_transaction,
 )
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -217,7 +218,7 @@ def test_generatetoaddress_fills_each_block_from_the_mempool(funded: Node) -> No
         ),
         ([1, "garbage"], -5, "Error: Invalid address"),
         ([1, ""], -5, "Error: Invalid address"),
-        ([1, ADDRESS[:-1] + "x"], -5, "Error: Invalid address"),
+        ([1, f"{ADDRESS[:-1]}x"], -5, "Error: Invalid address"),
         ([1.5, ADDRESS], -1, "JSON integer out of range"),
         ([2**31, ADDRESS], -1, "JSON integer out of range"),
         ([1, ADDRESS, 1.5], -1, "JSON integer out of range"),
@@ -292,9 +293,7 @@ def test_generatetoaddress_stops_where_the_tries_are_spent(
     def solve(
         node_: Node, block: Block, tries: int
     ) -> Generator[bool, None, tuple[Block | None, int]]:
-        if next(solved):
-            return real(node_, block, tries)
-        return answer((None, 0))
+        return real(node_, block, tries) if next(solved) else answer((None, 0))
 
     monkeypatch.setattr(rpc_mining, "solve_block", solve)
 
@@ -541,11 +540,11 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
             [ADDRESS, ["aa"]],
             -22,
             (
-                "Transaction decode failed for aa. "
+                "Transaction decode failed for '...'. "
                 "Make sure the tx has at least one input."
             ),
         ),
-        ([ADDRESS, ["0" * 63 + "1"]], -5, f"Transaction {'0' * 63}1 not in mempool."),
+        ([ADDRESS, ["0" * 63 + "1"]], -5, "Transaction '...' not in mempool."),
         (
             [ADDRESS, [1]],
             -3,
@@ -555,7 +554,7 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
             [ADDRESS, ["zz"]],
             -22,
             (
-                "Transaction decode failed for zz. "
+                "Transaction decode failed for '...'. "
                 "Make sure the tx has at least one input."
             ),
         ),
@@ -564,9 +563,19 @@ def test_generateblock_checks_a_descriptor_in_cores_order(
 def test_generateblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s."""
+    """The codes and messages are `bitcoind`'s, `...` for a string it quotes."""
     assert refusal(lambda: generate_block(node, CONN, params)) == (code, message)
     assert height(node) == 0
+
+
+@pytest.mark.parametrize("text", [LEAK_HEX, LEAK_WIF])
+def test_generateblock_refuses_a_key_as_a_transaction_without_quoting_it(
+    node: Node, text: str
+) -> None:
+    """ISS 2514: a raw key is a txid not in the mempool, a WIF no tx."""
+    with pytest.raises(RpcError) as caught:
+        generate_block(node, CONN, [ADDRESS, [text]])
+    assert_secret_free(caught.value, [text])
 
 
 X_ONLY = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
@@ -622,6 +631,35 @@ def test_generateblock_refuses_a_multipath_descriptor_parse_refuses(
         -5,
         "Error: Invalid address or descriptor",
     )
+
+
+# an x no point of the curve has, as an x-only key and a compressed one
+NOT_A_POINT_X = "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+NOT_A_POINT = f"02{NOT_A_POINT_X}"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        f"pk({NOT_A_POINT})",
+        f"sh(wpkh({NOT_A_POINT}))",
+        f"combo({NOT_A_POINT})",
+        f"tr({NOT_A_POINT_X})",
+        f"tr({X_ONLY},multi_a(1,{NOT_A_POINT_X}))",
+        f"wsh(multi(1,{TPUB}/<0;1>/0,{NOT_A_POINT}))",
+        # bip32_descriptors refuses the multipath key first, and ecc then
+        # refuses the other in one of the paths
+        f"tr({TPUB}/<0;1>/0,pk({NOT_A_POINT_X}))",
+        f"wsh(or_d(pk({TPUB}/<0;1>/0),pk({NOT_A_POINT})))",
+    ],
+)
+def test_generateblock_refuses_a_key_that_is_no_point(node: Node, output: str) -> None:
+    """`Parse` refuses the key, and the text is no address either."""
+    assert refusal(lambda: generate_block(node, CONN, [output, []])) == (
+        -5,
+        "Error: Invalid address or descriptor",
+    )
+    assert height(node) == 0
 
 
 def test_generateblock_mines_to_raw_at_top_level_with_its_checksum(
@@ -995,26 +1033,26 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
         (
             {"rules": ["segwit"], "longpollid": "x"},
             -8,
-            "longpollid must be of length 64 (not 1, for 'x')",
+            "longpollid must be of length 64 (not 1, for '...')",
         ),
         (
             {"rules": ["segwit"], "longpollid": "zz" * 32},
             -8,
-            f"longpollid must be hexadecimal string (not '{'zz' * 32}')",
+            "longpollid must be hexadecimal string (not '...')",
         ),
         # the first 64 bytes, not characters
         (
             {"rules": ["segwit"], "longpollid": "\u00e9" * 10},
             -8,
-            f"longpollid must be of length 64 (not 20, for '{'\u00e9' * 10}')",
+            "longpollid must be of length 64 (not 20, for '...')",
         ),
         (
             {"rules": ["segwit"], "longpollid": "\u00e9" * 40},
             -8,
-            f"longpollid must be hexadecimal string (not '{'\u00e9' * 32}')",
+            "longpollid must be hexadecimal string (not '...')",
         ),
         # read before the rules, and waited on before them
-        ({"longpollid": "x"}, -8, "longpollid must be of length 64 (not 1, for 'x')"),
+        ({"longpollid": "x"}, -8, "longpollid must be of length 64 (not 1, for '...')"),
         (
             {"longpollid": "00" * 32},
             -8,
@@ -1025,8 +1063,22 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
 def test_getblocktemplate_refuses_what_core_refuses(
     node: Node, request_: dict[str, Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s."""
+    """The codes and messages are `bitcoind`'s, `...` for a string it quotes."""
     assert refusal(lambda: finish_template(node, request_)) == (code, message)
+
+
+@pytest.mark.parametrize(
+    ("long_poll_id", "secret"),
+    [(LEAK_WIF, LEAK_WIF), (f"z{LEAK_HEX[1:]}", LEAK_HEX[1:])],
+)
+def test_a_key_as_longpollid_is_refused_without_quoting_it(
+    node: Node, long_poll_id: str, secret: str
+) -> None:
+    """ISS 2514: too short a `longpollid`, and one not hex, are not quoted."""
+    with pytest.raises(RpcError) as caught:
+        finish_template(node, {"rules": ["segwit"], "longpollid": long_poll_id})
+    assert int(caught.value.code) == -8
+    assert_secret_free(caught.value, [secret])
 
 
 def test_getblocktemplate_needs_its_argument_as_an_object(node: Node) -> None:
@@ -1447,11 +1499,11 @@ def test_the_long_poll_counter_starts_at_zero_and_counts_each_block(
     node: Node,
 ) -> None:
     """As `bitcoind`'s after a restart: 0, then one per block."""
-    assert template(node)["longpollid"] == tip(node).hex() + "0"
+    assert template(node)["longpollid"] == f"{tip(node).hex()}0"
 
     generate_to_address(node, CONN, [3, ADDRESS])
 
-    assert template(node)["longpollid"] == tip(node).hex() + "3"
+    assert template(node)["longpollid"] == f"{tip(node).hex()}3"
 
 
 def test_the_long_poll_counter_counts_transactions_and_disconnections(
@@ -1615,24 +1667,24 @@ def test_the_other_waits_are_served_as_core_names_them() -> None:
         (
             [1, "zz"],
             -8,
-            "current_tip must be of length 64 (not 2, for 'zz')",
+            "current_tip must be of length 64 (not 2, for '...')",
         ),
         (
-            [1, ZERO + " "],
+            [1, f"{ZERO} "],
             -8,
-            f"current_tip must be of length 64 (not 65, for '{ZERO} ')",
+            "current_tip must be of length 64 (not 65, for '...')",
         ),
         (
             [1, "g" * 64],
             -8,
-            f"current_tip must be hexadecimal string (not '{'g' * 64}')",
+            "current_tip must be hexadecimal string (not '...')",
         ),
     ],
 )
 def test_waitfornewblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s, on regtest."""
+    """The codes and messages are `bitcoind`'s on regtest, but for `...`."""
     assert refusal(lambda: wait_for_new_block(node, CONN, params)) == (code, message)
 
 
@@ -1724,11 +1776,11 @@ def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None
                 (2, "timeout", "string", "number"),
             ),
         ),
-        (["aa", -1], -8, "blockhash must be of length 64 (not 2, for 'aa')"),
+        (["aa", -1], -8, "blockhash must be of length 64 (not 2, for '...')"),
         (
             ["g" * 64],
             -8,
-            f"blockhash must be hexadecimal string (not '{'g' * 64}')",
+            "blockhash must be hexadecimal string (not '...')",
         ),
         ([ZERO, 1.5], -1, "JSON integer out of range"),
         ([ZERO, 2**31], -1, "JSON integer out of range"),
@@ -1738,7 +1790,7 @@ def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None
 def test_waitforblock_refuses_what_core_refuses(
     node: Node, params: list[Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s, on regtest."""
+    """The codes and messages are `bitcoind`'s on regtest, but for `...`."""
     assert refusal(lambda: wait_for_block(node, CONN, params)) == (code, message)
 
 

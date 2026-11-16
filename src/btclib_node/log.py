@@ -168,9 +168,7 @@ def _prefix(record: logging.LogRecord) -> str:
         return "[error] "
     if levelno >= logging.WARNING:
         return "[warning] "
-    if levelno >= logging.INFO:
-        return ""
-    return "[debug] "
+    return "" if levelno >= logging.INFO else "[debug] "
 
 
 # C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F)
@@ -258,9 +256,7 @@ class Logger(logging.Logger):
         self._limit_lock = threading.RLock()
         # `logging.Handler`, which is the type the two branches share:
         # inferred from the first of them instead, the second is a
-        # StreamHandler assigned to a name holding a FileHandler. What
-        # stood here before the branch was a third handler, built on
-        # every path and used on none.
+        # StreamHandler assigned to a name holding a FileHandler.
         handler: logging.Handler
         if log_path:
             # UTF-8 with `surrogateescape`: a setting holding a byte UTF-8

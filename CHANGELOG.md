@@ -12,9 +12,8 @@ entry (sections 9 and 12 of the organization standard).
 The record starts here, and nothing is reconstructed for the years of
 work before it: a changelog written backwards from a git log is a guess
 at what somebody would have noticed, and there is no way to check the
-guess. This paragraph used to date that boundary to a `v0.1.0` tag,
-deleted on 2026-08-23 (#553, btclib-org/.github#105); the boundary is
-where this file was written rather than where anything was tagged.
+guess. The boundary is where this file was written rather than where
+anything was tagged.
 
 This record carries two shapes of citation. The bullet, beside the claim
 it answers, is where section 9 of the organization standard puts the
@@ -31,6 +30,346 @@ appends being the part taken off. Section 9's *One fact in one place* is
 why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
+
+## v2026.11.14
+
+### The node asks only the DNS seeds Core lists
+
+`Main.addresses` drops `seed.bitcoin.sipa.be.` and `TestNet.addresses` drops
+`seed.testnet.bitcoin.sprovoost.nl.` (closes #2368).
+
+### `submitblock` answers `"inconclusive"` for a new block stored, not tried
+
+That is a new block it stores and does not try to connect, as in Core. The best
+chain is activated before the answer, a reorg included (closes #2419).
+
+### A batch member that is not an object gets a null `id`
+
+Each member is parsed into a request of its own, as Core's master does
+(closes #2186).
+
+### An integer past CPython's digit limit is read as bitcoind reads it
+
+A `settings.json` number, an integer option's value or a port (closes #2386),
+and a JSON-RPC body (closes #2456). `RawJSON` is defined in `rpc.jsonrpc`,
+beside the new `LongInteger`.
+
+### A descriptor key off the curve gets -5
+
+From `generateblock` and `scantxoutset`, where it got -32603, and
+`scantxoutset` writes the key as `...` (closes #2404).
+
+### The payload-length, too-large and decryption refusals print no length read
+
+V1Transport's payload-length refusal (closes #2358) and V2Transport's too-large
+refusal name the bound, and its decryption failure is a fixed text
+(closes #2440).
+
+### A refused magic is printed only where a chain defines it
+
+A network magic (closes #2437), and a v1 magic V2Transport reads (closes #2439).
+
+### Each inactivity drop logs Core's `-debug=net` line
+
+`P2pManager._inactivity_check` follows `CConnman::InactivityCheck`
+(closes #2369).
+
+### The tests stop racing the node
+
+The second RPC connection to register (closes #2401), and the node's clock held
+over both deterministic builds (closes #2372). `callbacks.py` cites the
+bitcoind test by its node id (closes #2411).
+
+### `AGENTS.md` and `CONTRIBUTING.md` follow the standard
+
+`AGENTS.md` points at `REVIEWING.md` (issue btclib-org/.github#2009).
+`CONTRIBUTING.md` lists its workflows in a table (closes #2434), and carries
+section 14's RootFileLinks part (issue btclib-org/.github#2166).
+
+### The documents and the configuration tell no history
+
+A passage that told what a setting or a workflow used to be keeps what is true
+now (closes #2383).
+
+### `CONTRIBUTING.md` leaves the checkout layout to the contributor
+
+Its *Worktrees* section goes, and `AGENTS.md` gives a worktree per task as an
+example for an agent (issue btclib-org/.github#2263).
+
+### `CONTRIBUTING.md`'s gates and docs blocks stop on a failure
+
+A failed suite or hook run (issue btclib-org/.github#2188), and a failed build
+or checker checkout (issue btclib-org/.github#2015).
+
+### `REPOSITORY.md` records the standing bypass
+
+The main-self-merge ruleset holds it (issue btclib-org/.github#2212).
+
+### `fuzz.yml` and `sourcery.yml` take .github's text
+
+`fuzz.yml` states when it runs (issue btclib-org/.github#1927), and
+`sourcery.yml` takes .github's concurrency comment
+(issue btclib-org/.github#2190).
+
+### prettier leaves `.pre-commit-config.yaml` to pre-commit.ci
+
+`.prettierignore` names it (issue btclib-org/.github#2038).
+
+### The bestpractices.dev answers move
+
+They reach v2026.11.12 (closes #2414), `static_analysis_fixed` is answered with
+no alert open (issue #2427), and a save nobody can make is recorded as owed
+(issue btclib-org/.github#2205).
+
+### The dev tools move
+
+coverage in the dev-tooling group (#2422), and soupsieve (closes #2445).
+
+### The version is 2026.11.14
+
+`pyproject.toml` declares `2026.11.14` in place of the `2026.12` placeholder
+that #2426 set.
+
+## v2026.11.12
+
+### btclib and bip32-descriptors 2026.11.12 are required
+
+A `headers` batch whose transaction counts are not zero is taken, as in Core
+(closes #2307), and a miniscript needing no signature of a key off the curve is
+signed, as bitcoind v32.1 signs it (closes #2412).
+
+### A dropped peer leaves `getpeerinfo` before its socket closes
+
+`Connection._close` removes it from the tables first, as Core's
+`DisconnectNodes` does (issue #2416).
+
+### The code takes Sourcery's rewrites
+
+Every rule but `dont-import-test-modules` is on (issue btclib-org/.github#2162).
+
+### The pinned actions and dev tools move
+
+btclib-org/.github's workflows to v2026.11.12 (#2384), and the dev-tooling
+group in `uv.lock` (#2408).
+
+### The version is 2026.11.12
+
+`pyproject.toml` declares `2026.11.12` in place of the `2026.12` placeholder
+that #2415 set.
+
+## v2026.11.11
+
+### btclib 2026.11.10 and ecc 2026.11.11 are required
+
+btclib 2026.11.10 removes `policy.are_inputs_standard`, which v2026.11.7
+imports (issue #2409), and bip32-descriptors 2026.11.11 is required with them
+(closes #2241, closes #2240, closes #2242, closes #2243).
+
+### The node takes btclib's and ecc's new names and refusal texts
+
+`validate_inputs_standardness`, `btclib.bms` and ecc's top-level modules, and
+the tests quote btclib's texts (closes #2350, closes #2365, closes #2366).
+
+### A miniscript input with a key off the curve is left unsigned
+
+bip32-descriptors 2026.11.11 refuses the key, where Core signs a script that
+never needs its signature (btclib-org/bip32-descriptors#292).
+
+### `scantxoutset` and `generateblock` refuse the draft descriptor forms
+
+`raw()` inside `sh()`, `wsh()` and `tr()`, `rawpkh()`, `rawnode()` and
+`rawleaf()` get -5, as in bitcoind v32.1, quoting no argument (closes #2231,
+closes #2269, closes #2287).
+
+### `submitblock` and the block proposal answer Core's reject reasons
+
+A block failing CheckBlock or CheckTransaction, or spending a missing input,
+gets Core's word, and so do `generateblock` and `TemplateError` (closes #2167,
+closes #2247).
+
+### `getchaintips` lists the active tip under a staged header
+
+A header `submitheader` staged on the active tip leaves the tip listed, as in
+Core (closes #2158).
+
+### A transaction's input values are held to `0..MAX_MONEY`
+
+`_check_tx_inputs` refuses a coin or a running input total out of range with
+`bad-txns-inputvalues-outofrange` (closes #2111).
+
+### A stored coin that cannot be read stops the node
+
+A `utxo-` record that does not deserialize, or that the store reports corrupt,
+logs Core's "Error reading from database" and stops the node (closes #2275,
+closes #2357).
+
+### A stored address table that fails its consistency check refuses the start
+
+`PeerDB.init_from_db` runs the check Core's `AddrMan` runs on load, and the
+start ends on "Invalid or corrupt peers.dat" (closes #2328).
+
+### `-maxconnections` is capped at 2000 and fitted to the file descriptors
+
+Read as a saturating int, it is capped and lowered, and
+`Config.max_connections_warnings` carries Core's warning for each step
+(closes #2127, closes #2338).
+
+### A `settings.json` `-rpcmaxconnections` that is no int is refused
+
+`Config` refuses it where bitcoind v32.1 does, `cli` passing the number as
+given (closes #2347).
+
+### The node announces protocol version 70017 and takes BIP434's `feature`
+
+A `feature` Core takes is ignored and any other drops the peer (closes #2250),
+and over v2 BIP324 short ids 33 to 37 are read (closes #2302).
+
+### Transaction announcements are rate-limited across peers
+
+Core v32.1's inbound and outbound buckets replace the per-peer trickle limit
+(closes #2106), and `getnetworkinfo` reports them, with `-txsendrate`
+(closes #2309).
+
+### `getnetworkinfo` answers v32.1's required fields
+
+`version`, `localrelay`, `timeoffset`, `networks`, `relayfee` and
+`incrementalfee` (closes #2128).
+
+### A clock out of sync with the outbound peers sets Core's warning
+
+A median offset past ten minutes sets `CLOCK_OUT_OF_SYNC`, and `warnings` are
+listed in Core's id order (closes #2282, closes #2294, closes #2297).
+
+### P2P handlers ignore octets past a message's fields
+
+As Core reads them, a message with trailing octets is handled, a `version`
+included (closes #2097). `headers` states where it still drops a batch
+(issue #2307).
+
+### A peer's block is connected before its next message is read
+
+`_accept_block` runs `activate_best_chain`, as `ProcessNewBlock` does
+(closes #2172), and the loop skips its idle sleep after a pass that moved
+the chain (closes #2352).
+
+### Orphans are reconsidered as Core v32.1 reconsiders them
+
+A block confirming an orphan's parent marks it (closes #2160), a parent refused
+without its witness keeps its child (issue #2159), and the relaying peer's next
+message waits until each marked peer settles one orphan (closes #2286).
+
+### Outbound peers are dropped for their services whatever the sync state
+
+As Core's VERSION handling drops them (closes #2169), and a peer is spared every
+inactivity check for its first minute (closes #2164).
+
+### Eviction and high-bandwidth peers follow Core v32.1
+
+Eviction compares connection times to the fraction of a second
+(closes #2252), and a new high-bandwidth peer is asked before the
+oldest is dropped (closes #2251).
+
+### A link-local address keeps its IPv6 scope
+
+`-bind` binds at it and a manual dial connects at it (closes #2165,
+closes #2292); `getpeerinfo` writes it, and lists a peer whose socket is
+closed (closes #2266, closes #2168).
+
+### The listeners set and log their socket options as Core does
+
+Both set `IPV6_PROTECTION_LEVEL` on Windows (closes #2163), and the P2P listener
+logs a refused `SO_REUSEADDR` or `IPV6_V6ONLY` and binds anyway (closes #2274).
+
+### Local addresses are recorded as Core v32.1 records them
+
+An `-externalip` on a network this node does not reach is kept, Discover runs
+under a `-bind` to any address, and neither logs the address (closes #2249).
+
+### An empty `-addnode` value is skipped with Core's warning
+
+`Config.addnode_empty` counts them (closes #2248).
+
+### `-test=addrman`, `-checkaddrman` and `-test=bip94` are read
+
+With Core's meaning (issue #2175, closes #2327). `cli.py` says why
+`-test=reindex_after_failure_noninteractive_yes` is not (closes #2332).
+
+### Fee estimates and version bits start where initial block download ends
+
+The fee estimators record, and the unknown version bits are checked on,
+the blocks from the one that ends initial block download (closes #2178,
+closes #2345).
+
+### Warmup ends on a stop asked after start-up's last check
+
+`-startupnotify` runs then too, as in Core v32.1 (closes #2349, issue #2061).
+
+### A request past a closing reply is read within Core's select wait
+
+The RPC server reads once more, for up to Core's `SELECT_TIMEOUT`, as bitcoind
+v32.1's socket thread does (closes #2153).
+
+### A stored block's refused CompactSize is named by its width or its limit
+
+The refusal prints no octet of the block (closes #2351).
+
+### The sdist leaves out the tests that need the repository
+
+The test modules that read `.github/`, `fuzz/` or git's index, and failed in an
+unpacked sdist, are not shipped (closes #2232).
+
+### Bitcoin Core is cited at the v32.1 tag
+
+The seeds, the source citations and `tests/_data` move to
+bitcoin/bitcoin@f0de87f040 (issue #2192), and `get_chain_tips` points at its
+lines (closes #2260).
+
+### The coverage floor holds `.github/scripts` and every source directory
+
+The implicit pin keeps its free-threaded suffix (closes #2228), the scripts are
+measured (closes #2204), and a run that leaves a source unmeasured is refused
+(closes #2390).
+
+### Tests that raced wait for what they check
+
+`prune_test` (closes #2236), `test_send_tx` (closes #2367), the lying-peers
+tests (closes #2138) and the framing comparison with bitcoind (closes #2304,
+closes #2194).
+
+### v2 message types holding 0x7F and 0x7E are tested
+
+As Core v32.1 tests them (closes #2253).
+
+### `CONTRIBUTING.md` and `RELEASING.md` take the shared text again
+
+Both shared halves are btclib-org/.github's (issue btclib-org/.github#2088,
+issue btclib-org/.github#2145, issue btclib-org/.github#1855, issue
+btclib-org/.github#2107).
+
+### The copied files and the `secret_free` helper follow btclib-org/.github
+
+They cite the standard as section 11 asks, as this tree's own prose does (issue
+btclib-org/.github#2137, issue btclib-org/.github#1950, #2379, #2391).
+
+### The README links its own files absolutely and ends on a Status section
+
+As section 2 of the organization's standard asks (issue btclib-org/.github#1851,
+issue btclib-org/.github#1856).
+
+### The bestpractices.dev answers are held in the tree
+
+`.bestpractices.json` holds them (issue btclib-org/.github#2153, issue
+btclib-org/.github#2159), and `ASSURANCE_CASE.md`'s CWE-209 entry states its
+rule (closes #2356).
+
+### The pinned pre-commit hook revisions move
+
+btclib-org/.github's hook, zizmor, ruff and uv (#2380).
+
+### The version is 2026.11.11
+
+`pyproject.toml` declares `2026.11.11` in place of the `2026.12` placeholder
+that #2235 set.
 
 ## v2026.11.7
 

@@ -47,7 +47,11 @@ def whitelisted(*values: str, default: bool | None = None) -> RpcAuth:
     )
 
 
-PYTEST_ONLY = ("pytest:" + ALLOWED,)
+PYTEST_ONLY = (f"pytest:{ALLOWED}",)
+
+# ISS 2456: an id past CPython's digit limit, which `json.dumps` cannot
+# write, so the request carrying it is sent as its text
+LONG_ID = "9" * 5000
 
 
 def test_parse_whitelist_splits_at_every_comma_and_space() -> None:
@@ -84,7 +88,7 @@ def test_a_user_with_no_whitelist_calls_everything_by_default() -> None:
 
 def test_a_whitelist_for_one_user_refuses_every_other_user_everything() -> None:
     """`-rpcwhitelistdefault` defaults to true once any whitelist is set."""
-    auth = whitelisted("alice:" + ALLOWED)
+    auth = whitelisted(f"alice:{ALLOWED}")
     assert auth.refusal(b"pytest", {"id": 1, "method": ALLOWED}) == Refusal(
         FORBIDDEN, warning=("RPC User %s not allowed to call any methods", "pytest")
     )
@@ -92,7 +96,7 @@ def test_a_whitelist_for_one_user_refuses_every_other_user_everything() -> None:
 
 def test_rpcwhitelistdefault_0_lets_every_other_user_call_everything() -> None:
     """`-rpcwhitelistdefault=0` beside a whitelist for somebody else."""
-    auth = whitelisted("alice:" + ALLOWED, default=False)
+    auth = whitelisted(f"alice:{ALLOWED}", default=False)
     assert auth.refusal(b"pytest", {"id": 1, "method": "stop"}) is None
 
 
@@ -270,6 +274,22 @@ CORE_ERRORS = [
         "400 Bad Request",
         '{"result":null,"error":{"code":-32600,"message":"Missing method"},"id":1}',
     ),
+    (
+        f'{{"id":{LONG_ID},"method":5}}'.encode(),
+        "400 Bad Request",
+        (
+            '{"result":null,"error":{"code":-32600,"message":"Method must be a string"},'
+            f'"id":{LONG_ID}}}'
+        ),
+    ),
+    (
+        '{"id":"\u00e9\\u007f\\u0001","method":5}'.encode(),
+        "400 Bad Request",
+        (
+            '{"result":null,"error":{"code":-32600,"message":"Method must be a string"},'
+            '"id":"\u00e9\\u007f\\u0001"}'
+        ),
+    ),
 ]
 CORE_ERROR_IDS = [
     "batch, non-object after an allowed method",
@@ -285,16 +305,18 @@ CORE_ERROR_IDS = [
     "jsonrpc a number",
     "version not supported, no id",
     "no method",
+    "id past the digit limit",
+    "id holding a character outside ASCII, DEL and a control character",
 ]
 
 
 def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list[Any]]:
     """Send `requests` over one kept-alive connection, the last closing it.
 
-    Returns every reply's bytes, what was queued for `handle_rpc`, and
-    every warning logged. A request queued is answered here the way
-    `handle_rpc` would, with a reply of its own, so that the next one
-    is read.
+    A request given as `bytes` is sent as it is. Returns every reply's
+    bytes, what was queued for `handle_rpc`, and every warning logged. A
+    request queued is answered here the way `handle_rpc` would, with a
+    reply of its own, so that the next one is read.
     """
     warnings: list[Any] = []
 
@@ -330,7 +352,9 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         userpass = base64.b64encode(b"pytest:pytest")
         for index, payload in enumerate(requests):
-            body = json.dumps(payload).encode()
+            body = (
+                payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+            )
             head = b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic " + userpass
             if index == len(requests) - 1:
                 head += b"\r\nConnection: close"
@@ -373,7 +397,7 @@ def test_what_core_refuses_ahead_of_the_whitelist_is_core_s_reply(
     """`JSONErrorReply`'s status line and JSON body, and nothing queued."""
     reply, messages, warnings = exchange(whitelisted(*PYTEST_ONLY), [request_])
     expected = f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
-    expected += f"Content-Length: {len(body) + 1}\r\nConnection: close\r\n\r\n"
+    expected += f"Content-Length: {len(body.encode()) + 1}\r\nConnection: close\r\n\r\n"
     assert reply == (expected + body + "\n").encode()
     assert not messages
     assert not warnings

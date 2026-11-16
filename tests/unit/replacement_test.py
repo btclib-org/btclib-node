@@ -328,12 +328,12 @@ def test_a_package_replacement_is_one_parent_and_its_child(
     third = (a_spend([(child.id, 0)]), 0, 100, None)
     failed = "package RBF failed: "
     assert refusal(mempool, [*members, third]) == (
-        failed + "package must be 1-parent-1-child"
+        f"{failed}package must be 1-parent-1-child"
     )
     holder = held(mempool, [a_coin()], 1_000)
     child = a_spend([(parent.id, 0), (holder.id, 0)])
     assert refusal(mempool, [members[0], (child, 10_000, child.vsize, None)]) == (
-        failed + "new transaction cannot have mempool ancestors"
+        f"{failed}new transaction cannot have mempool ancestors"
     )
 
 

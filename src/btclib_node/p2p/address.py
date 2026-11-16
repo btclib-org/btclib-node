@@ -332,17 +332,15 @@ def ip_and_port(ip: str, port: int, scope_id: int = 0) -> str:
     return f"[{parsed}]:{port}"
 
 
-# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h
-# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), not the old poll loop's
-# ten-passes-at-0.1s budget this constant carried until ISS 681: that
-# budget was never itself checked against Core, and it was too tight for
-# what `loop.sock_connect` needs on Windows' Proactor loop to notice a
-# refused loopback connect -- measured on this tree's own
+# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag). A one-second budget is too
+# tight for what `loop.sock_connect` needs on Windows' Proactor loop to
+# notice a refused loopback connect -- measured on this tree's own
 # instrumentation, in btclib-org/btclib-node run 33271519023, at
 # elapsed=2.017810 for a `ConnectionRefusedError` the run's own kernel
-# raised. `loop.sock_connect` does not need the two magic numbers a poll
-# needs, only this one: a real timeout wrapped around a wait that is
-# otherwise event-driven.
+# raised (ISS 681). `loop.sock_connect` needs no poll interval and pass
+# count, only this one number: a real timeout wrapped around a wait that
+# is otherwise event-driven.
 _DIAL_TIMEOUT = 5.0
 
 
@@ -935,9 +933,9 @@ class AddrResponseCache:
     Core's `CConnman::CachedAddrResponse` (`src/net.h`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag): `m_addrs_response_cache`
     and `m_cache_entry_expiration`. `PeerDB.addr_response_caches` holds
-    one of these per key, in place of the one shared sample this table
-    used to hold -- `callbacks.getaddr`'s own docstring is where the key
-    itself, and the reason for more than one, is argued.
+    one of these per key, rather than one shared sample --
+    `callbacks.getaddr`'s own docstring is where the key itself, and the
+    reason for more than one, is argued.
     """
 
     sample: list[NetworkAddressV2] = field(default_factory=list)
@@ -970,14 +968,14 @@ def _checked[**P, R](
 class PeerDB:
     """The table of addresses this node knows of, gossiped and self-confirmed.
 
-    Core's addrman (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag). `addresses` is its `mapInfo`, every address heard about,
-    and `active_addresses` is its tried table, the subset this node has
-    itself dialled and heard back from. Each is behind its own lock,
-    taken separately and never nested -- the comment beside each lock's
-    own field says which thread reaches it and why sharing the other lock
-    was declined -- and a move between the two holds a third around the
-    other two.
+    Core's addrman (`src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). `addresses` is its `mapInfo`, every address heard
+    about, and `active_addresses` is its tried table, the subset this
+    node has itself dialled and heard back from. Each is behind its own
+    lock, taken separately and never nested -- the comment beside each
+    lock's own field says which thread reaches it, and the comment
+    beside `_addresses_lock` says why the two do not share one -- and a
+    move between the two holds a third around the other two.
 
     An address is in the new table, in up to `_NEW_BUCKETS_PER_ADDRESS`
     buckets (`_insert_new`), or in the tried table (`_make_tried`), as in
@@ -1054,8 +1052,8 @@ class PeerDB:
         # wrong-row risk `_active_lock` guards against: iterating a
         # `set` while another thread mutates it is `RuntimeError: Set
         # changed size during iteration` in CPython, a crash rather than
-        # a silent corruption. Sharing `_active_lock` instead was
-        # measured and declined: nothing here ever needs the two tables
+        # a silent corruption. Sharing `_active_lock` instead would cost
+        # and buy nothing: nothing here ever needs the two tables
         # updated as one atomic step, and `add_addresses`'s own durable
         # write batch is measurably slower than `add_active_address`'s
         # single row -- sharing would let it hold up a handshake for no
@@ -1864,42 +1862,43 @@ class PeerDB:
         `_NEW_BUCKETS_PER_SOURCE_GROUP` buckets at most. With no `source` an
         address is its own source.
 
-        A new row's timestamp is the gossiped one, `time_penalty` seconds
-        less, floored at zero; a row held keeps its own unless the gossip
-        is newer by more than an hour, a day where it is a day old
-        itself (btclib-org/btclib-node#1603) -- Core's
+        A new row's timestamp is the gossiped one, `time_penalty`
+        seconds less, floored at zero; a row held keeps its own unless
+        the gossip is newer by more than an hour, a day where it is a
+        day old itself (btclib-org/btclib-node#1603) -- Core's
         `AddrManImpl::AddSingle` (`src/addrman.cpp`, at
         bitcoin/bitcoin@f0de87f040, the v32.1 tag): `pinfo->nTime =
         max(0, addr.nTime - time_penalty)`. `time_penalty` defaults to
         `_GOSSIP_TIME_PENALTY`, the flat two hours Core's own `ADDR`/
-        `ADDRV2` handler passes `AddrMan::Add` for a whole gossiped batch
-        (`net_processing.cpp`, same sha); `query_dns_seed` below and
-        `P2pManager._maybe_add_fixed_seeds` both pass `0`,
+        `ADDRV2` handler passes `AddrMan::Add` for a whole gossiped
+        batch (`net_processing.cpp`, same sha); `query_dns_seed` below
+        and `P2pManager._maybe_add_fixed_seeds` both pass `0`,
         `AddrMan::Add`'s own default (`ThreadOpenConnections`'s
-        `addrman.get().Add(seed_addrs, local)` and `ThreadDNSAddressSeed`'s
-        `addrman.get().Add(vAdd, resolveSource)` alike pass no third
-        argument), each answer already carrying a timestamp Core backdates
-        itself before it ever reaches here. An
-        address equal to `source` -- host only, `_host` rather than
-        `==`, since two records differing in `timestamp`, `services` or
-        even port are still one self-announcement -- is exempted from
-        the penalty, as `AddSingle`'s own `if (addr == source) { time_penalty
-        = 0s; }` is: a peer's word for its own address costs it nothing,
-        where the same word for somebody else's does. The port is
-        dropped from the comparison because Core's is: `source` there is
-        a `CNetAddr`, not a `CAddress`, and `addr == source` slices
-        `addr` down to its own `CNetAddr` base first
-        (`AddrManImpl::AddSingle`, `src/addrman.cpp`, at
-        bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- `_host`'s own
-        docstring is where `CNetAddr::operator==` itself is read. An
-        inbound `source` carries the peer's ephemeral source port from
-        `sock.accept()`'s own peername (`callbacks.py`'s own `version`
-        handler rewrites `conn.address` for an outbound connection
-        alone), which an endpoint-including comparison would have
-        compared against the peer's own announced listening port and
-        almost never matched (btclib-org/btclib-node#1380, review round
-        2) -- host-only is not merely Core's own comparison, it is what
-        makes the exemption reachable for an inbound peer at all.
+        `addrman.get().Add(seed_addrs, local)` and
+        `ThreadDNSAddressSeed`'s `addrman.get().Add(vAdd,
+        resolveSource)` alike pass no third argument), each answer
+        already carrying a timestamp Core backdates itself before it
+        ever reaches here. An address equal to `source` -- host only,
+        `_host` rather than `==`, since two records differing in
+        `timestamp`, `services` or even port are still one
+        self-announcement -- is exempted from the penalty, as
+        `AddSingle`'s own `if (addr == source) { time_penalty = 0s; }`
+        is: a peer's word for its own address costs it nothing, where
+        the same word for somebody else's does. The port is dropped from
+        the comparison because Core's is: `source` there is a
+        `CNetAddr`, not a `CAddress`, and `addr == source` slices `addr`
+        down to its own `CNetAddr` base first (`AddrManImpl::AddSingle`,
+        `src/addrman.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        -- `_host`'s own docstring is where `CNetAddr::operator==`
+        itself is read. An inbound `source` carries the peer's ephemeral
+        source port from `sock.accept()`'s own peername
+        (`callbacks.py`'s own `version` handler rewrites `conn.address`
+        for an outbound connection alone), which an endpoint-including
+        comparison would have compared against the peer's own announced
+        listening port and almost never matched
+        (btclib-org/btclib-node#1380) -- host-only is not merely Core's
+        own comparison, it is what makes the exemption reachable for an
+        inbound peer at all.
         """
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
@@ -1912,11 +1911,11 @@ class PeerDB:
                 # BIP155's ignore rule: an IPV6 record that is really an
                 # IPv4 or a (long-retired) TORv2 address wearing another
                 # network's sixteen octets is not a second peer, and
-                # keeping it under network id 2 is what used to gossip
-                # it back as IPv4 -- the same host, twice in the table
-                # (#151). Checked before the durable write too, so a
-                # dropped record is dropped everywhere, not merely kept
-                # out of the in-memory set.
+                # keeping it under network id 2 would gossip it back as
+                # IPv4 -- the same host, twice in the table (#151).
+                # Checked before the durable write too, so a dropped
+                # record is dropped everywhere, not merely kept out of
+                # the in-memory set.
                 if not _storable(address):
                     continue
                 key = endpoint_key(address)
@@ -2295,10 +2294,11 @@ class PeerDB:
             old_try = self._last_try.get(old_key, 0.0)
             if now - old_success < _ADDRMAN_REPLACEMENT:
                 return True
-            if now - old_try < _ADDRMAN_REPLACEMENT:
-                if now - old_try <= _ADDRMAN_RECENT_TRY_GRACE:
-                    return False
-            elif now - waiting <= _ADDRMAN_TEST_WINDOW:
+            if (
+                now - old_try <= _ADDRMAN_RECENT_TRY_GRACE
+                if now - old_try < _ADDRMAN_REPLACEMENT
+                else now - waiting <= _ADDRMAN_TEST_WINDOW
+            ):
                 return False
         self._good(known, now, test_before_evict=False)
         return True

@@ -410,9 +410,7 @@ def _ip_net_class(ip: _IP) -> Network:
         return Network.INTERNAL
     if not _is_routable(ip):
         return Network.UNROUTABLE
-    if _linked_ipv4(ip) is not None:
-        return Network.IPV4
-    return Network.IPV6
+    return Network.IPV4 if _linked_ipv4(ip) is not None else Network.IPV6
 
 
 # `CNetAddr::m_net` of each BIP155 id `is_routable` can answer for

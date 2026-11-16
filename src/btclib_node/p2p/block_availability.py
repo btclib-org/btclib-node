@@ -222,7 +222,8 @@ def _successors(
         assert top is not None  # noqa: S101 -- at or below its own height
         chunk = [top]
         for _ in range(size - 1):
-            chunk.append(header_dict[chunk[-1]].header.previous_block_hash)
+            parent = header_dict[chunk[-1]].header.previous_block_hash
+            chunk.append(parent)
         height += size
         yield from reversed(chunk)
 

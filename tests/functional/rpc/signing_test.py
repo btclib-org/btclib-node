@@ -59,7 +59,7 @@ def test_messages_are_signed_and_verified(rpc_node: Node) -> None:
 
     assert call("signmessagewithprivkey", [KEY, MESSAGE])["result"] == SIGNATURE
     assert call("verifymessage", [ADDRESS, SIGNATURE, MESSAGE])["result"] is True
-    assert call("verifymessage", [ADDRESS, SIGNATURE, MESSAGE + "!"])["result"] is False
+    assert call("verifymessage", [ADDRESS, SIGNATURE, f"{MESSAGE}!"])["result"] is False
     # named arguments, and one too many
     named = {"address": ADDRESS, "signature": SIGNATURE, "message": MESSAGE}
     assert call("verifymessage", named)["result"] is True
