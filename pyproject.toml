@@ -555,7 +555,8 @@ source-exclude = [
     #
     # `.github/` is not shipped, as the comment on source-include above
     # says: these load a script from `.github/scripts` by path, or read
-    # the CI files there
+    # the CI files or the bug report form there
+    "/tests/bug_report_form_test.py",
     "/tests/check_core_citation_pin_test.py",
     "/tests/check_vendored_pin_test.py",
     "/tests/interpreters_test.py",
@@ -719,7 +720,8 @@ package = ["src/btclib_node"]
 # `tests/sdist_dotted_names_test.py` reads source-exclude below against
 # `git ls-files`, `tests/pragma_test.py` runs `git grep` over every
 # tracked .py file, `tests/secret_free_test.py` tests the helper copied
-# verbatim from btclib-org/.github, and the rest load a script under
+# verbatim from btclib-org/.github, `tests/bug_report_form_test.py` reads
+# the bug report form, and the rest load a script under
 # .github/scripts/ or scripts/ by path -- so each mirrors no module of
 # the package and drives no node.
 # Naming one is what collects it -- and [tool.coverage.run]'s `source`
@@ -744,6 +746,7 @@ package = ["src/btclib_node"]
 # -- a selection, whose floor `tests/conftest.py`'s own
 # `relax_coverage_floor` drops.
 testpaths = [
+    "tests/bug_report_form_test.py",
     "tests/check_core_citation_pin_test.py",
     "tests/check_vendored_pin_test.py",
     "tests/docs_conf_test.py",

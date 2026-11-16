@@ -81,13 +81,11 @@ body:
       label: Platform, interpreter and store
       description: >
         `python -VV`, the operating system with its architecture, and
-        which store is running. A checkout depends on `rocksdict`, a
-        compiled wheel picked by platform and interpreter --
+        which store is running. A checkout and every PyPI release from
+        2026.9.4 on depend on `rocksdict`, a compiled wheel picked by
+        platform and interpreter --
         `python -c 'from importlib.metadata import version;
-        print(version("rocksdict"))'` -- and the one release published
-        to PyPI does not: its `db.py` imports the stdlib `sqlite3`
-        instead, so say that rather than running a command that raises
-        `PackageNotFoundError` against it.
+        print(version("rocksdict"))'`.
       placeholder: "CPython 3.14.6, Ubuntu 24.04 x86_64, rocksdict 0.3.29"
     validations:
       required: true
