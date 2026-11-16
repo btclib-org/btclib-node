@@ -5715,6 +5715,44 @@ def test_addnode_does_not_strip_non_ascii_whitespace() -> None:
     assert dialed == [("\xa0", 18444)]
 
 
+@pytest.mark.parametrize("node_str", ["\xa0", "\x1c"])
+def test_addnode_add_keeps_a_node_of_non_ascii_whitespace(node_str: str) -> None:
+    """Core v32.1 adds U+00A0 and U+001C, which `TrimStringView` keeps."""
+    added: list[str] = []
+
+    def record_add(name: str, *, use_v2transport: bool) -> bool:
+        added.append(name)
+        return True
+
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(add_added_peer=record_add),
+        ),
+    )
+    add_node(node, _CONN, [node_str, "add"])
+    assert added == [node_str]
+
+
+@pytest.mark.parametrize("node_str", [" \t", "\f\n\r\v"])
+def test_addnode_refuses_a_node_of_ascii_whitespace_only(node_str: str) -> None:
+    """Each of the six characters `TrimStringView` trims is refused as empty."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [node_str, "add"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Error: Node address cannot be empty"
+
+
 def test_addnode_refuses_an_unknown_command() -> None:
     """A `command` outside `add`/`remove`/`onetry` is refused with the help."""
     node = cast(
