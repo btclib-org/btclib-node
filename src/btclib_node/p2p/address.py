@@ -332,8 +332,8 @@ def ip_and_port(ip: str, port: int, scope_id: int = 0) -> str:
     return f"[{parsed}]:{port}"
 
 
-# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag). A one-second budget is too
+# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A one-second budget is too
 # tight for what `loop.sock_connect` needs on Windows' Proactor loop to
 # notice a refused loopback connect -- measured on this tree's own
 # instrumentation, in btclib-org/btclib-node run 33271519023, at

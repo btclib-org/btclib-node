@@ -1591,8 +1591,8 @@ class DownloadManager:
         a peer that old is sent none.
         """
         now = clock.now()
-        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
+        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
         # decision on `m_chainman.IsInitialBlockDownload()`, which
         # `main.update_ibd_status`'s own
         # `node.is_initial_block_download` answers faithfully

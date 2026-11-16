@@ -2630,8 +2630,8 @@ def _read_settings(
     _resolve_chain_name(settings)
 
     if token is not None:
-        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
+        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
         # quotes the argument, which may be a key (SECURITY.md, "Where this
         # node departs from Bitcoin Core")
         err_msg = (

@@ -2431,8 +2431,8 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     BTC/kvB rather than this tree's own sat/kvB.
     """
     mempool = node.mempool
-    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
+    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
     # beyond these: `usage`, `total_fee`, `limitclustercount`,
     # `limitclustersize`, the deprecated `fullrbf`. Each is backed by
     # something this tree does not carry -- a memory count, a persisted
@@ -2646,8 +2646,8 @@ def get_tx_out_set_info(
     if mismatches:
         raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
-        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
         # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
         # Core"; section 7 of the organization's standard, *A refusal
         # carries no secret*)

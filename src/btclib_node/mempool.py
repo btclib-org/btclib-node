@@ -289,8 +289,8 @@ class Mempool:
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
-        # (`src/kernel/mempool_options.h`, at
-        # bitcoin/bitcoin@f0de87f040) is 300, and this matches it,
+        # (`src/kernel/mempool_options.h`,
+        # at bitcoin/bitcoin@f0de87f040) is 300, and this matches it,
         # absent a measurement that says this tree's own traffic wants a
         # different one: `_evict_to_limit` below makes it an economic
         # threshold rather than a wall. Not exposed on `Config`: making
@@ -521,8 +521,8 @@ class Mempool:
         # Past `is_full()`, this does not refuse outright, whatever the
         # transaction paid. It adds the transaction provisionally and
         # runs `_evict_to_limit`, Core's own `LimitMempoolSize` shape
-        # (`validation.cpp`, called right after a provisional add, at
-        # bitcoin/bitcoin@f0de87f040): if the trim reaches this
+        # (`validation.cpp`, called right after a provisional add,
+        # at bitcoin/bitcoin@f0de87f040): if the trim reaches this
         # transaction's chunk, eviction takes it right back out and the
         # return value is `False` -- `rpc/callbacks.py`'s own "mempool
         # full", Core's, answers that case. A transaction already held

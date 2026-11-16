@@ -662,8 +662,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # flag means true, which is BIP37's default and Core's. A
     # block-relay-only connection or a feeler relays no transaction
     # whatever the peer asked for: Core's `VERSION` handler builds no
-    # `TxRelay` for either (`net_processing.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is
+    # `TxRelay` for either (`net_processing.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so nothing is
     # announced to it and a `getdata` of its for a transaction goes
     # unanswered.
     conn.relay_tx = (
