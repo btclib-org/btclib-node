@@ -11,7 +11,9 @@ a peer answered past what this connection will queue for it.
 """
 
 import asyncio
+import errno
 import logging
+import os
 import random
 import socket
 import threading
@@ -909,7 +911,7 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
 
 
 def test_a_peer_that_hangs_up_is_logged_in_net() -> None:
-    """A hangup writes Core's `net` line naming the peer, as Core's does."""
+    """A hangup writes Core's `net` line naming the peer."""
     entries, record = debug_recorder()
 
     async def drive() -> None:
@@ -970,7 +972,7 @@ def test_a_reset_connection_is_dropped_not_raised(
 
 
 def test_a_reset_peer_is_logged_in_net(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A receive error writes Core's `net` line with the error."""
+    """A receive error writes Core's `net` line, the error as Core prints it."""
     entries, record = debug_recorder()
 
     async def drive() -> None:
@@ -981,14 +983,50 @@ def test_a_reset_peer_is_logged_in_net(monkeypatch: pytest.MonkeyPatch) -> None:
         connection = a_running_connection(loop, ours, inbound=True, log_debug=record)
 
         async def reset(sock: socket.socket, nbytes: int) -> bytes:
-            raise ConnectionResetError("reset")
+            raise ConnectionResetError(errno.ECONNRESET, os.strerror(errno.ECONNRESET))
 
         monkeypatch.setattr(loop, "sock_recv", reset)
         await connection.run()
         theirs.close()
 
     asyncio.run(drive())
-    assert entries == [("net", "socket recv error, disconnecting peer=0: reset")]
+    error = f"{os.strerror(errno.ECONNRESET)} ({errno.ECONNRESET})"
+    assert entries == [("net", f"socket recv error, disconnecting peer=0: {error}")]
+
+
+@pytest.mark.parametrize("hangup", ["closed", "reset"])
+def test_a_peer_already_dropped_is_not_logged_in_net(
+    monkeypatch: pytest.MonkeyPatch, hangup: str
+) -> None:
+    """A read ending after `stop` writes no `net` line, as Core's `fDisconnect`.
+
+    `stop`, called from `Node`'s thread, sets `Closed` before its cancel
+    reaches `run`, so a read that ends in that window is a peer already
+    dropped: Core logs neither line for it (`src/net.cpp:2248` and `:2259`
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    entries, record = debug_recorder()
+
+    async def drive() -> None:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours, inbound=True, log_debug=record)
+
+        async def dropped(sock: socket.socket, nbytes: int) -> bytes:
+            connection.stop()
+            if hangup == "reset":
+                raise ConnectionResetError(
+                    errno.ECONNRESET, os.strerror(errno.ECONNRESET)
+                )
+            return b""
+
+        monkeypatch.setattr(loop, "sock_recv", dropped)
+        await connection.run()
+        theirs.close()
+
+    asyncio.run(drive())
+    assert entries == []
 
 
 def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:

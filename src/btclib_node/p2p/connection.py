@@ -1083,17 +1083,27 @@ class Connection:
                     # that a POSIX pair, backed by the kernel rather
                     # than a real TCP loopback, never sends
                     # (btclib-org/btclib-node#430).
-                    self.node.logger.log_debug(
-                        "net",
-                        "socket recv error, disconnecting peer=%d: %s",
-                        self.id,
-                        e,
-                    )
+                    # Core writes either line below only for a peer not
+                    # already being disconnected, `if (!pnode->fDisconnect)`
+                    # (`src/net.cpp:2248` and `:2259` at the same tag), and
+                    # prints the error as `NetworkErrorString` does.
+                    if self.status < P2pConnStatus.Closed:
+                        from btclib_node.p2p.manager import (  # noqa: PLC0415 -- it imports this module
+                            network_error_string,
+                        )
+
+                        self.node.logger.log_debug(
+                            "net",
+                            "socket recv error, disconnecting peer=%d: %s",
+                            self.id,
+                            network_error_string(e),
+                        )
                     return self.stop(cancel_task=False)
                 if not data:
-                    self.node.logger.log_debug(
-                        "net", "socket closed, disconnecting peer=%d", self.id
-                    )
+                    if self.status < P2pConnStatus.Closed:
+                        self.node.logger.log_debug(
+                            "net", "socket closed, disconnecting peer=%d", self.id
+                        )
                     return self.stop(cancel_task=False)
                 self.stats.bytes_recv += len(data)
                 try:
