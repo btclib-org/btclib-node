@@ -416,6 +416,24 @@ class _JsonObject(list[tuple[str, Any]]):
         return next((value for k, value in self if k == key), None)
 
 
+@dataclass(frozen=True)
+class _LongJsonInt:
+    """A JSON integer too long for an int64.
+
+    It is neither `int` nor `str`, as UniValue's `getInt` and `get_str`
+    both refuse it.
+    """
+
+    text: str
+
+
+def _parse_json_int(text: str) -> int | _LongJsonInt:
+    """Keep an integer too long for an int64 out of Python's ``int`` parser."""
+    if len(text.removeprefix("-")) > len(str(_INT64_END)):
+        return _LongJsonInt(text)
+    return int(text)
+
+
 def _json_int(entry: _JsonObject, key: str, bits: int) -> int:
     """UniValue's `getInt` of `entry[key]`: an integer within `bits` signed."""
     value = entry.get(key)
@@ -483,7 +501,9 @@ class BanMan:
         """
         text = path.read_text(encoding="utf-8")
         _refuse_past_max_depth(text)
-        settings = json.loads(text, object_pairs_hook=_JsonObject)
+        settings = json.loads(
+            text, object_pairs_hook=_JsonObject, parse_int=_parse_json_int
+        )
         if not isinstance(settings, _JsonObject):
             raise _BanlistError(path)
         # `ReadSettings` refuses a top-level key the file holds twice
