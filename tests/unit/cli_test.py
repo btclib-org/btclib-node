@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from btclib.b58 import wif_from_prv_key
 
 from btclib_node import Node, cli
 from btclib_node import config as config_module
@@ -31,7 +32,7 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
-from btclib_node.settings_file import read_settings
+from btclib_node.settings_file import Json, Number, Object, read_settings
 from tests import (
     RPCAUTH,
     cookie_path,
@@ -41,7 +42,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.secret_free import assert_secret_free
-from tests.unit.rpc import LEAK_WIF
+from tests.unit.rpc import LEAK_HEX, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -1326,20 +1327,14 @@ def test_build_config_logs_its_config_file_and_command_line_args(
     bitcoin/bitcoin@f0de87f040): the config file's args, then the command
     line's; a plain value quoted as `SettingsValue::write()` writes it, a
     negation's `true`, and `-rpcpassword`'s masked to `****` on either.
-    `SettingsValue::write()`'s own `json_escape`
-    (`src/univalue/lib/univalue_write.cpp`, same sha) doubles a backslash
-    like any other JSON string writer, so `datadir` is compared through
-    `cli._setting_to_write_str` rather than against the raw path: on
-    `windows-latest`, where `tmp_path` carries real backslashes, a plain
-    f-string would compare the doubled logged form against the
-    undoubled one (ISS 1509).
+    `datadir` is given by its length, as `_Option.masked` says.
     """
     conf = "regtest=1\n[regtest]\nrpcbind=127.0.0.1:8332\n"
     config = _build(tmp_path, "-nolisten=0", "-rpcpassword=hunter2", conf=conf)
     assert config.config_args == (
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
+        f"Command-line arg: datadir={_length(tmp_path)}",
         "Command-line arg: listen=true",
         "Command-line arg: rpcpassword=****",
     )
@@ -1351,9 +1346,6 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
     `m_settings.ro_config`/`command_line_options` (`src/common/settings.h`,
     same sha): the default section (`""`) sorts ahead of a named one, and
     a name sorts within its own section, whichever order they were set in.
-    `datadir` is compared through `cli._setting_to_write_str`, for the
-    same reason given in `test_build_config_logs_its_config_file_and_
-    command_line_args` above (ISS 1509).
     """
     settings = cli._Settings(
         command_line={"rpcpassword": ["hunter2"], "datadir": [str(tmp_path)]},
@@ -1366,27 +1358,200 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
         "Config file arg: listen=true",
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
+        f"Command-line arg: datadir={_length(tmp_path)}",
         "Command-line arg: rpcpassword=****",
     )
 
 
-def test_log_args_escapes_a_backslash_in_datadir() -> None:
+def test_log_args_escapes_a_backslash_in_a_value() -> None:
     r"""ISS 1509: `value.write()` JSON-escapes a backslash, doubling it.
 
-    A manufactured Windows-style path exercises `SettingsValue::write()`'s
-    `json_escape` (`src/univalue/lib/univalue_write.cpp`, at
-    bitcoin/bitcoin@f0de87f040, `escapes[0x5c] == "\\"`) without a
-    Windows runner: a literal single backslash in `datadir` is doubled in
-    the logged line, exactly as any other string value is. The expected
-    value is a hand-written literal, not `_setting_to_write_str` again,
-    so the test cannot pass a change that stops escaping it.
+    `SettingsValue::write()`'s `json_escape`
+    (`src/univalue/lib/univalue_write.cpp`, at bitcoin/bitcoin@f0de87f040,
+    `escapes[0x5c] == "\\"`): a literal single backslash in a value the log
+    writes whole is doubled. The expected value is a hand-written literal,
+    not `_setting_to_write_str` again, so the test cannot pass a change
+    that stops escaping it.
     """
-    windows_datadir = r"C:\Users\runneradmin\datadir"
-    settings = cli._Settings(command_line={"datadir": [windows_datadir]}, ro_config={})
-    assert cli._log_args(settings) == (
-        'Command-line arg: datadir="C:\\\\Users\\\\runneradmin\\\\datadir"',
+    settings = cli._Settings(command_line={"chain": [r"a\b"]}, ro_config={})
+    assert cli._log_args(settings) == ('Command-line arg: chain="a\\\\b"',)
+
+
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
+# a fixed random key's spellings, and the numbers macOS's numeric lookup
+# reads as an IPv4 address
+_LEAK_WIF_UNCOMPRESSED = wif_from_prv_key(LEAK_HEX, "mainnet", compressed=False)
+_LEAK_DECIMAL = str(int(LEAK_HEX, 16))
+# the Base64 of another fixed random key, whose slashes cut it into pieces
+# of at most `MAX_QUOTED_NAME` characters
+_LEAK_BASE64 = "wcil1MnV0wKgQbqu/L1QvBM5wzK5M/QkIiMVPCsN5zM="
+# a port of 64 digits, which a lookup reads as 12345 and btclib reads as a
+# private key
+_LONG_PORT = "0" * 59 + "12345"
+# a compressed WIF that is also an I2P host's label
+_I2P_WIF = "KxtMbjALuPLnk7RcdWLdVCP6Q2gywHUTLmc63LKVsMYTGo5MtWWq"
+_ONION_LABEL = _ONION.removesuffix(".onion")
+# the key in lowercase base32, followed by an onion's version byte and a wrong
+# checksum: the length and alphabet of an onion's label
+_LEAK_BASE32 = "qt547whr2wxzqgtzssv26cfeofujxuj5estsbx55drz4eblzmqfaaaad"
+_LEAK_SPELLINGS = [
+    LEAK_WIF,
+    _LEAK_WIF_UNCOMPRESSED,
+    LEAK_HEX,
+    _LEAK_DECIMAL,
+    _LEAK_BASE64,
+    _I2P_WIF,
+    _LEAK_BASE32,
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "shown"),
+    [
+        ("maxconnections", "125", '"125"'),
+        ("minrelaytxfee", "0.00001", '"0.00001"'),
+        ("testactivationheight", "segwit@100", '"segwit@100"'),
+        ("maxconnections", LEAK_WIF, "'...'"),
+        ("assumevalid", "0" * 64, "'...'"),
+        ("chain", "regtest", '"regtest"'),
+        ("debug", LEAK_WIF, "<52 characters>"),
+        ("test", "reindex_after_failure_noninteractive_yes", None),
+        ("test", LEAK_WIF, "<52 characters>"),
+        ("rpcbind", "[::1]:8332", '"[::1]:8332"'),
+        ("bind", "127.0.0.1:8334=onion", '"127.0.0.1:8334=onion"'),
+        ("whitebind", "noban,relay@127.0.0.1:8333", '"noban,relay@127.0.0.1:8333"'),
+        ("whitelist", "in,out,noban@::/0", '"in,out,noban@::/0"'),
+        ("rpcallowip", "1.2.3.4/255.255.255.0", '"1.2.3.4/255.255.255.0"'),
+        ("externalip", _ONION, None),
+        ("addnode", f"{_I2P}:0", None),
+        ("rpcbind", "localhost", "'...'"),
+        ("connect", f"{_ONION}:{LEAK_WIF}", "'...'"),
+        ("whitebind", f"{LEAK_WIF}@{_ONION}", "'...'"),
+        ("whitelist", f"noban@{LEAK_WIF}", "'...'"),
+        ("rpcbind", f"fe80::1%{LEAK_WIF}", "'...'"),
+        ("externalip", f"0x{LEAK_HEX}", "'...'"),
+        ("seednode", _LEAK_DECIMAL, "'...'"),
+        ("whitebind", f"{_LEAK_BASE64}@127.0.0.1", "'...'"),
+        ("rpcbind", f"fe80::1%{_LEAK_BASE64}", "'...'"),
+        ("whitebind", f"noban@{_ONION}:8333", None),
+        ("addnode", f"{_ONION}:{_LONG_PORT}", "'...'"),
+        ("addnode", f"{_I2P}:{_LONG_PORT}", "'...'"),
+        ("whitebind", f"noban@{_ONION}:{_LONG_PORT}", "'...'"),
+        ("bind", f"{_ONION}:{_LONG_PORT}=onion", "'...'"),
+        ("bind", f"127.0.0.1:{_LONG_PORT}=onion", "'...'"),
+        ("rpcbind", f"[::1]:{_LONG_PORT}", "'...'"),
+        ("connect", f"127.0.0.1:{_LONG_PORT}", "'...'"),
+        ("rpcallowip", f"1.2.3.0/{_LONG_PORT}", "'...'"),
+        ("whitebind", f"{_I2P_WIF}@{_I2P_WIF}.b32.i2p:8333", "'...'"),
+        ("whitebind", f"{_ONION_LABEL}@{_ONION}:8333", "'...'"),
+        ("addnode", f"{_ONION}:{_ONION_LABEL}", "'...'"),
+        ("addnode", f"[{_ONION}]:{_ONION_LABEL}", "'...'"),
+        ("bind", f"{_ONION}:8334={_ONION_LABEL}", "'...'"),
+        ("bind", f"{_I2P_WIF}.b32.i2p:8334={_I2P_WIF}", "'...'"),
+        ("addnode", f"{_I2P_WIF}.b32.i2p:8333", "'...'"),
+        ("addnode", f"{_LEAK_WIF_UNCOMPRESSED}.b32.i2p:8333", "'...'"),
+        ("addnode", f"{LEAK_WIF}.onion:8333", "'...'"),
+        ("addnode", f"{_LEAK_BASE32}.onion:8333", "'...'"),
+        ("addnode", f"{_LEAK_BASE32}.b32.i2p:8333", "'...'"),
+        ("addnode", f"{_I2P.upper()}:8333", "'...'"),
+        ("addnode", f"[{_I2P}]:8333", None),
+        ("bind", f"{_ONION}:8334=onion", None),
+        ("addnode", f"{_ONION_LABEL.upper()}.onion:8333", "'...'"),
+        ("datadir", "/a/b", "<4 characters>"),
+        ("blocknotify", "echo %s", "'...'"),
+        ("rpcwhitelist", "alice:getinfo", "'...'"),
+        ("rpcpassword", "hunter2", "****"),
+    ],
+)
+def test_log_args_writes_a_value_by_its_shape(
+    name: str, value: str, shown: str | None
+) -> None:
+    """ISS 2556: whole where no key fits its shape, masked otherwise.
+
+    `None` stands for the value written whole, as `write()` writes it.
+    Core writes each but `-rpcpassword`'s whole (`logArgsPrefix`,
+    `src/common/args.cpp:993`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag).
+    """
+    settings = cli._Settings(command_line={name: [value]})
+    expected = json.dumps(value) if shown is None else shown
+    assert cli._log_args(settings) == (f"Command-line arg: {name}={expected}",)
+
+
+@pytest.mark.parametrize(
+    ("setting", "shown"),
+    [
+        (Number("550"), "550"),
+        (Number(_LEAK_DECIMAL), "'...'"),
+        (None, "null"),
+        (True, "true"),
+        ("550", '"550"'),
+        (LEAK_WIF, "'...'"),
+        ([Number("550")], "'...'"),
+        (Object((("a", Number("550")),)), "'...'"),
+    ],
+    ids=["number", "long number", "null", "bool", "string", "key", "array", "object"],
+)
+def test_log_args_writes_a_settings_value_by_its_shape(
+    setting: Json, shown: str
+) -> None:
+    """ISS 2556: a known name's `settings.json` value, by the same rule.
+
+    A number is measured by its text, and an array and an object are never
+    written. Core writes every one whole (`LogArgs`, `src/common/args.cpp:1007`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    settings = cli._Settings(command_line={}, rw_settings={"prune": setting})
+    assert cli._log_args(settings) == (f"Setting file arg: prune = {shown}",)
+
+
+@pytest.mark.parametrize(
+    "secret",
+    _LEAK_SPELLINGS,
+    ids=[
+        "wif",
+        "uncompressed wif",
+        "hex",
+        "decimal",
+        "base64",
+        "i2p wif",
+        "base32",
+    ],
+)
+def test_log_args_writes_no_key_given_to_any_option(secret: str) -> None:
+    """ISS 2556: a key given by mistake to any option reaches no log line.
+
+    Every option of `_OPTIONS`, so an option added later is covered too: on
+    the command line, in the config file's default section and in a chain's
+    section, and in `settings.json` as a string and as a number. Each takes
+    the key alone, after a permission name, as one, as an IPv6 scope, as an
+    I2P host's label and an onion host's, and as both a permission name and
+    an I2P host's label: the shapes an address option reads.
+    """
+    values: dict[str, list[cli._Value]] = {
+        name: [
+            secret,
+            f"noban@{secret}",
+            f"{secret}@127.0.0.1",
+            f"fe80::1%{secret}",
+            f"{secret}.b32.i2p:8333",
+            f"{secret}.onion:8333",
+            f"{secret}@{secret}.b32.i2p:8333",
+        ]
+        for name in cli._OPTIONS
+    }
+    settings = cli._Settings(
+        command_line=dict(values),
+        ro_config={"": dict(values), "regtest": dict(values)},
+        rw_settings={
+            **dict.fromkeys(cli._OPTIONS, secret),
+            **{f"regtest.{name}": Number(_LEAK_DECIMAL) for name in cli._OPTIONS},
+        },
     )
+    lines = cli._log_args(settings)
+    assert len(lines) == len(cli._OPTIONS) * (7 * 3 + 2)
+    assert_secret_free(ValueError(*lines), _LEAK_SPELLINGS)
 
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
@@ -4019,11 +4184,17 @@ def test_build_config_externalip_is_a_list_at_dash_port() -> None:
 def test_build_config_externalip_looks_a_name_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1445: `Lookup` with `-dns`'s default, so a name is resolved here."""
+    """ISS 1445: `Lookup` with `-dns`'s default, so a name is resolved here.
+
+    The log of the settings also asks for the value as a numeric address
+    (`cli._masked_address`), which asks no DNS, so only the lookups without
+    `AI_NUMERICHOST` are counted.
+    """
     asked: list[bytes] = []
 
-    def getaddrinfo(host: bytes, *_: object, **__: object) -> list[Any]:
-        asked.append(host)
+    def getaddrinfo(host: bytes, *_: object, flags: int = 0, **__: object) -> list[Any]:
+        if not flags & socket.AI_NUMERICHOST:
+            asked.append(host)
         return [(2, 1, 6, "", ("8.8.4.4", 0))]
 
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
@@ -6065,7 +6236,7 @@ def test_the_values_are_logged_and_the_unknown_names_warned_of(
         "Setting file arg: regtest.port = 5",
         "Setting file arg: rpcuser = ****",
         "Setting file arg: string = ****",
-        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
+        f"Command-line arg: datadir={_length(tmp_path)}",
     )
 
 

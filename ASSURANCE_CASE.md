@@ -404,16 +404,15 @@ and what counters each.
   most `constants.MAX_QUOTED_NAME` characters; a longer one is given by its
   length. Refusals, warnings and logs quote them this way, the refusal of a
   line that fails to parse among them. `settings_file.py`'s `read_settings`
-  takes it as `quote` for a key named twice. The settings log writes a
-  `settings.json` value only where its name is a known option that is not
-  sensitive, and `****` for any other (`cli.py`'s `_log_args`). The repr
-  of `RequestHead` excludes `raw` and `fields`, which hold the
-  `Authorization` field, and the repr of `_Settings` excludes the fields
-  that may hold a credential. `tests/unit/rpc/connection_test.py` and
-  `tests/unit/cli_test.py` each define their own
-  `assert_free_of_credential`, which checks those reprs and, in
-  `connection_test.py`, the refusals of a header field and of a chunk-size
-  line.
+  takes it as `quote` for a key named twice. The log of the settings writes
+  a value as SECURITY.md's *Where this node departs from Bitcoin Core* says
+  (`cli.py`'s `_log_args`). The repr of `RequestHead` excludes `raw` and
+  `fields`, which hold the `Authorization` field, and the repr of
+  `_Settings` excludes the fields that may hold a credential.
+  `tests/unit/rpc/connection_test.py` and `tests/unit/cli_test.py` each
+  define their own `assert_free_of_credential`, which checks those reprs
+  and, in `connection_test.py`, the refusals of a header field and of a
+  chunk-size line.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

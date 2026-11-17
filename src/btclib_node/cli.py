@@ -223,6 +223,7 @@ from btclib_node.config import (
     has_valid_port,
     invalid_port_message,
     listen_port,
+    lookup_host_port,
     lookup_service,
     parse_bind,
     parse_whitebind,
@@ -245,13 +246,18 @@ from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeErro
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
-from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
+from btclib_node.p2p.banman import (
+    DEFAULT_MISBEHAVING_BANTIME,
+    is_valid_host,
+    lookup_subnet,
+)
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import IDLE_TIMEOUT
 from btclib_node.settings_file import (
     SETTINGS_FILENAME,
     Json,
     Number,
+    Object,
     read_settings,
     type_name,
     write_json,
@@ -259,7 +265,7 @@ from btclib_node.settings_file import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from btclib_node.chains import Chain
 
@@ -455,12 +461,98 @@ def _parse_hex_uint256(value: str) -> int | None:
     return int(text, 16) if text else 0
 
 
+# Each `_masked_*` below, and `shown_path`, serves as an `_Option.masked`:
+# what `_log_args` writes in place of a value of that option that may be a
+# key given by mistake, `None` where it writes the value whole.
+
+# What splits an address option's value into the pieces `_masked_address`
+# measures: the `@` after permission names, their commas, and an address's
+# dots, colons and brackets. Not a subnet's slash, which a Base64 key holds,
+# nor an IPv6 scope's `%`, which a key can follow.
+_ADDRESS_SEPARATORS = re.compile(r"[@,.:\[\]]")
+
+# The host `_masked_address` keeps whole however long: the shape of a real
+# onion v3 or I2P address, its label in lowercase base32 as Core writes one,
+# 56 characters before `.onion` or 52 before `.b32.i2p`
+_SPECIAL_HOST = re.compile(r"[a-z2-7]{56}\.onion|[a-z2-7]{52}\.b32\.i2p")
+
+
+def _masked_if_long(value: str) -> str | None:
+    """Return `'...'` for a value long enough to be a key, else `None`.
+
+    A value of at most `MAX_QUOTED_NAME` characters is too short for a
+    key, as `constants.quoted_name` says. Any longer one is masked, as an
+    `-assumevalid` hash is: a key in hex looks the same.
+    """
+    return None if len(value) <= MAX_QUOTED_NAME else "'...'"
+
+
+def _masked_name(value: str) -> str | None:
+    """Return a name's length where `quoted_name` gives it, else `None`."""
+    return None if len(value) <= MAX_QUOTED_NAME else quoted_name(value)
+
+
+def _masked_test_option(value: str) -> str | None:
+    """Return `_masked_name` of a value Core's `TEST_OPTIONS_DOC` lacks."""
+    return None if value in _CORE_TEST_OPTIONS else _masked_name(value)
+
+
+def _masked_address(value: str) -> str | None:
+    """Return `'...'` for a value that may hold a key, else `None`.
+
+    A value is whole where its address resolves without DNS, at a port or as
+    a subnet, and no piece of it between `_ADDRESS_SEPARATORS` is longer
+    than `MAX_QUOTED_NAME` characters, but an onion or I2P host the address
+    starts with. That host is exempt only where it has `_SPECIAL_HOST`'s
+    shape, so a key written as such a label, in another case or at another
+    length, is measured; the lookup that follows checks an onion's checksum
+    and version. Resolving alone is not enough: macOS's numeric lookup reads
+    a key's decimal, or its hex after `0x`, as an IPv4 address, and any text
+    after an IPv6 address's `%` as its scope, and a port may carry any
+    number of leading zeros. A host name is masked.
+
+    Permission names before an `@`, as a `-whitebind` or `-whitelist`
+    value has, and an `=onion` after the address, as a `-bind` value has,
+    are read for every address option: no key reads as either.
+    """
+    names, at, tail = value.partition("@")
+    if not at:
+        names, tail = "", value
+    address = tail.removesuffix("=onion")
+    host, _ = lookup_host_port(address, 0)
+    measured = f"{names}@{tail}"
+    if _SPECIAL_HOST.fullmatch(host):
+        # the host leads the address, bracketed or not: only that span is
+        # exempt, so its label repeated elsewhere is still measured
+        span = f"[{host}]" if tail.startswith("[") else host
+        measured = f"{names}@{tail.removeprefix(span)}"
+    if any(
+        len(piece) > MAX_QUOTED_NAME for piece in _ADDRESS_SEPARATORS.split(measured)
+    ):
+        return "'...'"
+    if lookup_service(address, 0) is not None or lookup_subnet(address) is not None:
+        return None
+    return "'...'"
+
+
+def _masked_text(_value: str) -> str:
+    """Return `'...'`: a command or a user's whitelist has no shape to check."""
+    return "'...'"
+
+
 @dataclass(frozen=True)
 class _Option:
     """One registered option: Core's `AddArg` arguments this module reads.
 
     `title` is `None` for a hidden option (`AddHiddenArgs`), which the
     help leaves out, and `sensitive` is Core's `SENSITIVE` flag.
+
+    `masked` is how `_log_args` writes a value that may be a key, where
+    `sensitive` is false. Core has no such field: its log writes every
+    value but a `SENSITIVE` option's whole (SECURITY.md, "Where this node
+    departs from Bitcoin Core"). The default, `_masked_if_long`, holds for
+    a value of any kind, so an option registered without a `masked` of its
+    own logs no key.
     """
 
     param: str
@@ -470,6 +562,7 @@ class _Option:
     disallow_negation: bool = False
     debug_only: bool = False
     sensitive: bool = False
+    masked: Callable[[str], str | None] = _masked_if_long
 
 
 _OPTIONS: dict[str, _Option] = {
@@ -493,11 +586,13 @@ _OPTIONS: dict[str, _Option] = {
         "can be specified multiple times.",
         _CONNECTION_TITLE,
         network_only=True,
+        masked=_masked_address,
     ),
     "alertnotify": _Option(
         "=<cmd>",
         "Execute command when an alert is raised (%s in cmd is replaced by message)",
         _OPTIONS_TITLE,
+        masked=_masked_text,
     ),
     "allowignoredconf": _Option(
         "",
@@ -528,24 +623,28 @@ _OPTIONS: dict[str, _Option] = {
         "is given). This option can be specified multiple times",
         _CONNECTION_TITLE,
         network_only=True,
+        masked=_masked_address,
     ),
     "blocknotify": _Option(
         "=<cmd>",
         "Execute command when the best block changes (%s in cmd is replaced "
         "by block hash)",
         _OPTIONS_TITLE,
+        masked=_masked_text,
     ),
     "blocksdir": _Option(
         "=<dir>",
         "Specify directory to hold blocks subdirectory for *.dat files "
         "(default: <datadir>)",
         _OPTIONS_TITLE,
+        masked=shown_path,
     ),
     "chain": _Option(
         "=<chain>",
         "Use the chain <chain> (default: main). Allowed values: "
         + ", ".join(sorted(_CHAIN_ALIASES)),
         _CHAINPARAMS_TITLE,
+        masked=_masked_name,
     ),
     # Core's registration (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
     # the v32.1 tag)
@@ -562,6 +661,7 @@ _OPTIONS: dict[str, _Option] = {
         f"{_DEFAULT_CONF_FILENAME}). Relative paths will be prefixed by datadir "
         "location. Pass -noconf to read no configuration file.",
         _OPTIONS_TITLE,
+        masked=shown_path,
     ),
     "connect": _Option(
         "=<ip>[:port]",
@@ -569,6 +669,7 @@ _OPTIONS: dict[str, _Option] = {
         "connections. This option can be specified multiple times.",
         _CONNECTION_TITLE,
         network_only=True,
+        masked=_masked_address,
     ),
     "datacarrier": _Option(
         "",
@@ -583,7 +684,11 @@ _OPTIONS: dict[str, _Option] = {
         _NODE_RELAY_TITLE,
     ),
     "datadir": _Option(
-        "=<dir>", "Specify data directory", _OPTIONS_TITLE, disallow_negation=True
+        "=<dir>",
+        "Specify data directory",
+        _OPTIONS_TITLE,
+        disallow_negation=True,
+        masked=shown_path,
     ),
     "debug": _Option(
         "=<category>",
@@ -595,6 +700,7 @@ _OPTIONS: dict[str, _Option] = {
         + ", ".join(sorted(_LOG_CATEGORIES))
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
+        masked=_masked_name,
     ),
     "debugexclude": _Option(
         "=<category>",
@@ -603,6 +709,7 @@ _OPTIONS: dict[str, _Option] = {
         "the specified category. This option can be specified multiple "
         'times to exclude multiple categories. This takes priority over "-debug"',
         _DEBUG_TEST_TITLE,
+        masked=_masked_name,
     ),
     "discover": _Option(
         "",
@@ -628,6 +735,7 @@ _OPTIONS: dict[str, _Option] = {
         "=<ip>",
         "Specify your own public address. This option can be specified multiple times",
         _CONNECTION_TITLE,
+        masked=_masked_address,
     ),
     "fixedseeds": _Option(
         "",
@@ -660,6 +768,7 @@ _OPTIONS: dict[str, _Option] = {
         "Specify additional configuration file, relative to the -datadir path "
         "(only usable from configuration file, not command line)",
         _OPTIONS_TITLE,
+        masked=shown_path,
     ),
     "incrementalrelayfee": _Option(
         "=<amt>",
@@ -794,6 +903,7 @@ _OPTIONS: dict[str, _Option] = {
         "(0.0.0.0/0), or all ipv6 (::/0). RFC4193 is allowed only if "
         "-cjdnsreachable=0. This option can be specified multiple times",
         _RPC_TITLE,
+        masked=_masked_address,
     ),
     "rpcauth": _Option(
         "=<userpw>",
@@ -814,18 +924,21 @@ _OPTIONS: dict[str, _Option] = {
         "127.0.0.1 and ::1 i.e., localhost)",
         _RPC_TITLE,
         network_only=True,
+        masked=_masked_address,
     ),
     "rpccookiefile": _Option(
         "=<loc>",
         "Location of the auth cookie. Relative paths will be prefixed by a "
         "net-specific datadir location. (default: data dir)",
         _RPC_TITLE,
+        masked=shown_path,
     ),
     "rpccookieperms": _Option(
         "=<readable-by>",
         "Set permissions on the RPC auth cookie file so that it is readable by "
         "[owner|group|all] (default: owner)",
         _RPC_TITLE,
+        masked=_masked_name,
     ),
     "rpcmaxconnections": _Option(
         "=<n>",
@@ -859,6 +972,7 @@ _OPTIONS: dict[str, _Option] = {
         "set-intersected. See -rpcwhitelistdefault documentation for "
         "information on default whitelist behavior.",
         _RPC_TITLE,
+        masked=_masked_text,
     ),
     "rpcwhitelistdefault": _Option(
         "",
@@ -875,6 +989,7 @@ _OPTIONS: dict[str, _Option] = {
         "option can be specified multiple times to connect to multiple nodes. "
         "During startup, seednodes will be tried before dnsseeds.",
         _CONNECTION_TITLE,
+        masked=_masked_address,
     ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
     "settings": _Option(
@@ -885,6 +1000,7 @@ _OPTIONS: dict[str, _Option] = {
         "Relative paths will be prefixed by datadir location. "
         f"(default: {SETTINGS_FILENAME})",
         _OPTIONS_TITLE,
+        masked=shown_path,
     ),
     "shutdownnotify": _Option(
         "=<cmd>",
@@ -893,11 +1009,17 @@ _OPTIONS: dict[str, _Option] = {
         "command doesn't require interaction with the server, consider having "
         "it fork into the background).",
         _OPTIONS_TITLE,
+        masked=_masked_text,
     ),
     "signet": _Option(
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
-    "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
+    "startupnotify": _Option(
+        "=<cmd>",
+        "Execute command on startup.",
+        _OPTIONS_TITLE,
+        masked=_masked_text,
+    ),
     # Core's registration (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040,
     # the v32.1 tag), the space before the colon included, but for the
     # value `_TEST_OPTIONS` leaves out
@@ -908,6 +1030,7 @@ _OPTIONS: dict[str, _Option] = {
         + ".",
         _DEBUG_TEST_TITLE,
         debug_only=True,
+        masked=_masked_test_option,
     ),
     # Core's registration (`src/chainparamsbase.cpp`, at
     # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
@@ -956,6 +1079,7 @@ _OPTIONS: dict[str, _Option] = {
         "multiple permissions separated by commas (default: "
         "download,noban,mempool,relay). Can be specified multiple times.",
         _CONNECTION_TITLE,
+        masked=_masked_address,
     ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
@@ -968,6 +1092,7 @@ _OPTIONS: dict[str, _Option] = {
         "control whether permissions apply to incoming connections and/or "
         "manual (default: incoming only). Can be specified multiple times.",
         _CONNECTION_TITLE,
+        masked=_masked_address,
     ),
     "whitelistforcerelay": _Option(
         "",
@@ -1604,15 +1729,30 @@ def _setting_to_write_str(value: _Value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _logged(option: _Option | None, value: Json, whole: str) -> str:
+    """Return what `_log_args` writes for `value` of `option`.
+
+    `****` where `option` is `None` or `sensitive`, and `'...'` for an
+    array or an object. A string is what `_Option.masked` returns for it,
+    and `whole`, Core's `write()` of `value`, where that is `None`, as for
+    a `bool` and a `null`.
+    """
+    if option is None or option.sensitive:
+        return "****"
+    if isinstance(value, list | Object):
+        return "'...'"
+    masked = option.masked(value) if isinstance(value, str) else None
+    return whole if masked is None else masked
+
+
 def _log_args(settings: _Settings) -> tuple[str, ...]:
     """Return Core's `LogArgs` lines: config file, settings file, command line.
 
     `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
     bitcoin/bitcoin@f0de87f040): `std::map` order -- a section, then a
     name inside it, each sorted, and each value in the order it was
-    read -- masked to `****` where `_Option.sensitive` is Core's own
-    `SENSITIVE` flag. Every config-file and command-line name reaching this
-    is already in `_OPTIONS`: `_parse_conf_text` drops an unknown config
+    read. Every config-file and command-line name reaching this is
+    already in `_OPTIONS`: `_parse_conf_text` drops an unknown config
     key with its own warning, and `_parse_parameters` refuses an unknown
     command-line one outright, so Core's own `if (flags)` guard around this
     has nothing left here to be false for. `LogArgs`'s middle category,
@@ -1622,27 +1762,27 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     This tree departs from Core on purpose where a log line may hold a
     secret (ASSURANCE_CASE.md, "Common implementation weaknesses"). A
     section and a `settings.json` name are quoted by `_quoted_line`, which
-    Core's are not: either may hold a password. A `settings.json` value is
-    written as `write_json` writes it only where its name is a known option
-    that is not `sensitive`; Core writes every one in clear. An unknown name
-    may be a sensitive option misspelled, so its value is `****`.
+    Core's are not: either may hold a password. Core writes `****` for a
+    `SENSITIVE` option's value on the config-file and command-line lines,
+    and every other value whole. This writes each value as `_logged` says,
+    and `****` for the value of a `settings.json` name no option has, which
+    may be a sensitive option misspelled (SECURITY.md, "Where this node
+    departs from Bitcoin Core").
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
         prefix = f"[{_quoted_line(section)}] " if section else ""
         for name, values in sorted(args.items()):
-            sensitive = _OPTIONS[name].sensitive
             for value in values:
-                shown = "****" if sensitive else _setting_to_write_str(value)
+                shown = _logged(_OPTIONS[name], value, _setting_to_write_str(value))
                 lines.append(f"Config file arg: {prefix}{name}={shown}")
     for name, setting in settings.rw_settings.items():
         option = _OPTIONS.get(_interpret_key(name).name)
-        shown = "****" if option is None or option.sensitive else write_json(setting)
+        shown = _logged(option, setting, write_json(setting))
         lines.append(f"Setting file arg: {_quoted_line(name)} = {shown}")
     for name, values in sorted(settings.command_line.items()):
-        sensitive = _OPTIONS[name].sensitive
         for value in values:
-            shown = "****" if sensitive else _setting_to_write_str(value)
+            shown = _logged(_OPTIONS[name], value, _setting_to_write_str(value))
             lines.append(f"Command-line arg: {name}={shown}")
     return tuple(lines)
 
