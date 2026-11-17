@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""docs/source/conf.py: `RootFileLinks`, and the placeholders `nitpick_ignore` lists.
+"""docs/source/conf.py's `RootFileLinks` and its `nitpick_ignore` placeholders.
 
 `RootFileLinks` links an included file to its page. Section 2 of the
 organization's standard, *The documentation*, is the rule its tests hold
@@ -12,11 +12,13 @@ page other than an included one.
 
 The placeholder entries of `nitpick_ignore` are checked against a build
 of docs/source with them removed: they must be the placeholders that
-build warns about.
+build warns about. The build leaves out the `*_link.md` shims, which
+include the root's Markdown files: a pull request that changes only
+those does not run the suite, and they hold no signature.
 
-Executing conf.py imports sphinx, and the build parses the Markdown
-pages with myst-parser: the `test` group carries both, sphinx with the
-`docs` group's floor.
+Executing conf.py imports sphinx, and the build loads myst-parser, an
+extension conf.py names: the `test` group carries both, at the `docs`
+group's floors.
 
 This sits at `tests/` root, as `pragma_test.py` does: docs/source/conf.py
 is neither a module of `src/btclib_node/` nor suite machinery.
@@ -185,7 +187,7 @@ def test_github_link_other_than_blob_is_left(conf: ModuleType, url: str) -> None
 def test_nitpick_ignore_matches_unignored_build(
     conf: ModuleType, tmp_path: Path
 ) -> None:
-    """Every placeholder ignore corresponds to a target the build reaches."""
+    """The placeholder ignores are the placeholders the build warns about."""
     placeholder = re.compile(r"__annotationlib_name_\d+__")
     configured = {
         target
@@ -200,6 +202,7 @@ def test_nitpick_ignore_matches_unignored_build(
         ],
         "intersphinx_mapping": {},
         "nitpicky": True,
+        "exclude_patterns": ["*_link.md"],
     }
     warning_log = StringIO()
     app = Sphinx(
@@ -214,8 +217,10 @@ def test_nitpick_ignore_matches_unignored_build(
         freshenv=True,
     )
     with warnings.catch_warnings():
-        # MyST accesses this Sphinx API during parsing; pytest treats the
-        # deprecation as an error even though the docs build does not.
+        # Sphinx's own napoleon reads a deprecated alias of an option
+        # while autodoc renders a docstring; this tree's
+        # `filterwarnings = ["error"]` would fail the test on it, where
+        # sphinx-build only lets it pass.
         warnings.simplefilter("ignore", RemovedInSphinx11Warning)
         app.build(force_all=True)
 
