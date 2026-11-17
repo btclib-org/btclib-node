@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, override
 from btclib_node.config import (
     invalid_port_message,
     lookup_service,
+    masked_address,
     service_text,
     split_host_port,
 )
@@ -97,7 +98,9 @@ _OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
 _ACCEPT_RETRY_DELAY = 0.1
 
 
-def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
+def _bind_and_listen(
+    host: Host, port: int, logger: Logger, shown: str | None = None
+) -> socket.socket:
     """Return a socket listening at `host` and `port`, non-blocking.
 
     Core's `HTTPServer::BindAndStartListening` (`src/httpserver.cpp`, at
@@ -107,8 +110,11 @@ def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
     `IPV6_PROTECTION_LEVEL` on Windows, a failure to set any but the first
     logged and passed over. Raises `OSError` in Core's words where any
     other step fails, the socket closed.
+
+    Its messages name the endpoint `shown`, or `service_text(host, port)`
+    where that is `None`.
     """
-    address = service_text(host, port)
+    address = service_text(host, port) if shown is None else shown
     if isinstance(host, SpecialAddress):
         err_msg = f"Bind address family for {address} not supported"
         raise OSError(err_msg)
@@ -463,23 +469,22 @@ class RpcManager(threading.Thread):
         synchronous (#88). Unlike that one, this does not set
         `listening`: `_listen` does, once the cookie is written too.
 
-        Core's two lines write the host whole (`src/httpserver.cpp:1367` and
-        `:1380`, same sha). This writes it whole where it looks up as a
-        numeric, onion or I2P address. Where the platform reads a key as
-        numeric, as macOS reads `0x` and a key's hex digits, or a key as the
-        scope after an IPv6 address's `%`, that key is written whole too
-        (btclib-org/btclib-node#2566). A host that does not look up is
-        written `'...'`, followed by its position for an `-rpcbind` value,
-        as in `Could not bind RPC on address '...' (value 2 of -rpcbind)
-        port 8332: Address lookup failed.` (SECURITY.md, "Where this node
-        departs from Bitcoin Core"). The lookup comes first, so that both
-        lines write the host the same way. It asks no DNS and logs nothing,
-        so Core's line order holds.
+        Core's lines write the host whole, and the address it resolves to where
+        its bind fails (`src/httpserver.cpp:1367`, `:1375` and `:1380`, same
+        sha). This writes them whole where `masked_address` keeps the host
+        whole. Any other host is written `'...'`, followed by its position for
+        an `-rpcbind` value, and the failed bind names it the same way, as in
+        `Could not bind RPC on address '...' (value 2 of -rpcbind) port 8332:
+        Address lookup failed.` (SECURITY.md, "Where this node departs from
+        Bitcoin Core"). Both lookups come first, so that every line writes the
+        host the same way. They ask no DNS and log nothing, so Core's line order
+        holds.
         """
         bound: list[socket.socket] = []
         for host, port, position in self._endpoints():
             service = lookup_service(host, port)
-            if service is not None:
+            whole = masked_address(host) is None
+            if whole:
                 shown = host
             elif position is None:
                 shown = "'...'"
@@ -499,13 +504,14 @@ class RpcManager(threading.Thread):
                     "The RPC server is not safe to expose to untrusted networks "
                     "such as the public internet"
                 )
+            endpoint = service_text(address, service_port) if whole else shown
             try:
-                bound.append(_bind_and_listen(address, service_port, self.logger))
+                bound.append(
+                    _bind_and_listen(address, service_port, self.logger, endpoint)
+                )
             except OSError as error:
                 self.logger.warning(
-                    "Binding RPC on address %s failed: %s",
-                    service_text(address, service_port),
-                    error,
+                    "Binding RPC on address %s failed: %s", endpoint, error
                 )
         return bound
 

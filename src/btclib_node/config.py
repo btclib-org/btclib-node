@@ -13,12 +13,15 @@ already built, or a network's name, into the `Chain` a `Config` carries.
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
 `listen_port` read an address Core's `Lookup` reads, for `-externalip`,
 `-bind` and `-rpcbind`, `parse_whitebind` that of `-whitebind`.
-`get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
-`-blocksdir`. All of these are public here because other modules read
-them.
+`masked_address` is how the log of the settings, and the refusals and log
+lines SECURITY.md names among the departures from Bitcoin Core, write an
+address that may be a key given by mistake. `get_path_arg` is `cli.py`'s
+reader of `-datadir`, `-conf` and `-blocksdir`. All of these are public here
+because other modules read them.
 """
 
 import os
+import re
 import sys
 
 # A real import and not TYPE_CHECKING-only like Mapping below, despite
@@ -48,6 +51,7 @@ from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
+    MAX_QUOTED_NAME,
     MAX_TIP_AGE,
     default_data_dir,
     shown_path,
@@ -57,7 +61,12 @@ from btclib_node.exceptions import (
     JsonIntegerOutOfRangeError,
     UnknownChainError,
 )
-from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
+from btclib_node.p2p.banman import (
+    DEFAULT_MISBEHAVING_BANTIME,
+    Host,
+    lookup_host,
+    lookup_subnet,
+)
 from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
@@ -92,6 +101,7 @@ __all__ = [
     "listen_port",
     "lookup_host_port",
     "lookup_service",
+    "masked_address",
     "onion_port",
     "parse_bind",
     "parse_whitebind",
@@ -336,6 +346,60 @@ def service_text(host: Host, port: int) -> str:
     return f"[{host}]:{port}" if isinstance(host, IPv6Address) else f"{host}:{port}"
 
 
+# What splits a value into the pieces `masked_address` measures: the `@`
+# after permission names, their commas, and an address's dots, colons and
+# brackets. Not a subnet's slash, which a Base64 key holds, nor an IPv6
+# scope's `%`, which a key can follow.
+_ADDRESS_SEPARATORS = re.compile(r"[@,.:\[\]]")
+
+# The host `masked_address` keeps whole however long: the shape of a real
+# onion v3 or I2P address, its label in lowercase base32 as Core writes one,
+# 56 characters before `.onion` or 52 before `.b32.i2p`
+_SPECIAL_HOST = re.compile(r"[a-z2-7]{56}\.onion|[a-z2-7]{52}\.b32\.i2p")
+
+
+def masked_address(value: str) -> str | None:
+    """Return `'...'` for an address that may hold a key, else `None`.
+
+    `None` means the address may be written whole. SECURITY.md, "Where this
+    node departs from Bitcoin Core", says which refusals and log lines write
+    an address this way.
+
+    A value is whole where its address resolves without DNS, at a port or as
+    a subnet, and no piece of it between `_ADDRESS_SEPARATORS` is longer
+    than `MAX_QUOTED_NAME` characters, but an onion or I2P host the address
+    starts with. That host is exempt only where it has `_SPECIAL_HOST`'s
+    shape, so a key written as such a label, in another case or at another
+    length, is measured; the lookup that follows checks an onion's checksum
+    and version. Resolving alone is not enough: macOS's numeric lookup reads
+    a key's decimal, or its hex after `0x`, as an IPv4 address, and any text
+    after an IPv6 address's `%` as its scope, and a port may carry any
+    number of leading zeros. A host name is masked.
+
+    Permission names before an `@`, as a `-whitebind` or `-whitelist`
+    value has, and an `=onion` after the address, as a `-bind` value has,
+    are read for every value: no key reads as either.
+    """
+    names, at, tail = value.partition("@")
+    if not at:
+        names, tail = "", value
+    address = tail.removesuffix("=onion")
+    host, _ = lookup_host_port(address, 0)
+    measured = f"{names}@{tail}"
+    if _SPECIAL_HOST.fullmatch(host):
+        # the host leads the address, bracketed or not: only that span is
+        # exempt, so its label repeated elsewhere is still measured
+        span = f"[{host}]" if tail.startswith("[") else host
+        measured = f"{names}@{tail.removeprefix(span)}"
+    if any(
+        len(piece) > MAX_QUOTED_NAME for piece in _ADDRESS_SEPARATORS.split(measured)
+    ):
+        return "'...'"
+    if lookup_service(address, 0) is not None or lookup_subnet(address) is not None:
+        return None
+    return "'...'"
+
+
 @dataclass(frozen=True)
 class BindAddress:
     """One `-bind` value: where to listen, and whether it is tagged `=onion`."""
@@ -412,9 +476,9 @@ def parse_whitebind(arg: str, *, position: int) -> WhitebindAddress:
     for an address that resolves to nothing and `position`, the value's
     place among the `-whitebind` values counted from 1, as `parse_bind`
     does and for its reason (`src/net_permissions.cpp:114`, same sha).
-    The refusal of an address that resolves but names no port quotes it,
-    as Core does (SECURITY.md, "Where this node departs from Bitcoin Core",
-    says why).
+    The refusal of an address that names no port quotes it, as Core does
+    (`src/net_permissions.cpp:118`, same sha), where `masked_address` keeps
+    it whole, and writes `'...'` and `position` otherwise.
     """
     flags, spec = parse_whitebind_permissions(arg, position=position)
     service = lookup_service(spec, 0)
@@ -424,7 +488,12 @@ def parse_whitebind(arg: str, *, position: int) -> WhitebindAddress:
         )
         raise ValueError(err_msg)
     if service[1] == 0:
-        err_msg = f"Need to specify a port with -whitebind: '{spec}'"
+        shown = masked_address(spec)
+        if shown is None:
+            shown = f"'{spec}'"
+        else:
+            shown = f"{shown} (value {position} of -whitebind)"
+        err_msg = f"Need to specify a port with -whitebind: {shown}"
         raise ValueError(err_msg)
     return WhitebindAddress(*service, flags)
 

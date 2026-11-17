@@ -58,7 +58,7 @@ from tests import (
     warnings_into,
 )
 from tests.secret_free import assert_secret_free
-from tests.unit.rpc import LEAK_WIF
+from tests.unit.rpc import LEAK_ADDRESSES, LEAK_I2P_WIF, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Buffer, Coroutine, Iterator, Mapping
@@ -740,7 +740,8 @@ def test_a_key_given_as_an_rpcbind_host_is_not_in_the_log(
     """ISS 2529: a WIF in place of the host is logged as `'...'`, by position.
 
     Core's "Binding RPC on address" and "Could not bind RPC on address"
-    lines write it whole. A host that looks up is written whole.
+    lines write it whole. A host is written whole where `masked_address`
+    keeps it.
     """
     port = get_random_port()
     manager = a_manager(
@@ -756,6 +757,53 @@ def test_a_key_given_as_an_rpcbind_host_is_not_in_the_log(
         f"Could not bind RPC on address {shown} port {port}: Address lookup failed.",
     ]
     assert_secret_free(ValueError(*lines.messages), [LEAK_WIF])
+
+
+@pytest.mark.parametrize(("host", "secret"), LEAK_ADDRESSES)
+def test_a_key_read_as_an_rpcbind_address_is_not_in_the_log(
+    a_manager: AManagerFactory, host: str, secret: str
+) -> None:
+    """ISS 2566: a host is written whole only where `masked_address` keeps it.
+
+    Core writes one that looks up whole, and the address it resolves to
+    where its bind fails (`src/httpserver.cpp:1367`, `:1375` and `:1380`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Which of these a platform
+    looks up is its own, and none binds.
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcbind=(host,), rpcallowip=("127.0.0.1",))
+    lines = LogLines()
+    manager.logger.addHandler(lines)
+    assert manager._bind() == []
+    shown = "'...' (value 1 of -rpcbind)"
+    assert lines.messages[0] == f"Binding RPC on address {shown} port {port}"
+    assert_secret_free(ValueError(*lines.messages), [secret])
+
+
+def test_a_key_given_as_an_i2p_rpcbind_host_is_not_in_the_failed_bind(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2566: the failed bind names the host as the line before it does.
+
+    An I2P host looks up on every platform and binds nothing. Core writes
+    the address it resolves to (`src/httpserver.cpp:1375`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), which re-encodes the key
+    in lowercase.
+    """
+    port = get_random_port()
+    manager = a_manager(
+        port, rpcbind=(f"{LEAK_I2P_WIF}.b32.i2p",), rpcallowip=("127.0.0.1",)
+    )
+    lines = LogLines()
+    manager.logger.addHandler(lines)
+    assert manager._bind() == []
+    shown = "'...' (value 1 of -rpcbind)"
+    refused = f"Bind address family for {shown} not supported"
+    assert lines.messages == [
+        f"Binding RPC on address {shown} port {port}",
+        f"Binding RPC on address {shown} failed: {refused}",
+    ]
+    assert_secret_free(ValueError(*lines.messages), [LEAK_I2P_WIF])
 
 
 def test_an_rpcbind_port_core_refuses_binds_nothing(

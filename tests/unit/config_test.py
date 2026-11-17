@@ -45,7 +45,7 @@ from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
 from tests.secret_free import assert_secret_free
-from tests.unit.rpc import LEAK_WIF
+from tests.unit.rpc import LEAK_ADDRESSES, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1290,6 +1290,25 @@ def test_a_key_given_in_a_whitebind_value_is_not_in_the_refusal(
         parse_whitebind(arg, position=1)
     assert str(raised.value) == message
     assert_secret_free(raised.value, [LEAK_WIF])
+
+
+@pytest.mark.parametrize(("arg", "secret"), LEAK_ADDRESSES)
+def test_a_key_read_as_an_address_with_no_port_is_not_in_the_refusal(
+    arg: str, secret: str
+) -> None:
+    """ISS 2566: an address is quoted only where `masked_address` keeps it.
+
+    Core quotes one that resolves (`src/net_permissions.cpp:118`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Which of these a platform
+    resolves is its own, so either refusal is taken.
+    """
+    with pytest.raises(ValueError, match="-whitebind") as raised:
+        parse_whitebind(f"noban@{arg}", position=3)
+    assert str(raised.value) in {
+        "Need to specify a port with -whitebind: '...' (value 3 of -whitebind)",
+        "Cannot resolve -whitebind address: '...' (value 3 of -whitebind)",
+    }
+    assert_secret_free(raised.value, [secret])
 
 
 def test_listen_port_takes_the_first_whitebind_that_grants_no_noban() -> None:
