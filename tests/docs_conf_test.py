@@ -217,10 +217,10 @@ def test_nitpick_ignore_matches_unignored_build(
         freshenv=True,
     )
     with warnings.catch_warnings():
-        # Sphinx's own napoleon reads a deprecated alias of an option
-        # while autodoc renders a docstring; this tree's
-        # `filterwarnings = ["error"]` would fail the test on it, where
-        # sphinx-build only lets it pass.
+        # Sphinx's own napoleon tests autodoc's options object for truth,
+        # which goes through that object's deprecated mapping interface;
+        # this tree's `filterwarnings = ["error"]` would fail the test on
+        # it, where sphinx-build ignores it.
         warnings.simplefilter("ignore", RemovedInSphinx11Warning)
         app.build(force_all=True)
 
