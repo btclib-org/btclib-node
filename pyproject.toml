@@ -376,6 +376,9 @@ test = [
     # tests/docs_conf_test.py executes docs/source/conf.py, which imports
     # it; the floor is `docs`'s, below
     "sphinx>=9.1.0",
+    # tests/docs_conf_test.py builds the Markdown pages with the same parser
+    # the docs group uses, so keep that parser in the test environment too.
+    "myst-parser>=5.1.0",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
@@ -712,10 +715,11 @@ package = ["src/btclib_node"]
 [tool.pytest.ini_options]
 # The modules beside the directories rather than under either are named
 # one at a time: `tests/docs_conf_test.py` runs the transform of
-# docs/source/conf.py, `tests/fuzz_corpus_test.py` reads fuzz/,
-# `tests/interpreters_test.py` reads pyproject.toml, .python-version and
-# the CI files against one another, `tests/property_test.py` draws
-# unconstrained octets against the entry points those harnesses declare,
+# docs/source/conf.py and builds docs/source,
+# `tests/fuzz_corpus_test.py` reads fuzz/, `tests/interpreters_test.py`
+# reads pyproject.toml, .python-version and the CI files against one
+# another, `tests/property_test.py` draws unconstrained octets against
+# the entry points those harnesses declare,
 # `tests/release_digests_test.py` reads release.yml and test.yml,
 # `tests/sdist_dotted_names_test.py` reads source-exclude below against
 # `git ls-files`, `tests/pragma_test.py` runs `git grep` over every
@@ -723,10 +727,9 @@ package = ["src/btclib_node"]
 # verbatim from btclib-org/.github, `tests/bug_report_form_test.py` reads
 # the bug report form, and the rest load a script under
 # .github/scripts/ or scripts/ by path -- so each mirrors no module of
-# the package and drives no node.
-# Naming one is what collects it -- and [tool.coverage.run]'s `source`
-# takes all of tests/, so a module no run collects is a file the floor
-# reports at zero.
+# the package and drives no node. Naming one is what collects it -- and
+# [tool.coverage.run]'s `source` takes all of tests/, so a module no run
+# collects is a file the floor reports at zero.
 #
 # `tests/integration/` is named too. It needs a bitcoind a bare run
 # has not got, so what a contributor without one gets is a skip naming
@@ -848,13 +851,14 @@ timeout = 300
 # (issue #111, issue #195) would leave open -- a socket, an event loop, a
 # worker pool or an open file, warned about by __del__ at whatever
 # moment the collector reaches it, so that the same tests would fail
-# differently on every run. Two other warnings that `error` surfaces
-# are not that shape and stay out of this list: a
-# deliberately unhandled exception on a manager's own thread and a
-# deliberately unawaited coroutine, each provoked on purpose by the
-# handful of tests that exercise it and silenced there with its own
-# `pytest.mark.filterwarnings` rather than named here for the whole
-# suite.
+# differently on every run. Other warnings that `error` surfaces are
+# not that shape and stay out of this list: a deliberately unhandled
+# exception on a manager's own thread and a deliberately unawaited
+# coroutine, each provoked on purpose by the handful of tests that
+# exercise it and silenced there with its own
+# `pytest.mark.filterwarnings`, and a deprecation Sphinx raises inside
+# the docs build of `tests/docs_conf_test.py`, silenced around that
+# build alone.
 filterwarnings = [
     "error",
     # `TestNet` and `TestNet4` (`src/btclib_node/chains.py`) are chains,

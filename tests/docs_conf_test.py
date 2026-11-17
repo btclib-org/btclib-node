@@ -2,26 +2,39 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`RootFileLinks` in docs/source/conf.py links an included file to its page.
+"""docs/source/conf.py's `RootFileLinks` and its `nitpick_ignore` placeholders.
 
-Section 2 of the organization's standard, *The documentation*, is the rule
-these tests hold `RootFileLinks` to. They run the transform on a
-hand-made doctree, so each case is checked whether or not a page of the
-tree holds it: a fragment, and a page other than an included one.
+`RootFileLinks` links an included file to its page. Section 2 of the
+organization's standard, *The documentation*, is the rule its tests hold
+it to. They run the transform on a hand-made doctree, so each case is
+checked whether or not a page of the tree holds it: a fragment, and a
+page other than an included one.
 
-Executing conf.py imports sphinx, which the `test` group carries with
-the `docs` group's floor.
+The placeholder entries of `nitpick_ignore` are checked against a build
+of docs/source with them removed: they must be the placeholders that
+build warns about. The build leaves out the `*_link.md` shims, which
+include the root's Markdown files: a pull request that changes only
+those does not run the suite, and they hold no signature.
+
+Executing conf.py imports sphinx, and the build loads myst-parser, an
+extension conf.py names: the `test` group carries both, at the `docs`
+group's floors.
 
 This sits at `tests/` root, as `pragma_test.py` does: docs/source/conf.py
 is neither a module of `src/btclib_node/` nor suite machinery.
 """
 
 import importlib.util
+import re
+import warnings
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from sphinx.application import Sphinx
+from sphinx.deprecation import RemovedInSphinx11Warning
 
 _CONF = Path(__file__).parents[1] / "docs" / "source" / "conf.py"
 # the docnames a build finds: each page of docs/source, by its stem
@@ -169,3 +182,47 @@ def test_github_link_other_than_blob_is_left(conf: ModuleType, url: str) -> None
     node = _run(conf, _url(conf, url))
     assert isinstance(node, conf.nodes.reference)
     assert node["refuri"] == url
+
+
+def test_nitpick_ignore_matches_unignored_build(
+    conf: ModuleType, tmp_path: Path
+) -> None:
+    """The placeholder ignores are the placeholders the build warns about."""
+    placeholder = re.compile(r"__annotationlib_name_\d+__")
+    configured = {
+        target
+        for domain, target in conf.nitpick_ignore
+        if domain == "py:class" and placeholder.fullmatch(target)
+    }
+    overrides = {
+        "nitpick_ignore": [
+            (domain, target)
+            for domain, target in conf.nitpick_ignore
+            if not (domain == "py:class" and placeholder.fullmatch(target))
+        ],
+        "intersphinx_mapping": {},
+        "nitpicky": True,
+        "exclude_patterns": ["*_link.md"],
+    }
+    warning_log = StringIO()
+    app = Sphinx(
+        srcdir=_CONF.parent,
+        confdir=_CONF.parent,
+        outdir=tmp_path / "html",
+        doctreedir=tmp_path / "doctrees",
+        buildername="dummy",
+        confoverrides=overrides,
+        status=StringIO(),
+        warning=warning_log,
+        freshenv=True,
+    )
+    with warnings.catch_warnings():
+        # Sphinx's own napoleon tests autodoc's options object for truth,
+        # which goes through that object's deprecated mapping interface;
+        # this tree's `filterwarnings = ["error"]` would fail the test on
+        # it, where sphinx-build ignores it.
+        warnings.simplefilter("ignore", RemovedInSphinx11Warning)
+        app.build(force_all=True)
+
+    reached = set(placeholder.findall(warning_log.getvalue()))
+    assert configured == reached
