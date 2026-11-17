@@ -1263,12 +1263,14 @@ def test_build_config_warns_about_a_double_negative(
 ) -> None:
     """`-nolisten=0` is `-listen=1`, warned about in the log alone, as in Core.
 
-    ISS 1295.
+    ISS 1295. ISS 2567: the warning is Core's text, which Core's
+    `test/functional/feature_config_args.py` expects at line 232, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
     """
     config = _build(tmp_path, "-connect=0", "-nolisten=0")
     assert config.listen is True
     assert config.log_warnings == (
-        "Parsed potentially confusing double-negative -listen='...'",
+        "Parsed potentially confusing double-negative -listen=0",
     )
     assert capsys.readouterr().err == ""
 
@@ -1287,6 +1289,15 @@ def test_build_config_writes_no_double_negative_value(
     )
     assert_secret_free(ValueError(*config.log_warnings), [LEAK_WIF])
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("value", ["00", "-0", "+0", " 0", "false", "no"])
+def test_interpret_value_writes_only_a_bare_0_whole(value: str) -> None:
+    """ISS 2567: a value that reads as false but is not `0` is `'...'`."""
+    info = cli._interpret_key("nolisten")
+    warnings: list[str] = []
+    assert cli._interpret_value(info, value, cli._OPTIONS["listen"], warnings) is True
+    assert warnings == ["Parsed potentially confusing double-negative -listen='...'"]
 
 
 def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
@@ -1309,9 +1320,9 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
         f"{path}:5 Section [y] is not recognized.\n"
     )
     assert config.log_warnings == (
-        "Parsed potentially confusing double-negative -listen='...'",
+        "Parsed potentially confusing double-negative -listen=0",
         f"{path}:2 Ignoring unknown configuration value foo",
-        "Parsed potentially confusing double-negative -server='...'",
+        "Parsed potentially confusing double-negative -server=0",
         f"{path}:6 Ignoring unknown configuration value y.bar",
     )
     assert config.section_warning == sections
@@ -1556,7 +1567,7 @@ def test_log_args_writes_no_key_given_to_any_option(secret: str) -> None:
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
 def test_interpret_value_masks_a_sensitive_double_negative(name: str) -> None:
-    """A `SENSITIVE` option's value is `'...'` in the warning, unlike Core."""
+    """`hunter2` is `'...'` in a `SENSITIVE` option's warning, unlike Core."""
     info = cli._interpret_key(f"no{name}")
     warnings: list[str] = []
     assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name], warnings) is True

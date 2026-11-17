@@ -1197,10 +1197,12 @@ def _interpret_value(
     (`src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040).
 
     Core's warning writes the value whole (`src/common/args.cpp:114`,
-    same sha). This one writes `'...'` in its place, as `-listen='...'`
-    for `-nolisten=0`: every value `_interpret_bool` reads as false
-    reaches it, a compressed WIF among them (SECURITY.md, "Where this
-    node departs from Bitcoin Core").
+    same sha), as `-listen=0` for `-nolisten=0`. This one writes `0`
+    whole too. `1` and an empty value, the other boolean forms an option
+    takes, read as true and never reach the warning. Any other value is
+    `'...'`, as `-listen='...'`: every value `_interpret_bool` reads as
+    false reaches the warning, a compressed WIF among them (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
     """
     if not info.negated:
         return "" if value is None else value
@@ -1208,8 +1210,9 @@ def _interpret_value(
         err_msg = f"Negating of -{info.name} is meaningless and therefore forbidden"
         raise ValueError(err_msg)
     if value is not None and not _interpret_bool(value):
+        shown = value if value == "0" else "'...'"
         warnings.append(
-            f"Parsed potentially confusing double-negative -{info.name}='...'"
+            f"Parsed potentially confusing double-negative -{info.name}={shown}"
         )
         return True
     return False

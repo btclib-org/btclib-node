@@ -261,7 +261,8 @@ fails (`runCommand` in `src/common/system.cpp:53`), at
 bitcoin/bitcoin@f0de87f040, the v32.1 tag. This node keeps Core's other words,
 and writes the value as the start-up refusals above write theirs. A double
 negative's value is `'...'`, as in `Parsed potentially confusing
-double-negative -listen='...'`. A `-test` value is quoted as a name, so that a
+double-negative -listen='...'`, except `0`, written whole as Core writes it:
+`-listen=0` for `-nolisten=0`. A `-test` value is quoted as a name, so that a
 key there is written `<52 characters>` between Core's quotes, except a name
 Core's `TEST_OPTIONS_DOC` lists, which is written whole. An RPC host that
 resolves is written whole, as a `-whitebind` address is; any other is `'...'`,
