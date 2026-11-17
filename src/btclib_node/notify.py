@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 
-def run_command(logger: logging.Logger, command: str) -> None:
+def run_command(logger: logging.Logger, command: str, option: str) -> None:
     """Run `command` through the shell, and warn (only) on a nonzero exit.
 
     Core's `runCommand` (same citation as the module docstring):
@@ -48,18 +48,29 @@ def run_command(logger: logging.Logger, command: str) -> None:
     `returncode` it answers is the same `nErr` that call's own
     `LogWarning` names. `command` empty is `runCommand`'s own
     `if (strCommand.empty()) return;`.
+
+    Core's warning writes the command whole (`src/common/system.cpp:53`,
+    same citation), and a notify option's value may be a key given by
+    mistake. This one writes `...` in its place, and `option` after the
+    exit code: the option the command is the value of, as
+    `runCommand error: system(...) returned 3 (-blocknotify)`, and its
+    position where the option takes several, as `(value 2 of
+    -shutdownnotify)` (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     if not command:
         return
     result = subprocess.run(command, shell=True, check=False)  # noqa: S602
     if result.returncode:
         logger.warning(
-            "runCommand error: system(%s) returned %d", command, result.returncode
+            "runCommand error: system(...) returned %d (%s)",
+            result.returncode,
+            option,
         )
 
 
-def run_detached(logger: logging.Logger, command: str) -> None:
-    """Run `command` on a thread nothing waits for.
+def run_detached(logger: logging.Logger, command: str, option: str) -> None:
+    """Run `command` on a thread nothing waits for, `option` as `run_command`'s.
 
     Core's own `std::thread(runCommand, cmd); t.detach();` (same
     citation): `-blocknotify`, `-startupnotify` and `-alertnotify` each
@@ -69,7 +80,9 @@ def run_detached(logger: logging.Logger, command: str) -> None:
     """
     if not command:
         return
-    threading.Thread(target=run_command, args=(logger, command), daemon=True).start()
+    threading.Thread(
+        target=run_command, args=(logger, command, option), daemon=True
+    ).start()
 
 
 def run_shutdown_notify(logger: logging.Logger, commands: Sequence[str]) -> None:
@@ -83,8 +96,11 @@ def run_shutdown_notify(logger: logging.Logger, commands: Sequence[str]) -> None
     module makes on its own.
     """
     threads = [
-        threading.Thread(target=run_command, args=(logger, command))
-        for command in commands
+        threading.Thread(
+            target=run_command,
+            args=(logger, command, f"value {position} of -shutdownnotify"),
+        )
+        for position, command in enumerate(commands, 1)
     ]
     for thread in threads:
         thread.start()
@@ -122,7 +138,7 @@ def alert_notify(logger: logging.Logger, command: str, message: str) -> None:
     if not command:
         return
     safe = f"'{_sanitize(message)}'"
-    run_detached(logger, command.replace("%s", safe))
+    run_detached(logger, command.replace("%s", safe), "-alertnotify")
 
 
 # Core's `m_warnings` is a `std::map` keyed by

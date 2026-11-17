@@ -849,6 +849,7 @@ def _after_tip_change(
         run_detached(
             node.logger,
             node.config.block_notify.replace("%s", to_add[-1].header.hash.hex()),
+            "-blocknotify",
         )
 
 

@@ -4136,7 +4136,7 @@ def test_blocknotify_does_not_fire_during_initial_block_download(
     """
     calls: list[str] = []
     monkeypatch.setattr(
-        main, "run_detached", lambda logger, command: calls.append(command)
+        main, "run_detached", lambda logger, command, option: calls.append(command)
     )
     node.config.block_notify = "touch %s"
 
@@ -4155,9 +4155,11 @@ def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
     one call with the branch's own tip is also what tells this apart
     from firing once per block in it.
     """
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        main, "run_detached", lambda logger, command: calls.append(command)
+        main,
+        "run_detached",
+        lambda logger, command, option: calls.append((command, option)),
     )
     node.config.block_notify = "touch %s"
 
@@ -4166,7 +4168,7 @@ def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
     )
     connect(node, recent)
     assert node.is_initial_block_download is False
-    assert calls == [f"touch {recent[-1].header.hash.hex()}"]
+    assert calls == [(f"touch {recent[-1].header.hash.hex()}", "-blocknotify")]
 
 
 def _recorded_heights(node: Node, monkeypatch: pytest.MonkeyPatch) -> list[int]:

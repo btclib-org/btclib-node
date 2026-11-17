@@ -26,6 +26,7 @@ from btclib_node.notify import (
 )
 from tests import wait_until
 from tests.secret_free import assert_secret_free
+from tests.unit.rpc import LEAK_WIF
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -79,7 +80,7 @@ def test_run_command_does_nothing_for_an_empty_command() -> None:
     logger = Logger()
     handler = _RecordingHandler()
     logger.addHandler(handler)
-    run_command(logger, "")
+    run_command(logger, "", "-blocknotify")
     assert handler.records == []
 
 
@@ -88,19 +89,41 @@ def test_run_command_is_silent_on_a_successful_exit() -> None:
     logger = Logger()
     handler = _RecordingHandler()
     logger.addHandler(handler)
-    run_command(logger, "true")
+    run_command(logger, "true", "-blocknotify")
     assert handler.records == []
 
 
 def test_run_command_warns_cores_own_way_on_a_nonzero_exit() -> None:
-    """`runCommand error: system(%s) returned %d`, Core's own `LogWarning`."""
+    """`runCommand error: system(%s) returned %d`, Core's own `LogWarning`.
+
+    The command is `...`, and the option it comes from follows (ISS 2529).
+    """
     logger = Logger()
     handler = _RecordingHandler()
     logger.addHandler(handler)
-    run_command(logger, "exit 3")
+    run_command(logger, "exit 3", "-blocknotify")
     (record,) = handler.records
     assert record.levelno == logging.WARNING
-    assert record.getMessage() == "runCommand error: system(exit 3) returned 3"
+    assert record.getMessage() == (
+        "runCommand error: system(...) returned 3 (-blocknotify)"
+    )
+
+
+def test_a_key_in_a_failing_notify_command_is_not_in_the_log() -> None:
+    """ISS 2529: Core's warning writes the command, a key in it included.
+
+    Each `-shutdownnotify` command is named by its position. The key
+    follows `||`, which neither `sh` nor `cmd.exe` reaches after `exit`.
+    """
+    logger = Logger()
+    handler = _RecordingHandler()
+    logger.addHandler(handler)
+    run_shutdown_notify(logger, ("true", f"exit 3 || {LEAK_WIF}"))
+    messages = [record.getMessage() for record in handler.records]
+    assert messages == [
+        "runCommand error: system(...) returned 3 (value 2 of -shutdownnotify)"
+    ]
+    assert_secret_free(ValueError(*messages), [LEAK_WIF])
 
 
 def test_run_command_runs_through_the_shell(tmp_path: Path) -> None:
@@ -114,7 +137,7 @@ def test_run_command_runs_through_the_shell(tmp_path: Path) -> None:
     shell to keep.
     """
     marker = tmp_path / "marker"
-    run_command(Logger(), f"echo hi|cat>{marker}")
+    run_command(Logger(), f"echo hi|cat>{marker}", "-blocknotify")
     assert marker.read_text() == "hi\n"
 
 
@@ -123,14 +146,14 @@ def test_run_detached_runs_the_command_on_a_thread_nothing_waits_for(
 ) -> None:
     """The command still runs, off whatever thread called `run_detached`."""
     marker = tmp_path / "marker"
-    run_detached(Logger(), f"touch {marker}")
+    run_detached(Logger(), f"touch {marker}", "-blocknotify")
     wait_until(marker.exists)
 
 
 def test_run_detached_does_nothing_for_an_empty_command() -> None:
     """No thread is started for an empty command."""
     before = threading.active_count()
-    run_detached(Logger(), "")
+    run_detached(Logger(), "", "-blocknotify")
     assert threading.active_count() == before
 
 
