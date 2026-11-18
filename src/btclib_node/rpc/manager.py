@@ -471,19 +471,19 @@ class RpcManager(threading.Thread):
 
         Core's lines write the host whole, and the address it resolves to where
         its bind fails (`src/httpserver.cpp:1367`, `:1375` and `:1380`, same
-        sha). This writes them whole where `masked_address` keeps the host
-        whole. Any other host is written `'...'`, followed by its position for
-        an `-rpcbind` value, and the failed bind names it the same way, as in
-        `Could not bind RPC on address '...' (value 2 of -rpcbind) port 8332:
-        Address lookup failed.` (SECURITY.md, "Where this node departs from
-        Bitcoin Core"). Both lookups come first, so that every line writes the
-        host the same way. They ask no DNS and log nothing, so Core's line order
-        holds.
+        sha). This writes them whole where the host looks up and
+        `masked_address` keeps it whole. Any other host is written `'...'`,
+        followed by its position for an `-rpcbind` value, and the failed bind
+        names it the same way, as in `Could not bind RPC on address '...'
+        (value 2 of -rpcbind) port 8332: Address lookup failed.` (SECURITY.md,
+        "Where this node departs from Bitcoin Core"). Both lookups come first,
+        so that every line writes the host the same way. They ask no DNS and
+        log nothing, so Core's line order holds.
         """
         bound: list[socket.socket] = []
         for host, port, position in self._endpoints():
             service = lookup_service(host, port)
-            whole = masked_address(host) is None
+            whole = service is not None and masked_address(host) is None
             if whole:
                 shown = host
             elif position is None:

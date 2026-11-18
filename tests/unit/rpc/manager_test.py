@@ -740,8 +740,8 @@ def test_a_key_given_as_an_rpcbind_host_is_not_in_the_log(
     """ISS 2529: a WIF in place of the host is logged as `'...'`, by position.
 
     Core's "Binding RPC on address" and "Could not bind RPC on address"
-    lines write it whole. A host is written whole where `masked_address`
-    keeps it.
+    lines write it whole. A host is written whole where it looks up and
+    `masked_address` keeps it.
     """
     port = get_random_port()
     manager = a_manager(
@@ -778,6 +778,29 @@ def test_a_key_read_as_an_rpcbind_address_is_not_in_the_log(
     shown = "'...' (value 1 of -rpcbind)"
     assert lines.messages[0] == f"Binding RPC on address {shown} port {port}"
     assert_secret_free(ValueError(*lines.messages), [secret])
+
+
+def test_an_rpcbind_host_that_does_not_look_up_is_not_in_the_log(
+    a_manager: AManagerFactory,
+) -> None:
+    """A host that does not look up is `'...'`, whatever `masked_address` says.
+
+    `masked_address` reads the text before an `@` as permission names, as a
+    `-whitebind` value has, so it keeps this value whole: the lookup of the
+    whole value is what refuses it.
+    """
+    port = get_random_port()
+    host = "short-pass@127.0.0.1"
+    manager = a_manager(port, rpcbind=(host,), rpcallowip=("127.0.0.1",))
+    lines = LogLines()
+    manager.logger.addHandler(lines)
+    assert manager._bind() == []
+    shown = "'...' (value 1 of -rpcbind)"
+    assert lines.messages == [
+        f"Binding RPC on address {shown} port {port}",
+        f"Could not bind RPC on address {shown} port {port}: Address lookup failed.",
+    ]
+    assert_secret_free(ValueError(*lines.messages), ["short-pass"])
 
 
 def test_a_key_given_as_an_i2p_rpcbind_host_is_not_in_the_failed_bind(

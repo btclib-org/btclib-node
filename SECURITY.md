@@ -268,8 +268,8 @@ double-negative -listen='...'`, except `0`, written whole as Core writes it:
 `-listen=0` for `-nolisten=0`. A `-test` value is quoted as a name, so that a
 key there is written `<52 characters>` between Core's quotes, except a name
 Core's `TEST_OPTIONS_DOC` lists, which is written whole. An RPC host is written
-whole where the log of the settings below writes an address whole, and so is
-the address it resolves to, which Core writes where a bind fails
+whole where it looks up and the log of the settings below writes it whole, and
+so is the address it resolves to, which Core writes where a bind fails
 (`src/httpserver.cpp:1375`). Any other host is `'...'` in each of these lines,
 the failed bind's included, and an `-rpcbind` value is also named by its
 position: `Could not bind RPC on address '...' (value 2 of -rpcbind) port 8332:
