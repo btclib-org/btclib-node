@@ -177,19 +177,23 @@ Core does not read `rawpkh()`, `rawnode()` or `rawleaf()`, nor a
 `musig()` where a script belongs. At top level and in `tr()`, its
 `scantxoutset` refusal of one quotes the expression whole, a private key
 in it included (`ParseScript` in `src/script/descriptor.cpp`, at
-bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal quotes
-none of its arguments, as in
-`'rawnode(...)' is not a valid descriptor function`.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
+the expression's arguments as `...`, as in
+`'rawnode(...)' is not a valid descriptor function`. It keeps the name
+before them where the name has at most `MAX_QUOTED_NAME` characters or
+is `musig` after a key origin Core reads, and what follows them where
+that is a derivation path, each step of it below 2^31, as `/0/*` in
+`'musig(...)/0/*'`. It writes `...` for either otherwise.
 
-Core's `scantxoutset` refusal of a hex key it reads as invalid quotes
-the key, which may be a private key given by mistake, and so does its
-refusal of a WIF of another network (`ParsePubkeyInner` in
-`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-tag). This node's refusal writes `...` in its place, as in
-`pk(): Pubkey '...' is invalid` and `wpkh(): key '...' is not valid`.
-Where it gives bip32_descriptors' refusal instead, that refusal names
-the key by its index alone, as for a key of a length no key has or a WIF
-that bip32_descriptors refuses as of another network.
+Core's `scantxoutset` refusal of a key it cannot read quotes the key, or
+the text it reads as one, which may be a private key given by mistake
+(`ParsePubkeyInner` in `src/script/descriptor.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
+`...` in its place, as in `pk(): Pubkey '...' is invalid`,
+`wpkh(): key '...' is not valid` and
+`wpkh(): Key '...' is invalid due to whitespace`. Where it gives
+bip32_descriptors' refusal instead, that refusal names the key by its
+index alone, as for a key path value Core refuses.
 
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
