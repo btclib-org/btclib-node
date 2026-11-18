@@ -42,7 +42,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.secret_free import assert_secret_free
-from tests.unit.rpc import LEAK_HEX, LEAK_WIF
+from tests.unit.rpc import LEAK_HEX, LEAK_I2P_WIF, LEAK_WIF
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -1400,8 +1400,6 @@ _LEAK_BASE64 = "wcil1MnV0wKgQbqu/L1QvBM5wzK5M/QkIiMVPCsN5zM="
 # a port of 64 digits, which a lookup reads as 12345 and btclib reads as a
 # private key
 _LONG_PORT = "0" * 59 + "12345"
-# a compressed WIF that is also an I2P host's label
-_I2P_WIF = "KxtMbjALuPLnk7RcdWLdVCP6Q2gywHUTLmc63LKVsMYTGo5MtWWq"
 _ONION_LABEL = _ONION.removesuffix(".onion")
 # the key in lowercase base32, followed by an onion's version byte and a wrong
 # checksum: the length and alphabet of an onion's label
@@ -1412,7 +1410,7 @@ _LEAK_SPELLINGS = [
     LEAK_HEX,
     _LEAK_DECIMAL,
     _LEAK_BASE64,
-    _I2P_WIF,
+    LEAK_I2P_WIF,
     _LEAK_BASE32,
 ]
 
@@ -1454,13 +1452,13 @@ _LEAK_SPELLINGS = [
         ("rpcbind", f"[::1]:{_LONG_PORT}", "'...'"),
         ("connect", f"127.0.0.1:{_LONG_PORT}", "'...'"),
         ("rpcallowip", f"1.2.3.0/{_LONG_PORT}", "'...'"),
-        ("whitebind", f"{_I2P_WIF}@{_I2P_WIF}.b32.i2p:8333", "'...'"),
+        ("whitebind", f"{LEAK_I2P_WIF}@{LEAK_I2P_WIF}.b32.i2p:8333", "'...'"),
         ("whitebind", f"{_ONION_LABEL}@{_ONION}:8333", "'...'"),
         ("addnode", f"{_ONION}:{_ONION_LABEL}", "'...'"),
         ("addnode", f"[{_ONION}]:{_ONION_LABEL}", "'...'"),
         ("bind", f"{_ONION}:8334={_ONION_LABEL}", "'...'"),
-        ("bind", f"{_I2P_WIF}.b32.i2p:8334={_I2P_WIF}", "'...'"),
-        ("addnode", f"{_I2P_WIF}.b32.i2p:8333", "'...'"),
+        ("bind", f"{LEAK_I2P_WIF}.b32.i2p:8334={LEAK_I2P_WIF}", "'...'"),
+        ("addnode", f"{LEAK_I2P_WIF}.b32.i2p:8333", "'...'"),
         ("addnode", f"{_LEAK_WIF_UNCOMPRESSED}.b32.i2p:8333", "'...'"),
         ("addnode", f"{LEAK_WIF}.onion:8333", "'...'"),
         ("addnode", f"{_LEAK_BASE32}.onion:8333", "'...'"),
@@ -4198,7 +4196,7 @@ def test_build_config_externalip_looks_a_name_up(
     """ISS 1445: `Lookup` with `-dns`'s default, so a name is resolved here.
 
     The log of the settings also asks for the value as a numeric address
-    (`cli._masked_address`), which asks no DNS, so only the lookups without
+    (`config.masked_address`), which asks no DNS, so only the lookups without
     `AI_NUMERICHOST` are counted.
     """
     asked: list[bytes] = []

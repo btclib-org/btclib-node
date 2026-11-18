@@ -120,7 +120,7 @@ from tests import (
 )
 from tests.secret_free import assert_secret_free
 from tests.unit.rolling_bloom_test import a_small_filter
-from tests.unit.rpc import LEAK_WIF
+from tests.unit.rpc import LEAK_ADDRESSES, LEAK_HEX, LEAK_I2P_WIF, LEAK_WIF
 
 
 def a_conn(
@@ -5406,7 +5406,8 @@ def test_async_connect_host_skips_a_resolved_address_already_held(
     `async_connect_host`'s own inner resolved-address check keys on
     `endpoint_key`, `PeerDB`'s own address identity, regardless of
     `addr_name` -- unlike `_added_held`/`_open_added_peers`'s own
-    literal/name split above (ISS 1498).
+    literal/name split above (ISS 1498). ISS 2557: a host name is written
+    `'...'`, as `masked_address` writes one.
     """
     logged, info = log_recorder()
 
@@ -5417,7 +5418,7 @@ def test_async_connect_host_skips_a_resolved_address_already_held(
     monkeypatch.setattr(manager.logger, "info", info)
     asyncio.run(manager.async_connect_host("peer.example", 18444))
     assert logged == [
-        "Not opening a connection to peer.example, already connected to 5.6.7.8:18444"
+        "Not opening a connection to '...', already connected to 5.6.7.8:18444"
     ]
 
 
@@ -5444,8 +5445,8 @@ def test_async_connect_host_logs_when_no_candidate_comes_up(
     monkeypatch.setattr(manager_module, "dial", never_connects)
     manager = a_manager()
     monkeypatch.setattr(manager.logger, "info", info)
-    asyncio.run(manager.async_connect_host("peer.example", 18444))
-    assert logged == ["Dial to peer.example did not come up"]
+    asyncio.run(manager.async_connect_host("1.2.3.4", 18444))
+    assert logged == ["Dial to 1.2.3.4 did not come up"]
 
 
 def test_async_connect_host_logs_the_port_when_dest_names_one(
@@ -5461,8 +5462,77 @@ def test_async_connect_host_logs_the_port_when_dest_names_one(
     monkeypatch.setattr(manager_module, "dial", never_connects)
     manager = a_manager()
     monkeypatch.setattr(manager.logger, "info", info)
-    asyncio.run(manager.async_connect_host("peer.example:9999", 18444))
-    assert logged == ["Dial to peer.example:9999 did not come up"]
+    asyncio.run(manager.async_connect_host("1.2.3.4:9999", 18444))
+    assert logged == ["Dial to 1.2.3.4:9999 did not come up"]
+
+
+@pytest.mark.parametrize(
+    ("dest", "secret"),
+    [
+        (LEAK_WIF, LEAK_WIF),
+        (LEAK_HEX, LEAK_HEX),
+        *LEAK_ADDRESSES,
+        (f"{LEAK_I2P_WIF}.b32.i2p:8333", LEAK_I2P_WIF),
+    ],
+)
+def test_async_connect_host_writes_no_key_given_as_dest(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dest: str, secret: str
+) -> None:
+    """ISS 2557: a key a resolver answers for is written `'...'`.
+
+    A resolver that answers every name, as a wildcard search domain does,
+    lets any text through, so `dest` is written as `masked_address` writes
+    it on every line `async_connect_host` logs.
+    """
+    logged, info = log_recorder()
+
+    async def never_connects(address: NetworkAddressV2, scope_id: int = 0) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
+    monkeypatch.setattr(manager_module, "dial", never_connects)
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host(dest, 18444))
+    assert logged == ["Dial to '...' did not come up"]
+    assert_secret_free(ValueError(*logged), [secret])
+
+
+def test_async_connect_host_writes_no_key_held_by_name(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2557: the line of a `dest` held by name, logged before a lookup."""
+    logged, info = log_recorder()
+    held = a_conn(1, address=peer_address("1.2.3.4", 18444), addr_name=LEAK_WIF)
+    manager = a_manager([held])
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host(LEAK_WIF, 18444))
+    assert logged == [
+        "Not opening a connection to '...', already connected to it by name"
+    ]
+    assert_secret_free(ValueError(*logged), [LEAK_WIF])
+
+
+def test_async_connect_host_writes_no_key_resolved_to_an_invalid_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2557: Core's debug line writes `pszDest` whole (`src/net.cpp:421`).
+
+    At bitcoin/bitcoin@f0de87f040, the v32.1 tag. The answer is a
+    documentation-range one (RFC3849), which `is_valid` refuses.
+    """
+    logged, record = debug_recorder()
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: _NamedLoop(["2001:db8::1"])
+    )
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    asyncio.run(manager.async_connect_host(LEAK_WIF, 18444))
+    assert logged == [
+        ("net", "Resolver returned invalid address [2001:db8::1]:18444 for '...'")
+    ]
+    assert_secret_free(ValueError(*(line for _, line in logged)), [LEAK_WIF])
 
 
 def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(

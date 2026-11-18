@@ -48,6 +48,7 @@ from btclib_node.config import (
     listen_port,
     lookup_host_port,
     lookup_service,
+    masked_address,
     parse_bind,
     parse_whitebind,
     service_text,
@@ -1780,13 +1781,18 @@ class P2pManager(threading.Thread):
 
         Refuses silently where `network_active` is false, `async_connect`
         above's own docstring giving the citation.
+
+        Each line logged writes `dest` as `masked_address` does, `'...'`
+        where it may be a key given by mistake. Core writes `pszDest` whole
+        (`src/net.cpp:421` and `:427`, same sha; SECURITY.md, "Where this
+        node departs from Bitcoin Core").
         """
         if not self.network_active:
             return
         if dest in self._held_addr_names():
             self.logger.info(
                 "Not opening a connection to %s, already connected to it by name",
-                dest,
+                masked_address(dest) or dest,
             )
             return
         host, port = lookup_host_port(dest, default_port)
@@ -1845,13 +1851,13 @@ class P2pManager(threading.Thread):
                     "net",
                     "Resolver returned invalid address %s for %s",
                     ip_and_port(ip, port),
-                    dest,
+                    masked_address(dest) or dest,
                 )
                 return
             if endpoint_key(address) in held:
                 self.logger.info(
                     "Not opening a connection to %s, already connected to %s",
-                    dest,
+                    masked_address(dest) or dest,
                     ip_and_port(ip, port),
                 )
                 return
@@ -1875,7 +1881,7 @@ class P2pManager(threading.Thread):
                 )
                 return
         if not addr_fetch:
-            self.logger.info("Dial to %s did not come up", dest)
+            self.logger.info("Dial to %s did not come up", masked_address(dest) or dest)
 
     def connect_host(
         self, dest: str, default_port: int, *, use_v2transport: bool = False

@@ -223,8 +223,8 @@ from btclib_node.config import (
     has_valid_port,
     invalid_port_message,
     listen_port,
-    lookup_host_port,
     lookup_service,
+    masked_address,
     parse_bind,
     parse_whitebind,
     service_text,
@@ -246,11 +246,7 @@ from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeErro
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
-from btclib_node.p2p.banman import (
-    DEFAULT_MISBEHAVING_BANTIME,
-    is_valid_host,
-    lookup_subnet,
-)
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import IDLE_TIMEOUT
 from btclib_node.settings_file import (
@@ -461,20 +457,10 @@ def _parse_hex_uint256(value: str) -> int | None:
     return int(text, 16) if text else 0
 
 
-# Each `_masked_*` below, and `shown_path`, serves as an `_Option.masked`:
-# what `_log_args` writes in place of a value of that option that may be a
-# key given by mistake, `None` where it writes the value whole.
-
-# What splits an address option's value into the pieces `_masked_address`
-# measures: the `@` after permission names, their commas, and an address's
-# dots, colons and brackets. Not a subnet's slash, which a Base64 key holds,
-# nor an IPv6 scope's `%`, which a key can follow.
-_ADDRESS_SEPARATORS = re.compile(r"[@,.:\[\]]")
-
-# The host `_masked_address` keeps whole however long: the shape of a real
-# onion v3 or I2P address, its label in lowercase base32 as Core writes one,
-# 56 characters before `.onion` or 52 before `.b32.i2p`
-_SPECIAL_HOST = re.compile(r"[a-z2-7]{56}\.onion|[a-z2-7]{52}\.b32\.i2p")
+# Each `_masked_*` below, `config.masked_address` and `shown_path` serves as
+# an `_Option.masked`: what `_log_args` writes in place of a value of that
+# option that may be a key given by mistake, `None` where it writes the value
+# whole.
 
 
 def _masked_if_long(value: str) -> str | None:
@@ -495,44 +481,6 @@ def _masked_name(value: str) -> str | None:
 def _masked_test_option(value: str) -> str | None:
     """Return `_masked_name` of a value Core's `TEST_OPTIONS_DOC` lacks."""
     return None if value in _CORE_TEST_OPTIONS else _masked_name(value)
-
-
-def _masked_address(value: str) -> str | None:
-    """Return `'...'` for a value that may hold a key, else `None`.
-
-    A value is whole where its address resolves without DNS, at a port or as
-    a subnet, and no piece of it between `_ADDRESS_SEPARATORS` is longer
-    than `MAX_QUOTED_NAME` characters, but an onion or I2P host the address
-    starts with. That host is exempt only where it has `_SPECIAL_HOST`'s
-    shape, so a key written as such a label, in another case or at another
-    length, is measured; the lookup that follows checks an onion's checksum
-    and version. Resolving alone is not enough: macOS's numeric lookup reads
-    a key's decimal, or its hex after `0x`, as an IPv4 address, and any text
-    after an IPv6 address's `%` as its scope, and a port may carry any
-    number of leading zeros. A host name is masked.
-
-    Permission names before an `@`, as a `-whitebind` or `-whitelist`
-    value has, and an `=onion` after the address, as a `-bind` value has,
-    are read for every address option: no key reads as either.
-    """
-    names, at, tail = value.partition("@")
-    if not at:
-        names, tail = "", value
-    address = tail.removesuffix("=onion")
-    host, _ = lookup_host_port(address, 0)
-    measured = f"{names}@{tail}"
-    if _SPECIAL_HOST.fullmatch(host):
-        # the host leads the address, bracketed or not: only that span is
-        # exempt, so its label repeated elsewhere is still measured
-        span = f"[{host}]" if tail.startswith("[") else host
-        measured = f"{names}@{tail.removeprefix(span)}"
-    if any(
-        len(piece) > MAX_QUOTED_NAME for piece in _ADDRESS_SEPARATORS.split(measured)
-    ):
-        return "'...'"
-    if lookup_service(address, 0) is not None or lookup_subnet(address) is not None:
-        return None
-    return "'...'"
 
 
 def _masked_text(_value: str) -> str:
@@ -586,7 +534,7 @@ _OPTIONS: dict[str, _Option] = {
         "can be specified multiple times.",
         _CONNECTION_TITLE,
         network_only=True,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "alertnotify": _Option(
         "=<cmd>",
@@ -623,7 +571,7 @@ _OPTIONS: dict[str, _Option] = {
         "is given). This option can be specified multiple times",
         _CONNECTION_TITLE,
         network_only=True,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "blocknotify": _Option(
         "=<cmd>",
@@ -669,7 +617,7 @@ _OPTIONS: dict[str, _Option] = {
         "connections. This option can be specified multiple times.",
         _CONNECTION_TITLE,
         network_only=True,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "datacarrier": _Option(
         "",
@@ -735,7 +683,7 @@ _OPTIONS: dict[str, _Option] = {
         "=<ip>",
         "Specify your own public address. This option can be specified multiple times",
         _CONNECTION_TITLE,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "fixedseeds": _Option(
         "",
@@ -903,7 +851,7 @@ _OPTIONS: dict[str, _Option] = {
         "(0.0.0.0/0), or all ipv6 (::/0). RFC4193 is allowed only if "
         "-cjdnsreachable=0. This option can be specified multiple times",
         _RPC_TITLE,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "rpcauth": _Option(
         "=<userpw>",
@@ -924,7 +872,7 @@ _OPTIONS: dict[str, _Option] = {
         "127.0.0.1 and ::1 i.e., localhost)",
         _RPC_TITLE,
         network_only=True,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "rpccookiefile": _Option(
         "=<loc>",
@@ -989,7 +937,7 @@ _OPTIONS: dict[str, _Option] = {
         "option can be specified multiple times to connect to multiple nodes. "
         "During startup, seednodes will be tried before dnsseeds.",
         _CONNECTION_TITLE,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
     "settings": _Option(
@@ -1079,7 +1027,7 @@ _OPTIONS: dict[str, _Option] = {
         "multiple permissions separated by commas (default: "
         "download,noban,mempool,relay). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
@@ -1092,7 +1040,7 @@ _OPTIONS: dict[str, _Option] = {
         "control whether permissions apply to incoming connections and/or "
         "manual (default: incoming only). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=_masked_address,
+        masked=masked_address,
     ),
     "whitelistforcerelay": _Option(
         "",

@@ -225,20 +225,19 @@ Core's `GetArgs` lists them: `Invalid -rpcallowip subnet specification:
 '...' (value 3 of -rpcallowip). Valid values are ...`.
 
 Core's other start-up refusals of an option's value, and its refusal of an
-argument that is not an option, quote the value whole too
-(`InvalidPortErrMsg`, `ResolveErrMsg` and `AmountErrMsg` in
-`src/common/messages.cpp` among them, at bitcoin/bitcoin@f0de87f040, the
-v32.1 tag). This node keeps Core's other words. A value that stands where a
-name belongs, as a chain, a logging category or a P2P permission, is quoted
-as a name is above, as in `Unknown chain <52 characters>.` Any other value
-but a path is written `'...'`, or `...` where Core's sentence puts it in
-parentheses, as in `Invalid minimum work specified (...), must be up to 64
-hex digits` and `Command line contains unexpected token '...', see
-btclib-node -h for a list of options.` Such a value of an option that takes
-several is also named by its position, as an `-rpcallowip` value is: `Cannot
-resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind` address that
-resolves and names no port is quoted, as Core quotes it: what resolves is a
-numeric, onion or I2P address, which a key's usual encodings are not.
+argument that is not an option, quote the value whole too (`InvalidPortErrMsg`,
+`ResolveErrMsg` and `AmountErrMsg` in `src/common/messages.cpp` among them, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other words.
+A value that stands where a name belongs, as a chain, a logging category or a
+P2P permission, is quoted as a name is above, as in `Unknown chain <52
+characters>.` Any other value but a path is written `'...'`, or `...` where
+Core's sentence puts it in parentheses, as in `Invalid minimum work specified
+(...), must be up to 64 hex digits` and `Command line contains unexpected token
+'...', see btclib-node -h for a list of options.` Such a value of an option
+that takes several is also named by its position, as an `-rpcallowip` value is:
+`Cannot resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind`
+address that names no port is quoted, as Core quotes it, where the log of the
+settings below writes an address whole.
 
 Core's start-up refusals of a path write it whole, a key given by mistake
 in place of an option's value included (`InitConfig` in
@@ -268,12 +267,26 @@ negative's value is `'...'`, as in `Parsed potentially confusing
 double-negative -listen='...'`, except `0`, written whole as Core writes it:
 `-listen=0` for `-nolisten=0`. A `-test` value is quoted as a name, so that a
 key there is written `<52 characters>` between Core's quotes, except a name
-Core's `TEST_OPTIONS_DOC` lists, which is written whole. An RPC host that
-resolves is written whole, as a `-whitebind` address is; any other is `'...'`,
-and an `-rpcbind` value is also named by its position: `Could not bind RPC on
-address '...' (value 2 of -rpcbind) port 8332: Address lookup failed.` A notify
-command is `...`, followed by the option it is the value of: `runCommand error:
-system(...) returned 1 (value 2 of -shutdownnotify)`.
+Core's `TEST_OPTIONS_DOC` lists, which is written whole. An RPC host is written
+whole where it looks up and the log of the settings below writes it whole, and
+so is the address it resolves to, which Core writes where a bind fails
+(`src/httpserver.cpp:1375`). Any other host is `'...'` in each of these lines,
+the failed bind's included, and an `-rpcbind` value is also named by its
+position: `Could not bind RPC on address '...' (value 2 of -rpcbind) port 8332:
+Address lookup failed.` A notify command is `...`, followed by the option it is
+the value of: `runCommand error: system(...) returned 1 (value 2 of
+-shutdownnotify)`.
+
+Core writes a peer's destination whole, a key given by mistake in its place
+included, in a debug line where the destination resolves to an invalid address,
+and in an info line where it resolves to an address already connected
+(`ConnectNode` in `src/net.cpp:421` and `:427`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag). The destination is the value of an option or of an RPC's
+argument, as of `-connect` or `addnode`. This node writes it as the log of the
+settings below writes an address, in those lines and in its own lines of a
+destination already connected by name and of a dial that does not come up:
+`Dial to '...' did not come up`. So a DNS name is `'...'` too, and these lines
+do not say which name was dialled.
 
 Core's log of the settings writes every value whole but a `SENSITIVE`
 option's from the configuration file or the command line, which it writes
