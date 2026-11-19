@@ -3204,6 +3204,18 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
     # v32.1 tag)
     rpcservertimeout = _rpcservertimeout(settings, server=server)
+    # `-rpcallowip`, which `InitHTTPAllowList` and `GetBindAddresses`
+    # read (`src/httpserver.cpp`, same sha), and `-rpcauth`,
+    # `-rpcwhitelist` and `-rpcwhitelistdefault`, which
+    # `InitRPCAuthentication` reads (`src/httprpc.cpp`, same sha):
+    # `AppInitMain` reaches both only under `-server`, so with the server
+    # off a value Core's `GetArgs` or `GetBoolArg` would refuse is not
+    # read (ISS 2538)
+    rpc_on = server is not False
+    rpcallowip = _get_args(settings, "rpcallowip") if rpc_on else []
+    rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
+    rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
+    rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None
 
     return Config(
         chain=before.chain,
@@ -3215,7 +3227,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         bind=bind,
         whitebind=whitebind,
         externalip=externalip,
-        rpcallowip=_get_args(settings, "rpcallowip"),
+        rpcallowip=rpcallowip,
         whitelist=_get_args(settings, "whitelist"),
         whitelist_relay=whitelist_relay,
         whitelist_force_relay=bool(_get_bool(settings, "whitelistforcerelay")),
@@ -3271,13 +3283,13 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         accept_stale_fee_estimates=bool(_get_bool(settings, "acceptstalefeeestimates")),
         deterministic_addrman="addrman" in _get_args(settings, "test"),
         check_addrman=_get_check_addrman(settings),
-        rpcauth=_get_args(settings, "rpcauth"),
+        rpcauth=rpcauth,
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
         rpccookiefile=rpccookiefile,
         rpccookieperms=_get_arg(settings, "rpccookieperms"),
-        rpcwhitelist=_get_args(settings, "rpcwhitelist"),
-        rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
+        rpcwhitelist=rpcwhitelist,
+        rpcwhitelistdefault=rpcwhitelistdefault,
         log_warnings=settings.log_warnings,
         section_warning=settings.section_warning,
         debug_warnings=settings.debug_warnings,
