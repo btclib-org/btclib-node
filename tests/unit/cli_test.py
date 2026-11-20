@@ -1183,16 +1183,26 @@ def test_build_config_skips_rpcservertimeout_when_server_is_off(
     assert config.rpcservertimeout == 30
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
 def test_build_config_reads_rpcservertimeout_when_server_is_on(
     tmp_path: Path,
+    argv: tuple[str, ...],
 ) -> None:
-    """ISS 2500: with `-server` on by default, out of range is refused."""
+    """ISS 2500: with `-server` on, out of range is refused.
+
+    `-server` unset is the default; `-server=1` and `-server` set it on
+    explicitly (ISS 2588).
+    """
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "settings.json").write_text(
         '{"rpcservertimeout": 9223372036854775808}', encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
-        _build(tmp_path, "-regtest")
+        _build(tmp_path, *argv)
 
 
 _SERVER_ONLY_RPC_OPTIONS = [
@@ -1227,10 +1237,19 @@ def test_build_config_skips_rpc_options_when_server_is_off(
 
 
 @pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
 def test_build_config_reads_rpc_options_when_server_is_on(
-    tmp_path: Path, name: str
+    tmp_path: Path, name: str, argv: tuple[str, ...]
 ) -> None:
-    """ISS 2538: with `-server` on by default, a number is refused."""
+    """ISS 2538: with `-server` on, a number is refused.
+
+    `-server` unset is the default; `-server=1` and `-server` set it on
+    explicitly (ISS 2588).
+    """
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "settings.json").write_text(
         f'{{"{name}": 5}}', encoding="utf-8"
@@ -1238,7 +1257,7 @@ def test_build_config_reads_rpc_options_when_server_is_on(
     with pytest.raises(
         ValueError, match=r"^JSON value of type number is not of expected type string$"
     ):
-        _build(tmp_path, "-regtest")
+        _build(tmp_path, *argv)
 
 
 def test_help_names_rpcservertimeout_under_debug_alone() -> None:
