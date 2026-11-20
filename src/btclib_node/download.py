@@ -925,8 +925,8 @@ class DownloadManager:
     def _request_wanted_txs(self) -> None:
         """Track what peers announced, and ask each peer for what is its turn.
 
-        Core's `AddTxAnnouncement` for every announcement in `inv_txs`,
-        then `GetRequestsToSend` and the `getdata` of `SendMessages` for
+        Core's `AddTxAnnouncement` for every announcement in `inv_txs`, once
+        each, then `GetRequestsToSend` and the `getdata` of `SendMessages` for
         every peer (`node/txdownloadman_impl.cpp` and
         `net_processing.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag). A transaction is asked for of one announcer at a time, and
@@ -945,7 +945,12 @@ class DownloadManager:
                 self.orphanage.erase_for_peer(peer)
         now = clock.now()
         wtxid_peers = sum(conn.wtxidrelay_received for conn in connections.values())
-        for conn_id, announced, txid in self.inv_txs:
+        # One pass reads every `inv` received since the last, where Core
+        # handles each as it comes. A peer's repeat of an announcement in
+        # the pass gets the answer its first got, so it is taken once: a
+        # peer declined as a resolver of an orphan is never recorded as its
+        # announcer, and would pay for the parent lookups at each repeat.
+        for conn_id, announced, txid in dict.fromkeys(self.inv_txs):
             conn = connections.get(conn_id)
             if conn is not None:
                 self._add_tx_announcement(conn, announced, now, wtxid_peers, txid=txid)
