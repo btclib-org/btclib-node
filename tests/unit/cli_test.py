@@ -1195,6 +1195,52 @@ def test_build_config_reads_rpcservertimeout_when_server_is_on(
         _build(tmp_path, "-regtest")
 
 
+_SERVER_ONLY_RPC_OPTIONS = [
+    "rpcallowip",
+    "rpcauth",
+    "rpcwhitelist",
+    "rpcwhitelistdefault",
+]
+
+
+@pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
+def test_build_config_skips_rpc_options_when_server_is_off(
+    tmp_path: Path, name: str
+) -> None:
+    """ISS 2538: `-server=0` does not read these four, as Core does not.
+
+    `InitHTTPAllowList`, `GetBindAddresses` and `InitRPCAuthentication`
+    are their only readers, and none is reached with the HTTP server
+    off, so a number in `settings.json`, which `GetArgs` and
+    `GetBoolArg` refuse, must not refuse the start.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"{name}": 5}}', encoding="utf-8"
+    )
+    config = _build(tmp_path, "-regtest", "-server=0")
+    assert config.rpc_port is None
+    assert config.rpcallowip == ()
+    assert config.rpc_auth == ()
+    assert config.rpc_whitelist == {}
+    assert config.rpc_whitelist_default is False
+
+
+@pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
+def test_build_config_reads_rpc_options_when_server_is_on(
+    tmp_path: Path, name: str
+) -> None:
+    """ISS 2538: with `-server` on by default, a number is refused."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"{name}": 5}}', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError, match=r"^JSON value of type number is not of expected type string$"
+    ):
+        _build(tmp_path, "-regtest")
+
+
 def test_help_names_rpcservertimeout_under_debug_alone() -> None:
     """`-rpcservertimeout` is `DEBUG_ONLY` in Core, as `-regtest` is."""
     message = " ".join(cli._help_message(show_debug=True).split())
