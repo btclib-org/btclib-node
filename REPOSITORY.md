@@ -434,10 +434,14 @@ trusts. `build`, the job that calls `reusable-build.yml`, takes
 job.
 `api-break.yml` takes `pull-requests: write` on the job that calls
 `reusable-api-break.yml`, to set the label.
-`claude-review.yml` takes `pull-requests: write` to post a comment and
-`id-token: write` for the token the action mints at startup, on the
-`claude` job that calls `btclib-org/.github`'s
-`reusable-claude-review.yml`. `codeql.yml`'s `analyze` and `scorecard.yml`'s
+`claude-review.yml` takes `pull-requests: write` to post the review, its
+reactions and the reply to a mention, and `id-token: write` for the
+token the action mints at startup, on the `claude` job that calls
+`btclib-org/.github`'s `reusable-claude-review.yml`.
+`sign-off-comment.yml` takes `pull-requests: write` on its calling job,
+for the comment the called workflow keeps on a pull request whose
+commits are not all signed off.
+`codeql.yml`'s `analyze` and `scorecard.yml`'s
 `analysis` take `security-events: write` to file a SARIF as
 code-scanning alerts, and `analysis` takes `id-token: write` besides,
 for the transparency-log entry its published score rests on.
@@ -1093,10 +1097,11 @@ rather than among the facilities above: an empty store there is where the
 standard's decision shows, not a facility nobody reached for.
 
 **A switch this repository does not set.** `claude-review.yml` calls
-`btclib-org/.github`'s `reusable-claude-review.yml`, whose jobs guard on
-`vars.CLAUDE_REVIEW_ENABLED`; a variable set here would take precedence
-over one of the same name on the organization, so the repository's own
-store is read too:
+`btclib-org/.github`'s `reusable-claude-review.yml`, whose review and
+mention jobs guard on `vars.CLAUDE_REVIEW_ENABLED`; the job that clears
+a new head's reactions runs whatever it says. A variable set here would
+take precedence over one of the same name on the organization, so the
+repository's own store is read too:
 
 ```shell
 gh api repos/btclib-org/btclib-node/actions/variables --jq .total_count

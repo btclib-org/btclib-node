@@ -90,9 +90,9 @@ is what a pull request here is answered against.
 - Source: <https://github.com/btclib-org/btclib-node>
 - Releases: <https://github.com/btclib-org/btclib-node/releases>
 - [CHANGELOG.md](https://github.com/btclib-org/btclib-node/blob/main/CHANGELOG.md)
-  for what changed, and
-  [RELEASE_NOTES.md](https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md)
-  for what a release asks a user to act on. `pyproject.toml` between
+  and
+  [RELEASE_NOTES.md](https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md),
+  which hold the same section for each release. `pyproject.toml` between
   releases declares the month a cycle is open on rather than a version
   anybody can install, and `CONTRIBUTING.md`'s *A release path, and what
   it has published* is what that shape is for

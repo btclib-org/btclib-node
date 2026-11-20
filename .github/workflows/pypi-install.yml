@@ -123,7 +123,7 @@ jobs:
   # release
   wait-for-index:
     if: ${{ !github.event.pull_request.draft }}
-    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
+    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@a96ab77e0b59880c6412f62da26d3f62dfc31e0c # v2026.11.20
     with:
       package: btclib-node
       version: ${{ inputs.version }}

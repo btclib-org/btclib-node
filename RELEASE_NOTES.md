@@ -11,9 +11,12 @@
   }
 -->
 
-Notable changes are documented here.
-[CHANGELOG.md](./CHANGELOG.md) is the record behind them: this file says
-what a user has to act on, that one says what changed and why.
+Each release's section here is what its GitHub release shows. A
+release's own pull request assembles that section from the entries under
+`changelog/next/`, and writes the same section into
+[CHANGELOG.md](./CHANGELOG.md). In the sections up to v2026.11.14 this
+file says what a user has to act on, and CHANGELOG.md's section of the
+same release says what changed and why.
 
 Versions are *[calendar versions](https://calver.org/)*, `YYYY.M.D`;
 between releases `pyproject.toml` declares the month alone, which is the
