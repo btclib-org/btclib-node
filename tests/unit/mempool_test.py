@@ -476,8 +476,8 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
 
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
     """A CPFP-evicted package bumps the rolling minimum by its combined rate."""
-    # Core's own TrimToSize (src/txmempool.cpp, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) bumps the rolling
+    # Core's own TrimToSize (src/txmempool.cpp,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) bumps the rolling
     # minimum from the removed chunk's own aggregate feerate, not from
     # the worst entry's own rate alone: a low-fee parent evicted with a
     # child overpaying for it (CPFP) bumps it by their combined rate, not

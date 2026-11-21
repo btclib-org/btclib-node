@@ -104,8 +104,8 @@ _SUBSIDY = 50 * 10**8
 # carries this whole payload in its own output, and `Tx.assert_valid`
 # refuses a transaction whose stripped serialization, times
 # `WITNESS_SCALE_FACTOR`, exceeds `MAX_BLOCK_WEIGHT` -- Core's own
-# `CheckTransaction` `bad-txns-oversize` (`consensus/tx_check.cpp`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag), which refuses a
+# `CheckTransaction` `bad-txns-oversize` (`consensus/tx_check.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which refuses a
 # transaction this large too (btclib-org/btclib#2417,
 # btclib-org/btclib#2420). A full megabyte crosses that bound by the
 # coinbase's own ~100 bytes of non-payload fields; this leaves headroom

@@ -852,8 +852,8 @@ def scan_tx_out_set(
         return True
     if action == "start":
         return _start(node, params)
-    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
     # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
     # Core"; section 7 of the organization's standard, *A refusal carries
     # no secret*)

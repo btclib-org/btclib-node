@@ -2441,8 +2441,8 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     BTC/kvB rather than this tree's own sat/kvB.
     """
     mempool = node.mempool
-    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
+    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
     # beyond these: `usage`, `total_fee`, `limitclustercount`,
     # `limitclustersize`, the deprecated `fullrbf`. Each is backed by
     # something this tree does not carry -- a memory count, a persisted
@@ -2656,8 +2656,8 @@ def get_tx_out_set_info(
     if mismatches:
         raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
-        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
         # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
         # Core"; section 7 of the organization's standard, *A refusal
         # carries no secret*)
@@ -3144,8 +3144,8 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
     """
     entry = mempool.entry(wtxid)
     return {
-        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         # btclib-org/btclib-node#1757
         "vsize_adjusted": entry.vsize,
         "vsize": entry.vsize,
@@ -3691,8 +3691,8 @@ def get_raw_transaction(
             "The genesis block coinbase is not considered an ordinary "
             "transaction and cannot be retrieved",
         )
-    # `skip_type_check` (src/rpc/rawtransaction.cpp:275, at
-    # bitcoin/bitcoin@f0de87f040), so the type of
+    # `skip_type_check` (src/rpc/rawtransaction.cpp:275,
+    # at bitcoin/bitcoin@f0de87f040), so the type of
     # this argument is read here, after the genesis exception, as
     # `ParseVerbosity` reads it (`_parse_verbosity`)
     verbosity = _parse_verbosity(params, 1, default=0)
