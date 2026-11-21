@@ -15,13 +15,14 @@ name: claude-review
 # request and are required checks on main; this one deliberately is not,
 # for the reason just given.
 #
-# It is one job's work on every pull request, which is not free: the
+# Each pull request costs a review job and the short jobs that set its
+# reactions, one of which runs on a draft too, and none is free: the
 # ceiling on concurrent jobs is the organization's, and the other
 # repositories' matrices compete for the same slots. REPOSITORY.md's
 # *Plan-gated settings* has the command that reads the plan the limit is
-# documented for. It earns the slot by being short -- it reads a diff,
-# searches the tree with Grep and has no interpreter to run the pull
-# request's code -- and by skipping a draft.
+# documented for. The review earns its slot by being short -- it reads a
+# diff, searches the tree with Grep and has no interpreter to run the
+# pull request's code -- and by skipping a draft.
 #
 # Besides the Bitcoin Core source of bitcoin-core-ref below, what this
 # tree adds to the shared review is a paragraph and the tools that
@@ -52,9 +53,10 @@ name: claude-review
 
 on:
   pull_request:
-    # the type list every `pull_request` workflow here carries but the one
-    # `cancel-in-progress: false` exempts, for the reasons test.yml gives
-    # at the same key
+    # the type list every `pull_request` workflow here carries but
+    # pypi-install.yml, which `cancel-in-progress: false` exempts, and
+    # changelog-entry.yml, whose list section 10 of the organization's
+    # standard gives; for the reasons test.yml gives at the same key
     types: [opened, reopened, synchronize, ready_for_review, closed]
   # the on-demand half: somebody writes @claude in a comment on a pull
   # request, or on a line of its diff, and asks for something the automatic
@@ -76,13 +78,13 @@ permissions:
   contents: read
 
 # cancel superseded runs. At the workflow level rather than on the job,
-# which is what one calling job holding both the review and the @claude
-# answer forces: a group on that job would cover the two together, where
-# the key below has to keep them apart. A workflow-level group is claimed
-# when the run is created, before any job's `if` is read, so what the
-# `closed` type buys does not rest on whether a job an `if` skips claims
-# its own group -- unmeasurable while the switch is off, and closed
-# unmeasured in btclib-org/btclib-secp256k1#593.
+# which is what one calling job holding every job of the callee forces:
+# a group on that job would cover the review and the @claude answer
+# together, where the key below has to keep them apart. A workflow-level
+# group is claimed when the run is created, before any job's `if` is
+# read, so what the `closed` type buys does not rest on whether a job an
+# `if` skips claims its own group -- unmeasurable while the switch is
+# off, and closed unmeasured in btclib-org/btclib-secp256k1#593.
 #
 # The pull request's number keys the group only where the event is
 # `pull_request`. A `pull_request_review_comment` carries
@@ -92,7 +94,7 @@ permissions:
 # review's group and let the next push cancel it. Every other event falls
 # back to `github.run_id`, which no two runs share, so
 # cancel-in-progress is inert for a mention and one answer runs beside
-# another rather than replacing it. Not the `github.ref` the other
+# another rather than replacing it. Not the `github.ref` that other
 # workflows here fall back to, whose events outside `pull_request` are a
 # push, a schedule, a dispatch or a call; this is the one workflow here a
 # comment triggers
@@ -103,9 +105,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # no `if:` of the review's on this job. The called workflow's two jobs
-  # each decline the events that are not their own, so a condition lifted
-  # up here would take the @claude answer out with the review.
+  # no `if:` of the review's on this job. The called workflow's jobs each
+  # decline the events that are not their own, so a condition lifted up
+  # here would take the @claude answer out with the review.
   #
   # Permissions do not inherit through a call, and a called workflow's own
   # block can only downgrade what the caller granted: a scope its jobs
@@ -121,10 +123,10 @@ jobs:
     # by a comment gets no cache access, which is what actionlint's
     # cache-call-unrestricted asks for
     cache-mode: none
-    uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
+    uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@a96ab77e0b59880c6412f62da26d3f62dfc31e0c # v2026.11.20
     permissions:
       contents: read
-      pull-requests: write # posting the review, and the reply to a mention
+      pull-requests: write # the review, its reactions, the reply to a mention
       id-token: write # the OIDC token the action mints at its own startup
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

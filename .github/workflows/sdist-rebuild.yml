@@ -40,7 +40,8 @@ on:
   # file is the tag's own, so nothing else a pull request touches changes
   # the answer
   pull_request:
-    # the type list every workflow here carries, for the reasons the same
+    # the type list every `pull_request` workflow here carries but
+    # pypi-install.yml and changelog-entry.yml, for the reasons the same
     # list carries in test.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
     paths:
@@ -61,12 +62,12 @@ jobs:
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed' }}
-    uses: btclib-org/.github/.github/workflows/reusable-sdist-rebuild.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
+    uses: btclib-org/.github/.github/workflows/reusable-sdist-rebuild.yml@a96ab77e0b59880c6412f62da26d3f62dfc31e0c # v2026.11.20
     # a called workflow's own permissions: block can only downgrade, not
     # restore, what this calling job grants -- README.md section 11's
     # "the bound refuses rather than trims", measured in
-    # btclib-org/.github#912 -- so every scope the callee's job asks for
-    # is named here too, or the run fails before any job starts
+    # btclib-org/.github#912 -- so every scope any of the callee's jobs
+    # asks for is named here too, or the run fails before any job starts
     permissions:
       contents: read
       attestations: read # what `gh attestation verify` reads to check the rebuilt sdist's digest

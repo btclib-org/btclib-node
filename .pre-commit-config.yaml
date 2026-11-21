@@ -52,6 +52,16 @@ repos:
         language: pygrep
         entry: '^ *rev: "?v?([0-9]+|[0-9][0-9.]*(a|b|rc|dev)[0-9]+)"?$'
         files: ^\.pre-commit-config\.yaml$
+  # section 4's leading-dash-path is the rule, and says why each key of
+  # the stanza is what it is
+  - repo: local
+    hooks:
+      - id: leading-dash-path
+        name: a path does not begin with a dash
+        language: fail
+        entry: "a hook reads a path beginning with - as its own option: rename it"
+        files: ^-
+        types: []
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -222,7 +232,7 @@ repos:
   # it runs ahead of markdownlint-cli2 below on purpose: that hook's
   # `--fix` repairs the very seam this hook exists to name
   - repo: https://github.com/btclib-org/.github
-    rev: f88870c9246bf313eb7f200c358b49b0938d89a3  # frozen: v2026.11.14
+    rev: be094615529fe484b2f6b635cb38dd5f0068fd93  # frozen: v2026.11.20
     hooks:
       - id: check-changelog
         args: [--grandfathered, "56"]
@@ -232,105 +242,28 @@ repos:
       - id: markdownlint-cli2
         name: markdownlint-cli2 (in place fixes)
         args: [--fix]
-  # how a link destination is spelled, which markdownlint has no rule for
-  # and the documentation build depends on. docs.yml greps the built html
-  # for `href="#./`: that is what myst renders in place of a link the
-  # RootFileLinks transform in docs/source/conf.py cannot resolve -- an
-  # anchor to an id no page has, which -W reports today and would stop
-  # reporting the day suppress_warnings took myst.xref_missing back. A
-  # grep can key on one spelling, so the destinations are spelled one way
-  # and this hook is what keeps them that way, in the commit that writes
-  # the link rather than in the artifact built from it.
-  #
-  # The rule is the prefix and not the extension, and the table in
-  # btclib-org/btclib#1175 is what decides that: "DOES_NOT_EXIST.txt",
-  # "sub/DOES_NOT_EXIST.md", "DOES_NOT_EXIST" and "../DOES_NOT_EXIST.md"
-  # each reach myst's fallback, and each is missed by the union of the
-  # two greps that table names. An ".md"-scoped rule leaves all four
-  # writable. Measured on this tree by building docs/source with each of
-  # the four appended to CONTRIBUTING.md (already included by
-  # contributing_link.md): every one renders "#" followed by the bare
-  # destination -- "#DOES_NOT_EXIST.md", "#sub/DOES_NOT_EXIST.md",
-  # "#DOES_NOT_EXIST", "#../DOES_NOT_EXIST.md" -- none of them the
-  # "#./" prefix docs.yml's own grep looks for, and none reachable by
-  # widening that grep either: an autodoc anchor renders the identical
-  # shape, "#btclib_node.chains.Chain" among them.
-  #
-  # `git grep -c -- '!\[' -- '*.md'` answers `README.md` alone: the tree
-  # does carry a badge row, and the badge case the pattern below also has
-  # to survive is still not measured by it. Every destination on that row
-  # is absolute, so the scheme lookahead decides each of those lines
-  # before the lookbehind's `!` and `[` are reached, and a pattern with
-  # that half deleted leaves the row green along with the rest of the
-  # tree -- an input that cannot carry the damage rather than a test of
-  # it. The pattern itself is the organization's own
-  # (btclib-org/.github#20).
-  #
-  # "../" is permitted here too, the same as "./": what this hook
-  # checks is that a destination is explicitly relative, because that
-  # is what keeps it recognisable to myst's fallback, and "../" is as
-  # explicit as "./" is. conf.py's transform still declines a "../"
-  # target that normalizes above the repository root -- nothing above
-  # the root is a document this build can answer for -- so that shape
-  # still reaches the fallback by design and still renders
-  # href="#../page.md", the same way a declined "./" target renders
-  # href="#./page.md". reusable-docs.yml's own grep, which docs.yml
-  # calls, keys on both today (btclib-org/.github#1095), so refusing
-  # "../" here would buy nothing that check does not already catch.
-  # Whether a "../" leaves the repository -- the thing a narrower
-  # spelling here might look like it guards against -- is not this
-  # hook's question: it checks a prefix, not a destination, and
-  # cannot see past the line it is written on. links.yml's lychee is
-  # what resolves a local destination and reports one that is missing
-  # or climbs out of the root.
-  #
-  # pygrep, and the same hook in every repository of this organization
-  # (btclib-org/.github#20): there is no shared hook repository to put
-  # it in, and pinned-rev above is that arrangement already. The
-  # pattern asks for a whole `[text](destination)`, so grep output of
-  # the form `FILE.md:21:](x.md)` carries no "[" and is not matched.
-  # The lookbehind refuses a "[" preceded by a backtick, which is what
-  # lets prose quote the refused shape in a code span -- and refuses
-  # one preceded by "!" or "[" as well, so that a *quoted* badge is
-  # escaped whole: without those two the scan would re-enter at the
-  # image inside it and report the src. The leading "!?" is what keeps
-  # a standalone image's own src checked despite that.
-  #
-  # A reference definition is a link too, and the second branch is for
-  # it: "[label]: page.md" renders the same fallback as the inline
-  # form, carries no "(", so the first branch cannot see it. That
-  # branch is anchored at the start of the line, which is what keeps it
-  # off a *use* site such as "[label][ref]: the" appearing in prose. At
-  # most three leading spaces, four making the line an indented code
-  # block rather than a definition.
-  #
-  # What pygrep cannot see is a fenced block, being line based -- an
-  # example of the refused shape inside one fails this hook, and the
-  # code span is the way round it
+  # how a link destination is spelled, which markdownlint has no rule
+  # for. Section 4 of the organization's standard is the rule, why the
+  # prefix and not the extension, what the script reads and what it
+  # cannot see, and why each tree runs its own copy, which section 14
+  # lists. The pin is the standard's test group's
   - repo: local
     hooks:
       - id: local-link-prefix
         name: a local markdown link destination begins with ./ or ../
-        language: pygrep
-        # one line, and no literal space in it -- "\x20" is the space the
-        # reference branch allows -- so yamllint reads the value as a
-        # single unbreakable word, which its line-length rule exempts. A
-        # block scalar rather than a quoted one for the same reason it is
-        # not a folded one: folding joins lines with a space, which would
-        # land inside the regex
-        entry: |-
-          (?<![`!\[])(?:!?\[(?:[^]]|\]\([^)]*\))*\]\(|^\x20{0,3}\[[^]]+\]:\s*)(?!\.\.?/|#|[A-Za-z][A-Za-z0-9+.-]*:)[^)\s]
+        entry: python .github/scripts/check_link_destinations.py --prefixed --
+        language: python
+        additional_dependencies: [markdown-it-py==4.3.0]
         types: [markdown]
         exclude: ^README\.md$
       # the root README.md is the package's page on the index, where a
       # relative link reaches nothing: section 2 of the organization's
-      # standard is the rule. This hook runs the pattern above without
-      # its exemption for "./" and "../"
+      # standard is the rule
       - id: readme-absolute-link
         name: the root README.md links a file of the tree absolutely
-        language: pygrep
-        entry: |-
-          (?<![`!\[])(?:!?\[(?:[^]]|\]\([^)]*\))*\]\(|^\x20{0,3}\[[^]]+\]:\s*)(?!#|[A-Za-z][A-Za-z0-9+.-]*:)[^)\s]
+        entry: python .github/scripts/check_link_destinations.py --absolute --
+        language: python
+        additional_dependencies: [markdown-it-py==4.3.0]
         files: ^README\.md$
         types: [markdown]
       # a line that ends inside a word, at that word's own hyphen.
@@ -358,8 +291,11 @@ repos:
       # around its `=`, so a line carrying one is another language's
       # value; and a quote inside a quote of the other kind is a nested
       # program's -- both read off one line, which is also where the
-      # three blind spots come from. Same `\x20` as above, and the same
-      # reason.
+      # three blind spots come from. The value is one line with no
+      # literal space in it, `\x20` being the space, so that yamllint
+      # reads it as a single unbreakable word, which its line-length rule
+      # exempts; and a block scalar, since a folded one joins its lines
+      # with a space, which would land inside the regex.
       # `CHANGELOG.md` and `RELEASE_NOTES.md` are out of reach because
       # section 9 makes them append-only: a refused shape in an entry
       # that has landed has no repair, and there would be no green state
@@ -383,7 +319,7 @@ repos:
     hooks:
       - id: prettier
         name: prettier (yaml and jsonc, in place fixes)
-        files: ^(.*\.ya?ml|\.vscode/.*\.json|\.markdownlint\.jsonc)$
+        files: ^(.*\.ya?ml|\.vscode/.*\.json|(changelog/next/)?\.markdownlint\.jsonc)$
         # not the gate itself: section 4 of the organization's standard says why
         exclude: ^\.pre-commit-config\.yaml$
   # the same for toml, which here is pyproject.toml: .taplo.toml holds
@@ -553,7 +489,7 @@ repos:
       # section 4 of the standard, its bare-sourcery-skip bullet, is the
       # rule. pygrep reads bytes, so \s and \w are ASCII there and \W
       # takes in a non-breaking space; a block scalar with no literal
-      # space, as local-link-prefix's, for the same reason
+      # space, as unquoted-placeholder's, for the same reason
       - id: bare-sourcery-skip
         name: a sourcery skip names rules, and no tag
         language: pygrep

@@ -34,7 +34,8 @@ on:
   # Harmless -- it gates nothing -- but it does mean a host having a bad
   # afternoon can go red on a push that changed no link at all
   pull_request:
-    # the type list every workflow here carries, for the reasons the same
+    # the type list every `pull_request` workflow here carries but
+    # pypi-install.yml and changelog-entry.yml, for the reasons the same
     # list carries in test.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
     paths:
@@ -63,6 +64,6 @@ jobs:
   # 10 of the organization's standard); what stays here is the trigger, the
   # schedule and which files are this tree's documentation
   links:
-    uses: btclib-org/.github/.github/workflows/reusable-links.yml@cb5a79443399980ba717df2dea23dbedf6bdbc3a # v2026.11.12
+    uses: btclib-org/.github/.github/workflows/reusable-links.yml@a96ab77e0b59880c6412f62da26d3f62dfc31e0c # v2026.11.20
     with:
       targets: '"**/*.md" ".github/**/*.md" ".claude/**/*.md" "docs/**/*.rst"'

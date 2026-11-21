@@ -261,9 +261,8 @@ homepage = "https://btclib.org/btclib-node/"
 documentation = "https://btclib-node.readthedocs.io/"
 download = "https://github.com/btclib-org/btclib-node/releases"
 # RELEASE_NOTES.md and not CHANGELOG.md: this url is what an index puts
-# behind "Changelog", and what a user following it wants is the release
-# notes, not the record behind them. CHANGELOG.md is linked from the
-# first lines of that file
+# behind "Changelog", and RELEASE_NOTES.md's section is the one the GitHub
+# release shows. CHANGELOG.md is linked from the first lines of that file
 changelog = "https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md"
 repository = "https://github.com/btclib-org/btclib-node"
 issues = "https://github.com/btclib-org/btclib-node/issues"
@@ -675,6 +674,9 @@ git-only = [
     ".prettierignore",
     ".vscode/",
     "COPYRIGHT",
+    # the entries a release assembles into CHANGELOG.md and
+    # RELEASE_NOTES.md, which the sdist carries
+    "changelog/",
 ]
 
 [tool.check-wheel-contents]
@@ -949,11 +951,15 @@ branch = true
 # test there (`tests/README.md`'s *Slow tests*), and `slow.yml` runs them.
 # `tests/*/_data/*` is upstream's code, vendored byte for byte
 # (tests/_data/README.md): it is not this tree's to cover.
+# `.github/scripts/check_link_destinations.py` is a copy section 14 of
+# the organization's standard compares, tested where its canonical copy
+# is (section 8 of the standard).
 omit = [
     "*/site-packages/*",
     "tests/integration/*",
     "tests/slow/*",
     "tests/*/_data/*",
+    ".github/scripts/check_link_destinations.py",
 ]
 
 [tool.coverage.report]
@@ -1191,6 +1197,10 @@ ignore = [
 # and the same for the citation pin check: the pre-commit hook that
 # runs it reads a failing developer's terminal, not a return value
 ".github/scripts/check_core_citation_pin.py" = ["T20"]
+# a copy section 14 of the organization's standard keeps byte for
+# byte: what it prints is the report the link hooks show
+# (btclib-org/.github#2377)
+".github/scripts/check_link_destinations.py" = ["T20"]
 # every __init__ in this file is one line, super().__init__(message) or
 # a formatted message built from its own arguments -- what it does is
 # already the whole of what the class's own docstring says, so a

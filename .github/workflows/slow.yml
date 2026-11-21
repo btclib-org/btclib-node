@@ -23,7 +23,8 @@ on:
     - cron: "20 3 * * 5"
   workflow_dispatch:
   pull_request:
-    # the type list every workflow here carries, for the reasons the same
+    # the type list every `pull_request` workflow here carries but
+    # pypi-install.yml and changelog-entry.yml, for the reasons the same
     # list carries in test.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
     paths:
