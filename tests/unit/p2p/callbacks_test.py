@@ -4355,6 +4355,56 @@ def test_a_transaction_inv_is_read_in_the_peer_s_own_relay_mode(
     assert node.download_manager.inv_txs == [(4, kept, not by_wtxid)]
 
 
+_A, _B = a_hash(1), a_hash(2)
+_TX, _WTX, _WITNESS_TX = (
+    InventoryType.MSG_TX,
+    InventoryType.MSG_WTX,
+    InventoryType.MSG_WITNESS_TX,
+)
+
+
+@pytest.mark.parametrize(
+    ("by_wtxid", "kinds", "queued"),
+    [
+        (
+            False,
+            [(_WTX, _A), (_TX, _A), (_TX, _B), (_TX, _A), (_TX, _B)],
+            [(_A, True), (_B, True)],
+        ),
+        (
+            True,
+            [(_TX, _A), (_WTX, _A), (_WTX, _B), (_WTX, _A), (_WTX, _B)],
+            [(_A, False), (_B, False)],
+        ),
+        (False, [(_TX, _A), (_TX, _B), (_TX, _A)], [(_A, True), (_B, True)]),
+        (False, [(_TX, _A), (_WITNESS_TX, _A)], [(_A, True)]),
+        (False, [(_WITNESS_TX, _A), (_TX, _A)], [(_A, True)]),
+        (True, [(_WITNESS_TX, _A), (_WTX, _A)], [(_A, True), (_A, False)]),
+        (True, [(_WTX, _A), (_WITNESS_TX, _A)], [(_A, False), (_A, True)]),
+    ],
+)
+def test_a_transaction_inv_queues_each_hash_once(
+    *,
+    by_wtxid: bool,
+    kinds: list[tuple[InventoryType, bytes]],
+    queued: list[tuple[bytes, bool]],
+) -> None:
+    """Core takes the first item of each hash and kind in one `inv`.
+
+    `MSG_TX` and `MSG_WITNESS_TX` are one kind, the txids, and `MSG_WTX`
+    the other. A skipped item counts for neither, and the next `inv` starts
+    afresh (`test_duplicate_tx_inv` in `test/functional/p2p_tx_download.py`,
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    node = a_data_node()
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    message = Inv([Inventory(kind, h) for kind, h in kinds]).serialize()
+    inv(node, message, peer)
+    inv(node, message, peer)
+    expected = [(4, h, txid) for h, txid in queued]
+    assert node.download_manager.inv_txs == expected * 2
+
+
 @pytest.mark.parametrize(
     ("kinds", "services"),
     [
