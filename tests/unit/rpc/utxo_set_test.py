@@ -1204,6 +1204,22 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("/x", "wpkh(): Key path value 'x' is not a valid uint32"),
+        ("/2147483648", "wpkh(): Key path value 2147483648 is out of range"),
+        ("/0/* ", "wpkh(): Key path value '* ' is not a valid uint32"),
+    ],
+    ids=["not-a-number", "out-of-range", "space"],
+)
+def test_a_key_path_element_core_refuses_answers_core_s_message(
+    node: Node, path: str, message: str
+) -> None:
+    """ISS 2550: `ParseKeyPathElement` names the element it refuses."""
+    assert refusal(node, "start", [f"wpkh({TPUB}{path})"]) == (-5, message)
+
+
 # Each where Core first refuses what `_parse` gives no message of its own
 # for: an expression no function reads, before a key or not, a threshold,
 # a key origin or a key path, or a miniscript outside wsh() and tr(),
@@ -1219,7 +1235,6 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
         f"tr({X_ONLY},foo)",
         f"wsh(multi( 1,{KEY}))",
         f"wpkh( [deadbeef]{KEY})",
-        f"wpkh({TPUB}/0/* )",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wpkh([deadbeef]]{H160})",
         f"sh(and_v(v:pk({KEY}),pk({KEY2})))",

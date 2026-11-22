@@ -142,6 +142,8 @@ _BTCLIB_KEY_REFUSALS = (
     "musig() derivation requires every participant to be extended",
     "Too many ')' in musig() expression",
     "missing ']' in the key origin",
+    "invalid derivation index",
+    "invalid index",
     "Key is invalid due to whitespace",
     "key is not valid",
     "key: WIF prefix",
@@ -531,6 +533,41 @@ def _key_item(text: str) -> str | None:
     return text[origin.end() :].partition("/")[0]
 
 
+# `ParseKeyPathElement`'s message for a path element that is no number, and
+# for one past `BIP32_HARDENED_FLAG` (`src/util/bip32.cpp`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+_UINT32 = re.compile("[0-9]+")
+_HARDENED_FLAG = 2**31
+
+# the elements `ParseDeriveType` reads as the range rather than a number
+_RANGE_ELEMENTS = frozenset({"*", "*'", "*h"})
+
+
+def _path_refusal(text: str) -> str | None:
+    """Return Core's message for the first key path element it refuses.
+
+    `text` is one key expression. Core splits it at `/`, reads the element
+    before each later one as `ParseKeyPathElement` does: an optional `'` or
+    `h` makes it hardened, the rest must be all digits and below
+    `BIP32_HARDENED_FLAG`; a multipath element and the range stand.
+    """
+    path = text.partition("]")[2] if "]" in text else text
+    at = path.find("/")
+    if at < 0:
+        return None
+    for element in path[at:].split("/")[1:]:
+        if element in _RANGE_ELEMENTS or (
+            element.startswith("<") and element.endswith(">")
+        ):
+            continue
+        raw = element[:-1] if element.endswith(("'", "h")) else element
+        if not _UINT32.fullmatch(raw):
+            return f"Key path value '{element}' is not a valid uint32"
+        if int(raw) >= _HARDENED_FLAG:
+            return f"Key path value {int(raw)} is out of range"
+    return None
+
+
 def _is_extended_key(key: str, network: str) -> bool:
     """Say whether `key` is an xpub or an xprv of `network`.
 
@@ -580,7 +617,10 @@ def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
         return "Key '...' is invalid due to whitespace"
     if key == text.rpartition("]")[2]:
         return _pathless_key_refusal(key, _key_context(calls), network)
-    return None if _is_extended_key(key, network) else _NO_KEY
+    # Core reads the key before its path: a key it refuses answers first
+    if not _is_extended_key(key, network):
+        return _NO_KEY
+    return _path_refusal(text)
 
 
 def _pathless_key_refusal(key: str, ctx: str, network: str) -> str | None:
