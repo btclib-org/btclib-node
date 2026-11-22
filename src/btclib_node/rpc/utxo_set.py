@@ -142,6 +142,7 @@ _BTCLIB_KEY_REFUSALS = (
     "musig() derivation requires every participant to be extended",
     "Too many ')' in musig() expression",
     "missing ']' in the key origin",
+    "'[' that opens a key origin",
     "Key is invalid due to whitespace",
     "key is not valid",
     "key: WIF prefix",
@@ -573,7 +574,13 @@ def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
     """
     key = _key_item(text)
     if key is None:
-        return ""
+        head = text.partition("]")[0]
+        if head.startswith("["):
+            return ""
+        got = head[0] if head else "]"
+        return (
+            f"Key origin start '[ character expected but not found, got '{got}' instead"
+        )
     if not key:
         return "No key provided"
     if key[0] in _SPACES or key[-1] in _SPACES:

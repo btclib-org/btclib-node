@@ -1204,6 +1204,18 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
+    """ISS 2552: `ParsePubkey` names the character it found in place of `[`."""
+    text = f"wpkh( [deadbeef]{KEY})"
+    assert refusal(node, "start", [text]) == (
+        -5,
+        (
+            "wpkh(): Key origin start '[ character expected but not found, "
+            "got ' ' instead"
+        ),
+    )
+
+
 # Each where Core first refuses what `_parse` gives no message of its own
 # for: an expression no function reads, before a key or not, a threshold,
 # a key origin or a key path, or a miniscript outside wsh() and tr(),
@@ -1218,7 +1230,6 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
         f"tr({X_ONLY},{NOT_A_POINT})",
         f"tr({X_ONLY},foo)",
         f"wsh(multi( 1,{KEY}))",
-        f"wpkh( [deadbeef]{KEY})",
         f"wpkh({TPUB}/0/* )",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wpkh([deadbeef]]{H160})",
