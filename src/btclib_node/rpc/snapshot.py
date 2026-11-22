@@ -56,7 +56,7 @@ from btclib.hashes import sha256
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.utxo_index import UtxoIndex
-from btclib_node.constants import quoted_name
+from btclib_node.constants import quoted_name, shown_path
 from btclib_node.db import KeyValueStore
 from btclib_node.rpc.errors import (
     RpcError,
@@ -290,11 +290,15 @@ def dump_tx_out_set(
     chain_tx_count, height = yield from _counted(node, target)
     try:
         file = temp_path.open("wb")
-    except OSError as err:
+    except OSError:
+        # raised outside the `except`, so that the `OSError` naming the
+        # path whole is no part of the caller's refusal, chained or not
+        file = None
+    if file is None:
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"Couldn't open file {temp_path} for writing.",
-        ) from err
+            f"Couldn't open file {shown_path(temp_path)} for writing.",
+        )
     with file:
         result = yield from _rolled_back_write(node, height, options, file, temp_path)
     temp_path.replace(path)
@@ -305,8 +309,8 @@ def _exists(path: Path) -> RpcError:
     """Return Core's refusal of a `path` that exists and is not a pipe."""
     return RpcError(
         RPCErrorCode.INVALID_PARAMETER,
-        f"{path} already exists. If you are sure this is what you want, "
-        "move it out of the way first",
+        f"{shown_path(path)} already exists. If you are sure this is what you "
+        "want, move it out of the way first",
     )
 
 
@@ -351,20 +355,28 @@ def _open_pipe(node: Node, path: Path) -> Generator[bool, None, BinaryIO]:
     """
     while True:
         _interruption_point(node)
+        fd = -1
+        failure: OSError | None = None
         try:
             fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
         except OSError as err:
             if err.errno != errno.ENXIO:
-                raise RpcError(
-                    RPCErrorCode.INVALID_PARAMETER,
-                    f"Couldn't open file {path} for writing.",
-                ) from err
-            yield False
-        else:
-            if not stat.S_ISFIFO(os.fstat(fd).st_mode):
-                os.close(fd)
-                raise _exists(path)
-            return os.fdopen(fd, "wb", buffering=0)
+                failure = err
+            else:
+                yield False
+        # raised outside the `except`, so that the `OSError` naming the
+        # path whole is no part of the caller's refusal, chained or not
+        if failure is not None:
+            raise RpcError(
+                RPCErrorCode.INVALID_PARAMETER,
+                f"Couldn't open file {shown_path(path)} for writing.",
+            )
+        if fd < 0:
+            continue
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise _exists(path)
+        return os.fdopen(fd, "wb", buffering=0)
 
 
 def _put(node: Node, file: Any, data: bytes) -> Generator[bool]:  # noqa: ANN401

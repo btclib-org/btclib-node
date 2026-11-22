@@ -211,6 +211,13 @@ that `testmempoolaccept` or `submitpackage` cannot decode is named by its
 index, in the words of Core's `combinerawtransaction`: `TX decode failed
 for tx 1. Make sure the tx has at least one input.`
 
+Core's `dumptxoutset` refusals quote the path it was given whole, a key
+given by mistake in its place included (`src/rpc/blockchain.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words and writes the path by its length: `<52 characters> already exists.
+If you are sure this is what you want, move it out of the way first` and
+`Couldn't open file <64 characters> for writing.`
+
 Core's start-up refusals of an `-rpccookieperms` and an `-rpcallowip` value
 quote the value whole, a key given by mistake in its place included
 (`InitRPCAuthentication` in `src/httprpc.cpp:260` and `InitHTTPAllowList`

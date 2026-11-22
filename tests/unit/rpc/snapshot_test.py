@@ -502,11 +502,34 @@ def test_an_existing_path_is_not_overwritten(node: Node) -> None:
     (node.data_dir / "there.dat").write_bytes(b"x")
     code, message = refusal(node, "there.dat", "latest")
     assert code == -8
+    target = node.data_dir / "there.dat"
     assert message == (
-        f"{node.data_dir / 'there.dat'} already exists. If you are sure this "
+        f"<{len(str(target))} characters> already exists. If you are sure this "
         "is what you want, move it out of the way first"
     )
     assert (node.data_dir / "there.dat").read_bytes() == b"x"
+
+
+def test_a_key_given_as_the_path_is_not_in_the_refusal(node: Node) -> None:
+    """ISS 2535: each path is written by its length, never whole."""
+    mine(node)
+    target = node.data_dir / LEAK_WIF
+    target.write_bytes(b"x")
+    with pytest.raises(RpcError) as caught:
+        dump(node, str(target), "latest")
+    assert caught.value.message == (
+        f"<{len(str(target))} characters> already exists. If you are sure this "
+        "is what you want, move it out of the way first"
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
+    missing = node.data_dir / LEAK_WIF / "x.dat"
+    with pytest.raises(RpcError) as caught:
+        dump(node, str(missing), "latest")
+    assert caught.value.message == (
+        f"Couldn't open file <{len(str(missing)) + len('.incomplete')} "
+        "characters> for writing."
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
 
 
 def test_a_path_that_cannot_be_opened_is_refused(node: Node) -> None:
@@ -515,7 +538,10 @@ def test_a_path_that_cannot_be_opened_is_refused(node: Node) -> None:
     target = node.data_dir / "no" / "such" / "dir" / "x.dat"
     assert refusal(node, str(target), "latest") == (
         -8,
-        f"Couldn't open file {target}.incomplete for writing.",
+        (
+            f"Couldn't open file <{len(str(target)) + len('.incomplete')} "
+            "characters> for writing."
+        ),
     )
 
 
@@ -964,8 +990,8 @@ def test_a_named_pipe_replaced_by_a_file_while_awaited_is_refused(
     assert (int(caught.value.code), caught.value.message) == (
         -8,
         (
-            f"{pipe} already exists. If you are sure this is what you want, "
-            "move it out of the way first"
+            f"<{len(str(pipe))} characters> already exists. If you are sure this "
+            "is what you want, move it out of the way first"
         ),
     )
     assert pipe.read_bytes() == b"kept"
@@ -983,5 +1009,5 @@ def test_a_named_pipe_that_cannot_be_opened_is_refused(
     monkeypatch.setattr(os, "open", denied)
     assert refusal(node, str(pipe), "latest") == (
         -8,
-        f"Couldn't open file {pipe} for writing.",
+        f"Couldn't open file <{len(str(pipe))} characters> for writing.",
     )
