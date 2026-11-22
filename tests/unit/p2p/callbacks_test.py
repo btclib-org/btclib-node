@@ -3194,7 +3194,8 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
     """`tx` has no catch of its own for `ChainstateInconsistencyError`.
 
     Unlike `MissingPrevoutError` above, it propagates uncaught, for
-    `handle_p2p`'s own generic catch to stop the one connection without
+    `p2p.main._dispatch`'s own generic catch to stop the one connection
+    without
     discouraging the peer --
     `test_a_callback_that_raises_drops_the_peer` (`p2p/main_test.py`)
     already proves that half by type, `ChainstateInconsistencyError`
@@ -3570,7 +3571,7 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) refuses exactly this
     shape with `BLOCK_MISSING_PREV`, and `MaybePunishNodeForBlock`
     (`net_processing.cpp`, same sha) calls `Misbehaving` for it --
-    `MisbehavingError` here is what `main.handle_p2p`'s own `except`
+    `MisbehavingError` here is what `p2p.main._dispatch`'s own `except`
     answers by discouraging and dropping the peer
     (`test_a_callback_that_raises_a_btclib_exception_costs_the_peer`,
     `p2p/main_test.py`, covers that mechanics generically). A `KeyError`

@@ -703,7 +703,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     """A mempool candidate failing a consensus check drops the tx, not the peer.
 
     Unlike the two tests above, whose stand-in callback raises straight
-    into `handle_p2p`'s own generic catch: `tx` (`p2p/callbacks.py`) is
+    into `_dispatch`'s own generic catch: `tx` (`p2p/callbacks.py`) is
     the real callback here, dispatched exactly as `callbacks["tx"]`
     reaches it, so its own `except BTClibValueError` is what has to
     keep this from ever reaching that catch at all. Core does not
