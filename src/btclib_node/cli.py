@@ -189,6 +189,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 (`src/common/args.cpp`, same sha): `_interpret_bool` below.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -3008,8 +3009,15 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     the `Node` holds its own.
     """
     blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
-    directories.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
-    blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
+    # each made only where missing, as `fs::create_directories` is called:
+    # a path that is a file, or one below a file, is left for
+    # `LockDirectory` below to refuse in Core's words ("Cannot write to
+    # directory ...; check permissions."), where `mkdir` would raise an
+    # `OSError` `main` does not catch, its text naming the path whole
+    # (ISS 2536)
+    for directory in (directories.data_dir, blocks_dir):
+        with contextlib.suppress(OSError):
+            directory.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
     default_dir = default_data_dir().absolute() / directories.chain.name
     return lock_directories(
         (directories.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))

@@ -3159,6 +3159,31 @@ def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
         cli.build_config([f"-datadir={datadir}"])
 
 
+@pytest.mark.usefixtures("no_node")
+def test_main_a_chain_directory_that_is_a_file_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2536: Core's `Cannot write to directory`, the path by its length.
+
+    A chain directory that is a regular file is `LockDirectory`'s
+    `ErrorWrite`, refused as Core refuses it, where `_lock`'s `mkdir`
+    raised an `OSError` naming the `-datadir` path whole.
+    """
+    datadir = tmp_path / LEAK
+    datadir.mkdir()
+    chain_dir = datadir / "regtest"
+    chain_dir.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={datadir}", "-regtest", "-nosettings"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert err == (
+        f"Error: Cannot write to directory <{len(str(chain_dir))} characters>; "
+        "check permissions.\n"
+    )
+    assert_secret_free(ValueError(err), [LEAK])
+
+
 def test_build_config_datadir_parent_is_a_file_raises(tmp_path: Path) -> None:
     """`-datadir` naming a path a file blocks higher up is refused too."""
     blocker = tmp_path / "not-a-dir"
