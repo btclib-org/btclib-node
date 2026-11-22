@@ -1163,8 +1163,9 @@ def _submitted_body_refusal(
     A header failing its proof of work is refused as `high-hash`, the reason
     `block_index.check_headers_pow` gives it: Core's `CheckBlock` asks
     `CheckBlockHeader` before anything of the body. A body failing
-    `main.assert_valid_block_proof` (on signet, its solution) is refused for
-    it, and nothing is marked: Core asks it in `CheckBlock`, and
+    `main.assert_valid_block_proof` (on signet, its solution) is refused with
+    Core's reason alone, `bad-signet-blksig`, the detail Core keeps as the
+    debug message, and nothing is marked: Core asks it in `CheckBlock`, and
     `ProcessNewBlock` marks nothing for a body failing that. A body failing
     the rest of `CheckBlock` is refused with Core's word where
     `mining.check_block_reason` has one, and nothing is marked either. A
@@ -1184,7 +1185,11 @@ def _submitted_body_refusal(
         check_headers_pow([block.header], node.chain.pow_limit_bits)
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
-        return str(error)
+        # `CheckBlock` answers the reason alone, dropping the detail it
+        # logs apart, as `BIP22ValidationResult` answers it
+        # (`src/rpc/mining.cpp`, same sha); `block_reject_reason` does
+        # that for Core's words
+        return block_reject_reason(error)
     # `CheckBlock` first: a body that was never indexed has no parent here
     # to read a height from
     if (reason := check_block_reason(block, check_merkle_root=True)) is not None:
