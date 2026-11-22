@@ -2560,7 +2560,9 @@ def test_a_key_given_as_a_bind_is_not_in_the_family_refusal(
     An I2P host's label is written back in lowercase base32, so a key given
     there would be the key again.
     """
-    manager = a_manager(**{option: [value]})
+    manager = (
+        a_manager(bind=[value]) if option == "bind" else a_manager(whitebind=[value])
+    )
     with pytest.raises(OSError, match="Bind address family") as raised:
         manager._bind()
     assert str(raised.value) == (
