@@ -1204,6 +1204,19 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+@pytest.mark.parametrize("character", ["\t", "\n"], ids=["tab", "newline"])
+def test_a_character_outside_the_descriptor_set_is_refused(
+    node: Node, character: str
+) -> None:
+    """ISS 2551: Core's `DescriptorChecksum` refuses the payload.
+
+    bitcoind v32.1.0 on regtest answered "Invalid characters in payload"
+    for each.
+    """
+    text = f"wpkh({character}{KEY})"
+    assert refusal(node, "start", [text]) == (-5, "Invalid characters in payload")
+
+
 # Each where Core first refuses what `_parse` gives no message of its own
 # for: an expression no function reads, before a key or not, a threshold,
 # a key origin or a key path, or a miniscript outside wsh() and tr(),

@@ -730,6 +730,16 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     return None
 
 
+# Core's `DescriptorChecksum` character set (`src/script/descriptor.cpp:139`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a payload holding any other
+# character is "Invalid characters in payload"
+_DESCRIPTOR_CHARACTERS = frozenset(
+    "0123456789()[],'/*abcdefgh@:$%{}"
+    "IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~"
+    'ijklmnopqrstuvwxyzABCDEFGH`#"\\ '
+)
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
@@ -750,6 +760,13 @@ def _parse(node: Node, text: str) -> list[_Source]:
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
+    # `CheckChecksum` splits at `#` and then refuses a payload holding a
+    # character outside `DescriptorChecksum`'s set, ahead of any parsing
+    # (ISS 2551)
+    if not _DESCRIPTOR_CHARACTERS.issuperset(text.partition("#")[0]):
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Invalid characters in payload"
+        )
     try:
         stripped = strip_checksum(text)
         sources = [
