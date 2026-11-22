@@ -730,6 +730,28 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     return None
 
 
+# what bip32_descriptors refuses a `multi()` threshold that is no number with
+# (`ParseScript`'s own message is `Multi threshold '<threshold>' is not valid`,
+# `src/script/descriptor.cpp:2429`, at bitcoin/bitcoin@f0de87f040, the v32.1
+# tag)
+_THRESHOLD_REFUSAL = "invalid multi() threshold: digits expected"
+
+
+def _multi_threshold_refusal(text: str) -> str | None:
+    """Return Core's message for the first `multi()` threshold `text` holds.
+
+    The threshold is what stands between the function's `(` and its first
+    `,`, as Core reads it, spaces included.
+    """
+    for name in _MULTI_FUNCTIONS:
+        at = text.find(f"{name}(")
+        if at < 0:
+            continue
+        threshold = text[at + len(name) + 1 :].partition(",")[0]
+        return f"Multi threshold '{threshold}' is not valid"
+    return None
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
@@ -759,7 +781,9 @@ def _parse(node: Node, text: str) -> list[_Source]:
     except (BTClibException, EccException) as err:
         message = str(err)
         network = node.chain.name
-        if stripped is not None and _refuses_key(err):
+        if message.startswith(_THRESHOLD_REFUSAL):
+            message = _multi_threshold_refusal(stripped or text) or message
+        elif stripped is not None and _refuses_key(err):
             message = (
                 _invalid_key_refusal(stripped, network)
                 or _core_refusal(stripped, _TOP, network)
