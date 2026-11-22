@@ -1581,8 +1581,22 @@ class Connection:
                     message = self.transport.get_received_message()
                 except RejectedMessageError as e:
                     # counted where Core's `ReceiveMsgBytes` counts a
-                    # rejected message, and the peer kept
+                    # rejected message, and the peer kept. Core's line
+                    # names the type, the length and the checksums it read,
+                    # octets the peer sent that may be a secret's (section 7
+                    # of the organization's standard, *A refusal carries no
+                    # secret*): this names the peer and which of the two
+                    # refusals it was, `RejectedMessageError`'s own text
+                    # naming no size (ISS 2498)
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
+                    refused = (
+                        "wrong checksum"
+                        if str(e.__cause__) == "invalid checksum"
+                        else "invalid message type"
+                    )
+                    self.node.logger.log_debug(
+                        "net", "message rejected: %s, peer=%d", refused, self.id
+                    )
                     continue
                 weight = _recv_memusage(message)
                 consumed += weight
