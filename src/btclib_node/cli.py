@@ -3361,6 +3361,20 @@ def _refusal(error: Exception) -> str:
     return f"Error: {error}\n"
 
 
+def _log_rate_limit(settings: _Settings) -> bool:
+    """Return whether the history log rate-limits, never refusing.
+
+    The value is one `_after_lock` has already refused by the time the log is
+    opened -- inside the handler for that refusal -- so reading it again must
+    not raise a second time: a value this node does not take is logged as the
+    default, rate limiting on.
+    """
+    try:
+        return _get_bool(settings, "logratelimit") is not False
+    except ValueError:
+        return True
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -3425,7 +3439,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 max_connections_warnings=directories.max_connections_warnings,
                 debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
-                rate_limit=_get_bool(before.settings, "logratelimit") is not False,
+                rate_limit=_log_rate_limit(before.settings),
             )
             if isinstance(error, JsonIntegerOutOfRangeError):
                 logger.warning(_exception_block(error))

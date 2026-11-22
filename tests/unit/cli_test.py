@@ -379,6 +379,29 @@ def test_main_writes_a_byte_utf8_refuses_as_that_byte(
 
 
 @pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize("value", ["5", "{}"], ids=["number", "object"])
+def test_main_refuses_a_non_bool_logratelimit_without_a_traceback(
+    tmp_path: Path, value: str, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """ISS 2586: opening the log must not read the value that refused again.
+
+    Measured on bitcoind v32.1.0: the start exits 1 with a type refusal, and
+    no Python traceback reaches stderr.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"logratelimit": {value}}}', encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+
+    err = capfdbinary.readouterr().err
+    assert b"Traceback" not in err
+    assert b"not of expected type" in err
+
+
+@pytest.mark.usefixtures("no_node")
 def test_main_writes_to_a_stderr_it_cannot_reconfigure(tmp_path: Path) -> None:
     """ISS 1290: a stream with no encoding of its own is written as it is.
 
