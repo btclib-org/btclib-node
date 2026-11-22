@@ -3115,6 +3115,31 @@ def _rpcservertimeout(settings: _Settings, *, server: bool | None) -> int:
     return int(IDLE_TIMEOUT) if value is None else value
 
 
+def _rpc_login(
+    settings: _Settings, *, server: bool | None
+) -> tuple[str | Path | None, str, str, str | None]:
+    """Return the cookie file, user, password and cookie perms, when read.
+
+    `InitRPCAuthentication` and the `GenerateAuthCookie` it calls read these
+    four, and `AppInitMain` reaches them only under `-server`
+    (`src/init.cpp:1633-1635`, same sha). `-rpcuser` is read only where
+    `-rpcpassword` is not empty, `-rpccookieperms` only where it is.
+    """
+    if server is False:
+        return "", "", "", None
+
+    # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
+    rpccookiefile = (
+        None
+        if _is_negated(settings, "rpccookiefile")
+        else _get_arg(settings, "rpccookiefile") or ""
+    )
+    rpcpassword = _get_arg(settings, "rpcpassword") or ""
+    if rpcpassword:
+        return rpccookiefile, _get_arg(settings, "rpcuser") or "", rpcpassword, None
+    return rpccookiefile, "", rpcpassword, _get_arg(settings, "rpccookieperms")
+
+
 # low-code-quality skipped: Core's `AppInitMain` checks, kept in its order
 def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quality
     """Refuse what Core refuses after its lock, and return the `Config`.
@@ -3188,26 +3213,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     if whitelist_relay is None:
         whitelist_relay = True
     server = _get_bool(settings, "server")
-    # `InitRPCAuthentication` and the `GenerateAuthCookie` it calls read the
-    # four cookie and login options, and `AppInitMain` reaches them only under
-    # `-server` (`src/init.cpp:1633-1635`, same sha). `-rpcuser` is read only
-    # where `-rpcpassword` is not empty, `-rpccookieperms` only where it is.
-    rpccookiefile: str | Path | None = ""
-    rpcuser = ""
-    rpcpassword = ""
-    rpccookieperms: str | None = None
-    if server is not False:
-        # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
-        rpccookiefile = (
-            None
-            if _is_negated(settings, "rpccookiefile")
-            else _get_arg(settings, "rpccookiefile") or ""
-        )
-        rpcpassword = _get_arg(settings, "rpcpassword") or ""
-        if rpcpassword:
-            rpcuser = _get_arg(settings, "rpcuser") or ""
-        else:
-            rpccookieperms = _get_arg(settings, "rpccookieperms")
+    rpccookiefile, rpcuser, rpcpassword, rpccookieperms = _rpc_login(
+        settings, server=server
+    )
     # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
     # (`src/init.cpp:1716`, same sha)
     ban_time = _get_int(settings, "bantime")
