@@ -1161,6 +1161,32 @@ def test_build_config_reads_rpcservertimeout(
 
 
 @pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcservertimeout": 9223372036854775808, "rpcallowip": 5}',
+        '{"bantime": 9223372036854775808, "rpcauth": 5}',
+    ],
+    ids=["allowip-before-timeout", "rpcauth-before-bantime"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_build_config_reads_the_rpc_options_in_core_s_order(
+    tmp_path: Path, settings_json: str
+) -> None:
+    """ISS 2584: `-rpcallowip` and `-rpcauth` are read before these two.
+
+    Measured on bitcoind v32.1.0: `InitHTTPAllowList` and
+    `InitRPCAuthentication` run at step 4a, `-bantime` only at step 6.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        settings_json, encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match=r"not of expected type string"):
+        _build(tmp_path, "-regtest")
+
+
+@pytest.mark.parametrize(
     "number",
     ["5", "9223372036854775808", "1.5", "9" * 5000],
     ids=["valid", "int64", "fraction", "digits"],
