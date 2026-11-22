@@ -3058,6 +3058,32 @@ def _warn_bad_port(option: str, port: int) -> None:
         )
 
 
+def _shown_bind_value(
+    value: str,
+    position: int,
+    option: str,
+    address: BindAddress | WhitebindAddress,
+) -> str:
+    """Return `address` as the duplicate-binding refusal writes it.
+
+    Core writes the address whole (`CheckBindingConflicts`, `src/init.cpp:
+    2368`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which writes an
+    I2P host's label in lowercase base32: one that is a key is then a key
+    written back. This writes the value whole only where `masked_address`
+    keeps it whole, and `'...'` and its position otherwise, as the RPC
+    bind lines do for ISS 2566 (SECURITY.md, "Where this node departs
+    from Bitcoin Core", ISS 2577).
+    """
+    masked = masked_address(value)
+    if isinstance(address, WhitebindAddress):
+        # the permission names before `@` are no part of the address
+        _, at, spec = value.partition("@")
+        masked = masked_address(spec if at else value)
+    if masked is None:
+        return service_text(address.host, address.port)
+    return f"'...' (value {position} of -{option})"
+
+
 def _check_bind(
     values: list[str], whitebind: list[str], default_port: int, port: int | None
 ) -> None:
@@ -3076,26 +3102,35 @@ def _check_bind(
         address = parse_bind(value, default_port, position=position)
         if not address.onion:
             _warn_bad_port("-bind", address.port)
-        parsed.append(address)
+        parsed.append((address, value, position))
     whitebound = [
-        parse_whitebind(value, position=position)
+        (parse_whitebind(value, position=position), value, position)
         for position, value in enumerate(whitebind, 1)
     ]
     if not values and not whitebind and port is not None:
         _warn_bad_port("-port", port)
-    ordered: list[BindAddress | WhitebindAddress] = [
-        *whitebound,
-        *sorted(parsed, key=lambda a: a.onion),
+    ordered: list[tuple[BindAddress | WhitebindAddress, str]] = [
+        *(
+            (address, _shown_bind_value(value, position, "whitebind", address))
+            for address, value, position in whitebound
+        ),
+        *(
+            (address, _shown_bind_value(value, position, "bind", address))
+            for address, value, position in sorted(
+                parsed, key=lambda item: item[0].onion
+            )
+        ),
     ]
     if not values:
-        ordered.append(default_onion_bind(default_port))
+        onion = default_onion_bind(default_port)
+        ordered.append((onion, service_text(onion.host, onion.port)))
     seen = set()
-    for bound in ordered:
+    for bound, shown in ordered:
         key = (str(bound.host).partition("%")[0], bound.port)
         if key in seen:
             err_msg = (
                 "Duplicate binding configuration for address "
-                f"{service_text(bound.host, bound.port)}. Please check "
+                f"{shown}. Please check "
                 "your -bind, -bind=...=onion and -whitebind settings."
             )
             raise ValueError(err_msg)
