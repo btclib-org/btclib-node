@@ -832,7 +832,7 @@ def test_a_message_the_transport_rejects_is_logged_in_net(
     tampered = bytearray(_wire_ping(1))
     tampered[at] = octet
     connection, _ = a_connection()
-    connection.node.logger.log_debug = record  # type: ignore[attr-defined]
+    connection.node.logger.log_debug = record  # type: ignore[method-assign]
     with connection.client:
         connection.parse_messages(bytes(tampered))
     assert entries == [("net", f"message rejected: {refused}, peer=0")]
