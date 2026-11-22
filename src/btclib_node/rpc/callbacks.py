@@ -3483,8 +3483,7 @@ def get_tx_spending_prevout(
         elif not mempool_only:
             raise RpcError(
                 RPCErrorCode.MISC_ERROR,
-                "Mempool lacks a relevant spend, "
-                "and txospenderindex is unavailable.",
+                "Mempool lacks a relevant spend, and txospenderindex is unavailable.",
             )
         answer.append(JsonObject(pairs))
     return answer
