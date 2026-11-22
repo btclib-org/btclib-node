@@ -27,10 +27,10 @@ from datetime import UTC, datetime
 
 __all__ = ["MAX_MOCK_TIME", "mock_time", "now", "now_utc", "set_mock_time"]
 
-# `std::chrono::nanoseconds::max()` in seconds: the bound `setmocktime`
-# takes at the v31.1 tag (`src/rpc/node.cpp`), where master takes
-# `uint32_t`'s maximum.
-MAX_MOCK_TIME = (2**63 - 1) // 10**9
+# `uint32_t`'s maximum: the bound `setmocktime` takes at the v32.1 tag
+# (`src/rpc/node.cpp`), where v31.1 took `std::chrono::nanoseconds::max()`
+# in seconds.
+MAX_MOCK_TIME = 2**32 - 1
 
 _mock_time: int = 0
 
