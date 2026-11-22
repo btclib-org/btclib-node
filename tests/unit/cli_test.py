@@ -1236,6 +1236,61 @@ def test_build_config_skips_rpc_options_when_server_is_off(
     assert config.rpc_whitelist_default is False
 
 
+@pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcuser": {}}',
+        '{"rpcpassword": ["x"]}',
+        '{"rpccookieperms": {}}',
+        '{"rpccookiefile": {}}',
+    ],
+    ids=["rpcuser", "rpcpassword", "rpccookieperms", "rpccookiefile"],
+)
+def test_build_config_skips_the_login_options_when_server_is_off(
+    tmp_path: Path, settings_json: str
+) -> None:
+    """ISS 2585: `-server=0` does not read the four login and cookie options.
+
+    `InitRPCAuthentication` and `GenerateAuthCookie` are their only readers,
+    and `AppInitMain` reaches them only under `-server`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        settings_json, encoding="utf-8"
+    )
+
+    config = _build(tmp_path, "-regtest", "-server=0")
+
+    assert config.rpc_port is None
+    assert config.rpc_whitelist == {}
+
+
+def test_build_config_reads_rpcuser_only_with_a_password(
+    tmp_path: Path,
+) -> None:
+    """ISS 2585: under `-server`, `-rpcuser` is read only beside a password."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}, "rpcpassword": "x", "rpccookieperms": {}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"not of expected type string"):
+        _build(tmp_path, "-regtest", "-server")
+
+
+def test_build_config_skips_rpcuser_without_a_password(tmp_path: Path) -> None:
+    """ISS 2585: an empty `-rpcpassword` leaves `-rpcuser` unread."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}}', encoding="utf-8"
+    )
+
+    config = _build(tmp_path, "-regtest", "-server")
+
+    assert config.rpc_port is not None
+
+
 @pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
 @pytest.mark.parametrize(
     "argv",
