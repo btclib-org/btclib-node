@@ -102,6 +102,7 @@ __all__ = [
     "lookup_host_port",
     "lookup_service",
     "masked_address",
+    "masked_permissioned_address",
     "onion_port",
     "parse_bind",
     "parse_whitebind",
@@ -376,13 +377,36 @@ def masked_address(value: str) -> str | None:
     after an IPv6 address's `%` as its scope, and a port may carry any
     number of leading zeros. A host name is masked.
 
-    Permission names before an `@`, as a `-whitebind` or `-whitelist`
-    value has, and an `=onion` after the address, as a `-bind` value has,
-    are read for every value: no key reads as either.
+    An `=onion` after the address, as a `-bind` value has, is read for
+    every value: no key reads as either. The whole value is the address,
+    so one holding an `@` is measured with it, as `-connect`, `-addnode`
+    and `-rpcbind` write a password given in a URL's form: only
+    `-whitebind` and `-whitelist` name permissions before one
+    (`masked_permissioned_address`, ISS 2579).
     """
-    names, at, tail = value.partition("@")
-    if not at:
-        names, tail = "", value
+    return _masked_address(value, permissions=False)
+
+
+def masked_permissioned_address(value: str) -> str | None:
+    """Return `'...'` for a `-whitebind` or `-whitelist` value, else `None`.
+
+    As `masked_address` measures an address, with the permission names
+    before an `@` measured too: no key reads as one. Core's
+    `NetWhitebindPermissions::TryParse` and `NetWhitelistPermissions::TryParse`
+    read that `@` (`src/net_permissions.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), and no other address option does (ISS 2579).
+    """
+    return _masked_address(value, permissions=True)
+
+
+def _masked_address(value: str, *, permissions: bool) -> str | None:
+    """Return `'...'` for `value`, the names before `@` read where asked."""
+    names = ""
+    tail = value
+    if permissions:
+        names, at, tail = value.partition("@")
+        if not at:
+            names, tail = "", value
     address = tail.removesuffix("=onion")
     host, _ = lookup_host_port(address, 0)
     measured = f"{names}@{tail}"
@@ -390,7 +414,10 @@ def masked_address(value: str) -> str | None:
         # the host leads the address, bracketed or not: only that span is
         # exempt, so its label repeated elsewhere is still measured
         span = f"[{host}]" if tail.startswith("[") else host
-        measured = f"{names}@{tail.removeprefix(span)}"
+        if permissions:
+            measured = f"{names}@{tail.removeprefix(span)}"
+        else:
+            measured = tail.removeprefix(span)
     if any(
         len(piece) > MAX_QUOTED_NAME for piece in _ADDRESS_SEPARATORS.split(measured)
     ):

@@ -225,6 +225,7 @@ from btclib_node.config import (
     listen_port,
     lookup_service,
     masked_address,
+    masked_permissioned_address,
     parse_bind,
     parse_whitebind,
     service_text,
@@ -1027,7 +1028,7 @@ _OPTIONS: dict[str, _Option] = {
         "multiple permissions separated by commas (default: "
         "download,noban,mempool,relay). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=masked_address,
+        masked=masked_permissioned_address,
     ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
@@ -1040,7 +1041,7 @@ _OPTIONS: dict[str, _Option] = {
         "control whether permissions apply to incoming connections and/or "
         "manual (default: incoming only). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=masked_address,
+        masked=masked_permissioned_address,
     ),
     "whitelistforcerelay": _Option(
         "",
