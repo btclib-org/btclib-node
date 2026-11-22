@@ -5536,6 +5536,62 @@ def test_main_a_json_integer_out_of_range_after_the_lock_logs_the_block(
     assert "[error]" not in log_text
 
 
+# ISS 2497: what `bitcoind` v32.1.0 printed on stderr for a wrong-typed value
+_EXCEPTION_TYPE_BLOCK = (
+    "\n\n************************\n"
+    "EXCEPTION: N8UniValue10type_errorE       \n"
+    "JSON value of type object is not of expected type string       \n"
+    "bitcoin in AppInit()       \n\n"
+)
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_prints_core_s_exception_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2497: `UniValue::type_error` reaches `PrintExceptionContinue`.
+
+    Measured on `bitcoind` v32.1.0 with `{"maxconnections": {}}` in
+    `regtest/settings.json` and `-regtest -listen=0 -server=0`: exit `1`
+    with this block on stderr, and no log, the throw coming before
+    `init::StartLogging`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": {}}', encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == _EXCEPTION_TYPE_BLOCK
+    assert not captured.out
+    assert not (tmp_path / "regtest" / "history.log").exists()
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_after_the_lock_logs_the_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2497: `PrintExceptionContinue` logs the block as a warning too.
+
+    `-bantime` is read in `_after_lock`, where `init::StartLogging` has
+    already opened `history.log`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"bantime": {}}', encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == _EXCEPTION_TYPE_BLOCK
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = _EXCEPTION_TYPE_BLOCK.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -44,6 +44,7 @@ __all__ = [
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "JsonIntegerOutOfRangeError",
+    "JsonTypeError",
     "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
@@ -439,6 +440,18 @@ class JsonIntegerOutOfRangeError(ValueError):
     def __init__(self) -> None:
         """Carry `getInt`'s own message."""
         super().__init__("JSON integer out of range")
+
+
+class JsonTypeError(ValueError):
+    """A start refused as `UniValue::checkType` refuses a `settings.json` value.
+
+    `get_str` and the getters beside it throw a `UniValue::type_error`
+    (`src/univalue/lib/univalue.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `AppInit` catches it and hands it to
+    `PrintExceptionContinue` rather than to `InitError`
+    (`src/bitcoind.cpp`, same sha), and `cli.main` prints it as that
+    function does. Raised by `cli._wrong_type`.
+    """
 
 
 class RpcCredentialRefusedError(ValueError):

@@ -242,7 +242,11 @@ from btclib_node.constants import (
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
-from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeError
+from btclib_node.exceptions import (
+    DirectoryLockError,
+    JsonIntegerOutOfRangeError,
+    JsonTypeError,
+)
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
@@ -1565,10 +1569,10 @@ def _load_conf_tree(  # noqa: PLR0913
     return tree
 
 
-def _wrong_type(value: Json) -> ValueError:
+def _wrong_type(value: Json) -> JsonTypeError:
     """Return the error Core's `UniValue::get_str` throws on `value`."""
     err_msg = f"JSON value of type {type_name(value)} is not of expected type string"
-    return ValueError(err_msg)
+    return JsonTypeError(err_msg)
 
 
 def _sources(
@@ -3330,20 +3334,26 @@ def _setup_environment() -> None:
         os.umask(_PRIVATE_UMASK)
 
 
-def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
+def _exception_block(error: JsonIntegerOutOfRangeError | JsonTypeError) -> str:
     """Return what Core's `PrintExceptionContinue` logs for `error`.
 
     `FormatException` (`src/util/exception.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) after a line of asterisks:
-    the `typeid` name of `getInt`'s `std::runtime_error`, its message, and
-    where `AppInit` caught it, each of these lines ending in seven
-    spaces. Core names its executable's path in place of `bitcoin` on
-    Windows. Here that executable is the Python interpreter, which names
-    no node, so `bitcoin` stands on every platform.
+    the `typeid` name of the exception, its message, and where `AppInit`
+    caught it, each of these lines ending in seven spaces. The name is
+    `getInt`'s `std::runtime_error` for a number out of range and
+    `UniValue::type_error` for a value of the wrong type. Core names its
+    executable's path in place of `bitcoin` on Windows. Here that
+    executable is the Python interpreter, which names no node, so
+    `bitcoin` stands on every platform.
     """
+    if isinstance(error, JsonTypeError):
+        name = "N8UniValue10type_errorE"
+    else:
+        name = "St13runtime_error"
     return (
         "\n\n************************\n"
-        "EXCEPTION: St13runtime_error       \n"
+        f"EXCEPTION: {name}       \n"
         f"{error}       \n"
         "bitcoin in AppInit()       \n"
     )
@@ -3353,10 +3363,10 @@ def _refusal(error: Exception) -> str:
     """Return what `main` writes to stderr for a refusal of the start.
 
     `PrintExceptionContinue`'s block and the newline it adds for a
-    `JsonIntegerOutOfRangeError`, `InitError`'s `Error: <message>` for any
-    other.
+    `JsonIntegerOutOfRangeError` or a `JsonTypeError`, `InitError`'s
+    `Error: <message>` for any other.
     """
-    if isinstance(error, JsonIntegerOutOfRangeError):
+    if isinstance(error, (JsonIntegerOutOfRangeError, JsonTypeError)):
         return f"{_exception_block(error)}\n"
     return f"Error: {error}\n"
 
@@ -3378,11 +3388,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
 
-    A `JsonIntegerOutOfRangeError` is the exception: Core throws it rather
-    than reporting it, so stderr gets `_exception_block`'s text, and a
-    refusal after the lock also logs it as a warning, as
-    `PrintExceptionContinue` writes it to both. The exit status is `1`
-    there too.
+    A `JsonIntegerOutOfRangeError` or a `JsonTypeError` is the exception:
+    Core throws them rather than reporting them, so stderr gets
+    `_exception_block`'s text, and a refusal after the lock also logs it as
+    a warning, as `PrintExceptionContinue` writes it to both. The exit
+    status is `1` there too.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -3427,7 +3437,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
-            if isinstance(error, JsonIntegerOutOfRangeError):
+            if isinstance(error, (JsonIntegerOutOfRangeError, JsonTypeError)):
                 logger.warning(_exception_block(error))
             else:
                 logger.error(str(error))  # noqa: TRY400
