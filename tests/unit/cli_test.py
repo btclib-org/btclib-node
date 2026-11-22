@@ -1178,9 +1178,7 @@ def test_build_config_reads_the_rpc_options_in_core_s_order(
     `InitRPCAuthentication` run at step 4a, `-bantime` only at step 6.
     """
     (tmp_path / "regtest").mkdir()
-    (tmp_path / "regtest" / "settings.json").write_text(
-        settings_json, encoding="utf-8"
-    )
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"not of expected type string"):
         _build(tmp_path, "-regtest")
