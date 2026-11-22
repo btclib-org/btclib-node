@@ -521,6 +521,26 @@ def test_the_list_is_written_in_core_s_format(tmp_path: Path) -> None:
     assert dict(BanMan(path, _LOGGER).banned()) == dict(ban_man.banned())
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_a_banlist_holding_a_json_constant_is_recreated_empty(
+    tmp_path: Path, constant: str
+) -> None:
+    """`UniValue::read` refuses `NaN` and the infinities; the file is remade.
+
+    Measured on bitcoind v32.1.0: each answer leaves `listbanned` empty and
+    the log reading `Cannot load banlist ... does not contain valid JSON`.
+    """
+    path = tmp_path / "banlist.json"
+    path.write_text(
+        '{"banned_nets":[{"version":1,"ban_created":1,'
+        f'"banned_until":{_NOW + 1},"address":"1.2.3.4/32"}}],"x":{constant}}}',
+        encoding="utf-8",
+    )
+
+    assert list(BanMan(path, _LOGGER).banned()) == []
+    assert read(path)["banned_nets"] == []
+
+
 def test_an_entry_core_would_drop_is_dropped(tmp_path: Path) -> None:
     """`BanMapFromJson` skips an unknown version and an unparsable address."""
     path = tmp_path / "banlist.json"
