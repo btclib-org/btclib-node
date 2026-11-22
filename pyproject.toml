@@ -1437,3 +1437,17 @@ daa = "daa"
 # `intoto` in the bundle's name `<tag>.intoto.jsonl`, as for codespell above:
 # typos' dictionary offers "into" for it too
 intoto = "intoto"
+
+[tool.typos.type.verbatim]
+# the files that quote a word rather than use it: a changelog entry, in
+# the history files or as a file under changelog/next/, quotes the
+# misspelling it is about, and .pre-commit-config.yaml the ones the spell
+# checkers found. typos matches a glob against the file name, so
+# "pr[0-9]*.md" is what reaches the entries (ISS 2591)
+extend-glob = [
+    "CHANGELOG.md",
+    "RELEASE_NOTES.md",
+    "pr[0-9]*.md",
+    ".pre-commit-config.yaml",
+]
+extend-ignore-re = ['`[^`]*`']
