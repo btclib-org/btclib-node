@@ -1255,9 +1255,7 @@ def test_build_config_skips_the_login_options_when_server_is_off(
     and `AppInitMain` reaches them only under `-server`.
     """
     (tmp_path / "regtest").mkdir()
-    (tmp_path / "regtest" / "settings.json").write_text(
-        settings_json, encoding="utf-8"
-    )
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
 
     config = _build(tmp_path, "-regtest", "-server=0")
 
