@@ -169,8 +169,28 @@ def test_the_coinbase_commits_to_the_height_past_sixteen(node: Node) -> None:
 
     block = create_new_block(node, SCRIPT).block
 
-    assert block.transactions[0].vin[0].script_sig == bip34_commitment(18) + b"\x00"
+    assert block.transactions[0].vin[0].script_sig == bip34_commitment(18)
     assert block.transactions[0].lock_time == 17
+    assert check_block_validity(node, block, check_merkle_root=True) is None
+
+
+@pytest.mark.parametrize(
+    ("mined", "script_sig"),
+    [
+        (15, bip34_commitment(16) + b"\x00"),
+        (16, bip34_commitment(17)),
+    ],
+    ids=["16", "17"],
+)
+def test_the_coinbase_dummy_extranonce_stops_past_sixteen(
+    node: Node, mined: int, script_sig: bytes
+) -> None:
+    """ISS 2258: Core v32.1 appends `OP_0` only at heights up to 16."""
+    mine(node, mined)
+
+    block = create_new_block(node, SCRIPT).block
+
+    assert block.transactions[0].vin[0].script_sig == script_sig
     assert check_block_validity(node, block, check_merkle_root=True) is None
 
 

@@ -125,6 +125,11 @@ _COINBASE_SEQUENCE = 0xFFFFFFFE
 # the witness reserved value `GenerateCoinbaseCommitment` writes
 _WITNESS_NONCE = bytes(32)
 
+# the last height whose BIP34 push is one byte, where Core appends `OP_0`
+# to the coinbase scriptSig (`src/node/miner.cpp:203-209`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+_LAST_DUMMY_EXTRANONCE_HEIGHT = 16
+
 # `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB, as satoshi per virtual byte
 _MIN_FEERATE = Fraction(1, 1000)
 
@@ -294,9 +299,12 @@ def _assemble(
     min_time = _minimum_time(tip_header, height, tip_mtp, node)
 
     fees = sum(c.fee for c in chosen)
-    # the extra push is `include_dummy_extranonce`, which keeps the
-    # script_sig of a height up to 16 at the two bytes `bad-cb-length` asks
-    script_sig = bip34_commitment(height) + b"\x00"
+    # Core appends `OP_0` only at a height up to 16, where the BIP34 push
+    # is one byte and `bad-cb-length` asks for two (`src/node/miner.cpp:
+    # 203-209`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+    script_sig = bip34_commitment(height)
+    if height <= _LAST_DUMMY_EXTRANONCE_HEIGHT:
+        script_sig += b"\x00"
     transactions = [
         Tx(
             version=_COINBASE_VERSION,
