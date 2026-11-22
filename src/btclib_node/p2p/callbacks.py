@@ -3768,6 +3768,47 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     node.logger.log_debug("net", "notfound of %d items", len(missing.items))
 
 
+def mempool(node: Node, msg: bytes, conn: Connection) -> None:
+    """Drop a peer that asks for this node's mempool, as Core does.
+
+    This node offers no `BLOOM_FILTER` service, and Core disconnects a peer
+    requesting `mempool` unless it holds the `mempool` permission; a `noban`
+    peer is answered with silence and kept (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, line 4947).
+    """
+    if NetPermissionFlags.MEMPOOL in conn.permissions:
+        return
+    node.logger.log_debug(
+        "net", "mempool request with bloom filters disabled, peer=%s", conn.id
+    )
+    if NetPermissionFlags.NO_BAN in conn.permissions:
+        return
+    conn.stop()
+
+
+def _no_bloom_service(node: Node, msg: bytes, conn: Connection, what: str) -> None:
+    """Drop a peer whose bloom message this node's services do not offer."""
+    node.logger.log_debug(
+        "net", "%s received despite not offering bloom services, peer=%s", what, conn.id
+    )
+    conn.stop()
+
+
+def filterload(node: Node, msg: bytes, conn: Connection) -> None:
+    """Drop a peer loading a bloom filter, as Core does."""
+    _no_bloom_service(node, msg, conn, "filterload")
+
+
+def filteradd(node: Node, msg: bytes, conn: Connection) -> None:
+    """Drop a peer adding to a bloom filter, as Core does."""
+    _no_bloom_service(node, msg, conn, "filteradd")
+
+
+def filterclear(node: Node, msg: bytes, conn: Connection) -> None:
+    """Drop a peer clearing its bloom filter, as Core does."""
+    _no_bloom_service(node, msg, conn, "filterclear")
+
+
 handshake_callbacks = {
     "version": version,
     "verack": verack,
@@ -3799,4 +3840,8 @@ callbacks = {
     "getcfcheckpt": get_cfcheckpt,
     "notfound": not_found,
     "feefilter": feefilter,
+    "mempool": mempool,
+    "filterload": filterload,
+    "filteradd": filteradd,
+    "filterclear": filterclear,
 }

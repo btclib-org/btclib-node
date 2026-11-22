@@ -126,6 +126,9 @@ from btclib_node.p2p.callbacks import (
     advance_getdata,
     feature,
     feefilter,
+    filteradd,
+    filterclear,
+    filterload,
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
@@ -135,6 +138,7 @@ from btclib_node.p2p.callbacks import (
     getheaders,
     headers,
     inv,
+    mempool,
     not_found,
     ping,
     pong,
@@ -5447,6 +5451,43 @@ def test_getblocktxn_with_no_indexes_drops_the_peer_undiscouraged() -> None:
     getblocktxn(node, GetBlockTxn(wanted, []).serialize(), peer)
     assert not peer.sent
     assert peer.stopped == [True]
+
+
+def test_a_bloom_filter_message_drops_a_peer_that_cannot_use_it() -> None:
+    """ISS 1971: the node offers no `BLOOM_FILTER`, so Core disconnects."""
+    for handler, message in (
+        (filterload, "filterload"),
+        (filteradd, "filteradd"),
+        (filterclear, "filterclear"),
+    ):
+        peer = a_peer()
+        handler(a_handshake_node(), b"", peer)
+        assert peer.stopped == [True], message
+        assert not peer.sent
+
+
+def test_a_mempool_request_drops_a_peer_without_the_mempool_permission() -> None:
+    """ISS 1971: Core's "mempool request with bloom filters disabled"."""
+    peer = a_peer()
+    mempool(a_handshake_node(), b"", peer)
+    assert peer.stopped == [True]
+    assert not peer.sent
+
+
+def test_a_noban_peer_asking_for_the_mempool_is_ignored_not_dropped() -> None:
+    """ISS 1971: Core keeps a `noban` peer and answers nothing."""
+    peer = a_peer(permissions=NetPermissionFlags.NO_BAN)
+    mempool(a_handshake_node(), b"", peer)
+    assert peer.stopped == []
+    assert not peer.sent
+
+
+def test_a_mempool_peer_is_answered_nothing_and_kept() -> None:
+    """ISS 1971: the `mempool` permission is what the message is for."""
+    peer = a_peer(permissions=NetPermissionFlags.MEMPOOL)
+    mempool(a_handshake_node(), b"", peer)
+    assert peer.stopped == []
+    assert not peer.sent
 
 
 def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
