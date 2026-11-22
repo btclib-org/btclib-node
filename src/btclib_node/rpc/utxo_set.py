@@ -618,9 +618,7 @@ def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
     if key == text.rpartition("]")[2]:
         return _pathless_key_refusal(key, _key_context(calls), network)
     # Core reads the key before its path: a key it refuses answers first
-    if not _is_extended_key(key, network):
-        return _NO_KEY
-    return _path_refusal(text)
+    return _path_refusal(text) if _is_extended_key(key, network) else _NO_KEY
 
 
 def _pathless_key_refusal(key: str, ctx: str, network: str) -> str | None:
