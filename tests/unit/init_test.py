@@ -1481,8 +1481,12 @@ def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
         with unstarted_node_context(tmp_path):
             pass
 
+    # what is asserted is that the build does not raise, not how fast it
+    # is: 10s timed out once on a loaded windows-latest runner (issue
+    # #2596), so the wait is generous, yet under the suite's own 300s so
+    # a hang still fails here with a TimeoutError naming this wait
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pool.submit(build).result(timeout=10)
+        pool.submit(build).result(timeout=120)
 
 
 def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
