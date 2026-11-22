@@ -13,13 +13,14 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.p2p.inventory import GetData, InventoryType
+from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.script.witness import Witness
 
 import btclib_node.download as download_module
 from btclib_node import clock as clock_module
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
+from btclib_node.p2p.callbacks import inv as inv_callback
 from btclib_node.p2p.compact_block import MAX_EXTRA_TX_WEIGHT, MAX_EXTRA_TXNS
 from btclib_node.p2p.permissions import NetPermissionFlags
 from tests.unit.download_test import (
@@ -466,6 +467,69 @@ def test_a_repeated_orphan_announcement_does_not_recompute_parents(
     manager.inv_txs = [(2, child.hash, False)]
     manager.tx_download()
     assert calls == 1
+
+
+def test_a_declined_peer_s_repeated_orphan_announcements_look_parents_up_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer declined as the orphan's resolver pays for one parent lookup.
+
+    It is never made a resolver, so its repeats are caught before the
+    lookup: those of one `inv` by `callbacks.inv`, those of the other
+    `inv`s of the same pass by `_request_wanted_txs`.
+    """
+    monkeypatch.setattr(download_module, "_MAX_PEER_TX_ANNOUNCEMENTS", 0)
+    second = a_conn(2, inbound=False)
+    manager = make_manager([a_conn(1, inbound=False), second])
+    _parent, child = a_parent_and_child()
+    manager.orphanage.add_tx(child, 1)
+
+    calls = {"unique_parents": 0, "already_have_tx": 0}
+    unique_parents = download_module.DownloadManager.unique_parents
+    already_have_tx = download_module.DownloadManager.already_have_tx
+
+    def counting_unique_parents(tx: Tx) -> list[bytes]:
+        calls["unique_parents"] += 1
+        return unique_parents(tx)
+
+    def counting_already_have_tx(self: Any, *args: Any, **kwargs: Any) -> bool:
+        calls["already_have_tx"] += 1
+        return already_have_tx(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        download_module.DownloadManager,
+        "unique_parents",
+        staticmethod(counting_unique_parents),
+    )
+    monkeypatch.setattr(
+        download_module.DownloadManager, "already_have_tx", counting_already_have_tx
+    )
+    message = Inv([Inventory(InventoryType.MSG_WTX, child.hash)] * 3).serialize()
+    inv_callback(manager.node, message, second)
+    inv_callback(manager.node, message, second)
+    manager.tx_download()
+    assert calls == {"unique_parents": 1, "already_have_tx": 1}
+    assert not manager.orphanage.have_tx_from_peer(child.hash, 2)
+
+
+def test_a_txid_and_a_wtxid_announcement_of_one_hash_are_both_taken() -> None:
+    """`MSG_WITNESS_TX` and `MSG_WTX` of one hash are two announcements.
+
+    From a wtxid-relay peer the first is a txid, dropped as already had,
+    and the second the orphan's wtxid, which makes the peer a resolver.
+    """
+    peer = a_conn(2, inbound=False)
+    manager = make_manager([a_conn(1, inbound=False), peer])
+    _parent, child = a_parent_and_child()
+    child = a_segwit(child)
+    manager.orphanage.add_tx(child, 1)
+    items = [
+        Inventory(InventoryType.MSG_WITNESS_TX, child.hash),
+        Inventory(InventoryType.MSG_WTX, child.hash),
+    ]
+    inv_callback(manager.node, Inv(items).serialize(), peer)
+    manager.tx_download()
+    assert manager.orphanage.have_tx_from_peer(child.hash, 2)
 
 
 def test_a_peer_without_wtxid_relay_is_not_made_a_resolver_by_a_txid() -> None:

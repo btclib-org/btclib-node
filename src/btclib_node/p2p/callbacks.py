@@ -2047,11 +2047,15 @@ def inv(  # sourcery skip: low-code-quality
     skipped = (
         InventoryType.MSG_TX if conn.wtxidrelay_received else InventoryType.MSG_WTX
     )
-    announced = [
-        (x.hash, x.type_code != InventoryType.MSG_WTX)
-        for x in inv.items
-        if x.type_code in _TX_TYPES and x.type_code != skipped
-    ]
+    # Core takes each hash once per `inv` and kind, in its `seen_txids` and
+    # `seen_wtxids` at the same sha.
+    announced = list(
+        dict.fromkeys(
+            (x.hash, x.type_code != InventoryType.MSG_WTX)
+            for x in inv.items
+            if x.type_code in _TX_TYPES and x.type_code != skipped
+        )
+    )
     # Core's `AddKnownTx` runs on each such item before its IBD check:
     # a peer that announced a transaction has it.
     for announced_hash, _ in announced:
