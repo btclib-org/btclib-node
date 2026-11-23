@@ -773,7 +773,7 @@ def _parse(node: Node, text: str) -> list[_Source]:
             # a leaf Core reads as no function is quoted; one that is a
             # bare key is written `...` there (ISS 2554)
             message = (
-                _core_refusal(stripped, _TOP, network)
+                _core_refusal(stripped or text, _TOP, network)
                 or "'...' is not a valid descriptor function"
             )
         elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
