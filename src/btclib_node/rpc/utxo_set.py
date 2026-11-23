@@ -158,6 +158,11 @@ _BTCLIB_KEY_REFUSALS = (
 # expression no function reads with
 _NOT_A_FUNCTION = "is not a valid descriptor function"
 
+# what bip32_descriptors refuses a `rawtr()` of more than one argument with;
+# Core answers `ParseScript`'s own words (`src/script/descriptor.cpp`, at
+# bitcoin/bitcoin@f0de87f040, the v32.1 tag; ISS 2571)
+_RAWTR_ARGUMENTS = "rawtr() takes one argument"
+
 # `ParsePubkeyInner`'s message for text it reads as no key
 _NO_KEY = "key '...' is not valid"
 
@@ -765,6 +770,8 @@ def _parse(node: Node, text: str) -> list[_Source]:
                 or _core_refusal(stripped, _TOP, network)
                 or message
             )
+        elif message.startswith(_RAWTR_ARGUMENTS):
+            message = "rawtr(): only one key expected."
         elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
             message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err

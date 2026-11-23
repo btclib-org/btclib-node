@@ -1327,3 +1327,14 @@ def test_a_scan_goes_on_between_steps(
     )
     assert result["success"] is True
     assert len(result["unspents"]) == 6
+
+
+@pytest.mark.parametrize("second", ["foo", KEY], ids=["word", "key"])
+def test_a_rawtr_of_more_than_one_argument_answers_core_s_message(
+    node: Node, second: str
+) -> None:
+    """ISS 2571: `ParseScript` reads exactly one key, in its own words."""
+    assert refusal(node, "start", [f"rawtr({X_ONLY},{second})"]) == (
+        -5,
+        "rawtr(): only one key expected.",
+    )
