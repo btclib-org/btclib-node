@@ -2957,9 +2957,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections=(
             DEFAULT_MAX_PEER_CONNECTIONS
             if deferred_max_connections is not None
-            else _get_int32(
-                settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
-            )
+            else _get_int32(settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS)
         ),
         rpcmaxconnections=_get_rpcmaxconnections(settings),
         # what the file descriptors `Config.__init__` reserves count
