@@ -10,6 +10,7 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag), over a real regtest node
 whose tip is recent.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from typing import TYPE_CHECKING, Any
@@ -28,10 +29,12 @@ from btclib.p2p.data import BlockPayload
 from btclib.p2p.inventory import GetData, GetHeaders, InventoryType
 from btclib.p2p.limits import MAX_BLOCK_TX_INDEX
 from btclib.script.script_pub_key import ScriptPubKey
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx import Tx
 
 from btclib_node.chains import RegTest
+from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -294,6 +297,44 @@ def test_a_block_its_header_does_not_commit_to_asks_for_the_block(
     with pytest.raises(MisbehavingError, match="reconstruction attempt failed"):
         blocktxn(node, wrong, peer)
     assert peer.download_queue == []
+
+
+def test_a_blocktxn_mutated_only_in_the_witness_asks_for_the_block(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """CVE-2025-62859: a witness-malleated `blocktxn` is no reconstruction.
+
+    The merkle root holds and the witness commitment does not, so Core
+    answers FAILED and asks for the block; the request stays in flight and
+    the header `valid_header`. bitcoin/bitcoin#32646.
+    """
+    node, _ = a_node(regtest_node)
+    transaction = generate_random_transaction()
+    block = next_block(node, transaction)
+    peer = a_compact_peer(node)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    mutated = replace(
+        transaction,
+        vin=[replace(transaction.vin[0], script_witness=Witness([b"\x00"]))],
+    )
+    assert mutated.id == transaction.id
+    blocktxn(node, BlockTxn(block.header.hash, [mutated]).serialize(), peer)
+    (getdata,) = sent(peer, GetData)
+    assert [(item.type_code, item.hash) for item in getdata.items] == [
+        (InventoryType.MSG_WITNESS_BLOCK, block.header.hash)
+    ]
+    assert peer.download_queue == [block.header.hash]
+    info = node.chainstate.block_index.header_dict[block.header.hash]
+    assert info.status == BlockStatus.valid_header
+    assert not held(node, block)
+    block_callback(
+        node,
+        BlockPayload(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        peer,
+    )
+    assert held(node, block)
 
 
 def test_a_compact_block_whose_short_ids_collide_asks_for_the_block(

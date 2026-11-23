@@ -3318,6 +3318,53 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     assert node.mempool.entry_sequences[resurrectable.hash] == 0
 
 
+def test_a_reorg_readds_a_version_3_parent_with_both_children(node: Node) -> None:
+    """CVE-2025-62861: a reorg's re-adds skip sibling eviction.
+
+    bitcoin/bitcoin#33504: `pre_verify_mempool_acceptance` skips
+    `_check_fee_and_truc` under `bypass_limits`, so the block's version-3
+    parent and both version-3 children all return to the mempool, where
+    the first child would otherwise be evicted.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    funding = common[0].transactions[0]
+    parent = with_two_outputs(
+        replace(
+            generate_random_transaction(funding.id, value=funding.vout[0].value - FEE),
+            version=3,
+        )
+    )
+    first = child_of(parent, 0, version=3)
+    second = child_of(parent, 1, version=3)
+    height = len(common)
+    block = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=height + 1), parent, first, second],
+        height,
+    )
+    fork = [*common, block]
+    block_index.add_headers([header.header for header in fork])
+    for block_in_fork in fork:
+        node.block_db.add_block(block_in_fork)
+        block_index.set_downloaded(block_in_fork.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork)
+    assert not any(
+        node.mempool.contains_tx(transaction) for transaction in (parent, first, second)
+    )
+
+    heavier = [*common, *_extend(common[-1].header.hash, len(common), 2)]
+    block_index.add_headers([block.header for block in heavier[1:]])
+    for block_in_heavier in heavier[1:]:
+        node.block_db.add_block(block_in_heavier)
+        block_index.set_downloaded(block_in_heavier.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(heavier)
+    for transaction in (parent, first, second):
+        assert node.mempool.contains_tx(transaction), transaction.id.hex()
+
+
 def test_each_connected_block_reaches_the_fee_estimator_at_its_height(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
