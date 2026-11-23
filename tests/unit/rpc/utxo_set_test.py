@@ -1215,7 +1215,6 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
         f"tr({X_ONLY},{{foo(1),pk({NOT_A_POINT_X})}})",
         f"tr({X_ONLY},{{foo(1),pk({LEAK_WIF})}})",
         f"foo(pk({NOT_A_POINT}))",
-        f"tr({X_ONLY},{NOT_A_POINT})",
         f"tr({X_ONLY},foo)",
         f"wsh(multi( 1,{KEY}))",
         f"wpkh( [deadbeef]{KEY})",
@@ -1327,3 +1326,17 @@ def test_a_scan_goes_on_between_steps(
     )
     assert result["success"] is True
     assert len(result["unspents"]) == 6
+
+
+def test_a_tr_leaf_that_is_a_bare_key_is_core_s_refusal(node: Node) -> None:
+    """ISS 2554: Core quotes the leaf, which may be a key, so it is `...`."""
+    for leaf in (KEY, NOT_A_POINT):
+        assert refusal(node, "start", [f"tr({X_ONLY},{leaf})"]) == (
+            -5,
+            "'...' is not a valid descriptor function",
+        )
+    # the control: a leaf no key reads as is quoted, as Core quotes it
+    assert refusal(node, "start", [f"tr({X_ONLY},foo)"]) == (
+        -5,
+        "'foo' is not a valid descriptor function",
+    )

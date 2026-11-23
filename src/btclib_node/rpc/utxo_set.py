@@ -158,6 +158,10 @@ _BTCLIB_KEY_REFUSALS = (
 # expression no function reads with
 _NOT_A_FUNCTION = "is not a valid descriptor function"
 
+# what bip32_descriptors refuses a `tr()` leaf that is no miniscript with;
+# Core quotes the leaf, which may be a key (ISS 2554)
+_TR_LEAF_REFUSAL = "tr() leaf is not a valid descriptor function"
+
 # `ParsePubkeyInner`'s message for text it reads as no key
 _NO_KEY = "key '...' is not valid"
 
@@ -764,6 +768,13 @@ def _parse(node: Node, text: str) -> list[_Source]:
                 _invalid_key_refusal(stripped, network)
                 or _core_refusal(stripped, _TOP, network)
                 or message
+            )
+        elif message == _TR_LEAF_REFUSAL:
+            # a leaf Core reads as no function is quoted; one that is a
+            # bare key is written `...` there (ISS 2554)
+            message = (
+                _core_refusal(stripped, _TOP, network)
+                or "'...' is not a valid descriptor function"
             )
         elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
             message = _core_refusal(stripped, _TOP, network) or message
