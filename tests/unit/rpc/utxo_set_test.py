@@ -1327,3 +1327,44 @@ def test_a_scan_goes_on_between_steps(
     )
     assert result["success"] is True
     assert len(result["unspents"]) == 6
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (f"sh(combo({KEY}))", "Can only have combo() at top level"),
+        (
+            f"wsh(wpkh({KEY}))",
+            "Can only have wpkh() at top level or inside sh()",
+        ),
+        (
+            f"tr({X_ONLY},wpkh({KEY}))",
+            "Can only have wpkh() at top level or inside sh()",
+        ),
+        (
+            f"tr({X_ONLY},multi(1,{KEY}))",
+            "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
+        ),
+        (
+            f"wsh(multi_a(1,{KEY}))",
+            "Can only have multi_a/sortedmulti_a inside tr()",
+        ),
+        (f"sh(tr({X_ONLY}))", "Can only have tr at top level"),
+        (f"sh(rawtr({X_ONLY}))", "Can only have rawtr at top level"),
+        (f"sh(unused({KEY}))", "Can only have unused at top level"),
+        (f"sh(sh(wpkh({KEY})))", "Can only have sh() at top level"),
+        (
+            f"wsh(wsh(wpkh({KEY})))",
+            "Can only have wsh() at top level or inside sh()",
+        ),
+        (
+            f"tr({X_ONLY},wsh(wpkh({KEY})))",
+            "Can only have wsh() at top level or inside sh()",
+        ),
+    ],
+)
+def test_a_function_core_reads_elsewhere_answers_core_s_message(
+    node: Node, text: str, message: str
+) -> None:
+    """ISS 2559: `ParseScript` refuses the place before it reads a key."""
+    assert refusal(node, "start", [text]) == (-5, message)

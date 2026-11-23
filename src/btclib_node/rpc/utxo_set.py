@@ -158,6 +158,24 @@ _BTCLIB_KEY_REFUSALS = (
 # expression no function reads with
 _NOT_A_FUNCTION = "is not a valid descriptor function"
 
+# what bip32_descriptors refuses a function written where Core reads none
+# with, and what `ParseScript` answers instead (`src/script/descriptor.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag; ISS 2559)
+_REFUSED_PLACE = re.compile(r"([a-z_]+)\(\) is not allowed inside (?:sh|wsh|tr)\(\)")
+_CORE_PLACES = {
+    "combo": "Can only have combo() at top level",
+    "wpkh": "Can only have wpkh() at top level or inside sh()",
+    "multi": "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
+    "sortedmulti": "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
+    "multi_a": "Can only have multi_a/sortedmulti_a inside tr()",
+    "sortedmulti_a": "Can only have multi_a/sortedmulti_a inside tr()",
+    "tr": "Can only have tr at top level",
+    "rawtr": "Can only have rawtr at top level",
+    "unused": "Can only have unused at top level",
+    "sh": "Can only have sh() at top level",
+    "wsh": "Can only have wsh() at top level or inside sh()",
+}
+
 # `ParsePubkeyInner`'s message for text it reads as no key
 _NO_KEY = "key '...' is not valid"
 
@@ -765,6 +783,10 @@ def _parse(node: Node, text: str) -> list[_Source]:
                 or _core_refusal(stripped, _TOP, network)
                 or message
             )
+        elif (place := _REFUSED_PLACE.fullmatch(message)) is not None and (
+            core := _CORE_PLACES.get(place[1])
+        ):
+            message = core
         elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
             message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
