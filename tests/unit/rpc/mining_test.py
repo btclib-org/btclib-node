@@ -1127,7 +1127,7 @@ def test_the_template_has_the_keys_of_core_s_in_its_order(funded: Node) -> None:
     ]
     assert template["capabilities"] == ["proposal"]
     assert template["version"] == 0x20000000
-    assert template["rules"] == ["csv", "!segwit", "taproot"]
+    assert template["rules"] == ["csv", "!segwit"]
     assert template["vbavailable"] == {}
     assert template["vbrequired"] == 0
     assert template["previousblockhash"] == tip(funded)
@@ -1227,11 +1227,11 @@ def test_the_version_and_deployments_follow_the_period_boundaries(node: Node) ->
         signalling,
         started,
     )
-    assert template()["rules"] == ["csv", "!segwit", "taproot"]
+    assert template()["rules"] == ["csv", "!segwit"]
 
     generate_to_address(node, CONN, [144, ADDRESS])
     assert (template()["version"], template()["vbavailable"]) == (0x20000000, {})
-    assert template()["rules"] == ["csv", "!segwit", "taproot", "testdummy"]
+    assert template()["rules"] == ["csv", "!segwit", "testdummy"]
 
 
 def test_a_mainnet_template_needs_a_peer_and_a_node_out_of_initial_sync() -> None:
@@ -1341,7 +1341,7 @@ def test_a_signet_template_names_the_signet_rule_and_its_challenge(
     template = get_block_template(node, CONN, [{"rules": ["segwit", "signet"]}])
 
     assert isinstance(template, dict)
-    assert template["rules"] == ["csv", "!segwit", "!signet", "taproot"]
+    assert template["rules"] == ["csv", "!segwit", "!signet"]
     assert template["signet_challenge"] == SIGNET_CHALLENGE.hex()
     assert (
         list(template).index("signet_challenge") == list(template).index("height") + 1

@@ -265,14 +265,15 @@ def test_each_chain_carries_btclib_s_headers_sync_params() -> None:
 
 
 def test_each_chain_carries_core_s_min_bip9_warning_height() -> None:
-    """ISS 1475: `MinBIP9WarningHeight`, at bitcoin/bitcoin@9be056a8a7.
+    """ISS 2278: `MinBIP9WarningHeight`, at bitcoin/bitcoin@f0de87f040.
 
-    Read from `src/kernel/chainparams.cpp` there, the v31.1 tag, for every
-    chain this package defines.
+    Read from `src/kernel/chainparams.cpp` there, the v32.1 tag, for every
+    chain this package defines: taproot's departure from `vDeployments`
+    raised mainnet's and testnet's.
     """
     assert {chain.name: chain.min_bip9_warning_height for chain in CHAINS} == {
-        "mainnet": 483840,
-        "testnet": 836640,
+        "mainnet": 711648,
+        "testnet": 2013984,
         "signet": 0,
         "regtest": 0,
         "testnet4": 0,
