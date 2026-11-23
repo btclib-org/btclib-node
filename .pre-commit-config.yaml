@@ -237,7 +237,7 @@ repos:
       - id: check-changelog
         args: [--grandfathered, "56"]
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.24.1
+    rev: v0.24.2
     hooks:
       - id: markdownlint-cli2
         name: markdownlint-cli2 (in place fixes)
@@ -407,7 +407,7 @@ repos:
     # self-repository flags a reusable-workflow or composite-action
     # reference that reads `uses: ./...` and recommends `uses: $/...`,
     # which release.yml spells; the actionlint above parses it
-    rev: v1.32.0
+    rev: v1.33.1
     hooks:
       - id: zizmor
         # --offline says out loud what already happens. zizmor reads a
@@ -453,7 +453,7 @@ repos:
   # checks only staged files unless given --enforce-all, so under
   # "pre-commit run --all-files" it checks nothing
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.5
+    rev: v0.17.6
     hooks:
       - id: ruff-check
         name: ruff check (in place fixes)
@@ -545,7 +545,7 @@ repos:
         pass_filenames: false
         require_serial: true
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.13.8
+    rev: 0.13.9
     hooks:
       # keep uv.lock in sync with pyproject.toml
       - id: uv-lock
