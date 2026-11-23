@@ -294,8 +294,8 @@ def _dispatch(
         # `conn_id`, not `conn.address`: same reasoning as
         # `handle_p2p_handshake` above (#526)
         # Core's `ProcessMessages` logs what `ProcessMessage` throws as one
-        # `net` debug line, text only (`src/net_processing.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). A
+        # `net` debug line, text only (`src/net_processing.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A
         # `BTClibValueError` is btclib's refusal of a payload and gets
         # that line, cut at 200 characters (this node's own cut, not
         # Core's); anything else is this node's own code failing and

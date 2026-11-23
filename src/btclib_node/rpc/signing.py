@@ -190,8 +190,8 @@ def _parse_sighash(value: object) -> int:
         return SIGHASH_DEFAULT
     text = _get_str(value)
     if text not in _SIGHASH_TYPES:
-        # Core quotes the name whole (`src/core_io.cpp:279`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # Core quotes the name whole (`src/core_io.cpp:279`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
         # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
         # Core"; section 7 of the organization's standard, *A refusal
         # carries no secret*)
@@ -333,8 +333,8 @@ def _parse_prevouts(
         found = coins.get((txid, vout))
         if found is not None and found.script_pub_key.script != script_pub_key:
             # `...` where Core writes each script's asm
-            # (`src/rpc/rawtransaction_util.cpp:237`, at
-            # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the caller gives
+            # (`src/rpc/rawtransaction_util.cpp:237`,
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the caller gives
             # one, and an earlier entry for the same output may have given
             # the other, so either may be a key's bytes (SECURITY.md, "Where
             # this node departs from Bitcoin Core"; section 7 of the
