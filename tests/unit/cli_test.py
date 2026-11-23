@@ -6813,3 +6813,36 @@ def test_build_config_warns_of_a_long_test_value_by_its_length(
     assert err == f"Warning: {warning}\n"
     assert config.debug_warnings == (warning,)
     assert_secret_free(ValueError(err, *config.debug_warnings), [LEAK_WIF])
+
+
+def test_build_config_reads_maxconnections_after_the_refusals_under_connect(
+    tmp_path: Path,
+) -> None:
+    """ISS 2381: Core's `||` short-circuits, so `-connect` defers the read.
+
+    bitcoind v32.1's `GetIntArg` at `src/init.cpp:807` is reached alone
+    where `-connect` is neither given nor negated; otherwise the first
+    read is `GetArg<int>` at `:1063`, after the blocks-directory refusal
+    at `:999`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": 1.5}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Specified blocks directory"):
+        cli.build_config(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-connect=127.0.0.1",
+                "-blocksdir=/nonexistent",
+            ]
+        )
+    for argv in (["-connect=127.0.0.1"], ["-noconnect"]):
+        with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+            cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+    # without `-connect`, `:807` itself reads it, ahead of `:999`
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        cli.build_config(
+            [f"-datadir={tmp_path}", "-regtest", "-blocksdir=/nonexistent"]
+        )

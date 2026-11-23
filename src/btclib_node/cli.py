@@ -2920,11 +2920,24 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     blocksdir = _get_arg(settings, "blocksdir")
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
-    max_connections_arg = _get_int(settings, "maxconnections")
-    if max_connections_arg is None:
-        max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
     connect = _get_args(settings, "connect")
     connect_negated = _is_negated(settings, "connect")
+    # Core reads `-maxconnections` with `GetIntArg` only where `-connect`
+    # is neither given nor negated: the `||` at `src/init.cpp:807`
+    # short-circuits, so under `-connect` its first read is `GetArg<int>` at
+    # :1063, after the refusals `Config.__init__` makes below. A number it
+    # refuses there is kept and raised once those have run (ISS 2381)
+    max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
+    deferred_max_connections: JsonIntegerOutOfRangeError | None = None
+    try:
+        raw_max_connections = _get_int(settings, "maxconnections")
+    except JsonIntegerOutOfRangeError as error:
+        if not connect and not connect_negated:
+            raise
+        deferred_max_connections = error
+    else:
+        if raw_max_connections is not None:
+            max_connections_arg = raw_max_connections
     # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
     # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
     # own soft-set does -- but only where `-dnsseed` was not given a
@@ -2941,8 +2954,12 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
-        max_connections=_get_int32(
-            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
+        max_connections=(
+            DEFAULT_MAX_PEER_CONNECTIONS
+            if deferred_max_connections is not None
+            else _get_int32(
+                settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
+            )
         ),
         rpcmaxconnections=_get_rpcmaxconnections(settings),
         # what the file descriptors `Config.__init__` reserves count
@@ -2958,6 +2975,8 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         pruned=bool(_get_int(settings, "prune")),
         reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
     )
+    if deferred_max_connections is not None:
+        raise deferred_max_connections
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     _check_test_options(settings, chain_name)
     # `IsArgSet`, so a negation is refused too and `settings.json` is
