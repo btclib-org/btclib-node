@@ -7415,3 +7415,68 @@ def test_a_maxconnections_value_core_cannot_read_is_refused_in_core_s_order(
         match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
     ):
         _build(tmp_path, "-regtest", "-listen=0", *args)
+
+
+@pytest.mark.parametrize(
+    ("settings_json", "argv", "message"),
+    [
+        (
+            '{"maxconnections": 1.5, "rpcbind": 1}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": 1.5, "rpcmaxconnections": [1]}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": 1.5, "server": 1}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": [1], "rpcbind": 1}',
+            ["-noconnect"],
+            _ARRAY_NOT_STRING,
+        ),
+        (
+            '{"maxconnections": 1.5, "rpcbind": 1}',
+            ["-connect=127.0.0.1", "-blocksdir={tmp}/nosuch"],
+            _NO_BLOCKS_DIR,
+        ),
+        ('{"rpcbind": 1}', ["-connect=127.0.0.1"], _NUMBER_NOT_STRING),
+        ('{"server": 1}', ["-noconnect"], _NUMBER_NOT_STRING),
+        ('{"rpcmaxconnections": [1]}', [], _ARRAY_NOT_STRING),
+    ],
+    ids=[
+        "rpcbind",
+        "rpcmaxconnections",
+        "server",
+        "noconnect-rpcbind",
+        "blocksdir-rpcbind",
+        "rpcbind-alone",
+        "server-alone",
+        "rpcmaxconnections-alone",
+    ],
+)
+def test_the_rpc_reads_after_maxconnections_wait_for_its_refusal(
+    tmp_path: Path, settings_json: str, argv: list[str], message: str
+) -> None:
+    """ISS 2381: a `-maxconnections` refusal comes before the RPC options'.
+
+    Measured on `bitcoind` v32.1.0 with `-regtest -listen=0` and the
+    values in `regtest/settings.json`. `AppInitParameterInteraction`
+    reads the three at `src/init.cpp:1078-1084` (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), after `-maxconnections`
+    at `:1063`, so a refusal of that read comes first. Alone, each of
+    theirs is refused.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError,
+        match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
+    ):
+        _build(tmp_path, "-regtest", "-listen=0", *args)
