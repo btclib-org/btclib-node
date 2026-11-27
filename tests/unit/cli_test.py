@@ -7305,3 +7305,178 @@ def test_build_config_warns_of_a_long_test_value_by_its_length(
     assert err == f"Warning: {warning}\n"
     assert config.debug_warnings == (warning,)
     assert_secret_free(ValueError(err, *config.debug_warnings), [LEAK_WIF])
+
+
+def test_build_config_reads_maxconnections_after_the_refusals_under_connect(
+    tmp_path: Path,
+) -> None:
+    """ISS 2381: Core's `||` short-circuits, so `-connect` defers the read.
+
+    bitcoind v32.1's `GetIntArg` at `src/init.cpp:807` is reached alone
+    where `-connect` is neither given nor negated; otherwise the first
+    read is `GetArg<int>` at `:1063`, after the blocks-directory refusal
+    at `:999`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": 1.5}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Specified blocks directory"):
+        cli.build_config(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-connect=127.0.0.1",
+                "-blocksdir=/nonexistent",
+            ]
+        )
+    for argv in (["-connect=127.0.0.1"], ["-noconnect"]):
+        with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+            cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+    # without `-connect`, `:807` itself reads it, ahead of `:999`
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        cli.build_config(
+            [f"-datadir={tmp_path}", "-regtest", "-blocksdir=/nonexistent"]
+        )
+
+
+_ARRAY_NOT_STRING = "JSON value of type array is not of expected type string"
+_NO_BLOCKS_DIR = "Specified blocks directory {nosuch} does not exist."
+
+
+@pytest.mark.parametrize(
+    ("value", "argv", "message"),
+    [
+        ("1.5", ["-connect=127.0.0.1", "-blocksdir={tmp}/nosuch"], _NO_BLOCKS_DIR),
+        ("[1]", ["-connect=127.0.0.1", "-blocksdir={tmp}/nosuch"], _NO_BLOCKS_DIR),
+        ("{}", ["-connect=127.0.0.1", "-blocksdir={tmp}/nosuch"], _NO_BLOCKS_DIR),
+        ("1.5", ["-noconnect", "-blocksdir={tmp}/nosuch"], _NO_BLOCKS_DIR),
+        (
+            "[1]",
+            ["-connect=127.0.0.1", "-prune=550", "-reindex-chainstate"],
+            (
+                "Prune mode is incompatible with -reindex-chainstate. "
+                "Use full -reindex instead."
+            ),
+        ),
+        (
+            "1.5",
+            ["-connect=127.0.0.1", "-forcednsseed"],
+            "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+        ),
+        (
+            "1.5",
+            ["-connect=127.0.0.1", "-bind=127.0.0.1:38428"],
+            "Cannot set -bind or -whitebind together with -listen=0",
+        ),
+        ("1.5", ["-connect=127.0.0.1", "-rpcmaxconnections=0"], _OUT_OF_RANGE),
+        ("1.5", ["-noconnect", "-rpcmaxconnections=0"], _OUT_OF_RANGE),
+        ("{}", ["-noconnect", "-rpcmaxconnections=0"], _OBJECT_NOT_STRING),
+        ("[1]", ["-connect=127.0.0.1"], _ARRAY_NOT_STRING),
+        ("1.5", ["-blocksdir={tmp}/nosuch"], _OUT_OF_RANGE),
+        ("[1]", ["-blocksdir={tmp}/nosuch"], _ARRAY_NOT_STRING),
+    ],
+    ids=[
+        "connect-blocksdir",
+        "connect-blocksdir-array",
+        "connect-blocksdir-object",
+        "noconnect-blocksdir",
+        "connect-prune-array",
+        "connect-forcednsseed",
+        "connect-bind",
+        "connect-rpcmaxconnections",
+        "noconnect-rpcmaxconnections",
+        "noconnect-rpcmaxconnections-object",
+        "connect-array",
+        "blocksdir",
+        "blocksdir-array",
+    ],
+)
+def test_a_maxconnections_value_core_cannot_read_is_refused_in_core_s_order(
+    tmp_path: Path, value: str, argv: list[str], message: str
+) -> None:
+    """ISS 2381: under `-connect`, `GetArg<int>` at `:1063` refuses the value.
+
+    Measured on `bitcoind` v32.1.0 with `-regtest -listen=0` and the value
+    as `maxconnections` in `regtest/settings.json`. Under `-connect` or
+    `-noconnect`, each refusal ahead of `src/init.cpp:1063` (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) comes first, and the
+    value's own comes ahead of the `-rpcmaxconnections` refusal at `:1080`.
+    Without either, `GetIntArg` reads the value at `:807`, ahead of them
+    all.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"maxconnections": {value}}}', encoding="utf-8"
+    )
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError,
+        match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
+    ):
+        _build(tmp_path, "-regtest", "-listen=0", *args)
+
+
+@pytest.mark.parametrize(
+    ("settings_json", "argv", "message"),
+    [
+        (
+            '{"maxconnections": 1.5, "rpcbind": 1}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": 1.5, "rpcmaxconnections": [1]}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": 1.5, "server": 1}',
+            ["-connect=127.0.0.1"],
+            _OUT_OF_RANGE,
+        ),
+        (
+            '{"maxconnections": [1], "rpcbind": 1}',
+            ["-noconnect"],
+            _ARRAY_NOT_STRING,
+        ),
+        (
+            '{"maxconnections": 1.5, "rpcbind": 1}',
+            ["-connect=127.0.0.1", "-blocksdir={tmp}/nosuch"],
+            _NO_BLOCKS_DIR,
+        ),
+        ('{"rpcbind": 1}', ["-connect=127.0.0.1"], _NUMBER_NOT_STRING),
+        ('{"server": 1}', ["-noconnect"], _NUMBER_NOT_STRING),
+        ('{"rpcmaxconnections": [1]}', [], _ARRAY_NOT_STRING),
+    ],
+    ids=[
+        "rpcbind",
+        "rpcmaxconnections",
+        "server",
+        "noconnect-rpcbind",
+        "blocksdir-rpcbind",
+        "rpcbind-alone",
+        "server-alone",
+        "rpcmaxconnections-alone",
+    ],
+)
+def test_the_rpc_reads_after_maxconnections_wait_for_its_refusal(
+    tmp_path: Path, settings_json: str, argv: list[str], message: str
+) -> None:
+    """ISS 2381: a `-maxconnections` refusal comes before the RPC options'.
+
+    Measured on `bitcoind` v32.1.0 with `-regtest -listen=0` and the
+    values in `regtest/settings.json`. `AppInitParameterInteraction`
+    reads the three at `src/init.cpp:1078-1084` (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), after `-maxconnections`
+    at `:1063`, so a refusal of that read comes first. Alone, each of
+    theirs is refused.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+    args = [arg.format(tmp=tmp_path) for arg in argv]
+    with pytest.raises(
+        ValueError,
+        match=f"^{re.escape(message.format(nosuch=_length(f'{tmp_path}/nosuch')))}$",
+    ):
+        _build(tmp_path, "-regtest", "-listen=0", *args)
