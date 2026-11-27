@@ -2424,7 +2424,14 @@ def _init_settings_file(settings: _Settings, net_dir: str, default_dir: str) -> 
         for name in settings.rw_settings
         if _interpret_key(name).name not in _OPTIONS
     )
-    path = _settings_path(settings, net_dir)
+    try:
+        path = _settings_path(settings, net_dir)
+    except JsonTypeError as error:
+        # Core reads `-settings` inside `InitConfig`'s `try`, whose `catch`
+        # returns the error as a `ConfigError`: `ParseArgs` hands that to
+        # `InitError` (`src/bitcoind.cpp`, at bitcoin/bitcoin@f0de87f040),
+        # not to `PrintExceptionContinue`
+        raise ValueError(str(error)) from None
     if path is None:
         err_msg = "Attempt to write settings file when dynamic settings are disabled."
         raise ValueError(err_msg)
@@ -2938,7 +2945,16 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     # (btclib-org/btclib-node#1265). `_after_lock` recomputes the
     # identical value from `max_connections_arg` below, once this
     # returns it.
-    dnsseed = _get_bool(settings, "dnsseed")
+    try:
+        dnsseed = _get_bool(settings, "dnsseed")
+    except JsonTypeError:
+        # `AppInitParameterInteraction` reads `-dnsseed` only beside a true
+        # `-forcednsseed`. Otherwise `AppInitMain` reads it first, once
+        # `init::StartLogging` has opened the log, and `_after_lock` refuses
+        # it there
+        if _get_bool(settings, "forcednsseed"):
+            raise
+        dnsseed = None
     if dnsseed is None:
         dnsseed = not connect and not connect_negated and max_connections_arg > 0
     directories = Config(
@@ -2960,7 +2976,11 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         # `-prune` nonzero as `GetIntArg` reads it, before it is parsed
         # below: what Core's refusal beside `-reindex-chainstate` asks
         pruned=bool(_get_int(settings, "prune")),
-        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
+        # read only under `-prune`, as `AppInitParameterInteraction` reads
+        # it; otherwise `AppInitMain` reads it first, once the log is open,
+        # and `_after_lock` refuses it there
+        reindex_chainstate=bool(_get_int(settings, "prune"))
+        and bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     _check_test_options(settings, chain_name)
@@ -3151,6 +3171,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
             head, tagged, _ = value.rpartition("=")
             if not has_valid_port(head if tagged and name == "bind" else value):
                 raise ValueError(invalid_port_message(name, position))
+    # `AppInitMain`'s first read of `-dnsseed`, beside `-onlynet`, after the
+    # checks above and ahead of `-externalip` (`src/init.cpp`, same sha)
+    dnsseed = _get_bool(settings, "dnsseed")
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"),
@@ -3167,7 +3190,6 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     listen = _resolve_listen(settings, before.max_connections_arg)
     # The same `if` as `-listen`'s soft-set, over the same `int64_t`
     # (ISS 1324), which an explicit `-dnsseed`/`-nodnsseed` wins over.
-    dnsseed = _get_bool(settings, "dnsseed")
     if dnsseed is None:
         no_peers = not connect and not connect_negated
         dnsseed = no_peers and before.max_connections_arg > 0
@@ -3220,6 +3242,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
     rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
     rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None
+    # `AppInitMain` reads it at step 7, as it loads the block chain
+    # (`src/init.cpp`, same sha)
+    reindex_chainstate = bool(_get_bool(settings, "reindex-chainstate"))
 
     return Config(
         chain=before.chain,
@@ -3240,7 +3265,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
-        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
+        reindex_chainstate=reindex_chainstate,
         debug=before.debug,
         debug_categories=before.debug_categories,
         debug_exclude=before.debug_exclude,

@@ -5592,6 +5592,63 @@ def test_main_a_json_type_error_after_the_lock_logs_the_block(
     assert "[error]" not in log_text
 
 
+@pytest.mark.parametrize(
+    ("settings", "kind"),
+    [
+        ('{"dnsseed": {}}', "object"),
+        ('{"dnsseed": 1}', "number"),
+        ('{"reindex-chainstate": {}}', "object"),
+    ],
+    ids=["dnsseed", "dnsseed number", "reindex-chainstate"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_read_first_after_the_log_opens_logs_the_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], settings: str, kind: str
+) -> None:
+    """`AppInitMain` reads these first, after `init::StartLogging`.
+
+    `AppInitParameterInteraction` reads `-dnsseed` only beside a true
+    `-forcednsseed`, and `-reindex-chainstate` only under `-prune`.
+    `tests/integration/start_exception_test.py` compares both with
+    bitcoind's.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    block = _EXCEPTION_TYPE_BLOCK.replace("type object", f"type {kind}")
+    assert capsys.readouterr().err == block
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = block.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        '{"dnsseed": {}, "forcednsseed": true}',
+        '{"prune": 550, "reindex-chainstate": {}}',
+    ],
+    ids=["dnsseed beside forcednsseed", "reindex-chainstate under prune"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_read_before_the_log_opens_logs_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], settings: str
+) -> None:
+    """`AppInitParameterInteraction` reads these before `init::StartLogging`."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == _EXCEPTION_TYPE_BLOCK
+    assert not captured.out
+    assert not (tmp_path / "regtest" / "history.log").exists()
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6293,11 +6350,28 @@ def test_a_false_settings_key_refuses_the_write(tmp_path: Path) -> None:
         _read(tmp_path)
 
 
-def test_an_array_settings_key_is_refused_as_core_refuses_it(tmp_path: Path) -> None:
-    """`Error: JSON value of type array is not of expected type string`."""
-    _settings(tmp_path, '{"settings":["a.json"]}')
-    with pytest.raises(ValueError, match="type array is not of expected type string"):
-        _read(tmp_path)
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [("{}", "object"), ('["a.json"]', "array")],
+    ids=["object", "array"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_a_wrong_typed_settings_key_is_refused_as_core_refuses_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, kind: str
+) -> None:
+    """`InitConfig`'s `catch` takes the `type_error`: `Error:`, not the block.
+
+    `tests/integration/start_exception_test.py` compares it with bitcoind's.
+    """
+    _settings(tmp_path, f'{{"settings":{value}}}')
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"Error: JSON value of type {kind} is not of expected type string\n"
+    )
+    assert not captured.out
 
 
 def test_a_chain_selector_in_the_file_is_refused_beside_the_command_line_one(
