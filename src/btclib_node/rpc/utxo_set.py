@@ -811,16 +811,17 @@ def _parse(node: Node, text: str) -> list[_Source]:
     except (BTClibException, EccException) as err:
         message = str(err)
         network = node.chain.name
-        if stripped is not None and (refused := _THRESHOLD_REFUSAL.match(message)):
-            message = _threshold_refusal(stripped, refused["name"])
-        elif stripped is not None and _refuses_key(err):
-            message = (
-                _invalid_key_refusal(stripped, network)
-                or _core_refusal(stripped, _TOP, network)
-                or message
-            )
-        elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
-            message = _core_refusal(stripped, _TOP, network) or message
+        if stripped is not None:
+            if refused := _THRESHOLD_REFUSAL.match(message):
+                message = _threshold_refusal(stripped, refused["name"])
+            elif _refuses_key(err):
+                message = (
+                    _invalid_key_refusal(stripped, network)
+                    or _core_refusal(stripped, _TOP, network)
+                    or message
+                )
+            elif message.endswith(_NOT_A_FUNCTION):
+                message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)
