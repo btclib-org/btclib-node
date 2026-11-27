@@ -45,6 +45,7 @@ from enum import StrEnum
 from typing import NamedTuple, override
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.hashes import hash256
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
@@ -76,6 +77,8 @@ _MAGIC_SIZE = 4
 _COMMAND_SIZE = 12
 _LENGTH_AT = _MAGIC_SIZE + _COMMAND_SIZE
 _LENGTH_SIZE = 4
+_CHECKSUM_AT = _LENGTH_AT + _LENGTH_SIZE
+_CHECKSUM_SIZE = 4
 
 _INCOMPLETE = "no whole message yet"
 
@@ -272,7 +275,14 @@ class V1Transport(Transport):
         try:
             message = Message.parse(raw)
         except BTClibValueError as e:
-            raise RejectedMessageError(len(raw)) from e
+            # Core compares the checksum before it checks the message type
+            # (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+            # where `Message.parse` refuses the command first: a message
+            # wrong in both is a wrong checksum, as in Core
+            checksum = hash256(raw[HEADER_SIZE:])[:_CHECKSUM_SIZE]
+            wrong = checksum != raw[_CHECKSUM_AT:HEADER_SIZE]
+            reason = "Wrong checksum" if wrong else "Invalid message type"
+            raise RejectedMessageError(len(raw), reason) from e
         return NetMessage(message.command, message.payload, len(raw))
 
     @override

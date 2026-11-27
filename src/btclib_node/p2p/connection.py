@@ -1581,21 +1581,18 @@ class Connection:
                     message = self.transport.get_received_message()
                 except RejectedMessageError as e:
                     # counted where Core's `ReceiveMsgBytes` counts a
-                    # rejected message, and the peer kept. Core's line
-                    # names the type, the length and the checksums it read,
-                    # octets the peer sent that may be a secret's (section 7
-                    # of the organization's standard, *A refusal carries no
-                    # secret*): this names the peer and which of the two
-                    # refusals it was, `RejectedMessageError`'s own text
-                    # naming no size (ISS 2498)
+                    # rejected message, and the peer kept
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
-                    refused = (
-                        "wrong checksum"
-                        if str(e.__cause__) == "invalid checksum"
-                        else "invalid message type"
-                    )
+                    # Core's line (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+                    # the v32.1 tag) also gives the message's length, on v1
+                    # its type too, and for a wrong checksum the checksum
+                    # read and the one the payload hashes to. Each is octets
+                    # the peer sent, or a hash of them, which may be a
+                    # secret's (section 7 of the organization's standard, *A
+                    # refusal carries no secret*): this keeps Core's prefix,
+                    # its reason and the peer. btclib-org/btclib-node#2498
                     self.node.logger.log_debug(
-                        "net", "message rejected: %s, peer=%d", refused, self.id
+                        "net", "%s: %s, peer=%d", e.prefix, e, self.id
                     )
                     continue
                 weight = _recv_memusage(message)

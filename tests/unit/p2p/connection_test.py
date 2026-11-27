@@ -818,24 +818,27 @@ def test_a_bad_checksum_keeps_the_peer() -> None:
 
 
 @pytest.mark.parametrize(
-    ("at", "octet", "refused"),
+    ("octets", "refused"),
     [
-        (20, 0xFF, "wrong checksum"),  # a checksum byte
-        (4, 0x01, "invalid message type"),  # the command's first byte
+        ({20: 0xFF}, "Wrong checksum"),  # a checksum byte
+        ({4: 0x01}, "Invalid message type"),  # the command's first byte
+        # both: Core compares the checksum first
+        ({4: 0x01, 20: 0xFF}, "Wrong checksum"),
     ],
 )
 def test_a_message_the_transport_rejects_is_logged_in_net(
-    at: int, octet: int, refused: str
+    octets: dict[int, int], refused: str
 ) -> None:
     """ISS 2498: Core logs each rejected message under `-debug=net`."""
     entries, record = debug_recorder()
     tampered = bytearray(_wire_ping(1))
-    tampered[at] = octet
+    for at, octet in octets.items():
+        tampered[at] = octet
     connection, _ = a_connection()
     connection.node.logger.log_debug = record  # type: ignore[method-assign]
     with connection.client:
         connection.parse_messages(bytes(tampered))
-    assert entries == [("net", f"message rejected: {refused}, peer=0")]
+    assert entries == [("net", f"Header error: {refused}, peer=0")]
 
 
 def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
@@ -2431,10 +2434,10 @@ def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:
     """The control: the same bytes with the fallback leave the transport v1."""
     connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=True)
     assert connection.transport.get_info().transport_type is TransportProtocolType.V1
-    # the `version` is rejected by the fallback, which logs it (ISS 2498)
-    # and keeps the peer, and the peer then hangs up
+    # the `version` is rejected by the fallback, which logs it as v1
+    # (ISS 2498) and keeps the peer, and the peer then hangs up
     assert entries == [
-        ("net", "message rejected: wrong checksum, peer=0"),
+        ("net", "Header error: Wrong checksum, peer=0"),
         ("net", "socket closed, disconnecting peer=0"),
     ]
 
