@@ -1560,42 +1560,83 @@ def test_a_tr_leaf_refusal_carries_no_private_key(
     assert_secret_free(caught.value, secrets)
 
 
+ADDR = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+COMBO_PLACE = "Can only have combo() at top level"
+WPKH_PLACE = "Can only have wpkh() at top level or inside sh()"
+MULTI_PLACE = "Can only have multi/sortedmulti at top level, in sh(), or in wsh()"
+MULTI_A_PLACE = "Can only have multi_a/sortedmulti_a inside tr()"
+SH_PLACE = "Can only have sh() at top level"
+WSH_PLACE = "Can only have wsh() at top level or inside sh()"
+ADDR_PLACE = "Can only have addr() at top level"
+TR_PLACE = "Can only have tr at top level"
+UNUSED_PLACE = "Can only have unused at top level"
+
+
+# Each a function written where `bitcoind` does not read it, with
+# `bitcoind`'s message. Where `bitcoind` quotes the expression, the node
+# names the function and writes `...` (SECURITY.md).
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (f"sh(combo({KEY}))", "Can only have combo() at top level"),
-        (
-            f"wsh(wpkh({KEY}))",
-            "Can only have wpkh() at top level or inside sh()",
-        ),
-        (
-            f"tr({X_ONLY},wpkh({KEY}))",
-            "Can only have wpkh() at top level or inside sh()",
-        ),
-        (
-            f"tr({X_ONLY},multi(1,{KEY}))",
-            "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
-        ),
-        (
-            f"wsh(multi_a(1,{KEY}))",
-            "Can only have multi_a/sortedmulti_a inside tr()",
-        ),
-        (f"sh(tr({X_ONLY}))", "Can only have tr at top level"),
+        (f"sh(combo({KEY}))", COMBO_PLACE),
+        (f"sh(wsh(combo({KEY})))", COMBO_PLACE),
+        (f"wsh(wpkh({KEY}))", WPKH_PLACE),
+        (f"tr({X_ONLY},wpkh({KEY}))", WPKH_PLACE),
+        (f"tr({X_ONLY},multi(1,{KEY}))", MULTI_PLACE),
+        (f"tr({X_ONLY},sortedmulti(1,{KEY}))", MULTI_PLACE),
+        (f"multi_a(1,{KEY})", MULTI_A_PLACE),
+        (f"sortedmulti_a(1,{KEY})", MULTI_A_PLACE),
+        (f"sh(multi_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"sh(sortedmulti_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"wsh(multi_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"sh(tr({X_ONLY}))", TR_PLACE),
+        (f"wsh(tr({X_ONLY}))", TR_PLACE),
+        (f"tr({X_ONLY},tr({X_ONLY}))", TR_PLACE),
         (f"sh(rawtr({X_ONLY}))", "Can only have rawtr at top level"),
-        (f"sh(unused({KEY}))", "Can only have unused at top level"),
-        (f"sh(sh(wpkh({KEY})))", "Can only have sh() at top level"),
+        (f"sh(unused({KEY}))", UNUSED_PLACE),
+        (f"tr({X_ONLY},unused({KEY}))", UNUSED_PLACE),
+        (f"sh(sh(wpkh({KEY})))", SH_PLACE),
+        (f"wsh(sh(wpkh({KEY})))", SH_PLACE),
+        (f"tr({X_ONLY},{{pk({KEY}),sh(wpkh({KEY}))}})", SH_PLACE),
+        (f"wsh(wsh(wpkh({KEY})))", WSH_PLACE),
+        (f"tr({X_ONLY},wsh(wpkh({KEY})))", WSH_PLACE),
+        (f"sh(addr({ADDR}))", ADDR_PLACE),
+        (f"tr({X_ONLY},addr({ADDR}))", ADDR_PLACE),
+        # the place, which Core refuses before a draft function inside
+        ("wsh(sh(raw(51)))", SH_PLACE),
+        (f"tr({X_ONLY},wsh(raw(51)))", WSH_PLACE),
+        (f"sh(combo(rawpkh({H160})))", COMBO_PLACE),
+        # a draft function, which Core reads nowhere
+        ("sh(rawnode(00))", NEEDED_P2SH),
+        (f"rawnode({H256})", NOT_A_FUNCTION.format("rawnode")),
+        ("rawleaf(51)", NOT_A_FUNCTION.format("rawleaf")),
+        # what Core refuses before the misplaced function
+        (f"tr({X_ONLY},{{raw(51),wpkh({KEY})}})", RAW_LEAF),
         (
-            f"wsh(wsh(wpkh({KEY})))",
-            "Can only have wsh() at top level or inside sh()",
+            f"tr({X_ONLY},{{rawpkh({H160}),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawpkh"),
         ),
         (
-            f"tr({X_ONLY},wsh(wpkh({KEY})))",
-            "Can only have wsh() at top level or inside sh()",
+            f"tr({X_ONLY},{{rawnode({H256}),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawnode"),
         ),
+        (
+            f"tr({X_ONLY},{{rawleaf(51),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawleaf"),
+        ),
+        (f"tr({XPUB},wpkh({KEY}))", f"tr(): {NO_KEY}"),
     ],
 )
 def test_a_function_core_reads_elsewhere_answers_core_s_message(
     node: Node, text: str, message: str
 ) -> None:
-    """ISS 2559: `ParseScript` refuses the place before it reads a key."""
+    """ISS 2559: Core refuses the place before what the function holds."""
     assert refusal(node, "start", [text]) == (-5, message)
+
+
+def test_a_misplaced_function_s_refusal_carries_no_private_key(node: Node) -> None:
+    """Section 7's *A refusal carries no secret*: Core refuses the place."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"sh(combo({LEAK_WIF}))")
+    assert (int(caught.value.code), caught.value.message) == (-5, COMBO_PLACE)
+    assert_secret_free(caught.value, [LEAK_WIF, LEAK_HEX])

@@ -165,22 +165,31 @@ _NOT_A_FUNCTION = "is not a valid descriptor function"
 # `_NOT_A_FUNCTION`
 _TR_LEAF_REFUSAL = "tr() leaf is not a valid descriptor function"
 
-# what bip32_descriptors refuses a function written where Core reads none
-# with, and what `ParseScript` answers instead (`src/script/descriptor.cpp`,
+# bip32_descriptors' refusal of a function written where it reads none
+_MISPLACED = re.compile(
+    r"[a-z_]+\(\) is not allowed inside (?:sh\(\)|wsh\(\)|tr\(\)|top level)"
+)
+
+# the functions both `ParseScript` and bip32_descriptors read in some
+# places only, the places they read each in, and Core's message for one
+# written elsewhere, which it gives before reading what the function holds
+# (`src/script/descriptor.cpp`,
 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag; ISS 2559)
-_REFUSED_PLACE = re.compile(r"([a-z_]+)\(\) is not allowed inside (?:sh|wsh|tr)\(\)")
+_MULTI_PLACE = "Can only have multi/sortedmulti at top level, in sh(), or in wsh()"
+_MULTI_A_PLACE = "Can only have multi_a/sortedmulti_a inside tr()"
 _CORE_PLACES = {
-    "combo": "Can only have combo() at top level",
-    "wpkh": "Can only have wpkh() at top level or inside sh()",
-    "multi": "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
-    "sortedmulti": "Can only have multi/sortedmulti at top level, in sh(), or in wsh()",
-    "multi_a": "Can only have multi_a/sortedmulti_a inside tr()",
-    "sortedmulti_a": "Can only have multi_a/sortedmulti_a inside tr()",
-    "tr": "Can only have tr at top level",
-    "rawtr": "Can only have rawtr at top level",
-    "unused": "Can only have unused at top level",
-    "sh": "Can only have sh() at top level",
-    "wsh": "Can only have wsh() at top level or inside sh()",
+    "combo": ((_TOP,), "Can only have combo() at top level"),
+    "wpkh": ((_TOP, _P2SH), "Can only have wpkh() at top level or inside sh()"),
+    "multi": ((_TOP, _P2SH, _P2WSH), _MULTI_PLACE),
+    "sortedmulti": ((_TOP, _P2SH, _P2WSH), _MULTI_PLACE),
+    "multi_a": ((_P2TR,), _MULTI_A_PLACE),
+    "sortedmulti_a": ((_P2TR,), _MULTI_A_PLACE),
+    "sh": ((_TOP,), "Can only have sh() at top level"),
+    "wsh": ((_TOP, _P2SH), "Can only have wsh() at top level or inside sh()"),
+    "addr": ((_TOP,), "Can only have addr() at top level"),
+    "tr": ((_TOP,), "Can only have tr at top level"),
+    "rawtr": ((_TOP,), "Can only have rawtr at top level"),
+    "unused": ((_TOP,), "Can only have unused at top level"),
 }
 
 # `ParsePubkeyInner`'s message for text it reads as no key
@@ -327,6 +336,11 @@ def _core_refusal(expr: str, ctx: str, network: str | None = None) -> str | None
     bip32_descriptors refuses one there with a message of its own, which
     `_parse` replaces with this function's where the two differ.
 
+    `ParseScript` refuses a function of `_CORE_PLACES` written where it
+    does not read it, before what the function holds. bip32_descriptors
+    refuses it there too, with a message of its own, which `_parse`
+    replaces with this function's.
+
     Where Core quotes the expression, which may hold a key, this writes it
     as `_quoted` does. Core quotes the expression whole, so a draft
     function inside a miniscript is named by the miniscript's function, as
@@ -335,13 +349,15 @@ def _core_refusal(expr: str, ctx: str, network: str | None = None) -> str | None
     `network`, the node's, is given where bip32_descriptors has refused
     `expr`, which `_tree_refusal` then reads as it says.
 
-    `Func` reads `expr` as a call of `sh()`, `wsh()`, `tr()` or `raw()`
-    only where `expr` ends with `)`. Where text follows the call, as `/0`
-    in `tr(K,raw(51))/0`, Core refuses `expr` whole as no function, and
-    this does not read the call either.
+    `Func` reads `expr` as a call of `raw()` or of a function of
+    `_CORE_PLACES` only where `expr` ends with `)`. Where text follows the
+    call, as `/0` in `tr(K,raw(51))/0`, Core refuses `expr` whole as no
+    function, and this does not read the call either.
     """
     name, _, args = expr[:-1].partition("(")
     called = expr.endswith(")")
+    if called and name in _CORE_PLACES and ctx not in _CORE_PLACES[name][0]:
+        return _CORE_PLACES[name][1]
     if called and name in _INNER:
         if name == "tr":
             return _tree_refusal(args, network)
@@ -850,14 +866,14 @@ def _parse(node: Node, text: str) -> list[_Source]:
     hex key as no point, or bip32_descriptors refuses as
     `_BTCLIB_KEY_REFUSALS` says, the message is that of whichever of
     `_invalid_key_refusal` and `_core_refusal` Core meets first in `text`.
-    Where bip32_descriptors refuses an expression no function reads, the
-    message is `_core_refusal`'s where it has one: `_invalid_key_refusal`
-    reads on past such an expression, to keys Core does not reach.
-    bip32_descriptors checks a key's network only once it has read the whole
-    descriptor, so a later refusal it raises comes first, where Core refuses
-    the key. Unless `_invalid_key_refusal` or `_tree_refusal` reads that
-    key, the message is then the later refusal's, not Core's
-    (btclib-org/btclib-node#2555).
+    Where bip32_descriptors refuses an expression no function reads, or a
+    function where it reads none, the message is `_core_refusal`'s where it
+    has one: `_invalid_key_refusal` reads on past such an expression, to
+    keys Core does not reach. bip32_descriptors checks a key's network only
+    once it has read the whole descriptor, so a later refusal it raises
+    comes first, where Core refuses the key. Unless `_invalid_key_refusal`
+    or `_tree_refusal` reads that key, the message is then the later
+    refusal's, not Core's (btclib-org/btclib-node#2555).
 
     Where bip32_descriptors refuses a threshold of one of
     `_MULTI_FUNCTIONS`, the message is `_threshold_refusal`'s. Where a leaf
@@ -917,11 +933,7 @@ def _parse(node: Node, text: str) -> list[_Source]:
                     _core_refusal(stripped, _TOP, network)
                     or "'...' is not a valid descriptor function"
                 )
-            elif (place := _REFUSED_PLACE.fullmatch(message)) is not None and (
-                core := _CORE_PLACES.get(place[1])
-            ):
-                message = core
-            elif message.endswith(_NOT_A_FUNCTION):
+            elif message.endswith(_NOT_A_FUNCTION) or _MISPLACED.fullmatch(message):
                 message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
