@@ -379,26 +379,37 @@ def test_main_writes_a_byte_utf8_refuses_as_that_byte(
 
 
 @pytest.mark.usefixtures("no_node")
-@pytest.mark.parametrize("value", ["5", "{}"], ids=["number", "object"])
+@pytest.mark.parametrize(
+    ("value", "kind", "argv"),
+    [("5", "number", []), ("{}", "object", []), ("5", "number", ["-port=0"])],
+    ids=["number", "object", "number beside -port=0"],
+)
 def test_main_refuses_a_non_bool_logratelimit_without_a_traceback(
-    tmp_path: Path, value: str, capfdbinary: pytest.CaptureFixture[bytes]
+    tmp_path: Path,
+    value: str,
+    kind: str,
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """ISS 2586: opening the log must not read the value that refused again.
 
-    Measured on bitcoind v32.1.0: the start exits 1 with a type refusal, and
-    no Python traceback reaches stderr.
+    Measured on bitcoind v32.1.0: the start exits 1 with a type refusal,
+    `-port=0` beside it included.
     """
     (tmp_path / "regtest").mkdir()
     (tmp_path / "regtest" / "settings.json").write_text(
         f'{{"logratelimit": {value}}}', encoding="utf-8"
     )
 
-    with pytest.raises(SystemExit):
-        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    with pytest.raises(SystemExit) as raised:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0", *argv])
 
-    err = capfdbinary.readouterr().err
-    assert b"Traceback" not in err
-    assert b"not of expected type" in err
+    assert raised.value.code == 1
+    message = f"JSON value of type {kind} is not of expected type string"
+    assert capsys.readouterr().err == f"Error: {message}\n"
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    assert f"[error] {message}" in log_text
+    assert "Log rate limiting disabled" not in log_text
 
 
 @pytest.mark.usefixtures("no_node")
