@@ -198,6 +198,11 @@ _CORE_PLACES = {
     "unused": ((_TOP,), "Can only have unused at top level"),
 }
 
+# what bip32_descriptors refuses a `rawtr()` of more than one argument with;
+# Core answers `ParseScript`'s own words (`src/script/descriptor.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag; ISS 2571)
+_RAWTR_ARGUMENTS = "rawtr() takes one argument"
+
 # `ParsePubkeyInner`'s message for text it reads as no key
 _NO_KEY = "key '...' is not valid"
 
@@ -991,19 +996,19 @@ def _parse(node: Node, text: str) -> list[_Source]:
     bip32_descriptors' here, which words it differently, except where it is
     Core's: for a payload holding a character outside
     `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, for
-    what `_core_refusal` refuses, shortened where Core quotes the
-    expression, and where the last two paragraphs say. Where ecc refuses a
-    hex key as no point, or bip32_descriptors refuses as
-    `_BTCLIB_KEY_REFUSALS` says, the message is that of whichever of
-    `_invalid_key_refusal` and `_core_refusal` Core meets first in `text`.
-    Where bip32_descriptors refuses an expression no function reads, or a
-    function where it reads none, the message is `_core_refusal`'s where it
-    has one: `_invalid_key_refusal` reads on past such an expression, to
-    keys Core does not reach. bip32_descriptors checks a key's network only
-    once it has read the whole descriptor, so a later refusal it raises
-    comes first, where Core refuses the key. Unless `_invalid_key_refusal`
-    or `_tree_refusal` reads that key, the message is then the later
-    refusal's, not Core's (btclib-org/btclib-node#2555).
+    a `rawtr()` of more than one argument, for what `_core_refusal` refuses,
+    shortened where Core quotes the expression, and where the last two
+    paragraphs say. Where ecc refuses a hex key as no point, or
+    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message is
+    that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
+    meets first in `text`. Where bip32_descriptors refuses an expression no
+    function reads, or a function where it reads none, the message is
+    `_core_refusal`'s where it has one: `_invalid_key_refusal` reads on past
+    such an expression, to keys Core does not reach. bip32_descriptors
+    checks a key's network only once it has read the whole descriptor, so a
+    later refusal it raises comes first, where Core refuses the key. Unless
+    `_invalid_key_refusal` or `_tree_refusal` reads that key, the message is
+    then the later refusal's, not Core's (btclib-org/btclib-node#2555).
 
     Where bip32_descriptors refuses a threshold of one of
     `_MULTI_FUNCTIONS`, the message is `_threshold_refusal`'s. Where a leaf
@@ -1063,6 +1068,8 @@ def _parse(node: Node, text: str) -> list[_Source]:
                     _core_refusal(stripped, _TOP, network)
                     or "'...' is not a valid descriptor function"
                 )
+            elif message.startswith(_RAWTR_ARGUMENTS):
+                message = "rawtr(): only one key expected."
             elif message.endswith(_NOT_A_FUNCTION) or _MISPLACED.fullmatch(message):
                 message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err

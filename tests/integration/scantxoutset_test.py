@@ -265,6 +265,7 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", [f"wpkh({_TPUB}/{_TPRV})"]], False),
     (["start", [f"tr(musig({_TPUB}/*,{_TPUB})/x)"]], False),
     (["start", [f"tr(musig({_TPUB},{_TPUB}/1)/x/*h)"]], False),
+    (["start", [f"rawtr({_X},foo)"]], True),
 ]
 
 
