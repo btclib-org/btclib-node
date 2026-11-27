@@ -2535,14 +2535,44 @@ def test_a_bind_that_fails_closes_the_listeners_bound_before_it(
     The second address has no sockaddr, as `BindListenPort` words it.
     """
     port = get_random_port()
-    manager = a_manager(bind=[f"127.0.0.1:{port}", f"{an_onion_host()}:{port}"])
+    onion = f"{an_onion_host()}:{port}"
+    manager = a_manager(bind=[f"127.0.0.1:{port}", onion])
+    # a real onion address is written whole, as Core writes it (ISS 2573)
+    refusal = f"Bind address family for {onion} not supported"
     # `excinfo` keeps the failed call's frames, and any socket they still
     # hold, alive past the block: the port is free only where it was closed
-    with pytest.raises(OSError, match=r"Bind address family for .* not supported"):
+    with pytest.raises(OSError, match=f"^{re.escape(refusal)}$"):
         manager._bind()
     assert not manager.listening.is_set()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", port))
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "secret"),
+    [
+        ("bind", f"{LEAK_I2P_WIF}.b32.i2p:8333", LEAK_I2P_WIF),
+        ("whitebind", f"{LEAK_I2P_WIF}.b32.i2p:8333", LEAK_I2P_WIF),
+    ],
+)
+def test_a_key_given_as_a_bind_is_not_in_the_family_refusal(
+    a_manager: AManagerFactory, option: str, value: str, secret: str
+) -> None:
+    """ISS 2573: Core writes the resolved address; this names the value's place.
+
+    An I2P host's label is written back in lowercase base32, so a key given
+    there would be the key again.
+    """
+    manager = (
+        a_manager(bind=[value]) if option == "bind" else a_manager(whitebind=[value])
+    )
+    with pytest.raises(OSError, match="Bind address family") as raised:
+        manager._bind()
+    assert str(raised.value) == (
+        f"Bind address family for '...' (value 1 of -{option}) not supported"
+    )
+    assert not manager.listening.is_set()
+    assert_secret_free(raised.value, [secret])
 
 
 def test_a_manager_whose_bind_names_nothing_ends_like_a_failed_bind(
