@@ -177,10 +177,11 @@ def test_the_coinbase_commits_to_the_height_past_sixteen(node: Node) -> None:
 @pytest.mark.parametrize(
     ("mined", "script_sig"),
     [
-        (15, bip34_commitment(16) + b"\x00"),
-        (16, bip34_commitment(17)),
+        (15, bytes([0x60, 0x00])),
+        (16, bytes([0x01, 0x11])),
+        (127, bytes([0x02, 0x80, 0x00])),
     ],
-    ids=["16", "17"],
+    ids=["16", "17", "128"],
 )
 def test_the_coinbase_dummy_extranonce_stops_past_sixteen(
     node: Node, mined: int, script_sig: bytes
