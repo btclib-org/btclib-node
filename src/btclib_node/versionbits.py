@@ -6,12 +6,13 @@
 
 `UnknownActivations` is `VersionBitsCache::CheckUnknownActivations` with
 its `WarningBitsConditionChecker` (`src/versionbits.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-ISS 2278): a BIP9 state machine per version bit, counting over each
-period the blocks that signal a bit no deployment in `_DEPLOYMENTS`
-uses, a bit being unknown from `Chain.min_bip9_warning_height` on. It
-reaches `LOCKED_IN` and then `ACTIVE` as any deployment does, with the
-same threshold and period.
+bitcoin/bitcoin@f0de87f040, the v32.1 tag): a BIP9 state machine per
+version bit, counting over each period the blocks that signal a bit no
+deployment in `_DEPLOYMENTS` uses, a bit being unknown from
+`Chain.min_bip9_warning_height` on. It reaches `LOCKED_IN` and then
+`ACTIVE` as any deployment does, with the same threshold and period. It
+reads bits 0 to 4 alone, v32.1 reserving 5 to 28 as nonce space under
+BIP 323.
 
 `check_unknown_activations` is what `main._after_tip_change` calls out
 of initial block download, where `Chainstate::UpdateTip`
@@ -21,15 +22,15 @@ warning, which runs `-alertnotify` the first time, and one that is
 
 `UnknownActivations.status` is `ComputeBlockVersion` and `GBTStatus`
 (same file and sha): the version a block on the tip carries, and the
-deployments `getblocktemplate` reports. Core's two deployments are both
-`gbt_optional_rule`, so a client's `rules` change neither the version nor
-the answer.
+deployments `getblocktemplate` reports. Core's one deployment,
+`testdummy` on regtest, is `gbt_optional_rule`, so a client's `rules`
+change neither the version nor the answer.
 
 This node enforces no deployment by signalling, each being buried
-(`btclib.consensus`). The deployments below are the ones Core still
-counts signals for, whose bits `ComputeBlockVersion` excludes from the
-warning; Core's others are always active or never, which excludes
-nothing.
+(`btclib.consensus`). The deployments below are the ones Core counts
+signals for, which set a version's bits and what `getblocktemplate`
+reports; Core's others are never active. Their bits lie past those the
+warning reads.
 """
 
 import enum
@@ -52,10 +53,16 @@ if TYPE_CHECKING:
 __all__ = ["DeploymentStatus", "UnknownActivations", "check_unknown_activations"]
 
 # `VERSIONBITS_TOP_BITS`, `VERSIONBITS_TOP_MASK` and
-# `VERSIONBITS_NUM_BITS` (`src/versionbits.h`, same sha)
+# `VERSIONBITS_NUM_BITS` (`src/versionbits.h`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag)
 _TOP_BITS = 0x20000000
 _TOP_MASK = 0xE0000000
-_NUM_BITS = 29
+_NUM_BITS = 5
+# the low bits of a version, below `VERSIONBITS_TOP_MASK`, among which
+# `ComputeBlockVersion` sets a deployment's own: `VERSIONBITS_NUM_BITS`
+# bounds only the warning, and a deployment's bit may lie past it (bit 28
+# for `DEPLOYMENT_TESTDUMMY`)
+_SIGNAL_BITS = 29
 
 # `std::numeric_limits<int64_t>::max()`, the end time of a deployment
 # that never times out, and of the warning checker
@@ -88,23 +95,14 @@ class _Deployment:
     min_activation_height: int
 
 
-# `src/kernel/chainparams.cpp`, same sha, `DEPLOYMENT_TAPROOT` on main
-# (`:111-113`) and on testnet (`:242-244`), `DEPLOYMENT_TESTDUMMY` on
-# regtest (`:582-585`). Signet and testnet4 carry neither one alone: their
-# `DEPLOYMENT_TAPROOT` is always active and `DEPLOYMENT_TESTDUMMY` never.
-_TAPROOT_BIT = 2
+# `src/kernel/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+# tag, `DEPLOYMENT_TESTDUMMY` on regtest (`:610-615`). v32.1's
+# `DeploymentPos` holds that one alone (bitcoin/bitcoin@74f71c5054): taproot
+# is buried, and no chain carries another deployment.
 _TESTDUMMY_BIT = 28
 _DEPLOYMENTS: Mapping[str, tuple[_Deployment, ...]] = {
-    "mainnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 709632),),
-    "testnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 0),),
     "regtest": (_Deployment("testdummy", _TESTDUMMY_BIT, 0, _NO_TIMEOUT, 0),),
 }
-
-# `DEPLOYMENT_TAPROOT` is `ALWAYS_ACTIVE` on these chains
-# (`src/kernel/chainparams.cpp`, same sha), which `GBTStatus` lists as
-# active; mainnet and testnet are above, and the other `testdummy`s are
-# never active
-_TAPROOT_ALWAYS_ACTIVE = frozenset({"regtest", "signet", "testnet4"})
 
 
 class DeploymentStatus(NamedTuple):
@@ -170,9 +168,6 @@ class UnknownActivations:
         self._threshold = 1815 if chain.name == "mainnet" else self._period * 3 // 4
         self._min_height = chain.min_bip9_warning_height
         self._deployments = _DEPLOYMENTS.get(chain.name, ())
-        self._always_active = (
-            ["taproot"] if chain.name in _TAPROOT_ALWAYS_ACTIVE else []
-        )
         # the genesis block's predecessor, which is `DEFINED` by definition
         self._cache: dict[bytes | None, _Boundary] = {
             None: _Boundary(
@@ -219,7 +214,7 @@ class UnknownActivations:
         version = _TOP_BITS
         signalling: dict[str, int] = {}
         locked_in: dict[str, int] = {}
-        active = list(self._always_active)
+        active: list[str] = []
         for name in sorted(found):
             deployment, state = found[name]
             if state in {_State.STARTED, _State.LOCKED_IN}:
@@ -279,7 +274,7 @@ class UnknownActivations:
             )
             if state in {_State.STARTED, _State.LOCKED_IN}
         }
-        counts = [0] * _NUM_BITS
+        counts = [0] * _SIGNAL_BITS
         warning_counts = [0] * _NUM_BITS
         if end >= self._min_height or known:
             for height in range(previous_end + 1, end + 1):
@@ -291,7 +286,11 @@ class UnknownActivations:
                     low = signals & -signals
                     bit = low.bit_length() - 1
                     counts[bit] += 1
-                    if height >= self._min_height and bit not in known:
+                    if (
+                        bit < _NUM_BITS
+                        and height >= self._min_height
+                        and bit not in known
+                    ):
                         warning_counts[bit] += 1
                     signals ^= low
         return _Boundary(
@@ -314,9 +313,8 @@ def check_unknown_activations(node: Node, blocks: int) -> None:
     """Warn of each unknown bit after each of the last `blocks` blocks.
 
     `Chainstate::UpdateTip`'s own loop (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows until
-    ISS 2278), run for each block a commit connected out of initial block
-    download, as `ConnectTip` does.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), run for each block a commit
+    connected out of initial block download, as `ConnectTip` does.
     A bit that is `ACTIVE` sets the warning, `node.warnings.set_warning`'s
     dedup running `-alertnotify` once, as `KernelNotifications::warningSet`
     does. One that is `LOCKED_IN` goes to the log at info level, where Core

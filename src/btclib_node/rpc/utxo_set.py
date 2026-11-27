@@ -142,6 +142,7 @@ _BTCLIB_KEY_REFUSALS = (
     "musig() derivation requires every participant to be extended",
     "Too many ')' in musig() expression",
     "missing ']' in the key origin",
+    "'[' that opens a key origin",
     "invalid derivation index",
     "invalid index",
     "Multiple multipath key path specifiers found",
@@ -649,23 +650,45 @@ def _hex_key_refusal(key: bytes, ctx: str) -> str | None:
     return None
 
 
+def _origin_start_refusal(text: str) -> str:
+    """Return `ParsePubkey`'s message for a key whose origin has no `[`.
+
+    `text` holds one `]` and does not open with `[`. Core quotes the first
+    character of `text` (`src/script/descriptor.cpp:2204`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A key may stand there by
+    mistake, and every key Core reads, hex, a WIF or an extended key, is a
+    run of more than one letter or digit. So this writes `...` for a
+    letter or digit that another follows (SECURITY.md, "Where this node
+    departs from Bitcoin Core").
+    """
+    got = text[0]
+    if got.isalnum() and text[1:2].isalnum():
+        got = "..."
+    return f"Key origin start '[ character expected but not found, got '{got}' instead"
+
+
 def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
-    """Return `ParsePubkeyInner`'s message for the key `text`, else None.
+    """Return Core's message for the key `text`, else None.
 
     `text` is what Core reads as one key, a `musig()` aside. `calls` are
     the functions open around it, its holder last, and `network` the
-    node's. Core reads a key of no path as hex, then as a WIF of
-    `network`'s prefix alone (`DecodeSecret`), then as an extended key of
-    `network`, and refuses what is none of these. Core reads a key of a
-    path as an extended key of `network` alone, and then the path, as
-    `_path_refusal` says. Core quotes the key, or what it reads as one,
-    which may be a private key given by mistake, where this writes `...`
-    (SECURITY.md, "Where this node departs from Bitcoin Core"). "" where
-    Core refuses the key's origin, with a message this does not give.
+    node's. Where `text` holds one `]` and does not open with `[`, the
+    message is `_origin_start_refusal`'s. Where Core refuses the key's
+    origin otherwise, it is "", as this gives no message for it. Any other
+    message is `ParsePubkeyInner`'s. Core reads a key of no path as hex,
+    then as a WIF of `network`'s prefix alone (`DecodeSecret`), then as an
+    extended key of `network`, and refuses what is none of these. Core
+    reads a key of a path as an extended key of `network` alone, and then
+    the path, as `_path_refusal` says. Core quotes the key, or what it
+    reads as one, which may be a private key given by mistake, where this
+    writes `...` (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     key = _key_item(text)
     if key is None:
-        return ""
+        if text.startswith("[") or text.count("]") > 1:
+            return ""
+        return _origin_start_refusal(text)
     if not key:
         return "No key provided"
     if key[0] in _SPACES or key[-1] in _SPACES:
@@ -827,17 +850,18 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     by a path as `_Musig.refusal` says. ecc refuses a hex key that is no
     point with `EccException`, and bip32_descriptors refuses the rest with
     `BTClibValueError`, each in words of its own. Core's message is
-    `ParsePubkeyInner`'s for a key and `ParsePubkey`'s for a `musig()`,
-    and `ParseScript` puts `_key_prefix` before it, all in
+    `ParsePubkey`'s for a `musig()` and for a key origin with no `[`, and
+    `ParsePubkeyInner`'s for the rest of a key, and `ParseScript` puts
+    `_key_prefix` before it, all in
     `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
     tag.
 
     Core reads `text` in order and refuses the first thing it cannot read,
     a `musig()` before the keys inside it. So this answers None where it
     first meets a function of `_DRAFT_NAMES`, a `musig()` where a script
-    belongs, a key origin Core refuses or a `musig()` path `_Musig.refusal`
-    answers "" for, as it does where `text` holds no key or `musig()` Core
-    refuses.
+    belongs, a key origin `_key_refusal` gives no message for or a
+    `musig()` path `_Musig.refusal` answers "" for, as it does where `text`
+    holds no key or `musig()` Core refuses.
     """
     walk = _KeyWalk(text, network)
     word = ""
@@ -859,26 +883,111 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     return None
 
 
+# the start of each message bip32_descriptors refuses a threshold of one of
+# `_MULTI_FUNCTIONS` with, where it is not digits alone or is past
+# 2**32 - 1, naming the function
+_THRESHOLD_REFUSAL = re.compile(
+    r"invalid (?P<name>(?:sorted)?multi(?:_a)?)\(\) threshold: "
+)
+
+# the digits of 2**32 - 1, the largest threshold Core reads
+_THRESHOLD_DIGITS = 10
+
+
+def _is_threshold(text: str) -> bool:
+    """Say whether Core reads `text` as a threshold: `ToIntegral<uint32_t>`.
+
+    That is one or more digits, leading zeros allowed, of a value below
+    2**32. As in `_fits`, at most `_THRESHOLD_DIGITS` of them are converted.
+    """
+    digits = text.lstrip("0")
+    return (
+        re.fullmatch("[0-9]+", text) is not None
+        and len(digits) <= _THRESHOLD_DIGITS
+        and not int(digits or "0") >> 32
+    )
+
+
+def _threshold_refusal(text: str, name: str) -> str:
+    """Return Core's message for the first threshold of a `name()` it refuses.
+
+    `name` is the one of `_MULTI_FUNCTIONS` that bip32_descriptors names in
+    its refusal of `text`. `ParseScript` reads the threshold with `Expr`,
+    as `_expr` does, and refuses one `_is_threshold` refuses, in
+    `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag. bip32_descriptors reads `text` in order, as Core does, and a
+    `name()` it reads before the one it refuses has a threshold Core reads,
+    so the one refused is the first in `text` that `_is_threshold` refuses.
+
+    Core quotes the threshold whole, and a key may be given in its place.
+    This quotes it through `quoted_name` (SECURITY.md, "Where this node
+    departs from Bitcoin Core").
+    """
+    calls = re.finditer(rf"(?<!\w){name}\(", text)
+    thresholds = (_expr(text[call.end() :])[0] for call in calls)
+    threshold = next(each for each in thresholds if not _is_threshold(each))
+    return f"Multi threshold '{quoted_name(threshold)}' is not valid"
+
+
+# Core's `DescriptorChecksum` character set (`src/script/descriptor.cpp:139`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `_parse` says where Core
+# refuses a payload holding any other character
+_DESCRIPTOR_CHARACTERS = frozenset(
+    "0123456789()[],'/*abcdefgh@:$%{}"
+    "IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~"
+    'ijklmnopqrstuvwxyzABCDEFGH`#"\\ '
+)
+
+# the checksum length in bytes Core's `CheckChecksum` accepts
+# (`src/script/descriptor.cpp:2973`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag)
+_CHECKSUM_LENGTH = 8
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
     Core's `Parse`. Its message names what it found wrong and is
-    bip32_descriptors' here, which words it differently, except for what
-    `_core_refusal` refuses, whose message is Core's, shortened where Core
-    quotes the expression. Where ecc refuses a hex key as no point, or
-    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message
-    is that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
+    bip32_descriptors' here, which words it differently, except where it is
+    Core's: for a payload holding a character outside
+    `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, and
+    for what `_core_refusal` refuses, shortened where Core quotes the
+    expression. Where ecc refuses a hex key as no point, or
+    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message is
+    that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
     meets first in `text`. Where bip32_descriptors refuses an expression no
     function reads, the message is `_core_refusal`'s where it has one:
     `_invalid_key_refusal` reads on past such an expression, to keys Core
     does not reach. bip32_descriptors checks a key's network only once it
-    has read the whole descriptor, so a later refusal it raises comes
-    first, where Core refuses the key. Unless `_invalid_key_refusal` or
-    `_tree_refusal` reads that key, the message is then bip32_descriptors'
-    or `_core_refusal`'s, not Core's (btclib-org/btclib-node#2555).
+    has read the whole descriptor, so a later refusal it raises comes first,
+    where Core refuses the key. Unless `_invalid_key_refusal` or
+    `_tree_refusal` reads that key, the message is then the later
+    refusal's, not Core's (btclib-org/btclib-node#2555).
+
+    Where bip32_descriptors refuses a threshold of one of
+    `_MULTI_FUNCTIONS`, the message is `_threshold_refusal`'s. Where a leaf
+    of `tr()` before the threshold's leaf holds a function of
+    `_DRAFT_NAMES`, Core refuses that function first, with
+    `_core_refusal`'s message, which this does not give.
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
+    # `CheckChecksum` splits at `#`, refuses more than one `#`, then a
+    # checksum that is not 8 bytes, and only then a payload holding a
+    # character outside `_DESCRIPTOR_CHARACTERS` (ISS 2551). The first two
+    # keep bip32_descriptors' message here (ISS 2649)
+    body, separator, checksum = text.partition("#")
+    # Core counts the checksum's UTF-8 bytes. `jsonrpc.decode` refuses a
+    # lone surrogate, and "surrogatepass" keeps one from raising here
+    size = len(checksum.encode("utf-8", "surrogatepass"))
+    if (
+        "#" not in checksum
+        and (not separator or size == _CHECKSUM_LENGTH)
+        and not _DESCRIPTOR_CHARACTERS.issuperset(body)
+    ):
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Invalid characters in payload"
+        )
     try:
         stripped = strip_checksum(text)
         sources = [
@@ -888,14 +997,17 @@ def _parse(node: Node, text: str) -> list[_Source]:
     except (BTClibException, EccException) as err:
         message = str(err)
         network = node.chain.name
-        if stripped is not None and _refuses_key(err):
-            message = (
-                _invalid_key_refusal(stripped, network)
-                or _core_refusal(stripped, _TOP, network)
-                or message
-            )
-        elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
-            message = _core_refusal(stripped, _TOP, network) or message
+        if stripped is not None:
+            if refused := _THRESHOLD_REFUSAL.match(message):
+                message = _threshold_refusal(stripped, refused["name"])
+            elif _refuses_key(err):
+                message = (
+                    _invalid_key_refusal(stripped, network)
+                    or _core_refusal(stripped, _TOP, network)
+                    or message
+                )
+            elif message.endswith(_NOT_A_FUNCTION):
+                message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)
@@ -981,8 +1093,8 @@ def scan_tx_out_set(
         return True
     if action == "start":
         return _start(node, params)
-    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # Core quotes the action whole (`src/rpc/blockchain.cpp:2508`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
     # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
     # Core"; section 7 of the organization's standard, *A refusal carries
     # no secret*)
