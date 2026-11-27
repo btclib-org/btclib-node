@@ -570,15 +570,23 @@ class RejectedMessageError(BTClibValueError):
     header included, which the stream has been moved past and the caller
     counts as received.
 
+    Core logs the rejection in `net`, in a line that starts with `prefix`
+    and then gives the reason, which is the text. `Connection.parse_messages`
+    writes that line. `prefix` is `TransportError`'s unless the transport
+    that rejects gives its own, as `V2Transport` does.
+
     The text names no size: on V1 the size holds the length field the
     peer wrote, and on V2 the length it decrypted, which section 7 of the
     organization's standard, *A refusal carries no secret*, keeps out of
     a refusal's text.
     """
 
-    def __init__(self, size: int) -> None:
-        super().__init__("message rejected")
+    def __init__(
+        self, size: int, reason: str, *, prefix: str = TransportError.prefix
+    ) -> None:
+        super().__init__(reason)
         self.size = size
+        self.prefix = prefix
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):
