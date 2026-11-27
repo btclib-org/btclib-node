@@ -218,6 +218,7 @@ from btclib_node.config import (
     BindAddress,
     Config,
     WhitebindAddress,
+    _read_cookie_perms,
     default_onion_bind,
     get_path_arg,
     has_valid_port,
@@ -3120,24 +3121,38 @@ def _rpc_login(
 ) -> tuple[str | Path | None, str, str, str | None]:
     """Return the cookie file, user, password and cookie perms, when read.
 
-    `InitRPCAuthentication` and the `GenerateAuthCookie` it calls read these
-    four, and `AppInitMain` reaches them only under `-server`
-    (`src/init.cpp:1633-1635`, same sha). `-rpcuser` is read only where
-    `-rpcpassword` is not empty, `-rpccookieperms` only where it is.
+    `InitRPCAuthentication` (`src/httprpc.cpp:248-296`, same sha) reads
+    these four, and `AppInitMain` reaches it only under `-server`
+    (`src/init.cpp:1633-1635`, same sha). It reads `-rpcpassword` first.
+    Where that is not empty, it reads `-rpcuser` and neither cookie option.
+    Where it is empty, it reads `-rpccookieperms`, then `-rpccookiefile`
+    (`_rpc_cookie_file`).
     """
     if server is False:
         return "", "", "", None
+    if rpcpassword := _get_arg(settings, "rpcpassword"):
+        return "", _get_arg(settings, "rpcuser") or "", rpcpassword, None
+    rpccookieperms = _get_arg(settings, "rpccookieperms")
+    return _rpc_cookie_file(settings, rpccookieperms), "", "", rpccookieperms
 
+
+def _rpc_cookie_file(settings: _Settings, rpccookieperms: str | None) -> str | None:
+    """Return `-rpccookiefile`, or `""` where Core does not read it.
+
+    `InitRPCAuthentication` stops at a `-rpccookieperms` that names no mode,
+    before its `GenerateAuthCookie` reads `-rpccookiefile`
+    (`src/rpc/request.cpp:93`, same sha). `RpcAuth.start` refuses that
+    value before it writes any cookie, so the `""` returned then is never
+    used.
+    """
+    if rpccookieperms is not None and _read_cookie_perms(rpccookieperms)[1]:
+        return ""
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
-    rpccookiefile = (
+    return (
         None
         if _is_negated(settings, "rpccookiefile")
         else _get_arg(settings, "rpccookiefile") or ""
     )
-    rpcpassword = _get_arg(settings, "rpcpassword") or ""
-    if rpcpassword:
-        return rpccookiefile, _get_arg(settings, "rpcuser") or "", rpcpassword, None
-    return rpccookiefile, "", rpcpassword, _get_arg(settings, "rpccookieperms")
 
 
 # low-code-quality skipped: Core's `AppInitMain` checks, kept in its order
@@ -3213,9 +3228,6 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     if whitelist_relay is None:
         whitelist_relay = True
     server = _get_bool(settings, "server")
-    rpccookiefile, rpcuser, rpcpassword, rpccookieperms = _rpc_login(
-        settings, server=server
-    )
     # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
     # (`src/init.cpp:1716`, same sha)
     ban_time = _get_int(settings, "bantime")
@@ -3235,6 +3247,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     # read (ISS 2538)
     rpc_on = server is not False
     rpcallowip = _get_args(settings, "rpcallowip") if rpc_on else []
+    rpccookiefile, rpcuser, rpcpassword, rpccookieperms = _rpc_login(
+        settings, server=server
+    )
     rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
     rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
     rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None

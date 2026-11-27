@@ -22,20 +22,28 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _start_and_stop(command: list[str], datadir: Path) -> tuple[bool, int, str]:
+def _start_and_stop(
+    command: list[str], datadir: Path, *, server: bool = False
+) -> tuple[bool, int, str]:
     """Start `command` on `datadir`, then stop it with `SIGTERM`.
 
-    Return whether it was still running once started, its exit status,
-    and its stderr. Both programs write `banlist.json` while loading,
-    past the point where a start with `-server` reads
-    `-rpcservertimeout`, so the wait ends once the start is past that
-    read or the process has exited.
+    `server` is the `-server` it is given. Return whether it was still
+    running once started, its exit status, and its stderr. Both programs
+    write `banlist.json` while loading, past the point where a start with
+    `-server` reads its RPC options, so the wait ends once the start is
+    past those reads or the process has exited.
     """
     banlist = datadir / "regtest" / "banlist.json"
     stderr = datadir.parent / f"{datadir.name}.stderr"
     with stderr.open("w", encoding="utf-8") as sink:
         process = subprocess.Popen(  # noqa: S603
-            [*command, f"-datadir={datadir}", "-regtest", "-listen=0", "-server=0"],
+            [
+                *command,
+                f"-datadir={datadir}",
+                "-regtest",
+                "-listen=0",
+                f"-server={int(server)}",
+            ],
             stdout=subprocess.DEVNULL,
             stderr=sink,
         )
