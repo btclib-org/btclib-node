@@ -1454,14 +1454,7 @@ def test_log_args_escapes_a_backslash_in_a_value() -> None:
 
 
 def test_log_args_escapes_del_as_core_writes_it() -> None:
-    r"""ISS 2523: Core's `json_escape` writes DEL as `\u007f`.
-
-    `SettingsValue::write()` goes through `json_escape`
-    (`src/univalue/lib/univalue_write.cpp`, at bitcoin/bitcoin@f0de87f040),
-    whose table escapes DEL; `json.dumps(..., ensure_ascii=False)` leaves it
-    as the byte itself, which is the one code point on which the two differ.
-    The expected line is hand-written, not produced by the function again.
-    """
+    r"""ISS 2523: DEL is logged as `\u007f`, as in Core's `json_escape`."""
     settings = cli._Settings(command_line={"chain": ["a\x7fbé"]}, ro_config={})
     assert cli._log_args(settings) == ('Command-line arg: chain="a\\u007fbé"',)
 

@@ -190,7 +190,6 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import io
-import json
 import os
 import re
 import sys
@@ -1223,7 +1222,7 @@ def _parse_parameters(
         first = (
             "true"
             if live[0] is True
-            else f"{_json_escape(shown_path(_setting_to_str(live[0])))} "
+            else f"{shown_path(_setting_to_str(live[0]))} "
             f"(value {skip + 1} of -includeconf)"
         )
         err_msg = (
@@ -1666,14 +1665,6 @@ def _setting_to_str(value: Json) -> str:
     raise _wrong_type(value)
 
 
-# Core's `json_escape` (`src/univalue/lib/univalue_write.cpp`) writes DEL as
-# `\u007f`; `json.dumps(..., ensure_ascii=False)` leaves it as the byte itself,
-# which is the only code point on which the two differ
-def _json_escape(text: str) -> str:
-    """Return `text` with DEL escaped as Core writes it."""
-    return text.replace("\x7f", "\\u007f")
-
-
 def _setting_to_write_str(value: _Value) -> str:
     """Return Core's `SettingsValue::write()`: `true`/`false`, else JSON.
 
@@ -1683,9 +1674,7 @@ def _setting_to_write_str(value: _Value) -> str:
     above, which is `GetArg`'s own `SettingToString`, a different Core
     function reached by a different reader.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return _json_escape(json.dumps(value, ensure_ascii=False))
+    return write_json(value)
 
 
 def _logged(option: _Option | None, value: Json, whole: str) -> str:
