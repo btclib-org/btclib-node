@@ -194,6 +194,14 @@ def test_combo_is_inferred_as_the_script_that_matched(node: Node) -> None:
             f"sh(multi(1,{KEY},{KEY2}))",
             f"sh(multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2}))",
         ),
+        (
+            f"sortedmulti(1,{KEY2},{KEY})",
+            f"multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2})",
+        ),
+        (
+            f"sh(sortedmulti(1,{KEY2},{KEY}))",
+            f"sh(multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2}))",
+        ),
         (f"tr({X_ONLY})", f"tr([{FINGERPRINT}]{X_ONLY})"),
         (
             f"tr({X_ONLY},sortedmulti_a(1,{X_ONLY2},{X_ONLY}))",
@@ -1573,8 +1581,8 @@ UNUSED_PLACE = "Can only have unused at top level"
 
 
 # Each a function written where `bitcoind` does not read it, with
-# `bitcoind`'s message. Where `bitcoind` quotes the expression, the node
-# names the function and writes `...` (SECURITY.md).
+# `bitcoind`'s message. Where `bitcoind` quotes an expression or a key, the
+# node writes `...` for what may be a key (SECURITY.md).
 @pytest.mark.parametrize(
     ("text", "message"),
     [
