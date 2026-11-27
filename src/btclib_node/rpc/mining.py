@@ -512,7 +512,10 @@ def _template(node: Node, client_rules: set[str]) -> dict[str, Any]:
     )
     rules = ["csv"]
     if not pre_segwit:
-        rules.append("!segwit")
+        # Core lists taproot, which is buried, with segwit
+        # (`src/rpc/mining.cpp:987-988`, at bitcoin/bitcoin@f0de87f040, the
+        # v32.1 tag)
+        rules.extend(["!segwit", "taproot"])
     if signet:
         rules.append("!signet")
     rules.extend(status.active)

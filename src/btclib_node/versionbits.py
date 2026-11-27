@@ -27,10 +27,10 @@ deployments `getblocktemplate` reports. Core's one deployment,
 change neither the version nor the answer.
 
 This node enforces no deployment by signalling, each being buried
-(`btclib.consensus`). The deployments below are the ones Core still
-counts signals for, whose bits `ComputeBlockVersion` excludes from the
-warning; Core's others are always active or never, which excludes
-nothing.
+(`btclib.consensus`). The deployments below are the ones Core counts
+signals for, which set a version's bits and what `getblocktemplate`
+reports; Core's others are never active. Their bits lie past those the
+warning reads.
 """
 
 import enum
@@ -54,13 +54,13 @@ __all__ = ["DeploymentStatus", "UnknownActivations", "check_unknown_activations"
 
 # `VERSIONBITS_TOP_BITS`, `VERSIONBITS_TOP_MASK` and
 # `VERSIONBITS_NUM_BITS` (`src/versionbits.h`, at bitcoin/bitcoin@f0de87f040,
-# the v32.1 tag): bits 5 to 28 are nonce space under BIP 323
+# the v32.1 tag)
 _TOP_BITS = 0x20000000
 _TOP_MASK = 0xE0000000
 _NUM_BITS = 5
 # the low bits of a version, below `VERSIONBITS_TOP_MASK`, among which
 # `ComputeBlockVersion` sets a deployment's own: `VERSIONBITS_NUM_BITS`
-# bounds only the warning, and a deployment's bit may lie past it (`:28`
+# bounds only the warning, and a deployment's bit may lie past it (bit 28
 # for `DEPLOYMENT_TESTDUMMY`)
 _SIGNAL_BITS = 29
 
@@ -96,7 +96,7 @@ class _Deployment:
 
 
 # `src/kernel/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
-# tag, `DEPLOYMENT_TESTDUMMY` on regtest (`:582-585`). v32.1's
+# tag, `DEPLOYMENT_TESTDUMMY` on regtest (`:610-615`). v32.1's
 # `DeploymentPos` holds that one alone (bitcoin/bitcoin@74f71c5054): taproot
 # is buried, and no chain carries another deployment.
 _TESTDUMMY_BIT = 28

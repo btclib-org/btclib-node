@@ -268,8 +268,8 @@ def test_each_chain_carries_core_s_min_bip9_warning_height() -> None:
     """ISS 2278: `MinBIP9WarningHeight`, at bitcoin/bitcoin@f0de87f040.
 
     Read from `src/kernel/chainparams.cpp` there, the v32.1 tag, for every
-    chain this package defines: taproot's departure from `vDeployments`
-    raised mainnet's and testnet's.
+    chain this package defines. Mainnet's and testnet's are taproot's
+    activation height plus one period, as Core's comments there say.
     """
     assert {chain.name: chain.min_bip9_warning_height for chain in CHAINS} == {
         "mainnet": 711648,

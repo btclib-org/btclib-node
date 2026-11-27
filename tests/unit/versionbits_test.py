@@ -96,6 +96,15 @@ def test_a_bit_signalled_at_the_threshold_locks_in_and_then_activates() -> None:
     assert check(versions[: 3 * _PERIOD]) == [(_UNKNOWN, True)]
 
 
+@pytest.mark.parametrize(("number", "expected"), [(4, [(4, False)]), (5, []), (27, [])])
+def test_the_warning_reads_bits_0_to_4_alone(
+    number: int, expected: list[tuple[int, bool]]
+) -> None:
+    """ISS 2278: at the threshold, bit 4 locks in and bits 5 and 27 do not."""
+    signalling = [bit(number)] * _THRESHOLD + [_TOP] * (_PERIOD - _THRESHOLD)
+    assert check(periods(0) + signalling) == expected
+
+
 def test_a_tip_inside_a_period_answers_with_the_period_before_it() -> None:
     """`GetStateFor` reads the state at the last period boundary.
 
