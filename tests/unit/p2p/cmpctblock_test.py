@@ -16,6 +16,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from btclib.block import witness_commitment_output
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.compact_blocks import (
@@ -309,13 +310,22 @@ def test_a_blocktxn_mutated_only_in_the_witness_asks_for_the_block(
     the header `valid_header`. bitcoin/bitcoin#32646.
     """
     node, _ = a_node(regtest_node)
+    block_index = node.chainstate.block_index
+    height = len(block_index.active_chain)
+    coinbase = generate_coinbase(height=height)
     transaction = generate_random_transaction()
-    block = next_block(node, transaction)
+    transaction.vin[0].script_witness = Witness([b"\x01" * 3])
+    transactions = [coinbase, transaction]
+    coinbase.vout = [*coinbase.vout, witness_commitment_output(transactions, bytes(32))]
+    coinbase.vin[0].script_witness = Witness([bytes(32)])
+    time = datetime.now(UTC) + timedelta(seconds=1)
+    block = build_block(block_index.active_chain[-1], transactions, height, time=time)
+    assert block.witness_commitment is not None
     peer = a_compact_peer(node)
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
     mutated = replace(
         transaction,
-        vin=[replace(transaction.vin[0], script_witness=Witness([b"\x00"]))],
+        vin=[replace(transaction.vin[0], script_witness=Witness([b"\x02" * 3]))],
     )
     assert mutated.id == transaction.id
     blocktxn(node, BlockTxn(block.header.hash, [mutated]).serialize(), peer)

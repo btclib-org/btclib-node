@@ -3324,7 +3324,8 @@ def test_a_reorg_readds_a_version_3_parent_with_both_children(node: Node) -> Non
     bitcoin/bitcoin#33504: `pre_verify_mempool_acceptance` skips
     `_check_fee_and_truc` under `bypass_limits`, so the block's version-3
     parent and both version-3 children all return to the mempool, where
-    the first child would otherwise be evicted.
+    the first child would otherwise be evicted: the second pays enough to
+    replace it.
     """
     common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
@@ -3337,6 +3338,9 @@ def test_a_reorg_readds_a_version_3_parent_with_both_children(node: Node) -> Non
     )
     first = child_of(parent, 0, version=3)
     second = child_of(parent, 1, version=3)
+    second = replace(
+        second, vout=[TxOut(second.vout[0].value - 2 * FEE, anyone_can_spend())]
+    )
     height = len(common)
     block = build_block(
         common[-1].header.hash,
