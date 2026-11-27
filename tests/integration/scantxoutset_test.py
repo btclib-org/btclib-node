@@ -240,6 +240,7 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", [f"[deadbeef]{_MUSIG}"]], False),
     (["start", [f"wpkh(\t{_K})"]], True),
     (["start", [f"wpkh(\t{_K})#qqqqqqqq"]], True),
+    (["start", [f"rawtr({_X},foo)"]], True),
 ]
 
 

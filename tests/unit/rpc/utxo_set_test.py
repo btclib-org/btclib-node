@@ -1560,12 +1560,37 @@ def test_a_tr_leaf_refusal_carries_no_private_key(
     assert_secret_free(caught.value, secrets)
 
 
-@pytest.mark.parametrize("second", ["foo", KEY], ids=["word", "key"])
+# Each what follows the key in a `rawtr()` of two arguments or of three
+@pytest.mark.parametrize("rest", ["foo", KEY, "foo,bar"], ids=["word", "key", "three"])
 def test_a_rawtr_of_more_than_one_argument_answers_core_s_message(
-    node: Node, second: str
+    node: Node, rest: str
 ) -> None:
     """ISS 2571: `ParseScript` reads exactly one key, in its own words."""
-    assert refusal(node, "start", [f"rawtr({X_ONLY},{second})"]) == (
+    assert refusal(node, "start", [f"rawtr({X_ONLY},{rest})"]) == (
         -5,
         "rawtr(): only one key expected.",
     )
+
+
+# Each a private key given as the first argument of a `rawtr()` of two, or as
+# the second, beside each spelling of it
+@pytest.mark.parametrize(
+    ("arguments", "secrets"),
+    [
+        (f"{TPRV},foo", [TPRV]),
+        (f"{X_ONLY},{TPRV}", [TPRV]),
+        (f"{REGTEST_WIF},foo", [REGTEST_WIF, LEAK_HEX]),
+        (f"{X_ONLY},{REGTEST_WIF}", [REGTEST_WIF, LEAK_HEX]),
+    ],
+)
+def test_a_rawtr_of_more_than_one_argument_carries_no_private_key(
+    node: Node, arguments: str, secrets: list[str]
+) -> None:
+    """Section 7's *A refusal carries no secret*."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"rawtr({arguments})")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        "rawtr(): only one key expected.",
+    )
+    assert_secret_free(caught.value, secrets)
