@@ -271,10 +271,10 @@ class ChainstateInconsistencyError(RuntimeError):
     `get_cfcheckpt` in `p2p/callbacks.py`) raise it too, over a filter
     or a filter header missing for a block already on the active chain,
     and carry none of that risk -- nothing downstream of answering one
-    peer's BIP157 request is mid-mutation of anything. `handle_p2p`'s
-    own generic catch is what lets them answer this without ending the
-    node: it logs it and keeps the peer, this not being a
-    `MisbehavingError`.
+    peer's BIP157 request is mid-mutation of anything.
+    `p2p.main._dispatch`'s own generic catch is what lets them answer
+    this without ending the node: it logs it and keeps the peer, this
+    not being a `MisbehavingError`.
 
     `getblocktxn` raises it for a record `read_held_block` refuses, and
     sets `terminate_flag` first, as Core asserts that read.

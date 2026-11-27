@@ -2954,13 +2954,14 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
     copies: "we do not ban/disconnect nodes that forward txs violating
     the additional (non-mandatory) rules here, to improve forwards and
     backwards compatibility" (`src/policy/policy.h:112-117`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The class is a
-    `BTClibValueError`, so letting it out of `tx` would reach
-    `handle_p2p`'s own `isinstance(e, BTClibException)` and discourage
-    the peer --
-    `test_a_callback_that_raises_a_btclib_exception_costs_the_peer`
-    (`p2p/main_test.py`) is that half, by type -- which is what the
-    catch this pins exists to prevent.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). The class is no
+    `MisbehavingError`, so even let out of `tx` it would leave the peer
+    as it is: `p2p.main._drop`'s own `isinstance(e, MisbehavingError)`
+    check discourages for nothing else --
+    `test_a_message_that_does_not_parse_costs_the_peer_nothing`
+    (`p2p/main_test.py`) is that half, by type. The catch this pins
+    keeps it inside `tx`, which hands it to `_rejected` as a refusal of
+    the transaction.
     """
 
     def non_standard(node: Any, transaction: Any) -> NoReturn:
@@ -2970,9 +2971,8 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
     monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", non_standard)
     transaction = a_transaction()
     node = a_data_node()
-    # the class is on the discouraging side of that test, so this catch
-    # is the whole of what keeps the peer
-    assert issubclass(NonStandardTxError, BTClibException)
+    # the class is on the sparing side of `_drop`, as the docstring says
+    assert not issubclass(NonStandardTxError, MisbehavingError)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert not node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == []
@@ -3194,12 +3194,11 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
     """`tx` has no catch of its own for `ChainstateInconsistencyError`.
 
     Unlike `MissingPrevoutError` above, it propagates uncaught, for
-    `p2p.main._dispatch`'s own generic catch to stop the one connection
-    without
-    discouraging the peer --
-    `test_a_callback_that_raises_drops_the_peer` (`p2p/main_test.py`)
-    already proves that half by type, `ChainstateInconsistencyError`
-    being a plain `RuntimeError`. btclib-org/btclib-node#631
+    `p2p.main._dispatch`'s own generic catch to log it and keep the
+    peer, undiscouraged -- `test_a_callback_that_raises_keeps_the_peer`
+    (`p2p/main_test.py`) already proves that half by type,
+    `ChainstateInconsistencyError` being a plain `RuntimeError`.
+    btclib-org/btclib-node#631
     """
 
     def corrupted(node: Any, transaction: Any) -> NoReturn:

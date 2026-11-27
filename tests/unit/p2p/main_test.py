@@ -702,16 +702,18 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
 ) -> None:
     """A mempool candidate failing a consensus check drops the tx, not the peer.
 
-    Unlike the two tests above, whose stand-in callback raises straight
-    into `_dispatch`'s own generic catch: `tx` (`p2p/callbacks.py`) is
-    the real callback here, dispatched exactly as `callbacks["tx"]`
-    reaches it, so its own `except BTClibValueError` is what has to
-    keep this from ever reaching that catch at all. Core does not
-    discourage a peer for a transaction failure of any kind,
-    consensus-level ones included -- `test_a_transaction_only_relay_
-    policy_refuses_costs_the_peer_nothing` (`p2p/callbacks_test.py`) is
-    the same claim for the standardness-only half, by calling `tx`
-    directly rather than through this dispatch. btclib-org/btclib-node#843
+    Unlike `test_a_callback_that_raises_keeps_the_peer` and
+    `test_a_callback_that_raises_a_btclib_exception_costs_the_peer`
+    above, whose stand-in callback raises straight into `_dispatch`'s
+    own generic catch: `tx` (`p2p/callbacks.py`) is the real callback
+    here, dispatched exactly as `callbacks["tx"]` reaches it, so its own
+    `except BTClibValueError` is what has to keep this from ever
+    reaching that catch at all. Core does not discourage a peer for a
+    transaction failure of any kind, consensus-level ones included --
+    `test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing`
+    (`p2p/callbacks_test.py`) is the same claim for the
+    standardness-only half, by calling `tx` directly rather than through
+    this dispatch. btclib-org/btclib-node#843
     """
     refused: list[bool] = []
 
@@ -925,7 +927,7 @@ def test_resume_cfilters_keeps_the_peer_on_a_bare_exception(
 ) -> None:
     """A bare exception out of `advance_cfilters` keeps the peer, undiscouraged.
 
-    ISS 1233: `handle_p2p`'s own answer, Core's `catch (...)`; the paused
+    ISS 1233: `_dispatch`'s own answer, Core's `catch (...)`; the paused
     entry is dropped, so nothing raises it again.
     """
     stopped: list[Any] = []
@@ -1082,7 +1084,7 @@ def test_resume_getdata_keeps_the_peer_on_a_bare_exception(
 ) -> None:
     """A bare exception out of `advance_getdata` keeps the peer, undiscouraged.
 
-    ISS 1233: `handle_p2p`'s own answer, Core's `catch (...)`; the paused
+    ISS 1233: `_dispatch`'s own answer, Core's `catch (...)`; the paused
     entry is dropped, so nothing raises it again.
     """
     stopped: list[Any] = []
