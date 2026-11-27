@@ -207,8 +207,9 @@ def shown_path(
     A path that is `default_path` is built from defaults alone and holds
     nothing an operator gave, so it is written through `quote`, as Bitcoin
     Core writes it. Any other may hold a key given in place of an option's
-    value, and is written by its length alone, as `<52 characters>`, with
-    no quotes (SECURITY.md, "Where this node departs from Bitcoin Core").
+    value or an RPC's argument, and is written by its length alone, as
+    `<52 characters>`, with no quotes (SECURITY.md, "Where this node departs
+    from Bitcoin Core").
     """
     text = str(path)
     if default_path is not None and text == str(default_path):

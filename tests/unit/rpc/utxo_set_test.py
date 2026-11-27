@@ -1226,6 +1226,122 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+# Each with the threshold `bitcoind` refuses in it, which its message quotes
+@pytest.mark.parametrize(
+    ("text", "threshold"),
+    [
+        (f"wsh(multi( 1,{KEY}))", " 1"),
+        (f"wsh(multi(a,{KEY}))", "a"),
+        # `Expr` ends the threshold at a `)` or a `,` outside brackets
+        ("wsh(multi(a))", "a"),
+        ("multi(a)", "a"),
+        (f"wsh(multi((1,2),{KEY}))", "(1,2)"),
+        (f"wsh(sortedmulti( 1,{KEY}))", " 1"),
+        (f"sh(sortedmulti(a,{KEY}))", "a"),
+        (f"tr({X_ONLY},multi_a( 1,{X_ONLY}))", " 1"),
+        (f"tr({X_ONLY},sortedmulti_a(a,{X_ONLY}))", "a"),
+        # the threshold refused, not the first the text holds
+        (f"tr({X_ONLY},{{multi_a(1,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{multi_a(x,{X_ONLY}),sortedmulti_a(1,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{sortedmulti_a(1,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{multi_a(001,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        # numbers `ToIntegral<uint32_t>` does not read
+        (f"wsh(multi(4294967296,{KEY}))", "4294967296"),
+        (f"wsh(multi(11111111111,{KEY}))", "11111111111"),
+        (f"wsh(multi(+1,{KEY}))", "+1"),
+        (f"wsh(multi(-1,{KEY}))", "-1"),
+    ],
+)
+def test_a_threshold_core_does_not_read_is_refused_with_its_message(
+    node: Node, text: str, threshold: str
+) -> None:
+    """ISS 2553: Core's `ParseScript` quotes the threshold it refuses."""
+    assert refusal(node, "start", [text]) == (
+        -5,
+        f"Multi threshold '{threshold}' is not valid",
+    )
+
+
+@pytest.mark.parametrize("key", [TPRV, LEAK_WIF, LEAK, str(int(LEAK, 16))])
+def test_a_key_given_as_a_threshold_is_given_by_its_length(
+    node: Node, key: str
+) -> None:
+    """Core quotes the threshold whole; this gives a long one by its length."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"wsh(multi({key},{KEY}))")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        f"Multi threshold '<{len(key)} characters>' is not valid",
+    )
+    assert_secret_free(caught.value, [key])
+
+
+def test_a_threshold_of_any_length_is_refused_with_its_length(node: Node) -> None:
+    """A threshold of more digits than `int` converts is given by its length."""
+    for threshold in (LONG_STEP, f"{ZEROS}4294967296"):
+        assert refusal(node, "start", [f"wsh(multi({threshold},{KEY}))"]) == (
+            -5,
+            f"Multi threshold '<{len(threshold)} characters>' is not valid",
+        )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"wpkh(\t{KEY})",
+        f"wpkh(\n{KEY})",
+        f"wpkh(\t{KEY})#qqqqqqqq",
+        f"wpkh(\t{KEY})#" + "é" * 4,
+    ],
+    ids=["tab", "newline", "tab-and-checksum", "tab-and-checksum-of-8-bytes"],
+)
+def test_a_character_outside_the_descriptor_set_is_refused(
+    node: Node, text: str
+) -> None:
+    """ISS 2551: Core's `DescriptorChecksum` refuses the payload.
+
+    bitcoind v32.1.0 on regtest answered "Invalid characters in payload"
+    for each.
+    """
+    assert refusal(node, "start", [text]) == (-5, "Invalid characters in payload")
+
+
+@pytest.mark.parametrize("key", [TPRV, LEAK_WIF], ids=["tprv", "wif"])
+def test_a_character_outside_the_descriptor_set_quotes_no_key(
+    node: Node, key: str
+) -> None:
+    """The payload may hold a private key, which the refusal leaves out."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"wpkh(\t{key})")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        "Invalid characters in payload",
+    )
+    assert_secret_free(caught.value, [key])
+
+
+# Each where Core's `CheckChecksum` does not refuse the payload's characters:
+# it refuses a second `#` or a checksum that is not 8 bytes first, or the
+# payload is in the set. Core's own messages for those two are ISS 2649's
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(f"wpkh(\t{KEY})#a#b", id="two-hashes"),
+        pytest.param(f"wpkh(\t{KEY})#abcd#efg", id="two-hashes-8-bytes-after-one"),
+        pytest.param(f"wpkh(\t{KEY})#abc", id="short-checksum"),
+        pytest.param(f"wpkh(\t{KEY})#" + "é" * 8, id="checksum-of-16-bytes"),
+        pytest.param(f"wpkh({KEY})#" + "\t" * 8, id="tabs-as-checksum"),
+    ],
+)
+def test_where_core_refuses_no_payload_character_the_message_is_the_parser_s(
+    node: Node, text: str
+) -> None:
+    """ISS 2551: the message is bip32_descriptors', not the payload refusal."""
+    with pytest.raises(BTClibValueError) as parsed:
+        strip_checksum(text)
+    assert refusal(node, "start", [text]) == (-5, str(parsed.value))
+
+
 def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
     """ISS 2552: `ParsePubkey` names the character it found in place of `[`."""
     text = f"wpkh( [deadbeef]{KEY})"
@@ -1239,9 +1355,9 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
 
 
 # Each where Core first refuses what `_parse` gives no message of its own
-# for: an expression no function reads, before a key or not, a threshold,
-# a key origin or a key path, or a miniscript outside wsh() and tr(),
-# which both refuse in the same words.
+# for: an expression no function reads, before a key or not, a key origin
+# or a key path, or a miniscript outside wsh() and tr(), which both refuse
+# in the same words.
 @pytest.mark.parametrize(
     "text",
     [
@@ -1251,7 +1367,6 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
         f"foo(pk({NOT_A_POINT}))",
         f"tr({X_ONLY},{NOT_A_POINT})",
         f"tr({X_ONLY},foo)",
-        f"wsh(multi( 1,{KEY}))",
         f"wpkh({TPUB}/0/* )",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wpkh([deadbeef]]{H160})",

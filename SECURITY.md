@@ -204,6 +204,20 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
 bip32_descriptors' refusal instead, that refusal names the key by its
 index alone, as for a key path value Core refuses.
 
+Core's `dumptxoutset` refusals quote the path it was given whole, a key
+given by mistake in its place included (`src/rpc/blockchain.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words and writes the path by its length: `<52 characters> already exists.
+If you are sure this is what you want, move it out of the way first` and
+`Couldn't open file <64 characters> for writing.`
+
+Core's `scantxoutset` refusal of a threshold it cannot read, in a
+`multi()`, `sortedmulti()`, `multi_a()` or `sortedmulti_a()`, quotes the
+threshold whole, which may be a key given in its place (`ParseScript` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). This node's refusal quotes it as the next paragraph quotes a name,
+so that a key there is written `<52 characters>` between Core's quotes.
+
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
 and `ParseHexV` in `src/rpc/util.cpp` among them, at
@@ -246,7 +260,17 @@ Core's sentence puts it in parentheses, as in `Invalid minimum work specified
 that takes several is also named by its position, as an `-rpcallowip` value is:
 `Cannot resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind`
 address that names no port is quoted, as Core quotes it, where the log of the
-settings below writes an address whole.
+settings below writes an address whole. Core's `Bind address family for %s not
+supported` writes the address a `-bind` or `-whitebind` value resolves to, an
+I2P host's label included (`BindListenPort` in `src/net.cpp:3396`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node writes that address whole
+where the log of the settings below writes the value whole, and otherwise
+`'...'` and the value's position, as in `Bind address family for '...' (value 1
+of -bind) not supported`. Core's `Duplicate binding configuration for address
+%s` writes such an address too (`AppInitMain` in `src/init.cpp:2368`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this node writes it the same
+way, as in `Duplicate binding configuration for address '...' (value 2 of
+-bind)`.
 
 Core's start-up refusals of a path write it whole, a key given by mistake
 in place of an option's value included (`InitConfig` in

@@ -257,10 +257,15 @@ def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     before `json.loads` reads the text: `json.loads` raises
     `RecursionError`, which is not a `ValueError`, on a text nested
     deeper than the stack holds.
+
+    It also raises on a body in UTF-16 or UTF-32, or behind a byte order
+    mark, which `json.loads` detects in bytes and reads. `decode` reads
+    the body as UTF-8, since `UniValue::read` reads the bytes as they
+    are, and `HTTPReq_JSONRPC` answers a body that `UniValue::read`
+    refuses as a parse error (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
-    # decoded as `json.loads` decodes bytes, so the depth is counted on
-    # the text it reads
-    text = body.decode(json.detect_encoding(body), "surrogatepass")
+    text = body.decode("utf-8", "surrogatepass")
     _refuse_past_max_depth(text)
     read = partial(
         json.loads,
