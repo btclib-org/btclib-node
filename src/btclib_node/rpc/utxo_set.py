@@ -158,8 +158,10 @@ _BTCLIB_KEY_REFUSALS = (
 # expression no function reads with
 _NOT_A_FUNCTION = "is not a valid descriptor function"
 
-# what bip32_descriptors refuses a `tr()` leaf that is no miniscript with;
-# Core quotes the leaf, which may be a key (ISS 2554)
+# bip32_descriptors' refusal of a `tr()` leaf no function reads, where the
+# leaf is too long for it to quote, its arguments written `(...)`. It
+# quotes a shorter one, as `'foo'`, and that message ends with
+# `_NOT_A_FUNCTION`
 _TR_LEAF_REFUSAL = "tr() leaf is not a valid descriptor function"
 
 # `ParsePubkeyInner`'s message for text it reads as no key
@@ -801,25 +803,31 @@ def _parse(node: Node, text: str) -> list[_Source]:
     Core's `Parse`. Its message names what it found wrong and is
     bip32_descriptors' here, which words it differently, except where it is
     Core's: for a payload holding a character outside
-    `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, and
-    for what `_core_refusal` refuses, shortened where Core quotes the
-    expression. Where ecc refuses a hex key as no point, or
-    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message is
-    that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
-    meets first in `text`. Where bip32_descriptors refuses an expression no
-    function reads, the message is `_core_refusal`'s where it has one:
-    `_invalid_key_refusal` reads on past such an expression, to keys Core
-    does not reach. bip32_descriptors checks a key's network only once it
-    has read the whole descriptor, so a later refusal it raises comes first,
-    where Core refuses the key. Unless `_invalid_key_refusal` or
-    `_tree_refusal` reads that key, the message is then the later
-    refusal's, not Core's (btclib-org/btclib-node#2555).
+    `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, for
+    what `_core_refusal` refuses, shortened where Core quotes the
+    expression, and where the last two paragraphs say. Where ecc refuses a
+    hex key as no point, or bip32_descriptors refuses as
+    `_BTCLIB_KEY_REFUSALS` says, the message is that of whichever of
+    `_invalid_key_refusal` and `_core_refusal` Core meets first in `text`.
+    Where bip32_descriptors refuses an expression no function reads, the
+    message is `_core_refusal`'s where it has one: `_invalid_key_refusal`
+    reads on past such an expression, to keys Core does not reach.
+    bip32_descriptors checks a key's network only once it has read the whole
+    descriptor, so a later refusal it raises comes first, where Core refuses
+    the key. Unless `_invalid_key_refusal` or `_tree_refusal` reads that
+    key, the message is then the later refusal's, not Core's
+    (btclib-org/btclib-node#2555).
 
     Where bip32_descriptors refuses a threshold of one of
     `_MULTI_FUNCTIONS`, the message is `_threshold_refusal`'s. Where a leaf
     of `tr()` before the threshold's leaf holds a function of
     `_DRAFT_NAMES`, Core refuses that function first, with
     `_core_refusal`'s message, which this does not give.
+
+    Where bip32_descriptors refuses a `tr()` leaf with `_TR_LEAF_REFUSAL`,
+    the message is `_core_refusal`'s where it has one. Otherwise it is
+    Core's, `'...' is not a valid descriptor function`, with `...` for the
+    leaf Core quotes.
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
@@ -858,8 +866,12 @@ def _parse(node: Node, text: str) -> list[_Source]:
                     or message
                 )
             elif message == _TR_LEAF_REFUSAL:
-                # a leaf Core reads as no function is quoted; one that is a
-                # bare key is written `...` there (ISS 2554)
+                # Core's `ParseScript` quotes the leaf whole, which may be a
+                # key (`src/script/descriptor.cpp:2794`,
+                # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), unless it
+                # first refuses what `_core_refusal` names. The leaf is
+                # written `...` (SECURITY.md, "Where this node departs from
+                # Bitcoin Core")
                 message = (
                     _core_refusal(stripped, _TOP, network)
                     or "'...' is not a valid descriptor function"
