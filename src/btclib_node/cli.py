@@ -3195,25 +3195,24 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     )
     server = _get_bool(settings, "server")
     prune = before.prune
-    # `-rpcallowip`, which `InitHTTPAllowList` and `GetBindAddresses`
-    # read (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    # v32.1 tag), and `-rpcauth`, `-rpcwhitelist` and
-    # `-rpcwhitelistdefault`, which `InitRPCAuthentication` reads
-    # (`src/httprpc.cpp`, same sha): `AppInitMain` reaches both only under
-    # `-server`, so with the server off a value Core's `GetArgs` or
-    # `GetBoolArg` would refuse is not read (ISS 2538). Read before
-    # `-rpcservertimeout` and `-bantime`, which Core reads after them
-    # (ISS 2584)
+    # In Core's order (ISS 2584): `AppInitServers` (`src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs `InitHTTPServer`,
+    # which reads `-rpcallowip` in `InitHTTPAllowList` and then
+    # `-rpcservertimeout` as `int64_t` seconds (`src/httpserver.cpp`, same
+    # sha), and then `StartHTTPRPC`, whose `InitRPCAuthentication` reads
+    # `-rpcauth`, `-rpcwhitelist` and `-rpcwhitelistdefault`
+    # (`src/httprpc.cpp`, same sha). `AppInitMain` runs `AppInitServers`
+    # only under `-server`, so with the server off a value Core's
+    # `GetArgs`, `GetIntArg` or `GetBoolArg` would refuse is not read
+    # (ISS 2500, ISS 2538)
     rpc_on = server is not False
     rpcallowip = _get_args(settings, "rpcallowip") if rpc_on else []
+    rpcservertimeout = _rpcservertimeout(settings, server=server)
     rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
     rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
     rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None
-    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
-    # seconds (`src/httpserver.cpp`, same sha)
-    rpcservertimeout = _rpcservertimeout(settings, server=server)
     # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
-    # (`src/init.cpp:1716`, same sha)
+    # (`src/init.cpp:1716`, same sha), after `AppInitServers` at step 4a
     ban_time = _get_int(settings, "bantime")
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
