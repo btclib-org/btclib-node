@@ -211,6 +211,18 @@ words and writes the path by its length: `<52 characters> already exists.
 If you are sure this is what you want, move it out of the way first` and
 `Couldn't open file <64 characters> for writing.`
 
+Core's `scantxoutset` refusal of a `tr()` leaf that no function reads
+quotes the leaf whole, a key given as a leaf included (`ParseScript` in
+`src/script/descriptor.cpp:2794`, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag). This node writes the leaf's arguments as `(...)`, and quotes
+the result where it has at most `MAX_QUOTED_NAME` characters, as in
+`'foo(...)' is not a valid descriptor function`. It writes a longer leaf
+`...`, as in `'...' is not a valid descriptor function` for a key given
+as a leaf or for `tr(K,foo(1)/0/0/0/0/0/0/0)`, except a leaf that holds
+a function the paragraph on `rawpkh()` above names, which is written as
+that paragraph says. Where Core refuses a leaf before it, as `rawpkh(H)`
+in `tr(K,{rawpkh(H),K})`, the refusal is that leaf's.
+
 Core's `scantxoutset` refusal of a threshold it cannot read, in a
 `multi()`, `sortedmulti()`, `multi_a()` or `sortedmulti_a()`, quotes the
 threshold whole, which may be a key given in its place (`ParseScript` in
