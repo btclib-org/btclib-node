@@ -44,6 +44,7 @@ __all__ = [
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "JsonIntegerOutOfRangeError",
+    "JsonTypeError",
     "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
@@ -439,6 +440,29 @@ class JsonIntegerOutOfRangeError(ValueError):
     def __init__(self) -> None:
         """Carry `getInt`'s own message."""
         super().__init__("JSON integer out of range")
+
+
+class JsonTypeError(ValueError):
+    """A start refused as `UniValue::checkType` refuses a `settings.json` value.
+
+    `get_str` and the getters beside it throw a `UniValue::type_error`
+    (`src/univalue/lib/univalue.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). `AppInit` catches it and hands it to
+    `PrintExceptionContinue` rather than to `InitError`
+    (`src/bitcoind.cpp`, same sha), and `cli.main` prints it as that
+    function does. Raised by `cli._wrong_type`.
+
+    A read inside `InitConfig`'s own `try` (`src/common/init.cpp`, same
+    sha) is one exception: its `catch` returns the error, and `ParseArgs`
+    hands it to `InitError`. The file's own `settings` key is read there,
+    by `WriteSettingsFile`, so `cli._init_settings_file` raises a plain
+    `ValueError` in its place.
+
+    `-help-debug` is another: `ProcessInitCommands` reads it under `-help`,
+    outside `AppInit` (`src/bitcoind.cpp`, same sha), where Core catches
+    nothing and aborts, while `cli.main` prints the block
+    (btclib-org/btclib-node#2641).
+    """
 
 
 class RpcCredentialRefusedError(ValueError):
