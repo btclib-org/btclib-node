@@ -237,7 +237,13 @@ Core's sentence puts it in parentheses, as in `Invalid minimum work specified
 that takes several is also named by its position, as an `-rpcallowip` value is:
 `Cannot resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind`
 address that names no port is quoted, as Core quotes it, where the log of the
-settings below writes an address whole.
+settings below writes an address whole. Core's `Bind address family for %s not
+supported` writes the address a `-bind` or `-whitebind` value resolves to, an
+I2P host's label included (`BindListenPort` in `src/net.cpp:3396`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node writes that address whole
+where the log of the settings below writes the value whole, and otherwise
+`'...'` and the value's position, as in `Bind address family for '...' (value 1
+of -bind) not supported`.
 
 Core's start-up refusals of a path write it whole, a key given by mistake
 in place of an option's value included (`InitConfig` in

@@ -2535,10 +2535,13 @@ def test_a_bind_that_fails_closes_the_listeners_bound_before_it(
     The second address has no sockaddr, as `BindListenPort` words it.
     """
     port = get_random_port()
-    manager = a_manager(bind=[f"127.0.0.1:{port}", f"{an_onion_host()}:{port}"])
+    onion = f"{an_onion_host()}:{port}"
+    manager = a_manager(bind=[f"127.0.0.1:{port}", onion])
+    # a real onion address is written whole, as Core writes it (ISS 2573)
+    refusal = f"Bind address family for {onion} not supported"
     # `excinfo` keeps the failed call's frames, and any socket they still
     # hold, alive past the block: the port is free only where it was closed
-    with pytest.raises(OSError, match=r"Bind address family for .* not supported"):
+    with pytest.raises(OSError, match=f"^{re.escape(refusal)}$"):
         manager._bind()
     assert not manager.listening.is_set()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:

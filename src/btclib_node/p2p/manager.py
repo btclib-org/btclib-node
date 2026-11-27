@@ -4394,16 +4394,12 @@ def _shown_listen_address(
     Core writes the address a value resolves to whole (`BindListenPort`,
     `src/net.cpp:3396`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
     which writes an I2P host's label in lowercase base32: one that is a
-    key is then a key written back. This writes the value whole only
-    where `masked_address` keeps it whole, and `'...'` and its position
-    otherwise, as the RPC bind lines of `rpc.manager` do for ISS 2566
-    (SECURITY.md, "Where this node departs from Bitcoin Core", ISS 2573).
+    key is then a key written back. This writes the address whole only
+    where `masked_address` keeps the value whole, and `'...'` and the
+    value's position otherwise, as the RPC bind lines of `rpc.manager` do
+    for ISS 2566 (SECURITY.md, "Where this node departs from Bitcoin Core",
+    ISS 2573).
     """
-    masked = masked_address(value)
-    if isinstance(address, WhitebindAddress):
-        # the permission names before `@` are no part of the address
-        _, at, spec = value.partition("@")
-        masked = masked_address(spec if at else value)
-    if masked is None:
+    if masked_address(value) is None:
         return service_text(address.host, address.port)
     return f"'...' (value {position} of -{option})"
