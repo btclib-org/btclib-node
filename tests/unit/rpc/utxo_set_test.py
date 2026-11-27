@@ -1204,6 +1204,63 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"wpkh(\t{KEY})",
+        f"wpkh(\n{KEY})",
+        f"wpkh(\t{KEY})#qqqqqqqq",
+        f"wpkh(\t{KEY})#" + "é" * 4,
+    ],
+    ids=["tab", "newline", "tab-and-checksum", "tab-and-checksum-of-8-bytes"],
+)
+def test_a_character_outside_the_descriptor_set_is_refused(
+    node: Node, text: str
+) -> None:
+    """ISS 2551: Core's `DescriptorChecksum` refuses the payload.
+
+    bitcoind v32.1.0 on regtest answered "Invalid characters in payload"
+    for each.
+    """
+    assert refusal(node, "start", [text]) == (-5, "Invalid characters in payload")
+
+
+@pytest.mark.parametrize("key", [TPRV, LEAK_WIF], ids=["tprv", "wif"])
+def test_a_character_outside_the_descriptor_set_quotes_no_key(
+    node: Node, key: str
+) -> None:
+    """The payload may hold a private key, which the refusal leaves out."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"wpkh(\t{key})")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        "Invalid characters in payload",
+    )
+    assert_secret_free(caught.value, [key])
+
+
+# Each where Core's `CheckChecksum` does not refuse the payload's characters:
+# it refuses a second `#` or a checksum that is not 8 bytes first, or the
+# payload is in the set. Core's own messages for those two are ISS 2649's
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(f"wpkh(\t{KEY})#a#b", id="two-hashes"),
+        pytest.param(f"wpkh(\t{KEY})#abcd#efg", id="two-hashes-8-bytes-after-one"),
+        pytest.param(f"wpkh(\t{KEY})#abc", id="short-checksum"),
+        pytest.param(f"wpkh(\t{KEY})#" + "é" * 8, id="checksum-of-16-bytes"),
+        pytest.param(f"wpkh({KEY})#" + "\t" * 8, id="tabs-as-checksum"),
+    ],
+)
+def test_where_core_refuses_no_payload_character_the_message_is_the_parser_s(
+    node: Node, text: str
+) -> None:
+    """ISS 2551: the message is bip32_descriptors', not the payload refusal."""
+    with pytest.raises(BTClibValueError) as parsed:
+        strip_checksum(text)
+    assert refusal(node, "start", [text]) == (-5, str(parsed.value))
+
+
 # Each where Core first refuses what `_parse` gives no message of its own
 # for: an expression no function reads, before a key or not, a threshold,
 # a key origin or a key path, or a miniscript outside wsh() and tr(),
