@@ -783,7 +783,8 @@ def test_a_rejected_message_is_refused_without_its_size() -> None:
     assert refusal.value.size == size
     del refusal.value.size
     assert_secret_free(refusal.value, [_KEY, length, str(len(contents)), str(size)])
-    assert str(refusal.value) == "message rejected"
+    assert refusal.value.prefix == "V2 transport error"
+    assert str(refusal.value) == "invalid message type"
 
 
 @pytest.mark.parametrize(

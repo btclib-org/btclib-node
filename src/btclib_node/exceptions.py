@@ -46,6 +46,7 @@ __all__ = [
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "JsonIntegerOutOfRangeError",
+    "JsonTypeError",
     "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
@@ -458,6 +459,28 @@ class JsonIntegerOutOfRangeError(AppInitExceptionError):
         super().__init__("JSON integer out of range")
 
 
+class JsonTypeError(AppInitExceptionError):
+    """A start refused as `UniValue::checkType` refuses a `settings.json` value.
+
+    `get_str` and the getters beside it throw a `UniValue::type_error`
+    (`src/univalue/lib/univalue.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). Raised by `cli._wrong_type`.
+
+    A read inside `InitConfig`'s own `try` (`src/common/init.cpp`, same
+    sha) is one exception: its `catch` returns the error, and `ParseArgs`
+    hands it to `InitError`. The file's own `settings` key is read there,
+    by `WriteSettingsFile`, so `cli._init_settings_file` raises a plain
+    `ValueError` in its place.
+
+    `-help-debug` is another: `ProcessInitCommands` reads it under `-help`,
+    outside `AppInit` (`src/bitcoind.cpp`, same sha), where Core catches
+    nothing and aborts, while `cli.main` prints the block
+    (btclib-org/btclib-node#2641).
+    """
+
+    typeid = "N8UniValue10type_errorE"
+
+
 class CreateDirectoriesError(AppInitExceptionError):
     """A start refused as `fs::create_directories` refuses a blocks directory.
 
@@ -578,15 +601,23 @@ class RejectedMessageError(BTClibValueError):
     header included, which the stream has been moved past and the caller
     counts as received.
 
+    Core logs the rejection in `net`, in a line that starts with `prefix`
+    and then gives the reason, which is the text. `Connection.parse_messages`
+    writes that line. `prefix` is `TransportError`'s unless the transport
+    that rejects gives its own, as `V2Transport` does.
+
     The text names no size: on V1 the size holds the length field the
     peer wrote, and on V2 the length it decrypted, which section 7 of the
     organization's standard, *A refusal carries no secret*, keeps out of
     a refusal's text.
     """
 
-    def __init__(self, size: int) -> None:
-        super().__init__("message rejected")
+    def __init__(
+        self, size: int, reason: str, *, prefix: str = TransportError.prefix
+    ) -> None:
+        super().__init__(reason)
         self.size = size
+        self.prefix = prefix
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):

@@ -4335,8 +4335,8 @@ def _relays_txs(conn: Connection) -> bool:
     and not `relay_tx`'s default. Core also sets it on a `filterload` or
     `filterclear`, and checks the share there too, but only where it
     offers `NODE_BLOOM`, dropping the peer otherwise. This node offers
-    `NODE_BLOOM` to no peer and ignores both messages
-    (btclib-org/btclib-node#1971).
+    `NODE_BLOOM` to no peer, so it drops the peer on both
+    (`callbacks.filterload`, `callbacks.filterclear`).
     """
     version_message = conn.version_message
     return version_message is not None and version_message.is_relay_requested

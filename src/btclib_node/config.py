@@ -15,9 +15,10 @@ is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
 `-bind` and `-rpcbind`, `parse_whitebind` that of `-whitebind`.
 `masked_address` is how the log of the settings, and the refusals and log
 lines SECURITY.md names among the departures from Bitcoin Core, write an
-address that may be a key given by mistake. `get_path_arg` is `cli.py`'s
-reader of `-datadir`, `-conf` and `-blocksdir`. All of these are public here
-because other modules read them.
+address that may be a key given by mistake, and `masked_permissioned_address`
+how that log writes a `-whitebind` or `-whitelist` value. `get_path_arg` is
+`cli.py`'s reader of `-datadir`, `-conf` and `-blocksdir`. All of these are
+public here because other modules read them.
 """
 
 import os
@@ -102,6 +103,7 @@ __all__ = [
     "lookup_host_port",
     "lookup_service",
     "masked_address",
+    "masked_permissioned_address",
     "onion_port",
     "parse_bind",
     "parse_whitebind",
@@ -346,8 +348,8 @@ def service_text(host: Host, port: int) -> str:
     return f"[{host}]:{port}" if isinstance(host, IPv6Address) else f"{host}:{port}"
 
 
-# What splits a value into the pieces `masked_address` measures: the `@`
-# after permission names, their commas, and an address's dots, colons and
+# What splits a value into the pieces `_masked_address` measures: an `@`,
+# the commas of permission names, and an address's dots, colons and
 # brackets. Not a subnet's slash, which a Base64 key holds, nor an IPv6
 # scope's `%`, which a key can follow.
 _ADDRESS_SEPARATORS = re.compile(r"[@,.:\[\]]")
@@ -376,13 +378,38 @@ def masked_address(value: str) -> str | None:
     after an IPv6 address's `%` as its scope, and a port may carry any
     number of leading zeros. A host name is masked.
 
-    Permission names before an `@`, as a `-whitebind` or `-whitelist`
-    value has, and an `=onion` after the address, as a `-bind` value has,
-    are read for every value: no key reads as either.
+    An `=onion` after the address, as a `-bind` value has, is read for
+    every value: no key reads as one. The whole value is the address, so a
+    password before an `@`, as a URL gives one, is measured with it: only
+    `-whitebind` and `-whitelist` name permissions before an `@`
+    (`masked_permissioned_address`, ISS 2579).
     """
-    names, at, tail = value.partition("@")
-    if not at:
-        names, tail = "", value
+    return _masked_address(value, permissions=False)
+
+
+def masked_permissioned_address(value: str) -> str | None:
+    """Return `'...'` where a permissioned address may hold a key, else `None`.
+
+    As `masked_address` measures an address, with the permission names
+    before an `@` measured too: no key reads as one. Core's
+    `NetWhitebindPermissions::TryParse` and `NetWhitelistPermissions::TryParse`
+    read that `@` (`src/net_permissions.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), and no other address option does (ISS 2579).
+    """
+    return _masked_address(value, permissions=True)
+
+
+def _masked_address(value: str, *, permissions: bool) -> str | None:
+    """Return `'...'` for an address that may hold a key, else `None`.
+
+    With `permissions`, the text before an `@` is read as permission names.
+    """
+    names = ""
+    tail = value
+    if permissions:
+        names, at, tail = value.partition("@")
+        if not at:
+            names, tail = "", value
     address = tail.removesuffix("=onion")
     host, _ = lookup_host_port(address, 0)
     measured = f"{names}@{tail}"
