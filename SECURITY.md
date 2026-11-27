@@ -195,6 +195,13 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
 bip32_descriptors' refusal instead, that refusal names the key by its
 index alone, as for a key path value Core refuses.
 
+Core's `scantxoutset` refusal of a threshold it cannot read, in a
+`multi()`, `sortedmulti()`, `multi_a()` or `sortedmulti_a()`, quotes the
+threshold whole, which may be a key given in its place (`ParseScript` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). This node's refusal quotes it as the next paragraph quotes a name,
+so that a key there is written `<52 characters>` between Core's quotes.
+
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
 and `ParseHexV` in `src/rpc/util.cpp` among them, at
