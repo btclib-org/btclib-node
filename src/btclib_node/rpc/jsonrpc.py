@@ -233,21 +233,6 @@ def _no_constant(name: str) -> NoReturn:
     raise ValueError(name)
 
 
-def _utf8_body(body: bytes | bytearray) -> str:
-    """Return the body as UTF-8 text, refusing the encodings Core refuses.
-
-    `UniValue::read` reads the bytes as they are: no byte order mark, no
-    UTF-16 or UTF-32 detection, so each of those is the parse error
-    `HTTPReq_JSONRPC` answers (`src/rpc/request.cpp`, same sha).
-    """
-    begins_with_mark = body[:1] in (b"\xef", b"\xff", b"\xfe")
-    looks_wide = body[:2] in (b"\x00{", b"{\x00")
-    if begins_with_mark or looks_wide:
-        message = "the body does not begin a UTF-8 JSON text"
-        raise ValueError(message)
-    return body.decode("utf-8", "surrogatepass")
-
-
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     r"""Decode a request body, each object a `JsonObject`.
 
@@ -272,8 +257,15 @@ def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     before `json.loads` reads the text: `json.loads` raises
     `RecursionError`, which is not a `ValueError`, on a text nested
     deeper than the stack holds.
+
+    It also raises on a body in UTF-16 or UTF-32, or behind a byte order
+    mark, which `json.loads` detects in bytes and reads. `decode` reads
+    the body as UTF-8, since `UniValue::read` reads the bytes as they
+    are, and `HTTPReq_JSONRPC` answers a body that `UniValue::read`
+    refuses as a parse error (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
-    text = _utf8_body(body)
+    text = body.decode("utf-8", "surrogatepass")
     _refuse_past_max_depth(text)
     read = partial(
         json.loads,
