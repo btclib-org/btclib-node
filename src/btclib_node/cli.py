@@ -988,8 +988,8 @@ _OPTIONS: dict[str, _Option] = {
         debug_only=True,
         masked=_masked_test_option,
     ),
-    # Core's registration (`src/chainparamsbase.cpp`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
+    # Core's registration (`src/chainparamsbase.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
     # parameter included
     "testactivationheight": _Option(
         "=name@height.",
@@ -2747,8 +2747,8 @@ def _read_settings(
     _resolve_chain_name(settings)
 
     if token is not None:
-        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
+        # `ParseArgs`'s refusal (`src/bitcoind.cpp:131`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), `'...'` where Core
         # quotes the argument, which may be a key (SECURITY.md, "Where this
         # node departs from Bitcoin Core")
         err_msg = (

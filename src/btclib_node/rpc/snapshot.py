@@ -106,8 +106,8 @@ def _target(node: Node, snapshot_type: str, options: dict[str, Any]) -> int | No
     may arrive while the transactions are counted.
     """
     # Core quotes the type whole in both refusals
-    # (`src/rpc/blockchain.cpp:3147` and `:3158`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+    # (`src/rpc/blockchain.cpp:3147` and `:3158`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
     # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
     # Core"; section 7 of the organization's standard, *A refusal carries
     # no secret*)

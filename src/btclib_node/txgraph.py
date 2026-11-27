@@ -58,8 +58,8 @@ __all__ = [
     "TxGraph",
 ]
 
-# Core's `ACCEPTABLE_COST` and `POST_CHANGE_COST` (`src/txmempool.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): the work a cluster gets
+# Core's `ACCEPTABLE_COST` and `POST_CHANGE_COST` (`src/txmempool.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the work a cluster gets
 # before its linearization is acceptable, and the work done after a
 # change to the mempool. The units are Core's, so a cluster ends as
 # often optimal here as there; a unit takes longer in Python.
