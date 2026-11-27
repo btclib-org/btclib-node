@@ -190,7 +190,6 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import io
-import json
 import os
 import re
 import sys
@@ -218,6 +217,7 @@ from btclib_node.config import (
     BindAddress,
     Config,
     WhitebindAddress,
+    _read_cookie_perms,
     default_onion_bind,
     get_path_arg,
     has_valid_port,
@@ -225,6 +225,7 @@ from btclib_node.config import (
     listen_port,
     lookup_service,
     masked_address,
+    masked_permissioned_address,
     parse_bind,
     parse_whitebind,
     service_text,
@@ -242,7 +243,11 @@ from btclib_node.constants import (
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
-from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeError
+from btclib_node.exceptions import (
+    DirectoryLockError,
+    JsonIntegerOutOfRangeError,
+    JsonTypeError,
+)
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
@@ -457,10 +462,10 @@ def _parse_hex_uint256(value: str) -> int | None:
     return int(text, 16) if text else 0
 
 
-# Each `_masked_*` below, `config.masked_address` and `shown_path` serves as
-# an `_Option.masked`: what `_log_args` writes in place of a value of that
-# option that may be a key given by mistake, `None` where it writes the value
-# whole.
+# Each `_masked_*` below, `config.masked_address`,
+# `config.masked_permissioned_address` and `shown_path` serves as an
+# `_Option.masked`: what `_log_args` writes in place of a value of that option
+# that may be a key given by mistake, `None` where it writes the value whole.
 
 
 def _masked_if_long(value: str) -> str | None:
@@ -1027,7 +1032,7 @@ _OPTIONS: dict[str, _Option] = {
         "multiple permissions separated by commas (default: "
         "download,noban,mempool,relay). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=masked_address,
+        masked=masked_permissioned_address,
     ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
@@ -1040,7 +1045,7 @@ _OPTIONS: dict[str, _Option] = {
         "control whether permissions apply to incoming connections and/or "
         "manual (default: incoming only). Can be specified multiple times.",
         _CONNECTION_TITLE,
-        masked=masked_address,
+        masked=masked_permissioned_address,
     ),
     "whitelistforcerelay": _Option(
         "",
@@ -1565,10 +1570,10 @@ def _load_conf_tree(  # noqa: PLR0913
     return tree
 
 
-def _wrong_type(value: Json) -> ValueError:
+def _wrong_type(value: Json) -> JsonTypeError:
     """Return the error Core's `UniValue::get_str` throws on `value`."""
     err_msg = f"JSON value of type {type_name(value)} is not of expected type string"
-    return ValueError(err_msg)
+    return JsonTypeError(err_msg)
 
 
 def _sources(
@@ -1675,9 +1680,7 @@ def _setting_to_write_str(value: _Value) -> str:
     above, which is `GetArg`'s own `SettingToString`, a different Core
     function reached by a different reader.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return json.dumps(value, ensure_ascii=False)
+    return write_json(value)
 
 
 def _logged(option: _Option | None, value: Json, whole: str) -> str:
@@ -2420,7 +2423,14 @@ def _init_settings_file(settings: _Settings, net_dir: str, default_dir: str) -> 
         for name in settings.rw_settings
         if _interpret_key(name).name not in _OPTIONS
     )
-    path = _settings_path(settings, net_dir)
+    try:
+        path = _settings_path(settings, net_dir)
+    except JsonTypeError as error:
+        # Core reads `-settings` inside `InitConfig`'s `try`, whose `catch`
+        # returns the error as a `ConfigError`: `ParseArgs` hands that to
+        # `InitError` (`src/bitcoind.cpp`, at bitcoin/bitcoin@f0de87f040),
+        # not to `PrintExceptionContinue`
+        raise ValueError(str(error)) from None
     if path is None:
         err_msg = "Attempt to write settings file when dynamic settings are disabled."
         raise ValueError(err_msg)
@@ -2934,7 +2944,16 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     # (btclib-org/btclib-node#1265). `_after_lock` recomputes the
     # identical value from `max_connections_arg` below, once this
     # returns it.
-    dnsseed = _get_bool(settings, "dnsseed")
+    try:
+        dnsseed = _get_bool(settings, "dnsseed")
+    except JsonTypeError:
+        # `AppInitParameterInteraction` reads `-dnsseed` only beside a true
+        # `-forcednsseed`. Otherwise `AppInitMain` reads it first, once
+        # `init::StartLogging` has opened the log, and `_after_lock` refuses
+        # it there
+        if _get_bool(settings, "forcednsseed"):
+            raise
+        dnsseed = None
     if dnsseed is None:
         dnsseed = not connect and not connect_negated and max_connections_arg > 0
     directories = Config(
@@ -2956,7 +2975,11 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         # `-prune` nonzero as `GetIntArg` reads it, before it is parsed
         # below: what Core's refusal beside `-reindex-chainstate` asks
         pruned=bool(_get_int(settings, "prune")),
-        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
+        # read only under `-prune`, as `AppInitParameterInteraction` reads
+        # it; otherwise `AppInitMain` reads it first, once the log is open,
+        # and `_after_lock` refuses it there
+        reindex_chainstate=bool(_get_int(settings, "prune"))
+        and bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     _check_test_options(settings, chain_name)
@@ -3150,19 +3173,59 @@ def _rpcservertimeout(settings: _Settings, *, server: bool | None) -> int:
     return int(IDLE_TIMEOUT) if value is None else value
 
 
+def _rpc_login(
+    settings: _Settings, *, server: bool | None
+) -> tuple[str | Path | None, str, str, str | None]:
+    """Return the cookie file, user, password and cookie perms, when read.
+
+    `InitRPCAuthentication` (`src/httprpc.cpp:248-296`, same sha) reads
+    these four, and `AppInitMain` reaches it only under `-server`
+    (`src/init.cpp:1633-1635`, same sha). It reads `-rpcpassword` first.
+    Where that is not empty, it reads `-rpcuser` and neither cookie option.
+    Where it is empty, it reads `-rpccookieperms`, then `-rpccookiefile`
+    (`_rpc_cookie_file`).
+    """
+    if server is False:
+        return "", "", "", None
+    if rpcpassword := _get_arg(settings, "rpcpassword"):
+        return "", _get_arg(settings, "rpcuser") or "", rpcpassword, None
+    rpccookieperms = _get_arg(settings, "rpccookieperms")
+    return _rpc_cookie_file(settings, rpccookieperms), "", "", rpccookieperms
+
+
+def _rpc_cookie_file(settings: _Settings, rpccookieperms: str | None) -> str | None:
+    """Return `-rpccookiefile`, or `""` where Core does not read it.
+
+    `InitRPCAuthentication` stops at a `-rpccookieperms` that names no mode,
+    before its `GenerateAuthCookie` reads `-rpccookiefile`
+    (`src/rpc/request.cpp:93`, same sha). `RpcAuth.start` refuses that
+    value before it writes any cookie, so the `""` returned then is never
+    used.
+    """
+    if rpccookieperms is not None and _read_cookie_perms(rpccookieperms)[1]:
+        return ""
+    # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
+    return (
+        None
+        if _is_negated(settings, "rpccookiefile")
+        else _get_arg(settings, "rpccookiefile") or ""
+    )
+
+
 # low-code-quality skipped: Core's `AppInitMain` checks, kept in its order
 def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quality
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`,
-    `-rpcbind` and `-whitebind`, then the `-externalip` and `-bind` values
-    nothing resolves, a `-whitebind` Core refuses, and an address bound
-    twice.
+    order: `-logratelimit`, which step 4a reads, then
+    `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`, `-rpcbind` and
+    `-whitebind`, then the `-externalip` and `-bind` values nothing
+    resolves, a `-whitebind` Core refuses, and an address bound twice.
     `-rpccookieperms` and `-rpcauth` are refused later, by
     `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
+    log_rate_limit = _get_bool(settings, "logratelimit") is not False
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
     # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
@@ -3182,6 +3245,9 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
             head, tagged, _ = value.rpartition("=")
             if not has_valid_port(head if tagged and name == "bind" else value):
                 raise ValueError(invalid_port_message(name, position))
+    # `AppInitMain`'s first read of `-dnsseed`, beside `-onlynet`, after the
+    # checks above and ahead of `-externalip` (`src/init.cpp`, same sha)
+    dnsseed = _get_bool(settings, "dnsseed")
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"),
@@ -3198,7 +3264,6 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     listen = _resolve_listen(settings, before.max_connections_arg)
     # The same `if` as `-listen`'s soft-set, over the same `int64_t`
     # (ISS 1324), which an explicit `-dnsseed`/`-nodnsseed` wins over.
-    dnsseed = _get_bool(settings, "dnsseed")
     if dnsseed is None:
         no_peers = not connect and not connect_negated
         dnsseed = no_peers and before.max_connections_arg > 0
@@ -3222,35 +3287,35 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     whitelist_relay = _get_bool(settings, "whitelistrelay")
     if whitelist_relay is None:
         whitelist_relay = True
-    # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
-    rpccookiefile = (
-        None
-        if _is_negated(settings, "rpccookiefile")
-        else _get_arg(settings, "rpccookiefile") or ""
-    )
     server = _get_bool(settings, "server")
-    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
-    # (`src/init.cpp:1716`, same sha)
-    ban_time = _get_int(settings, "bantime")
-    if ban_time is None:
-        ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
-    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
-    # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    # v32.1 tag)
-    rpcservertimeout = _rpcservertimeout(settings, server=server)
-    # `-rpcallowip`, which `InitHTTPAllowList` and `GetBindAddresses`
-    # read (`src/httpserver.cpp`, same sha), and `-rpcauth`,
-    # `-rpcwhitelist` and `-rpcwhitelistdefault`, which
-    # `InitRPCAuthentication` reads (`src/httprpc.cpp`, same sha):
-    # `AppInitMain` reaches both only under `-server`, so with the server
-    # off a value Core's `GetArgs` or `GetBoolArg` would refuse is not
-    # read (ISS 2538)
+    # In Core's order (ISS 2584): `AppInitServers` (`src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs `InitHTTPServer`,
+    # which reads `-rpcallowip` in `InitHTTPAllowList` and then
+    # `-rpcservertimeout` as `int64_t` seconds (`src/httpserver.cpp`, same
+    # sha), and then `StartHTTPRPC`, whose `InitRPCAuthentication` reads
+    # the login options (`_rpc_login`), then `-rpcauth`, `-rpcwhitelist`
+    # and `-rpcwhitelistdefault` (`src/httprpc.cpp`, same sha). `AppInitMain`
+    # runs `AppInitServers` only under `-server`, so with the server off a
+    # value Core's `GetArgs`, `GetIntArg` or `GetBoolArg` would refuse is not
+    # read (ISS 2500, ISS 2538)
     rpc_on = server is not False
     rpcallowip = _get_args(settings, "rpcallowip") if rpc_on else []
+    rpcservertimeout = _rpcservertimeout(settings, server=server)
+    rpccookiefile, rpcuser, rpcpassword, rpccookieperms = _rpc_login(
+        settings, server=server
+    )
     rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
     rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
     rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1716`, same sha), after `AppInitServers` at step 4a
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
+    # `AppInitMain` reads it at step 7, as it loads the block chain
+    # (`src/init.cpp`, same sha)
+    reindex_chainstate = bool(_get_bool(settings, "reindex-chainstate"))
 
     return Config(
         chain=before.chain,
@@ -3271,11 +3336,11 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
-        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
+        reindex_chainstate=reindex_chainstate,
         debug=before.debug,
         debug_categories=before.debug_categories,
         debug_exclude=before.debug_exclude,
-        log_rate_limit=_get_bool(settings, "logratelimit") is not False,
+        log_rate_limit=log_rate_limit,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         seednode=_get_args(settings, "seednode"),
@@ -3319,10 +3384,10 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         deterministic_addrman="addrman" in _get_args(settings, "test"),
         check_addrman=_get_check_addrman(settings),
         rpcauth=rpcauth,
-        rpcuser=_get_arg(settings, "rpcuser") or "",
-        rpcpassword=_get_arg(settings, "rpcpassword") or "",
+        rpcuser=rpcuser,
+        rpcpassword=rpcpassword,
         rpccookiefile=rpccookiefile,
-        rpccookieperms=_get_arg(settings, "rpccookieperms"),
+        rpccookieperms=rpccookieperms,
         rpcwhitelist=rpcwhitelist,
         rpcwhitelistdefault=rpcwhitelistdefault,
         log_warnings=settings.log_warnings,
@@ -3365,20 +3430,26 @@ def _setup_environment() -> None:
         os.umask(_PRIVATE_UMASK)
 
 
-def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
+def _exception_block(error: JsonIntegerOutOfRangeError | JsonTypeError) -> str:
     """Return what Core's `PrintExceptionContinue` logs for `error`.
 
     `FormatException` (`src/util/exception.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) after a line of asterisks:
-    the `typeid` name of `getInt`'s `std::runtime_error`, its message, and
-    where `AppInit` caught it, each of these lines ending in seven
-    spaces. Core names its executable's path in place of `bitcoin` on
-    Windows. Here that executable is the Python interpreter, which names
-    no node, so `bitcoin` stands on every platform.
+    the `typeid` name of the exception, its message, and where `AppInit`
+    caught it, each of these lines ending in seven spaces. The name is
+    `getInt`'s `std::runtime_error` for a number out of range and
+    `UniValue::type_error` for a value of the wrong type. Core names its
+    executable's path in place of `bitcoin` on Windows. Here that
+    executable is the Python interpreter, which names no node, so
+    `bitcoin` stands on every platform.
     """
+    if isinstance(error, JsonTypeError):
+        name = "N8UniValue10type_errorE"
+    else:
+        name = "St13runtime_error"
     return (
         "\n\n************************\n"
-        "EXCEPTION: St13runtime_error       \n"
+        f"EXCEPTION: {name}       \n"
         f"{error}       \n"
         "bitcoin in AppInit()       \n"
     )
@@ -3388,12 +3459,26 @@ def _refusal(error: Exception) -> str:
     """Return what `main` writes to stderr for a refusal of the start.
 
     `PrintExceptionContinue`'s block and the newline it adds for a
-    `JsonIntegerOutOfRangeError`, `InitError`'s `Error: <message>` for any
-    other.
+    `JsonIntegerOutOfRangeError` or a `JsonTypeError`, `InitError`'s
+    `Error: <message>` for any other.
     """
-    if isinstance(error, JsonIntegerOutOfRangeError):
+    if isinstance(error, (JsonIntegerOutOfRangeError, JsonTypeError)):
         return f"{_exception_block(error)}\n"
     return f"Error: {error}\n"
+
+
+def _log_rate_limit(settings: _Settings) -> bool:
+    """Return whether the history log rate-limits, never refusing.
+
+    `_after_lock` reads `logratelimit` first, so where it refuses the value,
+    that refusal is the one the log is opened for, inside its handler, and
+    reading the value again must not raise a second time. A value this node
+    does not take is logged as the default, rate limiting on.
+    """
+    try:
+        return _get_bool(settings, "logratelimit") is not False
+    except ValueError:
+        return True
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -3413,11 +3498,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
 
-    A `JsonIntegerOutOfRangeError` is the exception: Core throws it rather
-    than reporting it, so stderr gets `_exception_block`'s text, and a
-    refusal after the lock also logs it as a warning, as
-    `PrintExceptionContinue` writes it to both. The exit status is `1`
-    there too.
+    A `JsonIntegerOutOfRangeError` or a `JsonTypeError` is the exception:
+    Core throws them rather than reporting them, so stderr gets
+    `_exception_block`'s text, and a refusal after the lock also logs it as
+    a warning, as `PrintExceptionContinue` writes it to both. The exit
+    status is `1` there too.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -3460,9 +3545,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 max_connections_warnings=directories.max_connections_warnings,
                 debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
-                rate_limit=_get_bool(before.settings, "logratelimit") is not False,
+                rate_limit=_log_rate_limit(before.settings),
             )
-            if isinstance(error, JsonIntegerOutOfRangeError):
+            if isinstance(error, (JsonIntegerOutOfRangeError, JsonTypeError)):
                 logger.warning(_exception_block(error))
             else:
                 logger.error(str(error))  # noqa: TRY400

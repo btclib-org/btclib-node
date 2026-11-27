@@ -126,6 +126,9 @@ from btclib_node.p2p.callbacks import (
     advance_getdata,
     feature,
     feefilter,
+    filteradd,
+    filterclear,
+    filterload,
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
@@ -135,6 +138,7 @@ from btclib_node.p2p.callbacks import (
     getheaders,
     headers,
     inv,
+    mempool,
     not_found,
     ping,
     pong,
@@ -1900,6 +1904,13 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.wtxidrelay_received
     assert peer.prefer_addressv2
     assert peer.prefers_headers
+
+
+def test_sendaddrv2_ahead_of_version_is_ignored() -> None:
+    """ISS 2334: Core ignores every message received ahead of `version`."""
+    peer = a_peer()
+    sendaddrv2(a_handshake_node(), b"", peer)
+    assert not peer.prefer_addressv2
 
 
 @pytest.mark.parametrize(
@@ -5447,6 +5458,91 @@ def test_getblocktxn_with_no_indexes_drops_the_peer_undiscouraged() -> None:
     getblocktxn(node, GetBlockTxn(wanted, []).serialize(), peer)
     assert not peer.sent
     assert peer.stopped == [True]
+
+
+def test_the_bloom_and_mempool_messages_are_dispatched_to_their_callbacks() -> None:
+    """ISS 1971: `handle_p2p` runs only what the `callbacks` table names."""
+    assert cb.callbacks["mempool"] is mempool
+    assert cb.callbacks["filterload"] is filterload
+    assert cb.callbacks["filteradd"] is filteradd
+    assert cb.callbacks["filterclear"] is filterclear
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        NetPermissionFlags.NONE,
+        # Core offers this peer `NODE_BLOOM` and keeps it
+        NetPermissionFlags.BLOOM_FILTER,
+        NetPermissionFlags.ALL,
+    ],
+)
+def test_a_bloom_filter_message_drops_a_peer_that_cannot_use_it(
+    permissions: NetPermissionFlags,
+) -> None:
+    """ISS 1971: the node offers no `NODE_BLOOM`, so it disconnects, as Core."""
+    for handler, message in (
+        (filterload, "filterload"),
+        (filteradd, "filteradd"),
+        (filterclear, "filterclear"),
+    ):
+        node = a_handshake_node()
+        lines = logged_lines(node)
+        peer = a_peer(permissions=permissions)
+        handler(node, b"", peer)
+        assert peer.stopped == [True], message
+        assert not peer.sent
+        assert lines == [
+            f"{message} received despite not offering bloom services, peer=0"
+        ]
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        NetPermissionFlags.NONE,
+        # Core offers this peer `NODE_BLOOM` and keeps it
+        NetPermissionFlags.BLOOM_FILTER,
+        NetPermissionFlags.RELAY,
+        NetPermissionFlags.FORCE_RELAY,
+        # one of the two bits of `NO_BAN`: Core's `HasPermission` needs both
+        NetPermissionFlags.DOWNLOAD,
+        NetPermissionFlags.ADDR,
+    ],
+)
+def test_a_mempool_request_drops_a_peer_without_the_mempool_permission(
+    permissions: NetPermissionFlags,
+) -> None:
+    """ISS 1971: Core's "mempool request with bloom filters disabled"."""
+    node = a_handshake_node()
+    lines = logged_lines(node)
+    peer = a_peer(permissions=permissions)
+    mempool(node, b"", peer)
+    assert peer.stopped == [True]
+    assert not peer.sent
+    assert lines == ["mempool request with bloom filters disabled, peer=0"]
+
+
+def test_a_noban_peer_asking_for_the_mempool_is_ignored_not_dropped() -> None:
+    """ISS 1971: Core keeps a `noban` peer, logs nothing and answers nothing."""
+    node = a_handshake_node()
+    lines = logged_lines(node)
+    peer = a_peer(permissions=NetPermissionFlags.NO_BAN)
+    mempool(node, b"", peer)
+    assert peer.stopped == []
+    assert not peer.sent
+    assert not lines
+
+
+def test_a_mempool_peer_is_answered_nothing_and_kept() -> None:
+    """ISS 1971: Core answers it with its mempool; this node has no BIP35."""
+    node = a_handshake_node()
+    lines = logged_lines(node)
+    peer = a_peer(permissions=NetPermissionFlags.MEMPOOL)
+    mempool(node, b"", peer)
+    assert peer.stopped == []
+    assert not peer.sent
+    assert not lines
 
 
 def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:

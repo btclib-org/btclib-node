@@ -5966,21 +5966,20 @@ def test_setmocktime_holds_the_clock_and_zero_releases_it() -> None:
 
 
 def test_setmocktime_accepts_the_largest_timestamp_and_refuses_the_next() -> None:
-    """The v31.1 tag's bound `[0, 9223372036]`, measured at both ends.
+    """ISS 2256: the v32.1 tag's bound `[0, 4294967295]`, both ends.
 
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag, which this node follows
-    until ISS 2256.
+    Measured on a regtest bitcoind v32.1.0.
     """
     node = cast("Node", SimpleNamespace(chain=RegTest()))
     set_mock_time(node, _CONN, [clock.MAX_MOCK_TIME])
-    assert clock.mock_time() == 9223372036
+    assert clock.mock_time() == 4294967295
     with pytest.raises(RpcError) as raised:
-        set_mock_time(node, _CONN, [9223372037])
+        set_mock_time(node, _CONN, [4294967296])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == (
-        "Mocktime must be in the range [0, 9223372036], not 9223372037."
+        "Mocktime must be in the range [0, 4294967295], not 4294967296."
     )
-    assert clock.mock_time() == 9223372036
+    assert clock.mock_time() == 4294967295
 
 
 def test_setmocktime_refuses_a_negative_timestamp_and_keeps_the_clock() -> None:
@@ -5991,7 +5990,7 @@ def test_setmocktime_refuses_a_negative_timestamp_and_keeps_the_clock() -> None:
         set_mock_time(node, _CONN, [-1])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == (
-        "Mocktime must be in the range [0, 9223372036], not -1."
+        "Mocktime must be in the range [0, 4294967295], not -1."
     )
     assert clock.mock_time() == 1_600_000_000
 
@@ -8952,8 +8951,7 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
 
     result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
 
-    assert isinstance(result, str)
-    assert result.startswith("bad-signet-blksig")
+    assert result == "bad-signet-blksig"
     assert node.block_db.get_block(bad.header.hash) is None
     assert bad.header.hash not in node.chainstate.block_index.header_dict
 

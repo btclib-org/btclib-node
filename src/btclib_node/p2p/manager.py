@@ -3571,31 +3571,44 @@ class P2pManager(threading.Thread):
         port = cast("int", self.port)
         binds = sorted(
             (
-                parse_bind(value, port, position=position)
+                (parse_bind(value, port, position=position), value, position)
                 for position, value in enumerate(self.bind, 1)
             ),
-            key=lambda address: address.onion,
+            key=lambda item: item[0].onion,
         )
-        addresses: list[BindAddress | WhitebindAddress] = [
-            *(address for address in binds if not address.onion),
+        whitebound = [
+            (parse_whitebind(value, position=position), value, position)
+            for position, value in enumerate(self.whitebind, 1)
+        ]
+        addresses: list[tuple[BindAddress | WhitebindAddress, str]] = [
             *(
-                parse_whitebind(value, position=position)
-                for position, value in enumerate(self.whitebind, 1)
+                (address, _shown_listen_address(value, position, "bind", address))
+                for address, value, position in binds
+                if not address.onion
             ),
-            *(address for address in binds if address.onion),
+            *(
+                (
+                    address,
+                    _shown_listen_address(value, position, "whitebind", address),
+                )
+                for address, value, position in whitebound
+            ),
+            *(
+                (address, _shown_listen_address(value, position, "bind", address))
+                for address, value, position in binds
+                if address.onion
+            ),
         ]
         if not self.bind:
-            addresses.append(default_onion_bind(port))
+            onion = default_onion_bind(port)
+            addresses.append((onion, service_text(onion.host, onion.port)))
         sockets: list[socket.socket] = []
         try:
-            for address in addresses:
+            for address, shown in addresses:
                 host = address.host
                 if isinstance(host, SpecialAddress):
                     # Core's `BindListenPort`, for an address with no sockaddr
-                    err_msg = (
-                        "Bind address family for "
-                        f"{service_text(host, address.port)} not supported"
-                    )
+                    err_msg = f"Bind address family for {shown} not supported"
                     raise OSError(err_msg)  # noqa: TRY301
                 family = (
                     socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
@@ -4335,8 +4348,8 @@ def _relays_txs(conn: Connection) -> bool:
     and not `relay_tx`'s default. Core also sets it on a `filterload` or
     `filterclear`, and checks the share there too, but only where it
     offers `NODE_BLOOM`, dropping the peer otherwise. This node offers
-    `NODE_BLOOM` to no peer and ignores both messages
-    (btclib-org/btclib-node#1971).
+    `NODE_BLOOM` to no peer, so it drops the peer on both
+    (`callbacks.filterload`, `callbacks.filterclear`).
     """
     version_message = conn.version_message
     return version_message is not None and version_message.is_relay_requested
@@ -4368,3 +4381,25 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
         noban=NetPermissionFlags.NO_BAN in conn.permissions,
         inbound=conn.inbound,
     )
+
+
+def _shown_listen_address(
+    value: str,
+    position: int,
+    option: str,
+    address: BindAddress | WhitebindAddress,
+) -> str:
+    """Return `address` as a refusal writes it, `'...'` where it may be a key.
+
+    Core writes the address a value resolves to whole (`BindListenPort`,
+    `src/net.cpp:3396`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag),
+    which writes an I2P host's label in lowercase base32: one that is a
+    key is then a key written back. This writes the address whole only
+    where `masked_address` keeps the value whole, and `'...'` and the
+    value's position otherwise, as the RPC bind lines of `rpc.manager` do
+    for ISS 2566 (SECURITY.md, "Where this node departs from Bitcoin Core",
+    ISS 2573).
+    """
+    if masked_address(value) is None:
+        return service_text(address.host, address.port)
+    return f"'...' (value {position} of -{option})"

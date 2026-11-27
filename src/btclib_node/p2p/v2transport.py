@@ -227,7 +227,9 @@ class V2Transport(Transport):
             try:
                 command, payload = message_from_contents(contents)
             except BTClibValueError as e:
-                raise RejectedMessageError(size) from e
+                reason = "invalid message type"
+                prefix = V2TransportError.prefix
+                raise RejectedMessageError(size, reason, prefix=prefix) from e
             return NetMessage(command, payload, size)
 
     def _max_bytes_to_process(self) -> int:

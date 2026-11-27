@@ -1437,3 +1437,27 @@ daa = "daa"
 # `intoto` in the bundle's name `<tag>.intoto.jsonl`, as for codespell above:
 # typos' dictionary offers "into" for it too
 intoto = "intoto"
+
+[tool.typos.type.verbatim]
+# the files that quote a word rather than use it: a changelog entry, in
+# the history files or as a file under changelog/next/, quotes the sha or
+# the misspelling it is about -- `5ef2ede8` is read as `ede`/`edge`
+# otherwise -- and .pre-commit-config.yaml the ones the spell checkers
+# found. typos matches a glob against the file's name, so "pr[0-9]*.md"
+# is what reaches the entries, and "changelog/next/*.md" would not. The
+# hook runs with --write-changes, so an unignored match here is a rewrite
+# of the citation, not a report. Unquoted prose in these files stays
+# checked, but for the backtick shapes the pattern below misreads
+# (issue #2639).
+extend-glob = [
+    "CHANGELOG.md",
+    "RELEASE_NOTES.md",
+    "pr[0-9]*.md",
+    ".pre-commit-config.yaml",
+]
+# a code span of one or two backticks: it may wrap onto the next line,
+# never across a blank one. An escaped backtick opens none, and an escaped
+# backslash leaves the backtick after it free to open one
+extend-ignore-re = [
+    '\\\\|\\`|``(?:[^`\n]|`[^`\n]|\n[ \t]*[^`\s])*(?:\n[ \t]*)?``|`(?:[^`\n]|\n[ \t]*[^`\s])*(?:\n[ \t]*)?`',
+]
