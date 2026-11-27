@@ -5279,7 +5279,7 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     Unlike `MissingPrevoutError` and `BTClibValueError` above,
     `StoreCorruptionError`, raised for this node's own storage rather
     than for `tx`'s content, propagates out of `send_raw_transaction`
-    uncaught, for `handle_rpc`'s own generic catch to answer as this
+    uncaught, for `rpc.main._execute`'s own generic catch to answer as this
     node's own fault rather than as a refusal of `tx`
     (btclib-org/btclib-node#631).
     """

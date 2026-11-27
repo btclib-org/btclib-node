@@ -257,7 +257,11 @@ I2P host's label included (`BindListenPort` in `src/net.cpp:3396`, at
 bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node writes that address whole
 where the log of the settings below writes the value whole, and otherwise
 `'...'` and the value's position, as in `Bind address family for '...' (value 1
-of -bind) not supported`.
+of -bind) not supported`. Core's `Duplicate binding configuration for address
+%s` writes such an address too (`AppInitMain` in `src/init.cpp:2368`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this node writes it the same
+way, as in `Duplicate binding configuration for address '...' (value 2 of
+-bind)`.
 
 Core's start-up refusals of a path write it whole, a key given by mistake
 in place of an option's value included (`InitConfig` in

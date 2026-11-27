@@ -77,7 +77,7 @@ def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
     """Punish `conn` over `e`, and answer whether its host was discouraged.
 
     A `MisbehavingError` goes to `maybe_discourage_and_disconnect`, and
-    anything else leaves the peer as it is, `handle_p2p`'s own `except`
+    anything else leaves the peer as it is, `_dispatch`'s own `except`
     explaining why.
     """
     if isinstance(e, MisbehavingError):
@@ -223,7 +223,7 @@ def handle_p2p_handshake(node: Node) -> None:
             elif conn.status == P2pConnStatus.Connected:
                 _after_verack(conn, msg_type)
         except Exception as e:
-            # `handle_p2p`'s own `except` below explains which
+            # `_dispatch`'s own `except` below explains which
             # exceptions discourage the peer
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: this line is what

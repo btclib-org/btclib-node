@@ -776,21 +776,38 @@ def _threshold_refusal(text: str, name: str) -> str:
     return f"Multi threshold '{quoted_name(threshold)}' is not valid"
 
 
+# Core's `DescriptorChecksum` character set (`src/script/descriptor.cpp:139`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `_parse` says where Core
+# refuses a payload holding any other character
+_DESCRIPTOR_CHARACTERS = frozenset(
+    "0123456789()[],'/*abcdefgh@:$%{}"
+    "IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~"
+    'ijklmnopqrstuvwxyzABCDEFGH`#"\\ '
+)
+
+# the checksum length in bytes Core's `CheckChecksum` accepts
+# (`src/script/descriptor.cpp:2973`, at bitcoin/bitcoin@f0de87f040, the
+# v32.1 tag)
+_CHECKSUM_LENGTH = 8
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
     Core's `Parse`. Its message names what it found wrong and is
-    bip32_descriptors' here, which words it differently, except for what
-    `_core_refusal` refuses, whose message is Core's, shortened where Core
-    quotes the expression. Where ecc refuses a hex key as no point, or
-    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message
-    is that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
+    bip32_descriptors' here, which words it differently, except where it is
+    Core's: for a payload holding a character outside
+    `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, and
+    for what `_core_refusal` refuses, shortened where Core quotes the
+    expression. Where ecc refuses a hex key as no point, or
+    bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message is
+    that of whichever of `_invalid_key_refusal` and `_core_refusal` Core
     meets first in `text`. Where bip32_descriptors refuses an expression no
     function reads, the message is `_core_refusal`'s where it has one:
     `_invalid_key_refusal` reads on past such an expression, to keys Core
     does not reach. bip32_descriptors checks a key's network only once it
-    has read the whole descriptor, so a later refusal it raises comes
-    first, where Core refuses the key. Unless `_invalid_key_refusal` or
+    has read the whole descriptor, so a later refusal it raises comes first,
+    where Core refuses the key. Unless `_invalid_key_refusal` or
     `_tree_refusal` reads that key, the message is then the later
     refusal's, not Core's (btclib-org/btclib-node#2555).
 
@@ -802,6 +819,22 @@ def _parse(node: Node, text: str) -> list[_Source]:
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
+    # `CheckChecksum` splits at `#`, refuses more than one `#`, then a
+    # checksum that is not 8 bytes, and only then a payload holding a
+    # character outside `_DESCRIPTOR_CHARACTERS` (ISS 2551). The first two
+    # keep bip32_descriptors' message here (ISS 2649)
+    body, separator, checksum = text.partition("#")
+    # Core counts the checksum's UTF-8 bytes. `jsonrpc.decode` refuses a
+    # lone surrogate, and "surrogatepass" keeps one from raising here
+    size = len(checksum.encode("utf-8", "surrogatepass"))
+    if (
+        "#" not in checksum
+        and (not separator or size == _CHECKSUM_LENGTH)
+        and not _DESCRIPTOR_CHARACTERS.issuperset(body)
+    ):
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Invalid characters in payload"
+        )
     try:
         stripped = strip_checksum(text)
         sources = [

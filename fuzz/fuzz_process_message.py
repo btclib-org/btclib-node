@@ -94,34 +94,33 @@ and `resume_cfilters`, since draining one is a second call's worth of
 work this harness does not schedule.
 
 `p2p.main.handle_p2p_handshake` and `handle_p2p` are Core's
-`PeerManagerImpl::ProcessMessage` (`net_processing.cpp`,
-at bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- `handle_p2p_handshake` and
+`PeerManagerImpl::ProcessMessage` (`net_processing.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- `handle_p2p_handshake` and
 `handle_p2p` covering between them the same "one message, whichever
 table it dispatches through" Core folds into one function. Neither
-raises what a callback raises: each wraps its own dispatch in
-`except Exception as e`, discouraging the peer only for a
-`MisbehavingError` and otherwise logging it and keeping the peer, as
-`p2p/main.py`'s own comment there argues from Core's `ProcessMessages`.
-Either way the exception stops there, so one bad message does not take
-the loop down. A harness
-that only calls `handle_p2p` and trusts what escapes it would therefore
-never see a callback's own bug either -- `main.py`'s own `except` is
-exactly the boundary this harness has to see past rather than trust,
-which is what `_CrashCapture` below is for: a `logging.Handler`
-attached directly to `node.logger`, a `Logger(logging.Logger)` built
-directly rather than through `logging.getLogger()`, so its records do
-not propagate to root handlers such as `caplog`'s -- reading
-`record.exc_info` off every
-`node.logger.exception(...)` call `handle_p2p`/`handle_p2p_handshake`
-themselves make, or the exception among the arguments of the `net`
-debug line they write for a `BTClibValueError`, and sorting it on this
-harness's own axis,
-`isinstance(exc, BTClibException)`: btclib refusing `data` into
-`refused`, anything else, a bug, into `escaped` -- `handle_p2p`
-returning nothing for either, neither shows in what it returns. What
-lands in `escaped` is re-raised by `dispatch` below, so `handle_p2p`
-runs unmodified, exactly as `Node`'s own loop calls it, and what it
-would have hidden is still what makes this harness red; what
+raises what a callback raises: `handle_p2p_handshake`, and the
+`_dispatch` that `handle_p2p` calls, each wrap the callback in `except
+Exception as e`, discouraging the peer only for a `MisbehavingError` and
+otherwise logging it and keeping the peer, as `p2p/main.py`'s own
+comment there argues from Core's `ProcessMessages`. Either way the
+exception stops there, so one bad message does not take the loop down. A
+harness that only calls `handle_p2p` and trusts what escapes it would
+therefore never see a callback's own bug either -- `main.py`'s own
+`except` is exactly the boundary this harness has to see past rather
+than trust, which is what `_CrashCapture` below is for: a
+`logging.Handler` attached directly to `node.logger`, a
+`Logger(logging.Logger)` built directly rather than through
+`logging.getLogger()`, so its records do not propagate to root handlers
+such as `caplog`'s -- reading `record.exc_info` off every
+`node.logger.exception(...)` call `_dispatch`/`handle_p2p_handshake`
+themselves make, or the exception among the arguments of the `net` debug
+line they write for a `BTClibValueError`, and sorting it on this
+harness's own axis, `isinstance(exc, BTClibException)`: btclib refusing
+`data` into `refused`, anything else, a bug, into `escaped` --
+`handle_p2p` returning nothing for either, neither shows in what it
+returns. What lands in `escaped` is re-raised by `dispatch` below, so
+`handle_p2p` runs unmodified, exactly as `Node`'s own loop calls it, and
+what it would have hidden is still what makes this harness red; what
 lands in `refused` is raised too, once `escaped` is checked and found
 empty, so a callback's own refusal of `data` -- a call this harness
 would otherwise report exactly as it reports genuine acceptance -- is
@@ -215,9 +214,9 @@ _node: Node | None = None
 
 
 class _CrashCapture(logging.Handler):
-    """Sort what `handle_p2p`'s own `except` logs, btclib's or a bug.
+    """Sort what `_dispatch`'s own `except` logs, btclib's or a bug.
 
-    `handle_p2p`/`handle_p2p_handshake` log a callback's raise and
+    `_dispatch`/`handle_p2p_handshake` log a callback's raise and
     discourage the peer for a `MisbehavingError` alone -- this reads the
     same record and sorts it on its own axis, `isinstance(e,
     BTClibException)`, into `refused` for a `BTClibException` and `escaped`

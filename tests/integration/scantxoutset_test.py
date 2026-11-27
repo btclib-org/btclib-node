@@ -238,6 +238,8 @@ _REFUSED: list[tuple[list[Any], bool]] = [
     (["start", [f"and_v(v:rawpkh({_H160}),pk({_K}))"]], False),
     (["start", [f"{_MUSIG}/<0;1>/*"]], False),
     (["start", [f"[deadbeef]{_MUSIG}"]], False),
+    (["start", [f"wpkh(\t{_K})"]], True),
+    (["start", [f"wpkh(\t{_K})#qqqqqqqq"]], True),
 ]
 
 
