@@ -3089,20 +3089,20 @@ def _shown_bind_value(
 ) -> str:
     """Return `address` as the duplicate-binding refusal writes it.
 
-    Core writes the address whole (`CheckBindingConflicts`, `src/init.cpp:
-    2368`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), which writes an
-    I2P host's label in lowercase base32: one that is a key is then a key
-    written back. This writes the value whole only where `masked_address`
-    keeps it whole, and `'...'` and its position otherwise, as the RPC
-    bind lines do for ISS 2566 (SECURITY.md, "Where this node departs
-    from Bitcoin Core", ISS 2577).
+    Core writes the address whole (`AppInitMain`, `src/init.cpp:2368`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), which writes an I2P host's
+    label in lowercase base32: one that is a key is then a key written
+    back. This writes the address whole only where the log of the settings
+    writes the value whole, and `'...'` and the value's position otherwise,
+    as the RPC bind lines do for ISS 2566 (SECURITY.md, "Where this node
+    departs from Bitcoin Core", ISS 2577).
     """
-    masked = masked_address(value)
-    if isinstance(address, WhitebindAddress):
-        # the permission names before `@` are no part of the address
-        _, at, spec = value.partition("@")
-        masked = masked_address(spec if at else value)
-    if masked is None:
+    mask = (
+        masked_permissioned_address
+        if isinstance(address, WhitebindAddress)
+        else masked_address
+    )
+    if mask(value) is None:
         return service_text(address.host, address.port)
     return f"'...' (value {position} of -{option})"
 
