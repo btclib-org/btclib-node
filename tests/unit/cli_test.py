@@ -4443,6 +4443,36 @@ def test_build_config_a_bind_named_twice_is_refused(
         cli.build_config(["-regtest", *argv])
 
 
+@pytest.mark.parametrize(
+    ("options", "place"),
+    [
+        (["bind", "bind"], "value 2 of -bind"),
+        (["whitebind", "whitebind"], "value 2 of -whitebind"),
+        # once to each: the `-whitebind` value is seen first
+        (["whitebind", "bind"], "value 1 of -bind"),
+    ],
+)
+@pytest.mark.usefixtures("no_node")
+def test_build_config_a_key_named_twice_as_a_bind_is_refused_by_its_place(
+    options: list[str], place: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2577: Core writes the address; this names the value's place.
+
+    An I2P host's label is written back in lowercase base32, so a key given
+    there would be the key again.
+    """
+    value = f"{LEAK_I2P_WIF}.b32.i2p:8333"
+    argv = ["-regtest", *(f"-{option}={value}" for option in options)]
+    with pytest.raises(ValueError, match="Duplicate binding configuration") as raised:
+        cli.build_config(argv)
+    assert str(raised.value) == (
+        f"Duplicate binding configuration for address '...' ({place}). Please "
+        "check your -bind, -bind=...=onion and -whitebind settings."
+    )
+    assert_secret_free(raised.value, [LEAK_I2P_WIF])
+    assert not capsys.readouterr().err
+
+
 def test_build_config_a_bind_defaults_its_port_to_dash_port() -> None:
     """ISS 1257: `default_bind_port` is `-port`: these are one address."""
     with pytest.raises(ValueError, match="Duplicate binding configuration"):
