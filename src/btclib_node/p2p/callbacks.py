@@ -184,6 +184,9 @@ __all__ = [
     "cmpctblock",
     "feature",
     "feefilter",
+    "filteradd",
+    "filterclear",
+    "filterload",
     "get_cfcheckpt",
     "get_cfheaders",
     "get_cfilters",
@@ -197,6 +200,7 @@ __all__ = [
     "headers",
     "inv",
     "maybe_send_getheaders",
+    "mempool",
     "not_found",
     "ping",
     "pong",
@@ -3771,23 +3775,35 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
 def mempool(node: Node, msg: bytes, conn: Connection) -> None:
     """Drop a peer that asks for this node's mempool, as Core does.
 
-    This node offers no `BLOOM_FILTER` service, and Core disconnects a peer
-    requesting `mempool` unless it holds the `mempool` permission; a `noban`
-    peer is answered with silence and kept (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, line 4947).
+    Core reads the request only where it offers `NODE_BLOOM` or the peer
+    holds the `mempool` permission. Otherwise it keeps a `noban` peer, with
+    no log, and drops any other with a `net` line
+    (`src/net_processing.cpp:5187-5197`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). Core offers `NODE_BLOOM` to a `bloomfilter` peer
+    (`:1713-1714`) and this node to none (`connection.local_services`), so
+    such a peer is kept there and dropped here. Core answers a `mempool`
+    peer with an `inv` of its mempool (`:5212` and `:6346-6380`), and this
+    node answers it nothing: it has no BIP35.
     """
-    if NetPermissionFlags.MEMPOOL in conn.permissions:
+    if (
+        NetPermissionFlags.MEMPOOL in conn.permissions
+        or NetPermissionFlags.NO_BAN in conn.permissions
+    ):
         return
     node.logger.log_debug(
         "net", "mempool request with bloom filters disabled, peer=%s", conn.id
     )
-    if NetPermissionFlags.NO_BAN in conn.permissions:
-        return
     conn.stop()
 
 
-def _no_bloom_service(node: Node, msg: bytes, conn: Connection, what: str) -> None:
-    """Drop a peer whose bloom message this node's services do not offer."""
+def _no_bloom_service(node: Node, conn: Connection, what: str) -> None:
+    """Drop a peer whose bloom message this node's services do not offer.
+
+    Core keeps a `bloomfilter` peer on all three messages, since it offers
+    that peer `NODE_BLOOM` (`src/net_processing.cpp:1713-1714`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node offers it to no
+    peer (`connection.local_services`), so it drops that peer too.
+    """
     node.logger.log_debug(
         "net", "%s received despite not offering bloom services, peer=%s", what, conn.id
     )
@@ -3795,18 +3811,30 @@ def _no_bloom_service(node: Node, msg: bytes, conn: Connection, what: str) -> No
 
 
 def filterload(node: Node, msg: bytes, conn: Connection) -> None:
-    """Drop a peer loading a bloom filter, as Core does."""
-    _no_bloom_service(node, msg, conn, "filterload")
+    """Drop a peer loading a bloom filter, as Core does.
+
+    `src/net_processing.cpp:5242-5247`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag; `_no_bloom_service` says where this node departs from it.
+    """
+    _no_bloom_service(node, conn, "filterload")
 
 
 def filteradd(node: Node, msg: bytes, conn: Connection) -> None:
-    """Drop a peer adding to a bloom filter, as Core does."""
-    _no_bloom_service(node, msg, conn, "filteradd")
+    """Drop a peer adding to a bloom filter, as Core does.
+
+    `src/net_processing.cpp:5268-5273`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag; `_no_bloom_service` says where this node departs from it.
+    """
+    _no_bloom_service(node, conn, "filteradd")
 
 
 def filterclear(node: Node, msg: bytes, conn: Connection) -> None:
-    """Drop a peer clearing its bloom filter, as Core does."""
-    _no_bloom_service(node, msg, conn, "filterclear")
+    """Drop a peer clearing its bloom filter, as Core does.
+
+    `src/net_processing.cpp:5296-5301`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag; `_no_bloom_service` says where this node departs from it.
+    """
+    _no_bloom_service(node, conn, "filterclear")
 
 
 handshake_callbacks = {
