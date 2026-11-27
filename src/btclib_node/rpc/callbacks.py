@@ -1163,11 +1163,11 @@ def _submitted_body_refusal(
     A header failing its proof of work is refused as `high-hash`, the reason
     `block_index.check_headers_pow` gives it: Core's `CheckBlock` asks
     `CheckBlockHeader` before anything of the body. A body failing
-    `main.assert_valid_block_proof` (on signet, its solution) is refused for
-    it, and nothing is marked: Core asks it in `CheckBlock`, and
-    `ProcessNewBlock` marks nothing for a body failing that. A body failing
-    the rest of `CheckBlock` is refused with Core's word where
-    `mining.check_block_reason` has one, and nothing is marked either. A
+    `main.assert_valid_block_proof` (on signet, its solution) is refused with
+    Core's reason alone, `bad-signet-blksig`, and nothing is marked: Core asks
+    it in `CheckBlock`, and `ProcessNewBlock` marks nothing for a body failing
+    that. A body failing the rest of `CheckBlock` is refused with Core's word
+    where `mining.check_block_reason` has one, and nothing is marked either. A
     body that passes `CheckBlock` is then asked Core's `ContextualCheckBlock`
     (`mining.contextual_block_reason`), weight included, as Core's
     `AcceptBlock` asks it before storing the block (`src/validation.cpp`, at
@@ -1184,7 +1184,11 @@ def _submitted_body_refusal(
         check_headers_pow([block.header], node.chain.pow_limit_bits)
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
-        return str(error)
+        # `BIP22ValidationResult` answers `GetRejectReason()` alone, not the
+        # debug message `CheckBlock` gives beside it (`src/rpc/mining.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); `block_reject_reason`
+        # cuts btclib's detail after Core's word
+        return block_reject_reason(error)
     # `CheckBlock` first: a body that was never indexed has no parent here
     # to read a height from
     if (reason := check_block_reason(block, check_merkle_root=True)) is not None:
@@ -1286,6 +1290,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`, and
     `CheckBlockHeader`'s `high-hash`, which `block_index.check_headers_pow`
     raises in Core's words whether or not the body passes `CheckBlock`, and
+    `CheckBlock`'s `bad-signet-blksig` for a signet solution that fails, and
     those of `CheckBlock`'s that `mining.check_block_reason` answers in
     Core's words, as `_submitted_body_refusal` says. Any other invalid block
     is answered with btclib's own exception message instead of one of
@@ -1896,8 +1901,8 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
 
     # Core's `TrimStringView(node_arg).empty()` (`rpc/net.cpp:372-376`), whose
-    # default pattern is " \f\n\r\t\v" (`util/string.h:163`), both at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag: a bare `str.strip()` also
+    # default pattern is " \f\n\r\t\v" (`util/string.h:163`), both
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag: a bare `str.strip()` also
     # trims Unicode whitespace such as `\xa0`, which Core accepts as a node
     if not node_arg.strip(" \f\n\r\t\v"):
         raise RpcError(
@@ -2441,8 +2446,8 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     BTC/kvB rather than this tree's own sat/kvB.
     """
     mempool = node.mempool
-    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`, at
-    # bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
+    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1108-1132`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) answers several fields
     # beyond these: `usage`, `total_fee`, `limitclustercount`,
     # `limitclustersize`, the deprecated `fullrbf`. Each is backed by
     # something this tree does not carry -- a memory count, a persisted
@@ -2656,8 +2661,8 @@ def get_tx_out_set_info(
     if mismatches:
         raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
-        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
+        # Core quotes the name whole (`src/rpc/blockchain.cpp:1016`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this quotes it through
         # `quoted_name` (SECURITY.md, "Where this node departs from Bitcoin
         # Core"; section 7 of the organization's standard, *A refusal
         # carries no secret*)
@@ -3144,8 +3149,8 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
     """
     entry = mempool.entry(wtxid)
     return {
-        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         # btclib-org/btclib-node#1757
         "vsize_adjusted": entry.vsize,
         "vsize": entry.vsize,
@@ -3431,16 +3436,16 @@ def get_tx_spending_prevout(
 ) -> list[dict[str, Any]]:
     """Answer `gettxspendingprevout`: the mempool transaction spending each.
 
-    Core's RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag, which this node follows until ISS 2257), without its
-    `-txospenderindex`, which this node does not have: the answer is the
-    mempool's alone, so `blockhash` is never in it. Each answer is the
-    outpoint's own object, as given, with `spendingtxid` added where a
-    mempool transaction spends it, and `spendingtx` too under
-    `return_spending_tx`. Core's `mempool_only` defaults to true where
-    there is no index, and false asks for the index: an outpoint the
-    mempool does not spend is then refused, as Core refuses it with the
-    index unavailable. btclib-org/btclib-node#1501
+    Core's RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), without its `-txospenderindex`, which this node does
+    not have: the answer is the mempool's alone, so `blockhash` is never
+    in it. Each answer is the outpoint's own object, as given, with
+    `spendingtxid` added where a mempool transaction spends it, and
+    `spendingtx` too under `return_spending_tx`. Core's `mempool_only`
+    defaults to true where there is no index, and false asks for the
+    index: an outpoint the mempool does not spend is then refused, as
+    Core refuses it with the index unavailable.
+    btclib-org/btclib-node#1501
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["gettxspendingprevout"])
@@ -3483,8 +3488,7 @@ def get_tx_spending_prevout(
         elif not mempool_only:
             raise RpcError(
                 RPCErrorCode.MISC_ERROR,
-                f"No spending tx for the outpoint {txid.hex()}:{vout} in mempool, "
-                "and txospenderindex is unavailable.",
+                "Mempool lacks a relevant spend, and txospenderindex is unavailable.",
             )
         answer.append(JsonObject(pairs))
     return answer
@@ -3691,8 +3695,8 @@ def get_raw_transaction(
             "The genesis block coinbase is not considered an ordinary "
             "transaction and cannot be retrieved",
         )
-    # `skip_type_check` (src/rpc/rawtransaction.cpp:275, at
-    # bitcoin/bitcoin@f0de87f040), so the type of
+    # `skip_type_check` (src/rpc/rawtransaction.cpp:275,
+    # at bitcoin/bitcoin@f0de87f040), so the type of
     # this argument is read here, after the genesis exception, as
     # `ParseVerbosity` reads it (`_parse_verbosity`)
     verbosity = _parse_verbosity(params, 1, default=0)
@@ -4479,17 +4483,16 @@ def stop_wait_param(params: list[Any]) -> int | None:
 def set_mock_time(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     """Answer `setmocktime`: hold the node's clock at `timestamp`, regtest only.
 
-    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag, which this node follows until ISS 2256), in Core's order:
-    the generic missing-argument and wrong-type refusals, then the chain
-    gate -- `RPC_MISC_ERROR`, as the plain `std::runtime_error` Core
-    throws becomes -- then the range, a non-integer number being "JSON
-    integer out of range" as `getInt` answers it. A `timestamp` outside
-    `[0, MAX_MOCK_TIME]` is `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is
-    the v31.1 tag's bound, `nanoseconds::max()` in seconds; the v32.1 tag
-    narrows it to `uint32_t`'s maximum (406c2348dd, "rpc: tighten
-    setmocktime upper bound to UINT32_MAX"). Every refusal here matches a
-    regtest bitcoind v31.1.0.
+    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), in Core's order: the generic missing-argument and
+    wrong-type refusals, then the chain gate -- `RPC_MISC_ERROR`, as the
+    plain `std::runtime_error` Core throws becomes -- then the range, a
+    non-integer number being "JSON integer out of range" as `getInt`
+    answers it. A `timestamp` outside `[0, MAX_MOCK_TIME]` is
+    `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is the v32.1 tag's bound,
+    `uint32_t`'s maximum (bitcoin/bitcoin@406c2348dd, "rpc: tighten
+    setmocktime upper bound to UINT32_MAX"). Every refusal here matches
+    a regtest bitcoind v32.1.0.
 
     The callback runs on `Node`'s thread between two steps of the loop,
     so no validation is in flight, as Core's `LOCK(cs_main)` ensures.

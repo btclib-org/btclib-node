@@ -84,8 +84,8 @@ __all__ = [
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 
-# The global rate limits on transaction announcements, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag:
+# The global rate limits on transaction announcements,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
 # `OUTBOUND_INVENTORY_BUCKET_MULTIPLIER`, `INVENTORY_BUCKET_CHECK_DELAY`,
 # `INVENTORY_BUCKET_BACKLOG_HEARTBEAT`,
 # `INVENTORY_BUCKET_BACKLOG_HEARTBEAT_MIN` and `InvToSendBucket`'s own
@@ -1591,8 +1591,8 @@ class DownloadManager:
         a peer that old is sent none.
         """
         now = clock.now()
-        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
+        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) gates this same
         # decision on `m_chainman.IsInitialBlockDownload()`, which
         # `main.update_ibd_status`'s own
         # `node.is_initial_block_download` answers faithfully

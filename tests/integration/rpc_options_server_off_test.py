@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.integration.rpcservertimeout_server_off_test import _start_and_stop
+from tests.integration import start_and_stop
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,5 +47,5 @@ def test_a_start_without_the_server_ignores_rpc_options(
         (datadir / "regtest" / "settings.json").write_text(
             f'{{"{name}": 5}}', encoding="utf-8"
         )
-        results[program] = _start_and_stop(command, datadir)
+        results[program] = start_and_stop(command, datadir)
     assert results["node"] == results["bitcoind"] == (True, 0, "")
