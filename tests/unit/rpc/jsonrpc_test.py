@@ -152,15 +152,41 @@ def test_a_body_as_deep_as_core_reads_is_decoded(shape: Callable[[int], str]) ->
     assert decode(text.encode()) == json.loads(text)
 
 
-@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 @pytest.mark.parametrize("depth", [MAX_JSON_DEPTH + 1, 100_000])
 @pytest.mark.parametrize("shape", [_arrays, _objects])
 def test_a_body_deeper_than_core_reads_is_a_parse_error(
-    shape: Callable[[int], str], depth: int, encoding: str
+    shape: Callable[[int], str], depth: int
 ) -> None:
     """ISS 2468: refused at any depth, as `UniValue::read` refuses it."""
     with pytest.raises(ValueError, match="arrays and objects open"):
-        decode(shape(depth).encode(encoding))
+        decode(shape(depth).encode())
+
+
+_BODY = '{"method":"getblockcount"}'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(_BODY.encode("utf-16"), id="utf-16"),
+        pytest.param(_BODY.encode("utf-16-le"), id="utf-16-le"),
+        pytest.param(_BODY.encode("utf-32"), id="utf-32"),
+        pytest.param(b"\xef\xbb\xbf" + _BODY.encode(), id="utf-8-bom"),
+        pytest.param(f"[{_BODY}]".encode("utf-16-le"), id="utf-16-le-batch"),
+        pytest.param(f" {_BODY}".encode("utf-16-le"), id="utf-16-le-space-first"),
+        pytest.param(f"[{_BODY}]".encode("utf-16-be"), id="utf-16-be-batch"),
+        pytest.param(_BODY.encode("utf-32-be"), id="utf-32-be"),
+        pytest.param(f"\ufeff{_BODY}".encode("utf-32-be"), id="utf-32-be-bom"),
+    ],
+)
+def test_a_body_in_another_encoding_is_a_parse_error(body: bytes) -> None:
+    """ISS 2485: `UniValue::read` reads the bytes as they are.
+
+    Measured on bitcoind v32.1.0: each answers `-32700` "Parse error" over
+    HTTP 500, where the same text in plain UTF-8 is answered.
+    """
+    with pytest.raises(ValueError):  # noqa: PT011
+        decode(body)
 
 
 def test_a_bracket_in_a_string_is_not_counted() -> None:
