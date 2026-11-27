@@ -608,8 +608,8 @@ class Connection:
         # `P2pManager.server` decides it on accept and
         # `P2pManager.create_connection` sets it; nothing changes it after.
         self.prefer_evict: bool = False
-        # Core's `CNode::m_network_key` (`src/net.h`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag): the key
+        # Core's `CNode::m_network_key` (`src/net.h`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag): the key
         # `callbacks.getaddr` caches its answer under -- the BIP155 id of
         # the peer's network (Tor's for an `inbound_onion` one) and the
         # host and port of the accepted socket's local address, which on
@@ -718,8 +718,8 @@ class Connection:
         # check always treats as due. The queue is an insertion-ordered set
         # (keys only), which a trickle empties. btclib-org/btclib-node#141
         # Core's `m_tx_inventory_to_send` is a `std::vector`, which
-        # `ProcessInvBacklog` appends to without dedup (at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `inv_to_send`
+        # `ProcessInvBacklog` appends to without dedup
+        # (at bitcoin/bitcoin@f0de87f040, the v32.1 tag), so `inv_to_send`
         # counts a wtxid taken twice once here and twice in Core, though
         # both send it once.
         self.tx_announce_queue: dict[bytes, None] = {}
@@ -811,8 +811,8 @@ class Connection:
         # Core's `m_recv_flood_size`, `-maxreceivebuffer` in bytes. Past it
         # Core sets `fPauseRecv` (`MarkReceivedMsgsForProcessing`) and
         # selects the socket for no more reads until `PollMessage` takes
-        # its queue back within it (`src/net.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag); `run` below waits on
+        # its queue back within it (`src/net.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); `run` below waits on
         # `_recv_resume` for the same. It pauses rather than drops: a peer
         # past it has sent valid messages faster than this node handles
         # them, Core's flood-control case.
@@ -1583,6 +1583,17 @@ class Connection:
                     # counted where Core's `ReceiveMsgBytes` counts a
                     # rejected message, and the peer kept
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
+                    # Core's line (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+                    # the v32.1 tag) also gives the message's length, on v1
+                    # its type too, and for a wrong checksum the checksum
+                    # read and the one the payload hashes to. Each is octets
+                    # the peer sent, or a hash of them, which may be a
+                    # secret's (section 7 of the organization's standard, *A
+                    # refusal carries no secret*): this keeps Core's prefix,
+                    # its reason and the peer. btclib-org/btclib-node#2498
+                    self.node.logger.log_debug(
+                        "net", "%s: %s, peer=%d", e.prefix, e, self.id
+                    )
                     continue
                 weight = _recv_memusage(message)
                 consumed += weight

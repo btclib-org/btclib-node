@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 _PERIOD = 144
 _THRESHOLD = 108
 _TOP = 0x20000000
-# a bit no deployment uses, the one `feature_versionbits_warning.py` picks
-_UNKNOWN = 27
+# a bit no deployment uses, among the five the warning counts (ISS 2278)
+_UNKNOWN = 4
 _TESTDUMMY = 28
 _START = datetime.fromtimestamp(1_700_000_000, UTC)
 
@@ -96,6 +96,15 @@ def test_a_bit_signalled_at_the_threshold_locks_in_and_then_activates() -> None:
     assert check(versions[: 3 * _PERIOD]) == [(_UNKNOWN, True)]
 
 
+@pytest.mark.parametrize(("number", "expected"), [(4, [(4, False)]), (5, []), (27, [])])
+def test_the_warning_reads_bits_0_to_4_alone(
+    number: int, expected: list[tuple[int, bool]]
+) -> None:
+    """ISS 2278: at the threshold, bit 4 locks in and bits 5 and 27 do not."""
+    signalling = [bit(number)] * _THRESHOLD + [_TOP] * (_PERIOD - _THRESHOLD)
+    assert check(periods(0) + signalling) == expected
+
+
 def test_a_tip_inside_a_period_answers_with_the_period_before_it() -> None:
     """`GetStateFor` reads the state at the last period boundary.
 
@@ -119,16 +128,15 @@ def test_a_block_without_the_top_bits_signals_nothing() -> None:
 
 
 def test_a_bit_a_started_deployment_uses_is_not_unknown() -> None:
-    """`ComputeBlockVersion` sets `TESTDUMMY`'s bit while it is started.
+    """ISS 2278: `TESTDUMMY`'s bit 28 is outside the five the warning reads.
 
-    Regtest's `DEPLOYMENT_TESTDUMMY` is bit 28, `STARTED` from the first
-    boundary. Signalled through that period and the `LOCKED_IN` one, the
-    bit warns of nothing; once it is `ACTIVE` it is not set any more, and
-    a period that signals it locks in the warning.
+    Regtest's `DEPLOYMENT_TESTDUMMY` is `STARTED` from the first boundary,
+    and `ComputeBlockVersion` sets its bit then; v32.1's warning counts
+    bits 0 to 4 alone, so no period warns of the deployment's own.
     """
     versions = periods(0, bit(_TESTDUMMY), bit(_TESTDUMMY), bit(_TESTDUMMY))
     assert check(versions[: 3 * _PERIOD]) == []
-    assert check(versions) == [(_TESTDUMMY, False)]
+    assert check(versions) == []
 
 
 def test_no_block_below_the_warning_height_counts() -> None:
@@ -144,11 +152,12 @@ def test_no_block_below_the_warning_height_counts() -> None:
     assert check(versions[: 2 * _PERIOD], chain) == []
 
 
-def test_main_counts_taproot_s_bit_as_a_known_one() -> None:
-    """ISS 1475: `DEPLOYMENT_TAPROOT` is bit 2, signalled in 2021 on main.
+def test_main_counts_taproot_s_bit_as_unknown() -> None:
+    """ISS 2278: v32.1 drops `DEPLOYMENT_TAPROOT` from `vDeployments`.
 
-    The same blocks on a chain with no such deployment warn: signet's is
-    always active, which is not `STARTED`.
+    The blocks mainnet signalled it through leave the warning to read bit
+    2, which bits 0 to 4 count, as it does on a chain that never carried
+    the deployment.
     """
     # 2021-04-24, taproot's `nStartTime`, and the two periods mainnet
     # signalled it through
@@ -156,8 +165,7 @@ def test_main_counts_taproot_s_bit_as_a_known_one() -> None:
     versions = [_TOP] * 2016 + [bit(2)] * 2016 * 2 + [_TOP] * 2016 * 2
     active_chain, header_dict = a_chain(versions, start=start)
     for name, length, expected in (
-        ("mainnet", 4032, []),
-        ("mainnet", 6048, []),
+        ("mainnet", 4032, [(2, False)]),
         ("signet", 4032, [(2, False)]),
     ):
         chain = cast("Chain", SimpleNamespace(name=name, min_bip9_warning_height=0))
@@ -165,20 +173,19 @@ def test_main_counts_taproot_s_bit_as_a_known_one() -> None:
         assert found == expected, (name, length)
 
 
-def test_taproot_is_active_where_core_has_it_always_active() -> None:
-    """`GBTStatus`: main's taproot is tracked, signet's is always active."""
+def test_no_deployment_is_listed_as_always_active() -> None:
+    """ISS 2278: v32.1's `DeploymentPos` holds `DEPLOYMENT_TESTDUMMY` alone."""
     active_chain, header_dict = a_chain([_TOP] * 2016)
     found = {}
     for name in ("mainnet", "testnet", "signet", "testnet4", "regtest"):
         chain = cast("Chain", SimpleNamespace(name=name, min_bip9_warning_height=0))
         found[name] = UnknownActivations(chain).status(active_chain, header_dict)
 
-    assert found["mainnet"].active == []
-    assert found["mainnet"].signalling == {"taproot": 2}
-    assert found["testnet"].active == []
-    assert found["signet"].active == ["taproot"]
-    assert found["testnet4"].active == ["taproot"]
-    assert found["regtest"].active == ["taproot"]
+    assert all(status.active == [] for status in found.values())
+    assert found["mainnet"].signalling == {}
+    assert found["testnet"].signalling == {}
+    assert found["signet"].signalling == {}
+    assert found["testnet4"].signalling == {}
     assert found["regtest"].signalling == {"testdummy": 28}
     assert found["signet"].version == found["testnet4"].version == _TOP
 

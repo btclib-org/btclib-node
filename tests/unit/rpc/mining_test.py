@@ -1341,7 +1341,7 @@ def test_a_signet_template_names_the_signet_rule_and_its_challenge(
     template = get_block_template(node, CONN, [{"rules": ["segwit", "signet"]}])
 
     assert isinstance(template, dict)
-    assert template["rules"] == ["csv", "!segwit", "!signet", "taproot"]
+    assert template["rules"] == ["csv", "!segwit", "taproot", "!signet"]
     assert template["signet_challenge"] == SIGNET_CHALLENGE.hex()
     assert (
         list(template).index("signet_challenge") == list(template).index("height") + 1

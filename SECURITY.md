@@ -185,6 +185,15 @@ is `musig` after a key origin Core reads, and what follows them where
 that is a derivation path, each step of it below 2^31, as `/0/*` in
 `'musig(...)/0/*'`. It writes `...` for either otherwise.
 
+Core's `scantxoutset` refusal of a key whose `]` follows no `[` at its
+start quotes the key's first character, which may be a private key's
+(`ParsePubkey` in `src/script/descriptor.cpp:2204`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). Every key Core reads is a
+run of more than one letter or digit. So this node's refusal writes `...`
+for a letter or digit that another follows, as in `wpkh(): Key origin
+start '[ character expected but not found, got '...' instead`, and keeps
+any other character Core quotes, as the space in `wpkh( [deadbeef]<key>)`.
+
 Core's `scantxoutset` refusal of a key it cannot read quotes the key, or
 the text it reads as one, which may be a private key given by mistake
 (`ParsePubkeyInner` in `src/script/descriptor.cpp`, at
@@ -194,6 +203,32 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
 `wpkh(): Key '...' is invalid due to whitespace`. Where it gives
 bip32_descriptors' refusal instead, that refusal names the key by its
 index alone, as for a key path value Core refuses.
+
+Core's `dumptxoutset` refusals quote the path it was given whole, a key
+given by mistake in its place included (`src/rpc/blockchain.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words and writes the path by its length: `<52 characters> already exists.
+If you are sure this is what you want, move it out of the way first` and
+`Couldn't open file <64 characters> for writing.`
+
+Core's `scantxoutset` refusal of a `tr()` leaf that no function reads
+quotes the leaf whole, a key given as a leaf included (`ParseScript` in
+`src/script/descriptor.cpp:2794`, at bitcoin/bitcoin@f0de87f040, the
+v32.1 tag). This node writes the leaf's arguments as `(...)`, and quotes
+the result where it has at most `MAX_QUOTED_NAME` characters, as in
+`'foo(...)' is not a valid descriptor function`. It writes a longer leaf
+`...`, as in `'...' is not a valid descriptor function` for a key given
+as a leaf or for `tr(K,foo(1)/0/0/0/0/0/0/0)`, except a leaf that holds
+a function the paragraph on `rawpkh()` above names, which is written as
+that paragraph says. Where Core refuses a leaf before it, as `rawpkh(H)`
+in `tr(K,{rawpkh(H),K})`, the refusal is that leaf's.
+
+Core's `scantxoutset` refusal of a threshold it cannot read, in a
+`multi()`, `sortedmulti()`, `multi_a()` or `sortedmulti_a()`, quotes the
+threshold whole, which may be a key given in its place (`ParseScript` in
+`src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag). This node's refusal quotes it as the next paragraph quotes a name,
+so that a key there is written `<52 characters>` between Core's quotes.
 
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
@@ -237,7 +272,17 @@ Core's sentence puts it in parentheses, as in `Invalid minimum work specified
 that takes several is also named by its position, as an `-rpcallowip` value is:
 `Cannot resolve -bind address: '...' (value 2 of -bind)`. A `-whitebind`
 address that names no port is quoted, as Core quotes it, where the log of the
-settings below writes an address whole.
+settings below writes an address whole. Core's `Bind address family for %s not
+supported` writes the address a `-bind` or `-whitebind` value resolves to, an
+I2P host's label included (`BindListenPort` in `src/net.cpp:3396`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node writes that address whole
+where the log of the settings below writes the value whole, and otherwise
+`'...'` and the value's position, as in `Bind address family for '...' (value 1
+of -bind) not supported`. Core's `Duplicate binding configuration for address
+%s` writes such an address too (`AppInitMain` in `src/init.cpp:2368`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this node writes it the same
+way, as in `Duplicate binding configuration for address '...' (value 2 of
+-bind)`.
 
 Core's start-up refusals of a path write it whole, a key given by mistake
 in place of an option's value included (`InitConfig` in

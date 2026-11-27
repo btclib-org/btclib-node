@@ -17,14 +17,16 @@ listener holds them in `Whitelist.flags`' `granted`.
 Each permission does here what it does in Core, wherever this node has
 the behaviour it changes: `NO_BAN` (ban, discouragement, eviction, the
 headers work check, the preferred download peer, the stalled headers
-sync, the transaction trickle, the pruned block threshold), `DOWNLOAD`
-(`getheaders` below the minimum chain work), `ADDR` (address rate limit
-and the `getaddr` cache), `RELAY` (the limit on announcements) and
-`FORCE_RELAY` (relay of a known transaction, no `feefilter`).
-`BLOOM_FILTER` and `MEMPOOL` are accepted and listed by `getpeerinfo`
-and change nothing: this node answers no BIP37 request and no BIP35
-`mempool`, whoever asks. `DOWNLOAD`'s `-maxuploadtarget` and `RELAY`'s
-`-blocksonly` are not options of this node.
+sync, the transaction trickle, the pruned block threshold, the drop for
+a `mempool` request), `DOWNLOAD` (`getheaders` below the minimum chain
+work), `ADDR` (address rate limit and the `getaddr` cache), `RELAY` (the
+limit on announcements), `FORCE_RELAY` (relay of a known transaction, no
+`feefilter`) and `MEMPOOL` (the drop for a `mempool` request). This node
+answers no BIP35 `mempool`, whoever asks. `BLOOM_FILTER` is accepted and
+listed by `getpeerinfo` and changes nothing: this node offers
+`NODE_BLOOM` to no peer and answers no BIP37 request. `DOWNLOAD`'s
+`-maxuploadtarget` and `RELAY`'s `-blocksonly` are not options of this
+node.
 """
 
 from dataclasses import dataclass
@@ -103,7 +105,7 @@ NET_PERMISSIONS_DOC = (
     "noban (do not ban for misbehavior; implies download)",
     "forcerelay (relay transactions that are already in the mempool; implies relay)",
     "relay (unlimited transaction announcements)",
-    "mempool (accepted, does nothing: no BIP35)",
+    "mempool (not dropped for a mempool request, answered nothing: no BIP35)",
     "download (allow getheaders during IBD)",
     (
         "addr (responses to GETADDR avoid hitting the cache and contain random"
