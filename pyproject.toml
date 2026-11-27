@@ -1447,12 +1447,17 @@ intoto = "intoto"
 # is what reaches the entries, and "changelog/next/*.md" would not. The
 # hook runs with --write-changes, so an unignored match here is a rewrite
 # of the citation, not a report. Unquoted prose in these files stays
-# checked.
+# checked, but for the backtick shapes the pattern below misreads
+# (issue #2639).
 extend-glob = [
     "CHANGELOG.md",
     "RELEASE_NOTES.md",
     "pr[0-9]*.md",
     ".pre-commit-config.yaml",
 ]
-# single line, so an unpaired backtick cannot swallow the paragraphs below it
-extend-ignore-re = ['`[^`\n]*`']
+# a code span of one or two backticks: it may wrap onto the next line,
+# never across a blank one. An escaped backtick opens none, and an escaped
+# backslash leaves the backtick after it free to open one
+extend-ignore-re = [
+    '\\\\|\\`|``(?:[^`\n]|`[^`\n]|\n[ \t]*[^`\s])*(?:\n[ \t]*)?``|`(?:[^`\n]|\n[ \t]*[^`\s])*(?:\n[ \t]*)?`',
+]
