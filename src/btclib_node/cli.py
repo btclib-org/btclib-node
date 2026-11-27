@@ -2946,6 +2946,26 @@ def _make_blocks_dir(base_dir: Path, chain_name: str, blocksdir: str | None) -> 
         raise CreateDirectoriesError(err_msg)
 
 
+def _get_max_connections(
+    settings: _Settings, connect: Sequence[str], *, connect_negated: bool
+) -> tuple[int, JsonIntegerOutOfRangeError | JsonTypeError | None]:
+    """Return `-maxconnections` as `GetIntArg` reads it, and its refusal.
+
+    Core reads it with `GetIntArg` only where `-connect` is neither given
+    nor negated: the `||` at `src/init.cpp:807`, at
+    bitcoin/bitcoin@f0de87f040, short-circuits. Otherwise its first read
+    is `GetArg<int>` at `:1063`, so a value it refuses is returned beside
+    the default, for `Config` to refuse there (ISS 2381).
+    """
+    try:
+        value = _get_int(settings, "maxconnections")
+    except (JsonIntegerOutOfRangeError, JsonTypeError) as error:
+        if not connect and not connect_negated:
+            raise
+        return DEFAULT_MAX_PEER_CONNECTIONS, error
+    return (DEFAULT_MAX_PEER_CONNECTIONS if value is None else value), None
+
+
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
@@ -2977,22 +2997,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     _make_blocks_dir(base_dir, chain_name, blocksdir)
     connect = _get_args(settings, "connect")
     connect_negated = _is_negated(settings, "connect")
-    # Core reads `-maxconnections` with `GetIntArg` only where `-connect`
-    # is neither given nor negated: the `||` at `src/init.cpp:807`
-    # short-circuits, so under `-connect` its first read is `GetArg<int>` at
-    # :1063, after the refusals `Config.__init__` makes below. A number it
-    # refuses there is kept and raised once those have run (ISS 2381)
-    max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
-    deferred_max_connections: JsonIntegerOutOfRangeError | None = None
-    try:
-        raw_max_connections = _get_int(settings, "maxconnections")
-    except JsonIntegerOutOfRangeError as error:
-        if not connect and not connect_negated:
-            raise
-        deferred_max_connections = error
-    else:
-        if raw_max_connections is not None:
-            max_connections_arg = raw_max_connections
+    max_connections_arg, max_connections_refusal = _get_max_connections(
+        settings, connect, connect_negated=connect_negated
+    )
     # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
     # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
     # own soft-set does -- but only where `-dnsseed` was not given a
@@ -3020,9 +3027,10 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         blocks_dir=blocksdir,
         max_connections=(
             DEFAULT_MAX_PEER_CONNECTIONS
-            if deferred_max_connections is not None
+            if max_connections_refusal is not None
             else _get_int32(settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS)
         ),
+        max_connections_refusal=max_connections_refusal,
         rpcmaxconnections=_get_rpcmaxconnections(settings),
         # what the file descriptors `Config.__init__` reserves count
         rpcbind=_get_args(settings, "rpcbind"),
@@ -3041,8 +3049,6 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         reindex_chainstate=bool(_get_int(settings, "prune"))
         and bool(_get_bool(settings, "reindex-chainstate")),
     )
-    if deferred_max_connections is not None:
-        raise deferred_max_connections
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     _check_test_options(settings, chain_name)
     # `IsArgSet`, so a negation is refused too and `settings.json` is

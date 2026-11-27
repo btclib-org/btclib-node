@@ -58,6 +58,7 @@ from btclib_node.constants import (
     shown_path,
 )
 from btclib_node.exceptions import (
+    AppInitExceptionError,
     InvalidChainTypeError,
     JsonIntegerOutOfRangeError,
     UnknownChainError,
@@ -564,17 +565,22 @@ def _refuse_bind_without_listen(
         raise ValueError(err_msg)
 
 
-def _cap_max_connections(max_connections: int) -> tuple[int, str]:
+def _cap_max_connections(
+    max_connections: int, *, refusal: AppInitExceptionError | None
+) -> tuple[int, str]:
     """Cap `max_connections` at `MAX_PEER_CONNECTIONS`, warning where it does.
 
     `AppInitParameterInteraction` (`src/init.cpp:1063-1071`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) in its order: `GetArg<int>`
-    throws "JSON integer out of range" for a `settings.json` number past
-    a 32-bit `int`, which `cli` passes on unread for this point; then a
-    negative value is refused; then the cap comes with an `InitWarning`,
-    which `noui_ThreadSafeMessageBox` prints after `Warning: ` on stderr
-    and logs. The warning is `""` where nothing is capped.
+    throws first, which is `refusal` where `cli` hands one over, and "JSON
+    integer out of range" for a `settings.json` number past a 32-bit
+    `int`, which `cli` passes on unread for this point. Then a negative
+    value is refused; then the cap comes with an `InitWarning`, which
+    `noui_ThreadSafeMessageBox` prints after `Warning: ` on stderr and
+    logs. The warning is `""` where nothing is capped.
     """
+    if refusal is not None:
+        raise refusal
     if not -(2**31) <= max_connections < 2**31:
         raise JsonIntegerOutOfRangeError
     if max_connections < 0:
@@ -1327,6 +1333,7 @@ class Config:
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         max_connections_warnings: Sequence[str] = (),
+        max_connections_refusal: AppInitExceptionError | None = None,
         inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         tx_send_rate: int = DEFAULT_TX_SEND_RATE,
         dnsseed: bool | None = None,
@@ -1438,7 +1445,9 @@ class Config:
 
         _refuse_bind_without_listen(self.bind, self.whitebind, listen=self.listen)
 
-        capped, cap_warning = _cap_max_connections(max_connections)
+        capped, cap_warning = _cap_max_connections(
+            max_connections, refusal=max_connections_refusal
+        )
         self.inbound_relay_percent = inbound_relay_percent
         self.tx_send_rate = tx_send_rate
         self.rpcmaxconnections = _refuse_rpcmaxconnections(rpcmaxconnections)

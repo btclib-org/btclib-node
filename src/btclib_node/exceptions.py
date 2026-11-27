@@ -464,7 +464,7 @@ class JsonTypeError(AppInitExceptionError):
 
     `get_str` and the getters beside it throw a `UniValue::type_error`
     (`src/univalue/lib/univalue.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    v32.1 tag). Raised by `cli._wrong_type`.
+    v32.1 tag). Raised by `cli._wrong_type` and by `Config.__init__`.
 
     A read inside `InitConfig`'s own `try` (`src/common/init.cpp`, same
     sha) is one exception: its `catch` returns the error, and `ParseArgs`
