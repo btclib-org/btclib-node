@@ -1481,8 +1481,12 @@ def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
         with unstarted_node_context(tmp_path):
             pass
 
+    # the test asserts that the build does not raise, not how fast it is,
+    # so the wait is generous for a slow windows-latest runner (issue
+    # #2596), and under `timeout` in pyproject.toml. Leaving the `with`
+    # joins the worker, so a build that never returns ends at that limit
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pool.submit(build).result(timeout=10)
+        pool.submit(build).result(timeout=120)
 
 
 def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(

@@ -32,7 +32,7 @@ from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 from btclib_node import clock
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
-from btclib_node.rpc.jsonrpc import _refuse_past_max_depth
+from btclib_node.rpc.jsonrpc import _no_constant, _refuse_past_max_depth
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -502,7 +502,12 @@ class BanMan:
         text = path.read_text(encoding="utf-8")
         _refuse_past_max_depth(text)
         settings = json.loads(
-            text, object_pairs_hook=_JsonObject, parse_int=_parse_json_int
+            text,
+            object_pairs_hook=_JsonObject,
+            parse_int=_parse_json_int,
+            # `UniValue::read` refuses `NaN` and the infinities, which
+            # `json.loads` would otherwise read as floats
+            parse_constant=_no_constant,
         )
         if not isinstance(settings, _JsonObject):
             raise _BanlistError(path)

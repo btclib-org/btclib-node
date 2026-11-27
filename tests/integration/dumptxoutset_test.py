@@ -240,24 +240,30 @@ def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
 def test_an_existing_path_and_an_unopenable_one_are_refused(
     both: tuple[Bitcoind, Node], tmp_path: Path
 ) -> None:
-    """The paths in the messages are each side's own."""
+    """The paths are each side's own, by length here (ISS 2535)."""
     bitcoind, node = both
     client = rpc_client(node)
-    for call in (client.call, bitcoind.rpc):
+    for call, ours in ((client.call, True), (bitcoind.rpc, False)):
         target = str(tmp_path / f"x-{id(call)}.dat")
         call("dumptxoutset", [target, "latest"])
         with pytest.raises(RpcError) as err:
             call("dumptxoutset", [target, "latest"])
         assert err.value.code == -8
+        shown = f"<{len(target)} characters>" if ours else target
         assert str(err.value.args[0]).endswith(
-            f"{target} already exists. If you are sure this is what you want, "
+            f"{shown} already exists. If you are sure this is what you want, "
             "move it out of the way first"
         )
         missing = str(tmp_path / "none" / "x.dat")
         with pytest.raises(RpcError) as err:
             call("dumptxoutset", [missing, "latest"])
+        shown = (
+            f"<{len(missing) + len('.incomplete')} characters>"
+            if ours
+            else f"{missing}.incomplete"
+        )
         assert str(err.value.args[0]).endswith(
-            f"Couldn't open file {missing}.incomplete for writing."
+            f"Couldn't open file {shown} for writing."
         )
 
 

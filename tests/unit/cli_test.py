@@ -379,6 +379,43 @@ def test_main_writes_a_byte_utf8_refuses_as_that_byte(
 
 
 @pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(
+    ("value", "kind", "argv"),
+    [("5", "number", []), ("{}", "object", []), ("5", "number", ["-port=0"])],
+    ids=["number", "object", "number beside -port=0"],
+)
+def test_main_refuses_a_non_bool_logratelimit_without_a_traceback(
+    tmp_path: Path,
+    value: str,
+    kind: str,
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 2586: opening the log must not read the value that refused again.
+
+    Measured on bitcoind v32.1.0: the start exits 1, `-port=0` beside it
+    included, with `PrintExceptionContinue`'s block on stderr and in
+    `debug.log` after `[warning]` (ISS 2497).
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        f'{{"logratelimit": {value}}}', encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0", *argv])
+
+    assert raised.value.code == 1
+    block = _EXCEPTION_TYPE_BLOCK.replace("type object", f"type {kind}")
+    assert capsys.readouterr().err == block
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = block.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+    assert "Log rate limiting disabled" not in log_text
+
+
+@pytest.mark.usefixtures("no_node")
 def test_main_writes_to_a_stderr_it_cannot_reconfigure(tmp_path: Path) -> None:
     """ISS 1290: a stream with no encoding of its own is written as it is.
 
@@ -1160,6 +1197,59 @@ def test_build_config_reads_rpcservertimeout(
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
 
+_OUT_OF_RANGE = "JSON integer out of range"
+_NUMBER_NOT_STRING = "JSON value of type number is not of expected type string"
+_OBJECT_NOT_STRING = "JSON value of type object is not of expected type string"
+
+
+@pytest.mark.parametrize(
+    ("settings", "refusal"),
+    [
+        ({"rpcservertimeout": 2**63, "rpcallowip": 5}, _NUMBER_NOT_STRING),
+        ({"rpcservertimeout": 2**63, "rpcauth": 5}, _OUT_OF_RANGE),
+        ({"rpcservertimeout": 2**63, "rpcwhitelist": 5}, _OUT_OF_RANGE),
+        ({"rpcservertimeout": 2**63, "rpcwhitelistdefault": 5}, _OUT_OF_RANGE),
+        ({"rpcauth": 5, "rpcwhitelist": {}}, _NUMBER_NOT_STRING),
+        ({"rpcauth": {}, "rpcwhitelist": 5}, _OBJECT_NOT_STRING),
+        ({"rpcwhitelist": 5, "rpcwhitelistdefault": {}}, _NUMBER_NOT_STRING),
+        ({"rpcwhitelist": {}, "rpcwhitelistdefault": 5}, _OBJECT_NOT_STRING),
+        ({"bantime": 2**63, "rpcauth": 5}, _NUMBER_NOT_STRING),
+        ({"bantime": 2**63, "rpcwhitelist": 5}, _NUMBER_NOT_STRING),
+        ({"bantime": 2**63, "rpcwhitelistdefault": 5}, _NUMBER_NOT_STRING),
+    ],
+    ids=[
+        "rpcallowip-before-rpcservertimeout",
+        "rpcservertimeout-before-rpcauth",
+        "rpcservertimeout-before-rpcwhitelist",
+        "rpcservertimeout-before-rpcwhitelistdefault",
+        "rpcauth-before-rpcwhitelist-number",
+        "rpcauth-before-rpcwhitelist-object",
+        "rpcwhitelist-before-rpcwhitelistdefault-number",
+        "rpcwhitelist-before-rpcwhitelistdefault-object",
+        "rpcauth-before-bantime",
+        "rpcwhitelist-before-bantime",
+        "rpcwhitelistdefault-before-bantime",
+    ],
+)
+def test_build_config_reads_the_rpc_options_in_core_s_order(
+    tmp_path: Path, settings: dict[str, object], refusal: str
+) -> None:
+    """ISS 2584: of two type or range refusals, Core's first is the one raised.
+
+    The order is `-rpcallowip`, `-rpcservertimeout`, `-rpcauth`,
+    `-rpcwhitelist`, `-rpcwhitelistdefault`, then `-bantime`, as
+    `_after_lock` cites it from Core's source. Measured on `bitcoind`
+    v32.1.0: started with each `settings.json` here, it refuses the start
+    with the same message.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        json.dumps(settings), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        _build(tmp_path, "-regtest")
+
+
 @pytest.mark.parametrize(
     "number",
     ["5", "9223372036854775808", "1.5", "9" * 5000],
@@ -1234,6 +1324,162 @@ def test_build_config_skips_rpc_options_when_server_is_off(
     assert config.rpc_auth == ()
     assert config.rpc_whitelist == {}
     assert config.rpc_whitelist_default is False
+
+
+@pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcuser": {}}',
+        '{"rpcpassword": ["x"]}',
+        '{"rpccookieperms": {}}',
+        '{"rpccookiefile": {}}',
+    ],
+    ids=["rpcuser", "rpcpassword", "rpccookieperms", "rpccookiefile"],
+)
+def test_build_config_skips_the_login_options_when_server_is_off(
+    tmp_path: Path, settings_json: str
+) -> None:
+    """ISS 2585: `-server=0` does not read the four login and cookie options.
+
+    `InitRPCAuthentication` and `GenerateAuthCookie` are their only readers,
+    and `AppInitMain` reaches them only under `-server`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    config = _build(tmp_path, "-regtest", "-server=0")
+
+    assert config.rpc_port is None
+    assert config.rpc_whitelist == {}
+
+
+def test_build_config_reads_rpcuser_only_with_a_password(
+    tmp_path: Path,
+) -> None:
+    """ISS 2585: under `-server`, `-rpcuser` is read only beside a password."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}, "rpcpassword": "x"}', encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ValueError, match=r"^JSON value of type object is not of expected type string$"
+    ):
+        _build(tmp_path, "-regtest", "-server")
+
+
+def test_build_config_skips_rpcuser_without_a_password(tmp_path: Path) -> None:
+    """ISS 2585: an empty `-rpcpassword` leaves `-rpcuser` unread."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}}', encoding="utf-8"
+    )
+
+    config = _build(tmp_path, "-regtest", "-server")
+
+    assert config.rpc_port is not None
+
+
+@pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcpassword": "x", "rpccookieperms": {}}',
+        '{"rpcpassword": "x", "rpccookiefile": {}}',
+    ],
+    ids=["rpccookieperms", "rpccookiefile"],
+)
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_skips_the_cookie_options_beside_a_password(
+    tmp_path: Path, settings_json: str, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: a password leaves both cookie options unread, as in Core.
+
+    `InitRPCAuthentication` reads `-rpccookieperms`, and `-rpccookiefile`
+    through `GenerateAuthCookie`, only where `-rpcpassword` is empty.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    config = _build(tmp_path, *argv)
+
+    assert config.rpc_password_entry is not None
+    assert config.rpc_cookie_perms_error is None
+
+
+@pytest.mark.parametrize(
+    ("settings_json", "message"),
+    [
+        (
+            '{"rpccookiefile": {}, "rpcpassword": []}',
+            "JSON value of type array is not of expected type string",
+        ),
+        (
+            '{"rpccookiefile": {}, "rpccookieperms": []}',
+            "JSON value of type array is not of expected type string",
+        ),
+        (
+            '{"rpcservertimeout": 9223372036854775808, "rpcpassword": {}}',
+            "JSON integer out of range",
+        ),
+        (
+            '{"rpcallowip": 5, "rpcpassword": {}}',
+            "JSON value of type number is not of expected type string",
+        ),
+    ],
+    ids=[
+        "rpcpassword-before-rpccookiefile",
+        "rpccookieperms-before-rpccookiefile",
+        "rpcservertimeout-before-rpcpassword",
+        "rpcallowip-before-rpcpassword",
+    ],
+)
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_reads_the_login_options_in_core_s_order(
+    tmp_path: Path, settings_json: str, message: str, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: where two values are bad, the one Core reads first is refused.
+
+    `InitHTTPServer` reads `-rpcallowip` and `-rpcservertimeout` before
+    `StartHTTPRPC`, whose `InitRPCAuthentication` reads `-rpcpassword`, then
+    `-rpccookieperms`, then `-rpccookiefile` (`src/init.cpp:778-790` and
+    `src/httprpc.cpp:248-296`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_skips_rpccookiefile_past_an_rpccookieperms_naming_no_mode(
+    tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: Core stops at a bad `-rpccookieperms`, before the cookie file.
+
+    `RpcAuth.start` refuses the value in Core's place, after binding.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpccookieperms": "bogus", "rpccookiefile": {}}', encoding="utf-8"
+    )
+
+    config = _build(tmp_path, *argv)
+
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=bogus;")
 
 
 @pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
@@ -1453,6 +1699,12 @@ def test_log_args_escapes_a_backslash_in_a_value() -> None:
     assert cli._log_args(settings) == ('Command-line arg: chain="a\\\\b"',)
 
 
+def test_log_args_escapes_del_as_core_writes_it() -> None:
+    r"""ISS 2523: DEL is logged as `\u007f`, as in Core's `json_escape`."""
+    settings = cli._Settings(command_line={"chain": ["a\x7fbé"]}, ro_config={})
+    assert cli._log_args(settings) == ('Command-line arg: chain="a\\u007fbé"',)
+
+
 _ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
 _I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
 # a fixed random key's spellings, and the numbers macOS's numeric lookup
@@ -1500,6 +1752,9 @@ _LEAK_SPELLINGS = [
         ("externalip", _ONION, None),
         ("addnode", f"{_I2P}:0", None),
         ("rpcbind", "localhost", "'...'"),
+        ("connect", "alice:short-pass@1.2.3.4:8333", "'...'"),
+        ("addnode", "short-pass@1.2.3.4", "'...'"),
+        ("rpcbind", "short-pass@127.0.0.1", "'...'"),
         ("connect", f"{_ONION}:{LEAK_WIF}", "'...'"),
         ("whitebind", f"{LEAK_WIF}@{_ONION}", "'...'"),
         ("whitelist", f"noban@{LEAK_WIF}", "'...'"),
@@ -5536,6 +5791,119 @@ def test_main_a_json_integer_out_of_range_after_the_lock_logs_the_block(
     assert "[error]" not in log_text
 
 
+# ISS 2497: what `bitcoind` v32.1.0 printed on stderr for a wrong-typed value
+_EXCEPTION_TYPE_BLOCK = (
+    "\n\n************************\n"
+    "EXCEPTION: N8UniValue10type_errorE       \n"
+    "JSON value of type object is not of expected type string       \n"
+    "bitcoin in AppInit()       \n\n"
+)
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_prints_core_s_exception_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2497: `UniValue::type_error` reaches `PrintExceptionContinue`.
+
+    Measured on `bitcoind` v32.1.0 with `{"maxconnections": {}}` in
+    `regtest/settings.json` and `-regtest -listen=0 -server=0`: exit `1`
+    with this block on stderr, and no log, the throw coming before
+    `init::StartLogging`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"maxconnections": {}}', encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == _EXCEPTION_TYPE_BLOCK
+    assert not captured.out
+    assert not (tmp_path / "regtest" / "history.log").exists()
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_after_the_lock_logs_the_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2497: `PrintExceptionContinue` logs the block as a warning too.
+
+    `-bantime` is read in `_after_lock`, where `init::StartLogging` has
+    already opened `history.log`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"bantime": {}}', encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == _EXCEPTION_TYPE_BLOCK
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = _EXCEPTION_TYPE_BLOCK.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+
+
+@pytest.mark.parametrize(
+    ("settings", "kind"),
+    [
+        ('{"dnsseed": {}}', "object"),
+        ('{"dnsseed": 1}', "number"),
+        ('{"reindex-chainstate": {}}', "object"),
+    ],
+    ids=["dnsseed", "dnsseed number", "reindex-chainstate"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_read_first_after_the_log_opens_logs_the_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], settings: str, kind: str
+) -> None:
+    """`AppInitMain` reads these first, after `init::StartLogging`.
+
+    `AppInitParameterInteraction` reads `-dnsseed` only beside a true
+    `-forcednsseed`, and `-reindex-chainstate` only under `-prune`.
+    `tests/integration/start_exception_test.py` compares both with
+    bitcoind's.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    block = _EXCEPTION_TYPE_BLOCK.replace("type object", f"type {kind}")
+    assert capsys.readouterr().err == block
+    log_text = (tmp_path / "regtest" / "history.log").read_text(encoding="utf-8")
+    logged = block.removesuffix("\n\n").replace("\n", r"\x0a")
+    assert f"[warning] {logged}\n" in log_text
+    assert "[error]" not in log_text
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        '{"dnsseed": {}, "forcednsseed": true}',
+        '{"prune": 550, "reindex-chainstate": {}}',
+    ],
+    ids=["dnsseed beside forcednsseed", "reindex-chainstate under prune"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_a_json_type_error_read_before_the_log_opens_logs_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], settings: str
+) -> None:
+    """`AppInitParameterInteraction` reads these before `init::StartLogging`."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == _EXCEPTION_TYPE_BLOCK
+    assert not captured.out
+    assert not (tmp_path / "regtest" / "history.log").exists()
+
+
 def test_dunder_main_calls_cli_main_under_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6002,8 +6370,9 @@ def test_help_names_the_whitelist_options() -> None:
         "bloomfilter (accepted, does nothing: no BIP37), noban (do not ban "
         "for misbehavior; implies download), forcerelay (relay "
         "transactions that are already in the mempool; implies relay), "
-        "relay (unlimited transaction announcements), mempool (accepted, "
-        "does nothing: no BIP35), download (allow getheaders during IBD), "
+        "relay (unlimited transaction announcements), mempool (not dropped for "
+        "a mempool request, answered nothing: no BIP35), download (allow "
+        "getheaders during IBD), "
         "addr (responses to GETADDR avoid hitting the cache and contain "
         "random "
         "records with the most up-to-date info). Specify multiple "
@@ -6237,11 +6606,28 @@ def test_a_false_settings_key_refuses_the_write(tmp_path: Path) -> None:
         _read(tmp_path)
 
 
-def test_an_array_settings_key_is_refused_as_core_refuses_it(tmp_path: Path) -> None:
-    """`Error: JSON value of type array is not of expected type string`."""
-    _settings(tmp_path, '{"settings":["a.json"]}')
-    with pytest.raises(ValueError, match="type array is not of expected type string"):
-        _read(tmp_path)
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [("{}", "object"), ('["a.json"]', "array")],
+    ids=["object", "array"],
+)
+@pytest.mark.usefixtures("no_node")
+def test_a_wrong_typed_settings_key_is_refused_as_core_refuses_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, kind: str
+) -> None:
+    """`InitConfig`'s `catch` takes the `type_error`: `Error:`, not the block.
+
+    `tests/integration/start_exception_test.py` compares it with bitcoind's.
+    """
+    _settings(tmp_path, f'{{"settings":{value}}}')
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest", "-listen=0", "-server=0"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"Error: JSON value of type {kind} is not of expected type string\n"
+    )
+    assert not captured.out
 
 
 def test_a_chain_selector_in_the_file_is_refused_beside_the_command_line_one(
