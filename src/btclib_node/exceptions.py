@@ -36,8 +36,10 @@ from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.constants import quoted_name
 
 __all__ = [
+    "AppInitExceptionError",
     "BlockScriptVerifyError",
     "ChainstateInconsistencyError",
+    "CreateDirectoriesError",
     "DirectoryLockError",
     "IncompatibleStoreError",
     "IncompleteRequestHeadError",
@@ -426,19 +428,49 @@ class DirectoryLockError(RuntimeError):
         super().__init__(message)
 
 
-class JsonIntegerOutOfRangeError(ValueError):
+class AppInitExceptionError(ValueError):
+    """A start refused by an exception Core throws and `AppInit` catches.
+
+    `AppInit` hands it to `PrintExceptionContinue` rather than to
+    `InitError` (`src/bitcoind.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), and `cli.main` prints it as that function does. `typeid`
+    is the name libstdc++ gives the exception's type, and a message the
+    C++ library writes is in its words too: libstdc++ is the library of
+    the Linux `bitcoind` that `integration-bitcoind.yml` runs. libc++,
+    macOS's library, writes others.
+    """
+
+    typeid: ClassVar[str]
+
+
+class JsonIntegerOutOfRangeError(AppInitExceptionError):
     """A start refused as `UniValue::getInt` refuses a `settings.json` number.
 
     `getInt` throws a `std::runtime_error` (`src/univalue/include/univalue.h`,
-    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `AppInit` catches it
-    and hands it to `PrintExceptionContinue` rather than to `InitError`
-    (`src/bitcoind.cpp`, same sha), and `cli.main` prints it as that
-    function does. Raised by `cli._get_int` and by `Config.__init__`.
+    at bitcoin/bitcoin@f0de87f040, the v32.1 tag). Raised by `cli._get_int`
+    and by `Config.__init__`.
     """
+
+    typeid = "St13runtime_error"
 
     def __init__(self) -> None:
         """Carry `getInt`'s own message."""
         super().__init__("JSON integer out of range")
+
+
+class CreateDirectoriesError(AppInitExceptionError):
+    """A start refused as `fs::create_directories` refuses a blocks directory.
+
+    It throws a `std::filesystem::filesystem_error`, which
+    `GetBlocksDirPath` lets through (`src/common/args.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Raised by
+    `cli._make_blocks_dir`, with that exception's `what()`.
+    """
+
+    typeid = "NSt10filesystem7__cxx1116filesystem_errorE"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class RpcCredentialRefusedError(ValueError):

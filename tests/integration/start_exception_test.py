@@ -2,11 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A start that `UniValue::getInt` refuses, as bitcoind prints it.
+"""A start refused by an exception `AppInit` catches, as bitcoind prints it.
 
-ISS 2457. Each `settings.json` is written for a real bitcoind and for
-this node, each started on regtest with no listener and no RPC server,
-and the exit status, stdout and stderr of the two are held equal.
+Each case is set up for a real bitcoind and for this node, each started
+on regtest with no listener and no RPC server, and the exit status,
+stdout and stderr of the two are held equal: a `settings.json` number
+`UniValue::getInt` refuses (ISS 2457), and a blocks directory
+`fs::create_directories` cannot make (ISS 2536).
 """
 
 import subprocess
@@ -62,3 +64,57 @@ def test_a_start_getint_refuses_prints_what_bitcoind_prints(
     assert results["node"] == results["bitcoind"]
     assert results["bitcoind"][0] == 1
     assert "EXCEPTION: St13runtime_error" in results["bitcoind"][2]
+
+
+@pytest.mark.parametrize(
+    ("blocksdir", "debug"),
+    [(False, []), (False, ["-debug=bogus"]), (True, [])],
+    ids=["chain directory", "before -debug", "-blocksdir"],
+)
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="bitcoind's exception is libc++'s on macOS, and names its path on Windows",
+)
+def test_a_blocks_directory_that_cannot_be_made_prints_what_bitcoind_prints(
+    bitcoind_path: str, tmp_path: Path, *, blocksdir: bool, debug: list[str]
+) -> None:
+    """`create_directories`'s block on stderr, exit `1`, ISS 2536.
+
+    A regular file stands where `blocks`, or the chain directory above it,
+    goes. bitcoind names the path whole, and this node by its length;
+    `core` and `node` give the two paths one length.
+    """
+    commands = {
+        "core": [bitcoind_path, "-printtoconsole=0"],
+        "node": [sys.executable, "-m", "btclib_node"],
+    }
+    results = {}
+    paths = {}
+    for name, command in commands.items():
+        base = tmp_path / name / "key"
+        blocks = base / "regtest" / "blocks"
+        if blocksdir:
+            blocks.parent.mkdir(parents=True)
+            blocks.write_text("not a directory", encoding="utf-8")
+            (tmp_path / name / "data").mkdir()
+            options = [f"-datadir={tmp_path / name / 'data'}", f"-blocksdir={base}"]
+        else:
+            base.mkdir(parents=True)
+            blocks.parent.write_text("not a directory", encoding="utf-8")
+            options = [f"-datadir={base}"]
+        argv = [*options, "-regtest", "-listen=0", "-server=0", "-nosettings"]
+        result = subprocess.run(  # noqa: S603
+            [*command, *argv, *debug],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+        results[name] = (result.returncode, result.stdout, result.stderr)
+        paths[name] = str(blocks)
+    code, out, err = results["core"]
+    assert paths["core"] in err
+    shown = f"<{len(paths['node'])} characters>"
+    assert results["node"] == (code, out, err.replace(paths["core"], shown))
+    assert code == 1
+    assert "filesystem_error" in err

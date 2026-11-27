@@ -189,7 +189,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 (`src/common/args.cpp`, same sha): `_interpret_bool` below.
 """
 
-import contextlib
+import errno
 import io
 import json
 import os
@@ -243,7 +243,12 @@ from btclib_node.constants import (
 )
 from btclib_node.constants import quoted as _quoted
 from btclib_node.dirlock import DirectoryLock, lock_directories
-from btclib_node.exceptions import DirectoryLockError, JsonIntegerOutOfRangeError
+from btclib_node.exceptions import (
+    AppInitExceptionError,
+    CreateDirectoriesError,
+    DirectoryLockError,
+    JsonIntegerOutOfRangeError,
+)
 from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
@@ -2894,14 +2899,55 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
         settings.section_warning = lines
 
 
+def _make_blocks_dir(base_dir: Path, chain_name: str, blocksdir: str | None) -> None:
+    """Make the blocks directory where missing, as `GetBlocksDirPath` does.
+
+    `src/common/args.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag:
+    under `-blocksdir`, or under the data directory where it is not
+    given, and not at all where `-blocksdir` is no directory, which
+    `Config.__init__` refuses next. `fs::create_directories` throws where
+    it cannot make the directory, a file in the way included, and the
+    refusal is its `what()` in libstdc++'s words, as
+    `AppInitExceptionError` says: `ENOTDIR`'s text for a file at the path
+    itself too. libc++, macOS's library, writes `in create_directories:`
+    and `File exists` there. The path is written as `shown_path` writes
+    it.
+    """
+    if blocksdir is None:
+        root = base_dir.absolute()
+    else:
+        root = Path(get_path_arg(blocksdir)).absolute()
+        if not root.is_dir():
+            return
+    path = blocks_directory(root / chain_name)
+    err_msg = ""
+    try:
+        path.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
+    except OSError as os_error:
+        reason = (
+            os.strerror(errno.ENOTDIR)
+            if os_error.errno == errno.EEXIST
+            else os_error.strerror
+        )
+        default_path = blocks_directory(default_data_dir().absolute() / chain_name)
+        err_msg = (
+            "filesystem error: cannot create directories: "
+            f"{reason} [{shown_path(path, default_path)}]"
+        )
+    # raised past the `except`, whose `OSError` names the path whole
+    if err_msg:
+        raise CreateDirectoriesError(err_msg)
+
+
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@f0de87f040) in its order: a `NETWORK_ONLY` option set
     only in the default section off `main`, the warning about a section
-    naming no chain, a missing blocks directory, `-prune` beside
-    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is off,
+    naming no chain, a blocks directory that cannot be made, a missing
+    `-blocksdir`, `-prune` beside `-reindex-chainstate`, `-forcednsseed`
+    beside a `-dnsseed` that is off,
     a `settings.json` `-maxconnections` number past an `int`, then a
     negative one, then its cap at `MAX_PEER_CONNECTIONS`, a `settings.json`
     `-rpcmaxconnections` number that is no `int`, then one below one, the
@@ -2921,6 +2967,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     blocksdir = _get_arg(settings, "blocksdir")
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
+    _make_blocks_dir(base_dir, chain_name, blocksdir)
     max_connections_arg = _get_int(settings, "maxconnections")
     if max_connections_arg is None:
         max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
@@ -3004,20 +3051,14 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
 
     Core's `AppInitLockDirectories` (`src/init.cpp`, at
     bitcoin/bitcoin@f0de87f040), between `_before_lock` and `_after_lock`.
+    It makes no directory: `_make_data_dirs` and `_make_blocks_dir` make
+    them where missing, as `InitConfig` and `GetBlocksDirPath` do before
+    Core's lock.
     `Node.__init__` takes the same locks again, which a process already
     holding them is granted (`dirlock`), so `main` releases these once
     the `Node` holds its own.
     """
     blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
-    # each made only where missing, as `fs::create_directories` is called:
-    # a path that is a file, or one below a file, is left for
-    # `LockDirectory` below to refuse in Core's words ("Cannot write to
-    # directory ...; check permissions."), where `mkdir` would raise an
-    # `OSError` `main` does not catch, its text naming the path whole
-    # (ISS 2536)
-    for directory in (directories.data_dir, blocks_dir):
-        with contextlib.suppress(OSError):
-            directory.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
     default_dir = default_data_dir().absolute() / directories.chain.name
     return lock_directories(
         (directories.data_dir, default_dir), (blocks_dir, blocks_directory(default_dir))
@@ -3338,20 +3379,20 @@ def _setup_environment() -> None:
         os.umask(_PRIVATE_UMASK)
 
 
-def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
+def _exception_block(error: AppInitExceptionError) -> str:
     """Return what Core's `PrintExceptionContinue` logs for `error`.
 
     `FormatException` (`src/util/exception.cpp`, at
     bitcoin/bitcoin@f0de87f040, the v32.1 tag) after a line of asterisks:
-    the `typeid` name of `getInt`'s `std::runtime_error`, its message, and
-    where `AppInit` caught it, each of these lines ending in seven
-    spaces. Core names its executable's path in place of `bitcoin` on
-    Windows. Here that executable is the Python interpreter, which names
-    no node, so `bitcoin` stands on every platform.
+    the exception's `typeid` name, its message, and where `AppInit`
+    caught it, each of these lines ending in seven spaces. Core names
+    its executable's path in place of `bitcoin` on Windows. Here that
+    executable is the Python interpreter, which names no node, so
+    `bitcoin` stands on every platform.
     """
     return (
         "\n\n************************\n"
-        "EXCEPTION: St13runtime_error       \n"
+        f"EXCEPTION: {error.typeid}       \n"
         f"{error}       \n"
         "bitcoin in AppInit()       \n"
     )
@@ -3360,11 +3401,11 @@ def _exception_block(error: JsonIntegerOutOfRangeError) -> str:
 def _refusal(error: Exception) -> str:
     """Return what `main` writes to stderr for a refusal of the start.
 
-    `PrintExceptionContinue`'s block and the newline it adds for a
-    `JsonIntegerOutOfRangeError`, `InitError`'s `Error: <message>` for any
+    `PrintExceptionContinue`'s block and the newline it adds for an
+    `AppInitExceptionError`, `InitError`'s `Error: <message>` for any
     other.
     """
-    if isinstance(error, JsonIntegerOutOfRangeError):
+    if isinstance(error, AppInitExceptionError):
         return f"{_exception_block(error)}\n"
     return f"Error: {error}\n"
 
@@ -3386,7 +3427,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     opened for it with no `Node` built, `LogError`'s own second
     destination for the same message.
 
-    A `JsonIntegerOutOfRangeError` is the exception: Core throws it rather
+    An `AppInitExceptionError` is the exception: Core throws it rather
     than reporting it, so stderr gets `_exception_block`'s text, and a
     refusal after the lock also logs it as a warning, as
     `PrintExceptionContinue` writes it to both. The exit status is `1`
@@ -3435,7 +3476,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
-            if isinstance(error, JsonIntegerOutOfRangeError):
+            if isinstance(error, AppInitExceptionError):
                 logger.warning(_exception_block(error))
             else:
                 logger.error(str(error))  # noqa: TRY400

@@ -3159,29 +3159,80 @@ def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
         cli.build_config([f"-datadir={datadir}"])
 
 
+def _blocks_dir_block(shown: str) -> str:
+    """Return the block `bitcoind` prints where it cannot make `blocks`.
+
+    `fs::create_directories`'s exception, in libstdc++'s words, as
+    `cli._make_blocks_dir` says, its path `shown`.
+    """
+    return (
+        "\n\n************************\n"
+        "EXCEPTION: NSt10filesystem7__cxx1116filesystem_errorE       \n"
+        f"filesystem error: cannot create directories: Not a directory [{shown}]"
+        "       \nbitcoin in AppInit()       \n\n"
+    )
+
+
+@pytest.mark.parametrize("debug", [[], ["-debug=bogus"]], ids=["alone", "-debug"])
 @pytest.mark.usefixtures("no_node")
 def test_main_a_chain_directory_that_is_a_file_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], debug: list[str]
 ) -> None:
-    """ISS 2536: Core's `Cannot write to directory`, the path by its length.
+    """ISS 2536: `create_directories`'s exception, the path by its length.
 
-    A chain directory that is a regular file is `LockDirectory`'s
-    `ErrorWrite`, refused as Core refuses it, where `_lock`'s `mkdir`
-    raised an `OSError` naming the `-datadir` path whole.
+    `GetBlocksDirPath` cannot make `blocks` under a chain directory that
+    is a regular file, and throws before `-debug` is read. `bitcoind` on
+    macOS printed this block in libc++'s words, with `-debug=bogus` or
+    without; `start_exception_test.py` compares libstdc++'s on Linux.
     """
-    datadir = tmp_path / LEAK
+    datadir = tmp_path / LEAK_WIF
     datadir.mkdir()
-    chain_dir = datadir / "regtest"
-    chain_dir.write_text("not a directory", encoding="utf-8")
+    (datadir / "regtest").write_text("not a directory", encoding="utf-8")
     with pytest.raises(SystemExit) as excinfo:
-        cli.main([f"-datadir={datadir}", "-regtest", "-nosettings"])
+        cli.main([f"-datadir={datadir}", "-regtest", "-nosettings", *debug])
     assert excinfo.value.code == 1
     err = capsys.readouterr().err
-    assert err == (
-        f"Error: Cannot write to directory <{len(str(chain_dir))} characters>; "
-        "check permissions.\n"
-    )
-    assert_secret_free(ValueError(err), [LEAK])
+    assert err == _blocks_dir_block(_length(datadir / "regtest" / "blocks"))
+    assert_secret_free(ValueError(err), [LEAK_WIF])
+    assert_secret_free(excinfo.value, [LEAK_WIF])
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_blocks_directory_under_blocksdir_that_is_a_file_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 2536: the same under `-blocksdir`, its `blocks` a regular file.
+
+    libstdc++ reports a file at the path itself as not a directory too.
+    """
+    blocksdir = tmp_path / LEAK_WIF
+    (blocksdir / "regtest").mkdir(parents=True)
+    blocks = blocksdir / "regtest" / "blocks"
+    blocks.write_text("not a directory", encoding="utf-8")
+    datadir = tmp_path / "data"
+    datadir.mkdir()
+    argv = [f"-datadir={datadir}", f"-blocksdir={blocksdir}", "-regtest", "-nosettings"]
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert err == _blocks_dir_block(_length(blocks))
+    assert_secret_free(ValueError(err), [LEAK_WIF])
+    assert_secret_free(excinfo.value, [LEAK_WIF])
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_names_the_default_blocks_directory_whole(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path built from defaults alone holds nothing an operator gave."""
+    (home / ".btclib").mkdir()
+    (home / ".btclib" / "regtest").write_text("not a directory", encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["-regtest", "-nosettings"])
+    assert excinfo.value.code == 1
+    blocks = default_data_dir() / "regtest" / "blocks"
+    assert capsys.readouterr().err == _blocks_dir_block(str(blocks))
 
 
 def test_build_config_datadir_parent_is_a_file_raises(tmp_path: Path) -> None:
