@@ -1902,6 +1902,13 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.prefers_headers
 
 
+def test_sendaddrv2_ahead_of_version_is_ignored() -> None:
+    """ISS 2334: Core ignores every message received ahead of `version`."""
+    peer = a_peer()
+    sendaddrv2(a_handshake_node(), b"", peer)
+    assert not peer.prefer_addressv2
+
+
 @pytest.mark.parametrize(
     ("payload", "requested"),
     [
