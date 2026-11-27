@@ -204,7 +204,8 @@ def test_a_rejected_message_is_refused_without_its_size() -> None:
     assert refusal.value.size == len(tampered)
     del refusal.value.size
     assert_secret_free(refusal.value, [_KEY, fed, str(length), str(len(tampered))])
-    assert str(refusal.value) == "message rejected"
+    assert refusal.value.prefix == "Header error"
+    assert str(refusal.value) == "Wrong checksum"
 
 
 def test_an_invalid_command_is_rejected_when_its_payload_is_in() -> None:
@@ -216,8 +217,9 @@ def test_an_invalid_command_is_rejected_when_its_payload_is_in() -> None:
     data = transport.received_bytes(data)
     assert not transport.received_message_complete()
     transport.received_bytes(memoryview(bad[-1:]))
-    with pytest.raises(RejectedMessageError):
+    with pytest.raises(RejectedMessageError) as refusal:
         transport.get_received_message()
+    assert str(refusal.value) == "Invalid message type"
 
 
 def test_a_message_not_yet_whole_cannot_be_taken() -> None:

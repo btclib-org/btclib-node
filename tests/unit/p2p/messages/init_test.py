@@ -124,7 +124,9 @@ def make_connection() -> Connection:
     message it frames.
     """
     manager = SimpleNamespace(
-        node=SimpleNamespace(chain=RegTest()),
+        node=SimpleNamespace(
+            chain=RegTest(), logger=SimpleNamespace(log_debug=lambda *a: None)
+        ),
         loop=None,
         messages=deque(),
         handshake_messages=deque(),

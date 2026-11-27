@@ -1583,6 +1583,17 @@ class Connection:
                     # counted where Core's `ReceiveMsgBytes` counts a
                     # rejected message, and the peer kept
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
+                    # Core's line (`src/net.cpp`, at bitcoin/bitcoin@f0de87f040,
+                    # the v32.1 tag) also gives the message's length, on v1
+                    # its type too, and for a wrong checksum the checksum
+                    # read and the one the payload hashes to. Each is octets
+                    # the peer sent, or a hash of them, which may be a
+                    # secret's (section 7 of the organization's standard, *A
+                    # refusal carries no secret*): this keeps Core's prefix,
+                    # its reason and the peer. btclib-org/btclib-node#2498
+                    self.node.logger.log_debug(
+                        "net", "%s: %s, peer=%d", e.prefix, e, self.id
+                    )
                     continue
                 weight = _recv_memusage(message)
                 consumed += weight
