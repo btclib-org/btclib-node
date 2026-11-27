@@ -4486,9 +4486,9 @@ def set_mock_time(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     non-integer number being "JSON integer out of range" as `getInt`
     answers it. A `timestamp` outside `[0, MAX_MOCK_TIME]` is
     `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is the v32.1 tag's bound,
-    `uint32_t`'s maximum (406c2348dd, "rpc: tighten setmocktime upper
-    bound to UINT32_MAX"). Every refusal here matches a regtest bitcoind
-    v32.1.0.
+    `uint32_t`'s maximum (bitcoin/bitcoin@406c2348dd, "rpc: tighten
+    setmocktime upper bound to UINT32_MAX"). Every refusal here matches
+    a regtest bitcoind v32.1.0.
 
     The callback runs on `Node`'s thread between two steps of the loop,
     so no validation is in flight, as Core's `LOCK(cs_main)` ensures.

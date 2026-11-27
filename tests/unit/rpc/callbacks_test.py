@@ -5968,8 +5968,7 @@ def test_setmocktime_holds_the_clock_and_zero_releases_it() -> None:
 def test_setmocktime_accepts_the_largest_timestamp_and_refuses_the_next() -> None:
     """ISS 2256: the v32.1 tag's bound `[0, 4294967295]`, both ends.
 
-    Measured on regtest nodes of v31.1 and v32.1 while moving citations
-    for ISS 2192.
+    Measured on a regtest bitcoind v32.1.0.
     """
     node = cast("Node", SimpleNamespace(chain=RegTest()))
     set_mock_time(node, _CONN, [clock.MAX_MOCK_TIME])
