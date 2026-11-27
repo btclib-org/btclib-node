@@ -1326,6 +1326,162 @@ def test_build_config_skips_rpc_options_when_server_is_off(
     assert config.rpc_whitelist_default is False
 
 
+@pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcuser": {}}',
+        '{"rpcpassword": ["x"]}',
+        '{"rpccookieperms": {}}',
+        '{"rpccookiefile": {}}',
+    ],
+    ids=["rpcuser", "rpcpassword", "rpccookieperms", "rpccookiefile"],
+)
+def test_build_config_skips_the_login_options_when_server_is_off(
+    tmp_path: Path, settings_json: str
+) -> None:
+    """ISS 2585: `-server=0` does not read the four login and cookie options.
+
+    `InitRPCAuthentication` and `GenerateAuthCookie` are their only readers,
+    and `AppInitMain` reaches them only under `-server`.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    config = _build(tmp_path, "-regtest", "-server=0")
+
+    assert config.rpc_port is None
+    assert config.rpc_whitelist == {}
+
+
+def test_build_config_reads_rpcuser_only_with_a_password(
+    tmp_path: Path,
+) -> None:
+    """ISS 2585: under `-server`, `-rpcuser` is read only beside a password."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}, "rpcpassword": "x"}', encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ValueError, match=r"^JSON value of type object is not of expected type string$"
+    ):
+        _build(tmp_path, "-regtest", "-server")
+
+
+def test_build_config_skips_rpcuser_without_a_password(tmp_path: Path) -> None:
+    """ISS 2585: an empty `-rpcpassword` leaves `-rpcuser` unread."""
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpcuser": {}}', encoding="utf-8"
+    )
+
+    config = _build(tmp_path, "-regtest", "-server")
+
+    assert config.rpc_port is not None
+
+
+@pytest.mark.parametrize(
+    "settings_json",
+    [
+        '{"rpcpassword": "x", "rpccookieperms": {}}',
+        '{"rpcpassword": "x", "rpccookiefile": {}}',
+    ],
+    ids=["rpccookieperms", "rpccookiefile"],
+)
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_skips_the_cookie_options_beside_a_password(
+    tmp_path: Path, settings_json: str, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: a password leaves both cookie options unread, as in Core.
+
+    `InitRPCAuthentication` reads `-rpccookieperms`, and `-rpccookiefile`
+    through `GenerateAuthCookie`, only where `-rpcpassword` is empty.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    config = _build(tmp_path, *argv)
+
+    assert config.rpc_password_entry is not None
+    assert config.rpc_cookie_perms_error is None
+
+
+@pytest.mark.parametrize(
+    ("settings_json", "message"),
+    [
+        (
+            '{"rpccookiefile": {}, "rpcpassword": []}',
+            "JSON value of type array is not of expected type string",
+        ),
+        (
+            '{"rpccookiefile": {}, "rpccookieperms": []}',
+            "JSON value of type array is not of expected type string",
+        ),
+        (
+            '{"rpcservertimeout": 9223372036854775808, "rpcpassword": {}}',
+            "JSON integer out of range",
+        ),
+        (
+            '{"rpcallowip": 5, "rpcpassword": {}}',
+            "JSON value of type number is not of expected type string",
+        ),
+    ],
+    ids=[
+        "rpcpassword-before-rpccookiefile",
+        "rpccookieperms-before-rpccookiefile",
+        "rpcservertimeout-before-rpcpassword",
+        "rpcallowip-before-rpcpassword",
+    ],
+)
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_reads_the_login_options_in_core_s_order(
+    tmp_path: Path, settings_json: str, message: str, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: where two values are bad, the one Core reads first is refused.
+
+    `InitHTTPServer` reads `-rpcallowip` and `-rpcservertimeout` before
+    `StartHTTPRPC`, whose `InitRPCAuthentication` reads `-rpcpassword`, then
+    `-rpccookieperms`, then `-rpccookiefile` (`src/init.cpp:778-790` and
+    `src/httprpc.cpp:248-296`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(settings_json, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("-regtest",), ("-regtest", "-server=1"), ("-regtest", "-server")],
+    ids=["default", "server=1", "server"],
+)
+def test_build_config_skips_rpccookiefile_past_an_rpccookieperms_naming_no_mode(
+    tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    """ISS 2585: Core stops at a bad `-rpccookieperms`, before the cookie file.
+
+    `RpcAuth.start` refuses the value in Core's place, after binding.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        '{"rpccookieperms": "bogus", "rpccookiefile": {}}', encoding="utf-8"
+    )
+
+    config = _build(tmp_path, *argv)
+
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=bogus;")
+
+
 @pytest.mark.parametrize("name", _SERVER_ONLY_RPC_OPTIONS)
 @pytest.mark.parametrize(
     "argv",
