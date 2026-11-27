@@ -559,28 +559,43 @@ def _hex_key_refusal(key: bytes, ctx: str) -> str | None:
     return None
 
 
+def _origin_start_refusal(text: str) -> str:
+    """Return `ParsePubkey`'s message for a key whose origin has no `[`.
+
+    `text` holds one `]` and does not open with `[`. Core quotes the first
+    character of `text` (`src/script/descriptor.cpp:2204`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). A key may stand there by
+    mistake, and every key Core reads, hex, a WIF or an extended key, is a
+    run of more than one letter or digit. So this writes `...` for a
+    letter or digit that another follows (SECURITY.md, "Where this node
+    departs from Bitcoin Core").
+    """
+    got = text[0]
+    if got.isalnum() and text[1:2].isalnum():
+        got = "..."
+    return f"Key origin start '[ character expected but not found, got '{got}' instead"
+
+
 def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
-    """Return `ParsePubkeyInner`'s message for the key `text`, else None.
+    """Return Core's message for the key `text`, else None.
 
     `text` is what Core reads as one key, a `musig()` aside. `calls` are
     the functions open around it, its holder last, and `network` the
-    node's. Core reads a key of no path as hex, then as a WIF of
-    `network`'s prefix alone (`DecodeSecret`), then as an extended key of
-    `network`, and refuses what is none of these. Core quotes the key, or
-    what it reads as one, which may be a private key given by mistake,
-    where this writes `...` (SECURITY.md, "Where this node departs from
-    Bitcoin Core"). "" where Core refuses the key's origin, with a message
-    this does not give.
+    node's. Where `text` holds one `]` and does not open with `[`, the
+    message is `_origin_start_refusal`'s. Where Core refuses the key's
+    origin otherwise, it is "", as this gives no message for it. Any other
+    message is `ParsePubkeyInner`'s. Core reads a key of no path as hex,
+    then as a WIF of `network`'s prefix alone (`DecodeSecret`), then as an
+    extended key of `network`, and refuses what is none of these. Core
+    quotes the key, or what it reads as one, which may be a private key
+    given by mistake, where this writes `...` (SECURITY.md, "Where this
+    node departs from Bitcoin Core").
     """
     key = _key_item(text)
     if key is None:
-        head = text.partition("]")[0]
-        if head.startswith("["):
+        if text.startswith("[") or text.count("]") > 1:
             return ""
-        got = head[0] if head else "]"
-        return (
-            f"Key origin start '[ character expected but not found, got '{got}' instead"
-        )
+        return _origin_start_refusal(text)
     if not key:
         return "No key provided"
     if key[0] in _SPACES or key[-1] in _SPACES:
@@ -706,16 +721,17 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     by a path whose participants are not all extended keys. ecc refuses a
     hex key that is no point with `EccException`, and bip32_descriptors
     refuses the rest with `BTClibValueError`, each in words of its own.
-    Core's message is `ParsePubkeyInner`'s for a key and `ParsePubkey`'s
-    for a `musig()`, and `ParseScript` puts `_key_prefix` before it, all in
+    Core's message is `ParsePubkey`'s for a `musig()` and for a key origin
+    with no `[`, and `ParsePubkeyInner`'s for the rest of a key, and
+    `ParseScript` puts `_key_prefix` before it, all in
     `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
     tag.
 
     Core reads `text` in order and refuses the first thing it cannot read,
     a `musig()` before the keys inside it. So this answers None where it
     first meets a function of `_DRAFT_NAMES`, a `musig()` where a script
-    belongs or a key origin Core refuses, as it does where `text` holds no
-    key or `musig()` Core refuses.
+    belongs or a key origin `_key_refusal` gives no message for, as it does
+    where `text` holds no key or `musig()` Core refuses.
     """
     walk = _KeyWalk(text, network)
     word = ""

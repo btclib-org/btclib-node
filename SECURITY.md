@@ -185,6 +185,15 @@ is `musig` after a key origin Core reads, and what follows them where
 that is a derivation path, each step of it below 2^31, as `/0/*` in
 `'musig(...)/0/*'`. It writes `...` for either otherwise.
 
+Core's `scantxoutset` refusal of a key whose `]` follows no `[` at its
+start quotes the key's first character, which may be a private key's
+(`ParsePubkey` in `src/script/descriptor.cpp:2204`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). Every key Core reads is a
+run of more than one letter or digit. So this node's refusal writes `...`
+for a letter or digit that another follows, as in `wpkh(): Key origin
+start '[ character expected but not found, got '...' instead`, and keeps
+any other character Core quotes, as the space in `wpkh( [deadbeef]<key>)`.
+
 Core's `scantxoutset` refusal of a key it cannot read quotes the key, or
 the text it reads as one, which may be a private key given by mistake
 (`ParsePubkeyInner` in `src/script/descriptor.cpp`, at

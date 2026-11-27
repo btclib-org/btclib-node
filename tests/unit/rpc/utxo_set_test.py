@@ -939,6 +939,7 @@ SPACE = "Key '...' is invalid due to whitespace"
 TOO_MANY = "Too many ')' in musig() expression"
 UNEXTENDED = "musig(): derivation requires all participants to be xpubs or xprvs"
 RAW_LEAF = "Can only have raw() at top level"
+ORIGIN = "Key origin start '[ character expected but not found, got '{}' instead"
 
 # Each with the message of `ParsePubkey`, `ParsePubkeyInner` and
 # `ParseScript` in `src/script/descriptor.cpp`, at bitcoin/bitcoin@f0de87f040,
@@ -1096,6 +1097,20 @@ KEY_REFUSALS = [
     (f"wpkh({TPUB}<0;1>/*)", f"wpkh(): {NO_KEY}"),
     (f"and_v(v:pk({LEAK_WIF}),pk({KEY}))", NO_KEY),
     ("wpkh()", "wpkh(): No key provided"),
+    # a `]` with no `[` opening the key, whose first character is quoted
+    # unless it and the next are letters or digits
+    (f"wpkh(]{KEY})", "wpkh(): " + ORIGIN.format("]")),
+    (f"wpkh(x]{KEY})", "wpkh(): " + ORIGIN.format("x")),
+    (f"wpkh(x[deadbeef]{KEY})", "wpkh(): " + ORIGIN.format("x")),
+    (f"wpkh(x/0]{KEY})", "wpkh(): " + ORIGIN.format("x")),
+    (f"multi(1,{KEY}, [deadbeef]{KEY2})", "Multi: " + ORIGIN.format(" ")),
+    (f"wsh(and_v(v:pk( [deadbeef]{KEY}),older(10)))", ORIGIN.format(" ")),
+    (
+        f"tr(musig({KEY}, [deadbeef]{KEY2}))",
+        "tr(): musig(): " + ORIGIN.format(" "),
+    ),
+    (f"wpkh(ab]{KEY})", "wpkh(): " + ORIGIN.format("...")),
+    (f"pk({KEY},x]foo)", "pk(): " + ORIGIN.format("...")),
     # the whole argument of a function of one key, commas included, read
     # as the key, whether the function is miniscript's or not
     (f"pk({H160},foo)", f"pk(): {NO_KEY}"),
@@ -1185,6 +1200,9 @@ def test_a_key_or_musig_core_refuses_has_core_s_message(
         (f"wpkh([deadbeef{TPRV}/0)", f"wpkh(): {NO_KEY}"),
         (f"pk({TPRV},foo)", f"pk(): {NO_KEY}"),
         (f"pk({KEY},{TPRV})", f"pk(): {NO_KEY}"),
+        (f"wpkh({LEAK}]{KEY})", "wpkh(): " + ORIGIN.format("...")),
+        (f"wpkh({TPRV}]{KEY})", "wpkh(): " + ORIGIN.format("...")),
+        (f"wpkh({TPRV}/0]{KEY})", "wpkh(): " + ORIGIN.format("...")),
     ],
 )
 def test_a_key_refusal_quotes_no_key(node: Node, text: str, message: str) -> None:
@@ -1193,6 +1211,10 @@ def test_a_key_refusal_quotes_no_key(node: Node, text: str, message: str) -> Non
         scan(node, text)
     assert (int(caught.value.code), caught.value.message) == (-5, message)
     assert_secret_free(caught.value, [TPRV, LEAK])
+    # a quote of one character is shorter than what `assert_secret_free`
+    # looks for
+    for secret in (TPRV, LEAK):
+        assert f"'{secret[0]}'" not in caught.value.message
 
 
 def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
@@ -1287,6 +1309,9 @@ def test_an_unmatched_closing_parenthesis_keeps_the_parser_refusal(node: Node) -
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wsh(multi(1,[dead]{KEY},{H160}))",
         f"wsh(multi(1,[deadbeef]]{KEY},{H160}))",
+        # `ParsePubkey` refuses a second `]` before the start of the origin
+        f"wsh(multi(1,x]]{KEY},{KEY2}))",
+        f"wpkh( [deadbeef]]{KEY})",
     ],
 )
 def test_the_key_walk_stops_at_a_key_origin_core_refuses(text: str) -> None:
