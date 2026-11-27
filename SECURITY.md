@@ -202,7 +202,14 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
 `wpkh(): key '...' is not valid` and
 `wpkh(): Key '...' is invalid due to whitespace`. Where it gives
 bip32_descriptors' refusal instead, that refusal names the key by its
-index alone, as for a key path value Core refuses.
+index alone.
+
+Core's `scantxoutset` refusal of a key path element it cannot read as a
+number quotes the element whole, which may be a key given in its place,
+as a WIF written after a key's `/` (`ParseKeyPathElement` in
+`src/util/bip32.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag). This
+node's refusal quotes it as the RPC refusals below quote a name, so that a
+WIF there is written `<52 characters>` between Core's quotes.
 
 Core's `dumptxoutset` refusals quote the path it was given whole, a key
 given by mistake in its place included (`src/rpc/blockchain.cpp`, at

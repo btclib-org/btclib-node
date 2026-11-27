@@ -194,6 +194,14 @@ def test_combo_is_inferred_as_the_script_that_matched(node: Node) -> None:
             f"sh(multi(1,{KEY},{KEY2}))",
             f"sh(multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2}))",
         ),
+        (
+            f"sortedmulti(1,{KEY2},{KEY})",
+            f"multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2})",
+        ),
+        (
+            f"sh(sortedmulti(1,{KEY2},{KEY}))",
+            f"sh(multi(1,[{FINGERPRINT}]{KEY},[{FINGERPRINT2}]{KEY2}))",
+        ),
         (f"tr({X_ONLY})", f"tr([{FINGERPRINT}]{X_ONLY})"),
         (
             f"tr({X_ONLY},sortedmulti_a(1,{X_ONLY2},{X_ONLY}))",
@@ -525,7 +533,11 @@ def test_a_record_that_does_not_parse_fails_the_scan(
         (["start", ["bogus"]], -5, ""),
         (["start", [f"pkh({KEY})#00000000"]], -5, ""),
         (["start", [f"pkh({XPUB}/0/*)"]], -5, ""),
-        (["start", [f"pkh({TPUB}/<0;1>/<2;3>)"]], -5, ""),
+        (
+            ["start", [f"pkh({TPUB}/<0;1>/<2;3>)"]],
+            -5,
+            "pkh(): Multiple multipath key path specifiers found",
+        ),
         (
             ["start", [{"desc": "raw(51)", "range": -1}]],
             -8,
@@ -1220,12 +1232,125 @@ def test_a_key_refusal_quotes_no_key(node: Node, text: str, message: str) -> Non
 
 
 def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
-    """`text` and `calls` may hold a private key, which neither shows."""
+    """`text`, `calls` and a `musig()`'s path may hold a private key."""
     walk = utxo_set._KeyWalk(f"wpkh({TPRV}(1))", "regtest")
     for at, part in ((0, "wpkh"), (len("wpkh(") + len(TPRV), TPRV)):
         assert walk.open(part, at) is None
     assert walk.calls == ["wpkh", TPRV]
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
+    walk = utxo_set._KeyWalk(f"tr(musig({TPUB},{TPUB})/{TPRV})", "regtest")
+    for at, part in ((len("tr"), "tr"), (len("tr(musig"), "musig")):
+        assert walk.open(part, at) is None
+    assert walk.musigs[-1].path == f"/{TPRV}"
+    assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
+
+
+NOT_UINT32 = "is not a valid uint32"
+OUT_OF_RANGE = "is out of range"
+
+# Each a path with `bitcoind`'s refusal of it, after a key or a `musig()`,
+# a long element given by its length
+KEY_PATH_REFUSALS = [
+    # ISS 2550's own
+    ("/x", f"Key path value 'x' {NOT_UINT32}"),
+    ("/2147483648", f"Key path value 2147483648 {OUT_OF_RANGE}"),
+    ("/0/* ", f"Key path value '* ' {NOT_UINT32}"),
+    # the range is read as such only as the last element
+    ("/*/0", f"Key path value '*' {NOT_UINT32}"),
+    ("/*/*", f"Key path value '*' {NOT_UINT32}"),
+    ("/*h/0", f"Key path value '*h' {NOT_UINT32}"),
+    # a number is a uint32, leading zeros allowed, then below 2**31
+    ("/4294967295", f"Key path value 4294967295 {OUT_OF_RANGE}"),
+    ("/4294967296", f"Key path value '4294967296' {NOT_UINT32}"),
+    ("/12345678901", f"Key path value '12345678901' {NOT_UINT32}"),
+    ("/00000000002147483648", f"Key path value 2147483648 {OUT_OF_RANGE}"),
+    ("/2147483648h", f"Key path value 2147483648 {OUT_OF_RANGE}"),
+    ("/h", f"Key path value 'h' {NOT_UINT32}"),
+    ("/2147483647/x", f"Key path value 'x' {NOT_UINT32}"),
+    ("/0/", "Key path value '' is not valid"),
+    ("/0//1", "Key path value '' is not valid"),
+    # a multipath element, whose items are each read as an element
+    ("/<0;x>", f"Key path value 'x' {NOT_UINT32}"),
+    ("/<0;2147483648>", f"Key path value 2147483648 {OUT_OF_RANGE}"),
+    ("/<0;1>h", f"Key path value '<0;1>h' {NOT_UINT32}"),
+    ("/<0>", "Multipath key path specifiers must have at least two items"),
+    ("/<0;1>/<2;3>", "Multiple multipath key path specifiers found"),
+    ("/<1h;1h>", "Duplicated key path value 2147483649 in multipath specifier"),
+    # a number with more digits than `int` converts from a string
+    (f"/{LONG_STEP}", f"Key path value '<{len(LONG_STEP)} characters>' {NOT_UINT32}"),
+    (f"/{ZEROS}1/x", f"Key path value 'x' {NOT_UINT32}"),
+    (f"/{ZEROS}2147483648", f"Key path value 2147483648 {OUT_OF_RANGE}"),
+]
+
+
+@pytest.mark.parametrize(("path", "message"), KEY_PATH_REFUSALS)
+def test_a_key_path_element_core_refuses_answers_core_s_message(
+    node: Node, path: str, message: str
+) -> None:
+    """ISS 2550: `ParseKeyPath` names the element it refuses."""
+    assert refusal(node, "start", [f"wpkh({TPUB}{path})"]) == (
+        -5,
+        f"wpkh(): {message}",
+    )
+
+
+@pytest.mark.parametrize(("path", "message"), KEY_PATH_REFUSALS)
+def test_a_musig_path_element_core_refuses_answers_core_s_message(
+    node: Node, path: str, message: str
+) -> None:
+    """`ParsePubkey` reads a `musig()`'s path as `ParseKeyPath` does."""
+    text = f"tr(musig({TPUB},{TPUB}/1){path})"
+    assert refusal(node, "start", [text]) == (-5, f"tr(): musig(): {message}")
+
+
+# Each where Core refuses a `musig()`'s path before it reads its elements,
+# in words the key walk does not give
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"tr(musig({TPUB}/*,{TPUB})/x)",
+        f"tr(musig({TPUB},{TPUB})/x/*h)",
+        f"tr(musig({TPUB},{TPUB})/x/*')",
+        f"tr(musig({TPUB}/*,{TPUB})/0,pk(foo))",
+        f"tr(musig({TPUB},{TPUB})/0/*h,pk(foo))",
+    ],
+)
+def test_the_key_walk_stops_at_a_musig_path_core_refuses_first(text: str) -> None:
+    """Core refuses a ranged participant or a hardened range first."""
+    assert utxo_set._invalid_key_refusal(text, "regtest") is None
+
+
+# Each a path holding a private key, a WIF or a number, with what stands
+# in its place in the refusal
+@pytest.mark.parametrize(
+    ("path", "element"),
+    [
+        (f"/{LEAK_WIF}", LEAK_WIF),
+        (f"/{TPRV}", TPRV),
+        (f"/{int(LEAK_HEX, 16)}", str(int(LEAK_HEX, 16))),
+        # a key written right after a step, with no `/` between them
+        (f"/0{LEAK_WIF}", f"0{LEAK_WIF}"),
+        (f"/<0;{TPRV}>", TPRV),
+    ],
+)
+@pytest.mark.parametrize(
+    ("before", "prefix"),
+    [
+        (f"wpkh({TPUB}", "wpkh(): "),
+        (f"tr(musig({TPUB},{TPUB}/1)", "tr(): musig(): "),
+    ],
+)
+def test_a_key_given_as_a_key_path_element_is_given_by_its_length(
+    node: Node, path: str, element: str, before: str, prefix: str
+) -> None:
+    """Core quotes the element whole; this gives a long one by its length."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"{before}{path})")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        f"{prefix}Key path value '<{len(element)} characters>' {NOT_UINT32}",
+    )
+    assert_secret_free(caught.value, [LEAK_WIF, TPRV, str(int(LEAK_HEX, 16))])
 
 
 # Each with the threshold `bitcoind` refuses in it, which its message quotes
@@ -1357,10 +1482,10 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
 
 
 # Each where Core first refuses what `_parse` gives no message of its own
-# for: an expression no function reads, before a key or not, a key origin
-# or a key path, or a miniscript outside wsh() and tr(), which both refuse
-# in the same words. `_parse` has a message of its own for a `tr()` leaf
-# too long for bip32_descriptors to quote, so no such leaf is here.
+# for: an expression no function reads, before a key or not, a key origin,
+# or a miniscript outside wsh() and tr(), which both refuse in the same
+# words. `_parse` has a message of its own for a `tr()` leaf too long for
+# bip32_descriptors to quote, so no such leaf is here.
 @pytest.mark.parametrize(
     "text",
     [
@@ -1369,7 +1494,6 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
         f"tr({X_ONLY},{{foo(1),pk({LEAK_WIF})}})",
         f"foo(pk({NOT_A_POINT}))",
         f"tr({X_ONLY},foo)",
-        f"wpkh({TPUB}/0/* )",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wpkh([deadbeef]]{H160})",
         f"sh(and_v(v:pk({KEY}),pk({KEY2})))",
@@ -1558,6 +1682,88 @@ def test_a_tr_leaf_refusal_carries_no_private_key(
         scan(node, f"tr({X_ONLY},{leaf})")
     assert (int(caught.value.code), caught.value.message) == (-5, LONG_LEAF)
     assert_secret_free(caught.value, secrets)
+
+
+ADDR = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+COMBO_PLACE = "Can only have combo() at top level"
+WPKH_PLACE = "Can only have wpkh() at top level or inside sh()"
+MULTI_PLACE = "Can only have multi/sortedmulti at top level, in sh(), or in wsh()"
+MULTI_A_PLACE = "Can only have multi_a/sortedmulti_a inside tr()"
+SH_PLACE = "Can only have sh() at top level"
+WSH_PLACE = "Can only have wsh() at top level or inside sh()"
+ADDR_PLACE = "Can only have addr() at top level"
+TR_PLACE = "Can only have tr at top level"
+UNUSED_PLACE = "Can only have unused at top level"
+
+
+# Each a function written where `bitcoind` does not read it, with
+# `bitcoind`'s message. Where `bitcoind` quotes an expression or a key, the
+# node writes `...` for what may be a key (SECURITY.md).
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (f"sh(combo({KEY}))", COMBO_PLACE),
+        (f"sh(wsh(combo({KEY})))", COMBO_PLACE),
+        (f"wsh(wpkh({KEY}))", WPKH_PLACE),
+        (f"tr({X_ONLY},wpkh({KEY}))", WPKH_PLACE),
+        (f"tr({X_ONLY},multi(1,{KEY}))", MULTI_PLACE),
+        (f"tr({X_ONLY},sortedmulti(1,{KEY}))", MULTI_PLACE),
+        (f"multi_a(1,{KEY})", MULTI_A_PLACE),
+        (f"sortedmulti_a(1,{KEY})", MULTI_A_PLACE),
+        (f"sh(multi_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"sh(sortedmulti_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"wsh(multi_a(1,{KEY}))", MULTI_A_PLACE),
+        (f"sh(tr({X_ONLY}))", TR_PLACE),
+        (f"wsh(tr({X_ONLY}))", TR_PLACE),
+        (f"tr({X_ONLY},tr({X_ONLY}))", TR_PLACE),
+        (f"sh(rawtr({X_ONLY}))", "Can only have rawtr at top level"),
+        (f"sh(unused({KEY}))", UNUSED_PLACE),
+        (f"tr({X_ONLY},unused({KEY}))", UNUSED_PLACE),
+        (f"sh(sh(wpkh({KEY})))", SH_PLACE),
+        (f"wsh(sh(wpkh({KEY})))", SH_PLACE),
+        (f"tr({X_ONLY},{{pk({KEY}),sh(wpkh({KEY}))}})", SH_PLACE),
+        (f"wsh(wsh(wpkh({KEY})))", WSH_PLACE),
+        (f"tr({X_ONLY},wsh(wpkh({KEY})))", WSH_PLACE),
+        (f"sh(addr({ADDR}))", ADDR_PLACE),
+        (f"tr({X_ONLY},addr({ADDR}))", ADDR_PLACE),
+        # the place, which Core refuses before a draft function inside
+        ("wsh(sh(raw(51)))", SH_PLACE),
+        (f"tr({X_ONLY},wsh(raw(51)))", WSH_PLACE),
+        (f"sh(combo(rawpkh({H160})))", COMBO_PLACE),
+        # a draft function, which Core reads nowhere
+        ("sh(rawnode(00))", NEEDED_P2SH),
+        (f"rawnode({H256})", NOT_A_FUNCTION.format("rawnode")),
+        ("rawleaf(51)", NOT_A_FUNCTION.format("rawleaf")),
+        # what Core refuses before the misplaced function
+        (f"tr({X_ONLY},{{raw(51),wpkh({KEY})}})", RAW_LEAF),
+        (
+            f"tr({X_ONLY},{{rawpkh({H160}),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawpkh"),
+        ),
+        (
+            f"tr({X_ONLY},{{rawnode({H256}),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawnode"),
+        ),
+        (
+            f"tr({X_ONLY},{{rawleaf(51),wpkh({KEY})}})",
+            NOT_A_FUNCTION.format("rawleaf"),
+        ),
+        (f"tr({XPUB},wpkh({KEY}))", f"tr(): {NO_KEY}"),
+    ],
+)
+def test_a_function_core_reads_elsewhere_answers_core_s_message(
+    node: Node, text: str, message: str
+) -> None:
+    """ISS 2559: Core refuses the place before what the function holds."""
+    assert refusal(node, "start", [text]) == (-5, message)
+
+
+def test_a_misplaced_function_s_refusal_carries_no_private_key(node: Node) -> None:
+    """Section 7's *A refusal carries no secret*: Core refuses the place."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"sh(combo({LEAK_WIF}))")
+    assert (int(caught.value.code), caught.value.message) == (-5, COMBO_PLACE)
+    assert_secret_free(caught.value, [LEAK_WIF, LEAK_HEX])
 
 
 # Each what follows the key in a `rawtr()` of two arguments or of three
