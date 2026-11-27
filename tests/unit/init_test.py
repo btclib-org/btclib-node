@@ -1481,10 +1481,10 @@ def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
         with unstarted_node_context(tmp_path):
             pass
 
-    # what is asserted is that the build does not raise, not how fast it
-    # is: 10s timed out once on a loaded windows-latest runner (issue
-    # #2596), so the wait is generous, yet under the suite's own 300s so
-    # a hang still fails here with a TimeoutError naming this wait
+    # the test asserts that the build does not raise, not how fast it is,
+    # so the wait is generous for a slow windows-latest runner (issue
+    # #2596), and under `timeout` in pyproject.toml. Leaving the `with`
+    # joins the worker, so a build that never returns ends at that limit
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(build).result(timeout=120)
 
