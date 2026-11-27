@@ -1194,6 +1194,59 @@ def test_build_config_reads_rpcservertimeout(
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
 
+_OUT_OF_RANGE = "JSON integer out of range"
+_NUMBER_NOT_STRING = "JSON value of type number is not of expected type string"
+_OBJECT_NOT_STRING = "JSON value of type object is not of expected type string"
+
+
+@pytest.mark.parametrize(
+    ("settings", "refusal"),
+    [
+        ({"rpcservertimeout": 2**63, "rpcallowip": 5}, _NUMBER_NOT_STRING),
+        ({"rpcservertimeout": 2**63, "rpcauth": 5}, _OUT_OF_RANGE),
+        ({"rpcservertimeout": 2**63, "rpcwhitelist": 5}, _OUT_OF_RANGE),
+        ({"rpcservertimeout": 2**63, "rpcwhitelistdefault": 5}, _OUT_OF_RANGE),
+        ({"rpcauth": 5, "rpcwhitelist": {}}, _NUMBER_NOT_STRING),
+        ({"rpcauth": {}, "rpcwhitelist": 5}, _OBJECT_NOT_STRING),
+        ({"rpcwhitelist": 5, "rpcwhitelistdefault": {}}, _NUMBER_NOT_STRING),
+        ({"rpcwhitelist": {}, "rpcwhitelistdefault": 5}, _OBJECT_NOT_STRING),
+        ({"bantime": 2**63, "rpcauth": 5}, _NUMBER_NOT_STRING),
+        ({"bantime": 2**63, "rpcwhitelist": 5}, _NUMBER_NOT_STRING),
+        ({"bantime": 2**63, "rpcwhitelistdefault": 5}, _NUMBER_NOT_STRING),
+    ],
+    ids=[
+        "rpcallowip-before-rpcservertimeout",
+        "rpcservertimeout-before-rpcauth",
+        "rpcservertimeout-before-rpcwhitelist",
+        "rpcservertimeout-before-rpcwhitelistdefault",
+        "rpcauth-before-rpcwhitelist-number",
+        "rpcauth-before-rpcwhitelist-object",
+        "rpcwhitelist-before-rpcwhitelistdefault-number",
+        "rpcwhitelist-before-rpcwhitelistdefault-object",
+        "rpcauth-before-bantime",
+        "rpcwhitelist-before-bantime",
+        "rpcwhitelistdefault-before-bantime",
+    ],
+)
+def test_build_config_reads_the_rpc_options_in_core_s_order(
+    tmp_path: Path, settings: dict[str, object], refusal: str
+) -> None:
+    """ISS 2584: of two type or range refusals, Core's first is the one raised.
+
+    The order is `-rpcallowip`, `-rpcservertimeout`, `-rpcauth`,
+    `-rpcwhitelist`, `-rpcwhitelistdefault`, then `-bantime`, as
+    `_after_lock` cites it from Core's source. Measured on `bitcoind`
+    v32.1.0: started with each `settings.json` here, it refuses the start
+    with the same message.
+    """
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "settings.json").write_text(
+        json.dumps(settings), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        _build(tmp_path, "-regtest")
+
+
 @pytest.mark.parametrize(
     "number",
     ["5", "9223372036854775808", "1.5", "9" * 5000],
