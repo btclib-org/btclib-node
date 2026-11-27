@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tests import get_random_port
-from tests.integration.rpcservertimeout_server_off_test import _start_and_stop
+from tests.integration import start_and_stop
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,5 +69,5 @@ def test_a_start_ignores_the_login_options_core_does_not_read(
             settings_json, encoding="utf-8"
         )
         rpcport = [f"-rpcport={get_random_port()}"] if server else []
-        results[program] = _start_and_stop([*command, *rpcport], datadir, server=server)
+        results[program] = start_and_stop([*command, *rpcport], datadir, server=server)
     assert results["node"] == results["bitcoind"] == (True, 0, "")
