@@ -65,7 +65,7 @@ def test_a_refusal_answers_core_s_error_and_leaves_the_clock(rpc_node: Node) -> 
     _, body = client.call_raw("setmocktime", [-1], jsonrpc="1.0", request_timeout=2)
     assert body["error"] == {
         "code": -8,
-        "message": "Mocktime must be in the range [0, 9223372036], not -1.",
+        "message": "Mocktime must be in the range [0, 4294967295], not -1.",
     }
     _, body = client.call_raw("setmocktime", [], jsonrpc="1.0", request_timeout=2)
     assert body["error"] == {"code": -1, "message": HELP_TEXT["setmocktime"]}

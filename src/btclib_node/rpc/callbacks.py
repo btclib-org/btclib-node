@@ -1163,11 +1163,11 @@ def _submitted_body_refusal(
     A header failing its proof of work is refused as `high-hash`, the reason
     `block_index.check_headers_pow` gives it: Core's `CheckBlock` asks
     `CheckBlockHeader` before anything of the body. A body failing
-    `main.assert_valid_block_proof` (on signet, its solution) is refused for
-    it, and nothing is marked: Core asks it in `CheckBlock`, and
-    `ProcessNewBlock` marks nothing for a body failing that. A body failing
-    the rest of `CheckBlock` is refused with Core's word where
-    `mining.check_block_reason` has one, and nothing is marked either. A
+    `main.assert_valid_block_proof` (on signet, its solution) is refused with
+    Core's reason alone, `bad-signet-blksig`, and nothing is marked: Core asks
+    it in `CheckBlock`, and `ProcessNewBlock` marks nothing for a body failing
+    that. A body failing the rest of `CheckBlock` is refused with Core's word
+    where `mining.check_block_reason` has one, and nothing is marked either. A
     body that passes `CheckBlock` is then asked Core's `ContextualCheckBlock`
     (`mining.contextual_block_reason`), weight included, as Core's
     `AcceptBlock` asks it before storing the block (`src/validation.cpp`, at
@@ -1184,7 +1184,11 @@ def _submitted_body_refusal(
         check_headers_pow([block.header], node.chain.pow_limit_bits)
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
-        return str(error)
+        # `BIP22ValidationResult` answers `GetRejectReason()` alone, not the
+        # debug message `CheckBlock` gives beside it (`src/rpc/mining.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); `block_reject_reason`
+        # cuts btclib's detail after Core's word
+        return block_reject_reason(error)
     # `CheckBlock` first: a body that was never indexed has no parent here
     # to read a height from
     if (reason := check_block_reason(block, check_merkle_root=True)) is not None:
@@ -1286,6 +1290,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`, and
     `CheckBlockHeader`'s `high-hash`, which `block_index.check_headers_pow`
     raises in Core's words whether or not the body passes `CheckBlock`, and
+    `CheckBlock`'s `bad-signet-blksig` for a signet solution that fails, and
     those of `CheckBlock`'s that `mining.check_block_reason` answers in
     Core's words, as `_submitted_body_refusal` says. Any other invalid block
     is answered with btclib's own exception message instead of one of
@@ -4479,17 +4484,16 @@ def stop_wait_param(params: list[Any]) -> int | None:
 def set_mock_time(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     """Answer `setmocktime`: hold the node's clock at `timestamp`, regtest only.
 
-    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag, which this node follows until ISS 2256), in Core's order:
-    the generic missing-argument and wrong-type refusals, then the chain
-    gate -- `RPC_MISC_ERROR`, as the plain `std::runtime_error` Core
-    throws becomes -- then the range, a non-integer number being "JSON
-    integer out of range" as `getInt` answers it. A `timestamp` outside
-    `[0, MAX_MOCK_TIME]` is `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is
-    the v31.1 tag's bound, `nanoseconds::max()` in seconds; the v32.1 tag
-    narrows it to `uint32_t`'s maximum (406c2348dd, "rpc: tighten
-    setmocktime upper bound to UINT32_MAX"). Every refusal here matches a
-    regtest bitcoind v31.1.0.
+    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag), in Core's order: the generic missing-argument and
+    wrong-type refusals, then the chain gate -- `RPC_MISC_ERROR`, as the
+    plain `std::runtime_error` Core throws becomes -- then the range, a
+    non-integer number being "JSON integer out of range" as `getInt`
+    answers it. A `timestamp` outside `[0, MAX_MOCK_TIME]` is
+    `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is the v32.1 tag's bound,
+    `uint32_t`'s maximum (bitcoin/bitcoin@406c2348dd, "rpc: tighten
+    setmocktime upper bound to UINT32_MAX"). Every refusal here matches
+    a regtest bitcoind v32.1.0.
 
     The callback runs on `Node`'s thread between two steps of the loop,
     so no validation is in flight, as Core's `LOCK(cs_main)` ensures.

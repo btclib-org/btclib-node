@@ -190,7 +190,6 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import io
-import json
 import os
 import re
 import sys
@@ -1676,9 +1675,7 @@ def _setting_to_write_str(value: _Value) -> str:
     above, which is `GetArg`'s own `SettingToString`, a different Core
     function reached by a different reader.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return json.dumps(value, ensure_ascii=False)
+    return write_json(value)
 
 
 def _logged(option: _Option | None, value: Json, whole: str) -> str:
@@ -3160,14 +3157,15 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`,
-    `-rpcbind` and `-whitebind`, then the `-externalip` and `-bind` values
-    nothing resolves, a `-whitebind` Core refuses, and an address bound
-    twice.
+    order: `-logratelimit`, which step 4a reads, then
+    `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`, `-rpcbind` and
+    `-whitebind`, then the `-externalip` and `-bind` values nothing
+    resolves, a `-whitebind` Core refuses, and an address bound twice.
     `-rpccookieperms` and `-rpcauth` are refused later, by
     `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
+    log_rate_limit = _get_bool(settings, "logratelimit") is not False
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
     # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
@@ -3228,31 +3226,31 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
     if whitelist_relay is None:
         whitelist_relay = True
     server = _get_bool(settings, "server")
-    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
-    # (`src/init.cpp:1716`, same sha)
-    ban_time = _get_int(settings, "bantime")
-    if ban_time is None:
-        ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
-    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
-    # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
-    # v32.1 tag)
-    rpcservertimeout = _rpcservertimeout(settings, server=server)
-    # `-rpcallowip`, which `InitHTTPAllowList` and `GetBindAddresses`
-    # read (`src/httpserver.cpp`, same sha), and `-rpcauth`,
-    # `-rpcwhitelist` and `-rpcwhitelistdefault`, which
-    # `InitRPCAuthentication` reads (`src/httprpc.cpp`, same sha):
-    # `AppInitMain` reaches both only under `-server`, so with the server
-    # off a value Core's `GetArgs` or `GetBoolArg` would refuse is not
-    # read (ISS 2538)
+    # In Core's order (ISS 2584): `AppInitServers` (`src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag) runs `InitHTTPServer`,
+    # which reads `-rpcallowip` in `InitHTTPAllowList` and then
+    # `-rpcservertimeout` as `int64_t` seconds (`src/httpserver.cpp`, same
+    # sha), and then `StartHTTPRPC`, whose `InitRPCAuthentication` reads
+    # the login options (`_rpc_login`), then `-rpcauth`, `-rpcwhitelist`
+    # and `-rpcwhitelistdefault` (`src/httprpc.cpp`, same sha). `AppInitMain`
+    # runs `AppInitServers` only under `-server`, so with the server off a
+    # value Core's `GetArgs`, `GetIntArg` or `GetBoolArg` would refuse is not
+    # read (ISS 2500, ISS 2538)
     rpc_on = server is not False
     rpcallowip = _get_args(settings, "rpcallowip") if rpc_on else []
+    rpcservertimeout = _rpcservertimeout(settings, server=server)
     rpccookiefile, rpcuser, rpcpassword, rpccookieperms = _rpc_login(
         settings, server=server
     )
     rpcauth = _get_args(settings, "rpcauth") if rpc_on else []
     rpcwhitelist = _get_args(settings, "rpcwhitelist") if rpc_on else []
     rpcwhitelistdefault = _get_bool(settings, "rpcwhitelistdefault") if rpc_on else None
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1716`, same sha), after `AppInitServers` at step 4a
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
 
     return Config(
         chain=before.chain,
@@ -3277,7 +3275,7 @@ def _after_lock(before: _BeforeLock) -> Config:  # sourcery skip: low-code-quali
         debug=before.debug,
         debug_categories=before.debug_categories,
         debug_exclude=before.debug_exclude,
-        log_rate_limit=_get_bool(settings, "logratelimit") is not False,
+        log_rate_limit=log_rate_limit,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         seednode=_get_args(settings, "seednode"),
@@ -3398,6 +3396,20 @@ def _refusal(error: Exception) -> str:
     return f"Error: {error}\n"
 
 
+def _log_rate_limit(settings: _Settings) -> bool:
+    """Return whether the history log rate-limits, never refusing.
+
+    `_after_lock` reads `logratelimit` first, so where it refuses the value,
+    that refusal is the one the log is opened for, inside its handler, and
+    reading the value again must not raise a second time. A value this node
+    does not take is logged as the default, rate limiting on.
+    """
+    try:
+        return _get_bool(settings, "logratelimit") is not False
+    except ValueError:
+        return True
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -3462,7 +3474,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 max_connections_warnings=directories.max_connections_warnings,
                 debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
-                rate_limit=_get_bool(before.settings, "logratelimit") is not False,
+                rate_limit=_log_rate_limit(before.settings),
             )
             if isinstance(error, JsonIntegerOutOfRangeError):
                 logger.warning(_exception_block(error))
