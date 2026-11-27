@@ -458,10 +458,10 @@ def _parse_hex_uint256(value: str) -> int | None:
     return int(text, 16) if text else 0
 
 
-# Each `_masked_*` below, `config.masked_address` and `shown_path` serves as
-# an `_Option.masked`: what `_log_args` writes in place of a value of that
-# option that may be a key given by mistake, `None` where it writes the value
-# whole.
+# Each `_masked_*` below, `config.masked_address`,
+# `config.masked_permissioned_address` and `shown_path` serves as an
+# `_Option.masked`: what `_log_args` writes in place of a value of that option
+# that may be a key given by mistake, `None` where it writes the value whole.
 
 
 def _masked_if_long(value: str) -> str | None:

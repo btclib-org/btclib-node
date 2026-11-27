@@ -5473,6 +5473,7 @@ def test_async_connect_host_logs_the_port_when_dest_names_one(
         (LEAK_HEX, LEAK_HEX),
         *LEAK_ADDRESSES,
         (f"{LEAK_I2P_WIF}.b32.i2p:8333", LEAK_I2P_WIF),
+        ("alice:short-pass@1.2.3.4:8333", "short-pass"),
     ],
 )
 def test_async_connect_host_writes_no_key_given_as_dest(
