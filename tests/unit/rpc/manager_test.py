@@ -780,17 +780,20 @@ def test_a_key_read_as_an_rpcbind_address_is_not_in_the_log(
     assert_secret_free(ValueError(*lines.messages), [secret])
 
 
+@pytest.mark.parametrize(
+    ("host", "secret"),
+    [("127.0.0.1/8", "127.0.0.1/8"), ("short-pass@127.0.0.1", "short-pass")],
+)
 def test_an_rpcbind_host_that_does_not_look_up_is_not_in_the_log(
-    a_manager: AManagerFactory,
+    a_manager: AManagerFactory, host: str, secret: str
 ) -> None:
     """A host that does not look up is `'...'`, whatever `masked_address` says.
 
-    `masked_address` reads the text before an `@` as permission names, as a
-    `-whitebind` value has, so it keeps this value whole: the lookup of the
-    whole value is what refuses it.
+    `masked_address` keeps the subnet `127.0.0.1/8` whole, so the failed
+    lookup is what writes it as `'...'`. `masked_address` itself writes a
+    password before an `@` as `'...'` (ISS 2579).
     """
     port = get_random_port()
-    host = "short-pass@127.0.0.1"
     manager = a_manager(port, rpcbind=(host,), rpcallowip=("127.0.0.1",))
     lines = LogLines()
     manager.logger.addHandler(lines)
@@ -800,7 +803,7 @@ def test_an_rpcbind_host_that_does_not_look_up_is_not_in_the_log(
         f"Binding RPC on address {shown} port {port}",
         f"Could not bind RPC on address {shown} port {port}: Address lookup failed.",
     ]
-    assert_secret_free(ValueError(*lines.messages), ["short-pass"])
+    assert_secret_free(ValueError(*lines.messages), [secret])
 
 
 def test_a_key_given_as_an_i2p_rpcbind_host_is_not_in_the_failed_bind(
@@ -2386,9 +2389,10 @@ def test_report_server_failure_suppresses_a_cancelled_future(
 ) -> None:
     """`_report_server_failure` does not raise where `future.cancelled()`.
 
-    This is the ordinary shape `stop`'s own sweep leaves behind: cancelling
-    the `asyncio.Task` underneath `future` puts `future` itself into the
-    cancelled state through `run_coroutine_threadsafe`'s own chaining
+    This is the ordinary shape `_stop_accepting`'s cancel of `server`
+    leaves behind: cancelling the `asyncio.Task` underneath `future`
+    puts `future` itself into the cancelled state through
+    `run_coroutine_threadsafe`'s own chaining
     (`asyncio.futures._set_concurrent_future_state`), and
     `future.exception()` on a cancelled future raises rather than
     returning -- which is what the `with suppress` this method opens

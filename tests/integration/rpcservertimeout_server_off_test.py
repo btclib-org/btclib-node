@@ -10,45 +10,15 @@ regtest with no listener and no RPC server: both start, and both exit
 `0` once stopped.
 """
 
-import subprocess
 import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
-from tests import wait_until
+from tests.integration import start_and_stop
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def _start_and_stop(command: list[str], datadir: Path) -> tuple[bool, int, str]:
-    """Start `command` on `datadir`, then stop it with `SIGTERM`.
-
-    Return whether it was still running once started, its exit status,
-    and its stderr. Both programs write `banlist.json` while loading,
-    past the point where a start with `-server` reads
-    `-rpcservertimeout`, so the wait ends once the start is past that
-    read or the process has exited.
-    """
-    banlist = datadir / "regtest" / "banlist.json"
-    stderr = datadir.parent / f"{datadir.name}.stderr"
-    with stderr.open("w", encoding="utf-8") as sink:
-        process = subprocess.Popen(  # noqa: S603
-            [*command, f"-datadir={datadir}", "-regtest", "-listen=0", "-server=0"],
-            stdout=subprocess.DEVNULL,
-            stderr=sink,
-        )
-        try:
-            wait_until(lambda: banlist.exists() or process.poll() is not None)
-            started = process.poll() is None
-            process.terminate()
-            returncode = process.wait(timeout=60)
-        finally:
-            # a no-op on a process that has exited
-            process.kill()
-            process.wait(timeout=30)
-    return started, returncode, stderr.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -76,5 +46,5 @@ def test_a_start_without_the_server_ignores_rpcservertimeout(
         (datadir / "regtest" / "settings.json").write_text(
             f'{{"rpcservertimeout": {number}}}', encoding="utf-8"
         )
-        results[name] = _start_and_stop(command, datadir)
+        results[name] = start_and_stop(command, datadir)
     assert results["node"] == results["bitcoind"] == (True, 0, "")

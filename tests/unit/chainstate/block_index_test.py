@@ -344,9 +344,9 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     `assert_not_timewarp` raises a bare `BTClibValueError` for it,
     having no `MisbehavingError` of its own to raise -- this tree's
     exception, not btclib's. Before this, `_assert_valid_in_context` let
-    that bare exception through unconverted, which
-    `p2p.main.handle_p2p`'s own `isinstance(e, MisbehavingError)` check
-    would not have discouraged the peer for.
+    that bare exception through unconverted, which `p2p.main._drop`'s
+    own `isinstance(e, MisbehavingError)` check would not have
+    discouraged the peer for.
 
     ISS 2327: regtest under `-test=bip94` is the chain it runs on. Its
     difficulty period is short enough to mine here, and the period's

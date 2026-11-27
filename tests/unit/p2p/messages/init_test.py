@@ -5,13 +5,14 @@
 """This package's two payloads, the dispatch tables' keys, and the framing.
 
 The framing itself is btclib.p2p.message.Message's and is tested there,
-and every payload received is btclib.p2p's, this package's own two
-being sent and never received. What is this node's is those two, the
-octets Core sends a peer too old for the rest; `callbacks` and
+and every payload parsed is btclib.p2p's, this package's own two being
+sent and never received. What is this node's is those two, the octets
+Core sends a peer too old for the rest; `callbacks` and
 `handshake_callbacks`, two hand-written tables of string literals,
-checked here against every command a real payload carries; which queue
-a command lands in; how a partial message is held until the rest arrives;
-and what becomes of a peer whose octets do not decode.
+checked here against every command a real payload carries and the BIP37
+commands btclib carries no payload for; which queue a command lands in;
+how a partial message is held until the rest arrives; and what becomes
+of a peer whose octets do not decode.
 """
 
 import asyncio
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from btclib.exceptions import BTClibValueError
+from btclib.p2p.bip324 import MESSAGE_IDS
 from btclib.p2p.handshake import Verack
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -47,7 +49,7 @@ if TYPE_CHECKING:
 
 MAGIC = RegTest().magic
 
-# where every payload the node receives is defined: this package's own
+# where every payload the node parses is defined: this package's own
 # two are only sent, `btclib_node.p2p.messages`'s own docstring is why
 _BTCLIB_P2P_MODULES = (
     "btclib.p2p.address",
@@ -61,6 +63,11 @@ _BTCLIB_P2P_MODULES = (
     "btclib.p2p.negotiation",
     "btclib.p2p.reject",
 )
+
+# the BIP37 commands btclib carries no payload class for, by design
+# (`btclib.p2p.merkleblock`'s docstring): this node reads none of them
+# and drops the peer that sends one (`callbacks.filterload`)
+_NOT_CARRIED = frozenset(("filteradd", "filterclear", "filterload"))
 
 
 def known_commands() -> set[str]:
@@ -94,10 +101,12 @@ def test_the_dispatch_tables_key_on_real_commands() -> None:
     that is registered and never called -- exactly how "sendcmpt" went
     unreached on the way out. This checks each key against every
     command a `btclib.p2p` payload actually carries, this package's
-    own two being only sent.
+    own two being only sent. `_NOT_CARRIED` is checked against Core's
+    commands instead, `MESSAGE_IDS` naming each of them.
     """
+    assert set(MESSAGE_IDS) >= _NOT_CARRIED
     unknown = (set(callbacks) | set(handshake_callbacks)) - known_commands()
-    assert not unknown
+    assert unknown <= _NOT_CARRIED
 
 
 def make_connection() -> Connection:
@@ -115,7 +124,9 @@ def make_connection() -> Connection:
     message it frames.
     """
     manager = SimpleNamespace(
-        node=SimpleNamespace(chain=RegTest()),
+        node=SimpleNamespace(
+            chain=RegTest(), logger=SimpleNamespace(log_debug=lambda *a: None)
+        ),
         loop=None,
         messages=deque(),
         handshake_messages=deque(),

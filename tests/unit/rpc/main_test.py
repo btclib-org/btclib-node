@@ -367,14 +367,14 @@ def test_a_callback_that_raises_is_answered_internal_error() -> None:
 def test_testmempoolaccept_own_store_error_reaches_the_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`testmempoolaccept`'s own store fault reaches `handle_rpc`'s log line.
+    """`testmempoolaccept`'s own store fault reaches `_execute`'s log line.
 
     `test_mempool_accept` (`rpc/callbacks.py`) has no catch of its own
     for `StoreCorruptionError` -- the fault this proves reaches the log
     is a real one, monkeypatched onto `verify_mempool_acceptance` where
     `UtxoIndex.get_coin` would otherwise raise it -- so it propagates
-    here the same as any other raising callback, `handle_rpc`'s own
-    generic catch above being what logs it and answers `INTERNAL_ERROR`
+    here the same as any other raising callback, `rpc.main._execute`'s
+    own generic catch being what logs it and answers `INTERNAL_ERROR`
     rather than `test_mempool_accept` folding it into one entry's own
     `"reject-reason"` (btclib-org/btclib-node#668). A real `Logger`
     writing to a real file, read back after, is what proves the line
