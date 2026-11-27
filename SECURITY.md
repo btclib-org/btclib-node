@@ -195,6 +195,13 @@ bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node's refusal writes
 bip32_descriptors' refusal instead, that refusal names the key by its
 index alone, as for a key path value Core refuses.
 
+Core's `dumptxoutset` refusals quote the path it was given whole, a key
+given by mistake in its place included (`src/rpc/blockchain.cpp`, at
+bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
+words and writes the path by its length: `<52 characters> already exists.
+If you are sure this is what you want, move it out of the way first` and
+`Couldn't open file <64 characters> for writing.`
+
 Core's RPC refusals quote what a caller gave where a hash, a hex string or
 a name belongs, a key given by mistake in its place included (`ParseHashV`
 and `ParseHexV` in `src/rpc/util.cpp` among them, at
@@ -210,13 +217,6 @@ otherwise, as in `Network not recognized: <52 characters>`. A transaction
 that `testmempoolaccept` or `submitpackage` cannot decode is named by its
 index, in the words of Core's `combinerawtransaction`: `TX decode failed
 for tx 1. Make sure the tx has at least one input.`
-
-Core's `dumptxoutset` refusals quote the path it was given whole, a key
-given by mistake in its place included (`src/rpc/blockchain.cpp`, at
-bitcoin/bitcoin@f0de87f040, the v32.1 tag). This node keeps Core's other
-words and writes the path by its length: `<52 characters> already exists.
-If you are sure this is what you want, move it out of the way first` and
-`Couldn't open file <64 characters> for writing.`
 
 Core's start-up refusals of an `-rpccookieperms` and an `-rpcallowip` value
 quote the value whole, a key given by mistake in its place included

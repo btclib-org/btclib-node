@@ -295,6 +295,10 @@ def dump_tx_out_set(
         # path whole is no part of the caller's refusal, chained or not
         file = None
     if file is None:
+        # Core writes `temppath` whole (`src/rpc/blockchain.cpp:3180`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); this writes it as
+        # `shown_path` does, since a caller may give a key in its place
+        # (SECURITY.md, "Where this node departs from Bitcoin Core").
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
             f"Couldn't open file {shown_path(temp_path)} for writing.",
@@ -306,7 +310,13 @@ def dump_tx_out_set(
 
 
 def _exists(path: Path) -> RpcError:
-    """Return Core's refusal of a `path` that exists and is not a pipe."""
+    """Return Core's refusal of a `path` that exists and is not a pipe.
+
+    Core writes `path` whole (`src/rpc/blockchain.cpp:3171`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag); this writes it as
+    `shown_path` does, since a caller may give a key in its place
+    (SECURITY.md, "Where this node departs from Bitcoin Core").
+    """
     return RpcError(
         RPCErrorCode.INVALID_PARAMETER,
         f"{shown_path(path)} already exists. If you are sure this is what you "
@@ -367,6 +377,11 @@ def _open_pipe(node: Node, path: Path) -> Generator[bool, None, BinaryIO]:
         # raised outside the `except`, so that the `OSError` naming the
         # path whole is no part of the caller's refusal, chained or not
         if failure is not None:
+            # Core writes `temppath` whole (`src/rpc/blockchain.cpp:3180`,
+            # at bitcoin/bitcoin@f0de87f040, the v32.1 tag), the pipe itself
+            # here; this writes it as `shown_path` does, since a caller may
+            # give a key in its place (SECURITY.md, "Where this node departs
+            # from Bitcoin Core").
             raise RpcError(
                 RPCErrorCode.INVALID_PARAMETER,
                 f"Couldn't open file {shown_path(path)} for writing.",

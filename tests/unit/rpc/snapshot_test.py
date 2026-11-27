@@ -12,6 +12,7 @@ shape of the answer, are what `bitcoind` says for the same call
 """
 
 import contextlib
+import errno
 import os
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1011,3 +1012,23 @@ def test_a_named_pipe_that_cannot_be_opened_is_refused(
         -8,
         f"Couldn't open file <{len(str(pipe))} characters> for writing.",
     )
+
+
+@pipes
+def test_a_key_naming_a_pipe_that_cannot_be_opened_is_not_in_the_refusal(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2535: no `OSError` naming the pipe is chained to the refusal."""
+    pipe = node.data_dir / LEAK_WIF
+    os.mkfifo(pipe)
+
+    def denied(path: Path, *_: object) -> int:
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+
+    monkeypatch.setattr(os, "open", denied)
+    with pytest.raises(RpcError) as caught:
+        dump(node, str(pipe), "latest")
+    assert caught.value.message == (
+        f"Couldn't open file <{len(str(pipe))} characters> for writing."
+    )
+    assert_secret_free(caught.value, [LEAK_WIF])
