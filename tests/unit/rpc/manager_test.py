@@ -2389,9 +2389,10 @@ def test_report_server_failure_suppresses_a_cancelled_future(
 ) -> None:
     """`_report_server_failure` does not raise where `future.cancelled()`.
 
-    This is the ordinary shape `stop`'s own sweep leaves behind: cancelling
-    the `asyncio.Task` underneath `future` puts `future` itself into the
-    cancelled state through `run_coroutine_threadsafe`'s own chaining
+    This is the ordinary shape `_stop_accepting`'s cancel of `server`
+    leaves behind: cancelling the `asyncio.Task` underneath `future`
+    puts `future` itself into the cancelled state through
+    `run_coroutine_threadsafe`'s own chaining
     (`asyncio.futures._set_concurrent_future_state`), and
     `future.exception()` on a cancelled future raises rather than
     returning -- which is what the `with suppress` this method opens

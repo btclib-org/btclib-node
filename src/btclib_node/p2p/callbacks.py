@@ -1791,7 +1791,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     `AcceptBlockHeader`'s own shape: it indexes the header where the parent
     is known, raises where the header itself is invalid -- a
     `MisbehavingError` where Core's `MaybePunishNodeForBlock` punishes,
-    which `main.handle_p2p`'s own `except` answers by dropping and
+    which `main._dispatch`'s own `except` answers by dropping and
     discouraging the peer, as it does for a block failing its own checks
     below -- and, for a single header whose parent is missing, returns
     `None` rather than raising, which is `headers`'s own "ask again" case
