@@ -113,7 +113,7 @@ _ORIGIN = re.compile(r"\[[0-9a-fA-F]{8}(?P<path>(?:/[0-9]+['h]?)*)\]")
 # follow a key or a `musig()`
 _PATH = re.compile(r"(?:/(?:[0-9]+|<[0-9]+['h]?(?:;[0-9]+['h]?)+>)['h]?)*(?:/\*['h]?)?")
 
-# the digits of 2**31 - 1, the largest step Core reads
+# the digits of 2**31 - 1, the largest step Core reads, and of 2**32 - 1
 _STEP_DIGITS = 10
 
 # what `IsSpace` reads as whitespace
@@ -143,6 +143,12 @@ _BTCLIB_KEY_REFUSALS = (
     "Too many ')' in musig() expression",
     "missing ']' in the key origin",
     "'[' that opens a key origin",
+    "invalid derivation index",
+    "invalid index",
+    "Multiple multipath key path specifiers found",
+    "a multipath step takes at least two elements",
+    "Duplicated key path value",
+    "Key path value is not a valid uint32",
     "Key is invalid due to whitespace",
     "key is not valid",
     "key: WIF prefix",
@@ -538,6 +544,91 @@ def _key_item(text: str) -> str | None:
     return text[origin.end() :].partition("/")[0]
 
 
+_DIGITS = re.compile("[0-9]+")
+
+# Core's `BIP32_HARDENED_FLAG`: an element's number is below it, and the
+# child number of a hardened element is that number with it set
+_HARDENED_FLAG = 2**31
+
+# what `ParseDeriveType` reads as the range, where it is a path's last
+# element, hardened or not: an element before the last is read as a number
+_HARDENED_RANGES = frozenset({"*'", "*h"})
+_RANGE_ELEMENTS = _HARDENED_RANGES | {"*"}
+
+
+def _uint32(text: str) -> int | None:
+    """Return `text` as `ToIntegral<uint32_t>` reads it, else None.
+
+    That is one or more digits, leading zeros allowed, of a value below
+    2**32. As in `_fits`, at most `_STEP_DIGITS` of them are converted.
+    """
+    digits = text.lstrip("0")
+    if not _DIGITS.fullmatch(text) or len(digits) > _STEP_DIGITS:
+        return None
+    number = int(digits or "0")
+    return None if number >> 32 else number
+
+
+def _key_path_element(element: str) -> int | str:
+    """Return the child number of `element`, else Core's message refusing it.
+
+    `ParseKeyPathElement` refuses an empty element, then one that is no
+    number as `_uint32` reads it once a last `'` or `h` is dropped, then a
+    number at or past `_HARDENED_FLAG`, in `src/util/bip32.cpp` at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag. The `'` or `h` makes the
+    element hardened.
+
+    Core quotes the element it reads as no number whole, and a key may be
+    given in its place. This quotes it through `quoted_name` (SECURITY.md,
+    "Where this node departs from Bitcoin Core").
+    """
+    if not element:
+        return "Key path value '' is not valid"
+    hardened = element[-1] in "'h"
+    number = _uint32(element[:-1] if hardened else element)
+    if number is None:
+        return f"Key path value '{quoted_name(element)}' is not a valid uint32"
+    if number >= _HARDENED_FLAG:
+        return f"Key path value {number} is out of range"
+    return (number | _HARDENED_FLAG) if hardened else number
+
+
+def _path_refusal(path: str) -> str | None:
+    """Return Core's message for the first element of `path` it refuses.
+
+    `path` is what follows a key or a `musig()`, from its first `/`. Core
+    splits it at each `/`, and `ParseDeriveType` drops the last element
+    where it is in `_RANGE_ELEMENTS`. `ParseKeyPath` then reads each
+    element after the first `/` in order, as `_key_path_element` does,
+    and an element between `<` and `>` as a multipath one: one in a path,
+    of two items or more split at `;`, each read as an element and none
+    twice. Both are in `src/script/descriptor.cpp` at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag.
+    """
+    elements = path.split("/")[1:]
+    if elements[-1] in _RANGE_ELEMENTS:
+        elements.pop()
+    multipath = False
+    for element in elements:
+        items = [element]
+        if element.startswith("<") and element.endswith(">"):
+            if multipath:
+                return "Multiple multipath key path specifiers found"
+            multipath = True
+            items = element[1:-1].split(";")
+            if len(items) < 2:  # noqa: PLR2004
+                return "Multipath key path specifiers must have at least two items"
+        seen: set[int] = set()
+        for item in items:
+            number = _key_path_element(item)
+            if isinstance(number, str):
+                return number
+            if number in seen:
+                return f"Duplicated key path value {number} in multipath specifier"
+            seen.add(number)
+    return None
+
+
 def _is_extended_key(key: str, network: str) -> bool:
     """Say whether `key` is an xpub or an xprv of `network`.
 
@@ -593,9 +684,11 @@ def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
     message is `ParsePubkeyInner`'s. Core reads a key of no path as hex,
     then as a WIF of `network`'s prefix alone (`DecodeSecret`), then as an
     extended key of `network`, and refuses what is none of these. Core
-    quotes the key, or what it reads as one, which may be a private key
-    given by mistake, where this writes `...` (SECURITY.md, "Where this
-    node departs from Bitcoin Core").
+    reads a key of a path as an extended key of `network` alone, and then
+    the path, as `_path_refusal` says. Core quotes the key, or what it
+    reads as one, which may be a private key given by mistake, where this
+    writes `...` (SECURITY.md, "Where this node departs from Bitcoin
+    Core").
     """
     key = _key_item(text)
     if key is None:
@@ -606,9 +699,10 @@ def _key_refusal(text: str, calls: list[str], network: str) -> str | None:
         return "No key provided"
     if key[0] in _SPACES or key[-1] in _SPACES:
         return "Key '...' is invalid due to whitespace"
-    if key == text.rpartition("]")[2]:
-        return _pathless_key_refusal(key, _key_context(calls), network)
-    return None if _is_extended_key(key, network) else _NO_KEY
+    if path := text.rpartition("]")[2].removeprefix(key):
+        # Core reads the key before its path: a key it refuses answers first
+        return _path_refusal(path) if _is_extended_key(key, network) else _NO_KEY
+    return _pathless_key_refusal(key, _key_context(calls), network)
 
 
 def _pathless_key_refusal(key: str, ctx: str, network: str) -> str | None:
@@ -642,6 +736,40 @@ def _opened_refusal(name: str, calls: list[str], commas: list[int]) -> str | Non
 
 
 @dataclass
+class _Musig:
+    """What `_KeyWalk` has read of an open `musig()`.
+
+    `path` may hold a private key given by mistake, so `repr` and `str`
+    leave it out (section 7 of the organization's standard, *A refusal
+    carries no secret*).
+    """
+
+    # what follows the `musig()`'s `)`, from its `/`, or "" where that is
+    # no `/`
+    path: str = field(repr=False)
+    # whether a participant is no extended key, and whether one is ranged
+    unextended: bool = False
+    ranged: bool = False
+
+    def refusal(self) -> str | None:
+        """Return what `ParsePubkey` refuses the path with, else None.
+
+        Core reads the path once it has read the participants. It refuses
+        the path where a participant is no extended key. Then, where one is
+        ranged or the path's range is hardened, it refuses it in words this
+        does not give, and this answers "". Then it reads the path as
+        `_path_refusal` does.
+        """
+        if not self.path:
+            return None
+        if self.unextended:
+            return "derivation requires all participants to be xpubs or xprvs"
+        if self.ranged or self.path.rpartition("/")[2] in _HARDENED_RANGES:
+            return ""
+        return _path_refusal(self.path)
+
+
+@dataclass
 class _KeyWalk:
     """What `_invalid_key_refusal` has read of `text` so far.
 
@@ -659,9 +787,8 @@ class _KeyWalk:
     # the commas read in each open call: after the first, a `tr()` reads
     # its tree
     commas: list[int] = field(default_factory=list)
-    # for each open `musig()`: whether a path follows it, and whether a
-    # participant is no extended key
-    musigs: list[list[bool]] = field(default_factory=list)
+    # each open `musig()`
+    musigs: list[_Musig] = field(default_factory=list)
 
     def open(self, word: str, at: int) -> str | None:
         """Read the `(` at `at`, after `word`."""
@@ -673,7 +800,8 @@ class _KeyWalk:
             # `ParsePubkey` splits the `musig()` at each `)`
             if span.count(")") > 1:
                 return f"{_key_prefix(self.calls)}Too many ')' in musig() expression"
-            self.musigs.append([span.partition(")")[2].startswith("/"), False])
+            path = span.partition(")")[2]
+            self.musigs.append(_Musig(path if path.startswith("/") else ""))
         self.calls.append(word)
         self.commas.append(0)
         return None
@@ -682,9 +810,10 @@ class _KeyWalk:
         """Read a `)`."""
         if not self.calls:
             return ""
-        if self.calls[-1].rpartition(":")[2] == "musig" and all(self.musigs.pop()):
-            message = "derivation requires all participants to be xpubs or xprvs"
-            return f"{_key_prefix(self.calls)}{message}"
+        if self.calls[-1].rpartition(":")[2] == "musig":
+            refusal = self.musigs.pop().refusal()
+            if refusal is not None:
+                return refusal and f"{_key_prefix(self.calls)}{refusal}"
         self.calls.pop()
         self.commas.pop()
         return None
@@ -711,11 +840,11 @@ class _KeyWalk:
         refusal = _key_refusal(span, self.calls, self.network)
         if refusal is not None:
             return refusal and f"{_key_prefix(self.calls)}{refusal}"
-        key = _key_item(span) or ""
-        if self.calls[-1].rpartition(":")[2] == "musig" and not _is_extended_key(
-            key, self.network
-        ):
-            self.musigs[-1][1] = True
+        if self.calls[-1].rpartition(":")[2] == "musig":
+            musig = self.musigs[-1]
+            key = _key_item(span) or ""
+            musig.unextended |= not _is_extended_key(key, self.network)
+            musig.ranged |= span.rpartition("/")[2] in _RANGE_ELEMENTS
         return None
 
 
@@ -724,20 +853,21 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
 
     Core refuses a key as `_key_refusal` says, a `musig()` outside `P2TR`,
     one whose text holds a `)` after the one closing it, and one followed
-    by a path whose participants are not all extended keys. ecc refuses a
-    hex key that is no point with `EccException`, and bip32_descriptors
-    refuses the rest with `BTClibValueError`, each in words of its own.
-    Core's message is `ParsePubkey`'s for a `musig()` and for a key origin
-    with no `[`, and `ParsePubkeyInner`'s for the rest of a key, and
-    `ParseScript` puts `_key_prefix` before it, all in
+    by a path as `_Musig.refusal` says. ecc refuses a hex key that is no
+    point with `EccException`, and bip32_descriptors refuses the rest with
+    `BTClibValueError`, each in words of its own. Core's message is
+    `ParsePubkey`'s for a `musig()` and for a key origin with no `[`, and
+    `ParsePubkeyInner`'s for the rest of a key, and `ParseScript` puts
+    `_key_prefix` before it, all in
     `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
     tag.
 
     Core reads `text` in order and refuses the first thing it cannot read,
     a `musig()` before the keys inside it. So this answers None where it
     first meets a function of `_DRAFT_NAMES`, a `musig()` where a script
-    belongs or a key origin `_key_refusal` gives no message for, as it does
-    where `text` holds no key or `musig()` Core refuses.
+    belongs, a key origin `_key_refusal` gives no message for or a
+    `musig()` path `_Musig.refusal` answers "" for, as it does where `text`
+    holds no key or `musig()` Core refuses.
     """
     walk = _KeyWalk(text, network)
     word = ""
