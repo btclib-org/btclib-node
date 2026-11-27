@@ -171,8 +171,8 @@ BAD_PORTS = frozenset(
     }
 )
 
-# Core's `INTERNAL_IN_IPV6_PREFIX` (`src/netaddress.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+# Core's `INTERNAL_IN_IPV6_PREFIX` (`src/netaddress.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
 _INTERNAL_PREFIX = bytes.fromhex("fd6b88c08724")
 
 # the two networks this node has a dial for, and the whole of what
@@ -332,8 +332,8 @@ def ip_and_port(ip: str, port: int, scope_id: int = 0) -> str:
     return f"[{parsed}]:{port}"
 
 
-# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag). A one-second budget is too
+# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag). A one-second budget is too
 # tight for what `loop.sock_connect` needs on Windows' Proactor loop to
 # notice a refused loopback connect -- measured on this tree's own
 # instrumentation, in btclib-org/btclib-node run 33271519023, at
@@ -1678,8 +1678,8 @@ class PeerDB:
         # without asking again. `time_penalty=0`: `AddrMan::Add`'s own
         # default, since `_dns_seed_timestamp` below already backdates
         # the entry the way Core's own caller does before it ever
-        # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp`, at
-        # bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+        # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp`,
+        # at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         self.add_addresses(
             (
                 peer_address(

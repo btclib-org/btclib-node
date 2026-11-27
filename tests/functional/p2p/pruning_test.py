@@ -183,7 +183,7 @@ def test_a_pruned_server_serves_a_block_it_still_holds(
     `GetHeaders`, sent after the connection already reads `Connected`,
     races this test's own hand-built `GetData` for a block deep past
     genesis. Where the block arrives first its parent is not yet
-    indexed, `callbacks.block` raises and `main.handle_p2p`'s `except`
+    indexed, `callbacks.block` raises and `main._dispatch`'s `except`
     drops the connection -- after the block was received, so what fails
     is the `Connected` assertion below (btclib-org/btclib-node#1029).
     """

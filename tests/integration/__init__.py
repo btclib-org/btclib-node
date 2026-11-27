@@ -16,14 +16,19 @@ than actually reaching a node. `tests/README.md` declares the split from
 
 `departed` gives this node's words for the bitcoind refusals whose shapes
 it reads: a hash or hex string quoted, and a transaction that does not
-decode.
+decode. `start_and_stop` starts bitcoind or this node on regtest and stops
+it, for the modules that compare the two starts.
 """
 
 import re
+import subprocess
 from typing import TYPE_CHECKING
+
+from tests import wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 # bitcoind's refusals that quote what the caller gave, each built as Core
 # builds it: `ParseHashV` and `ParseHexV` (`src/rpc/util.cpp:127`, `:129`
@@ -65,3 +70,40 @@ def departed(message: str, transactions: Sequence[object] = ()) -> str:
             f"TX decode failed for tx {index}. Make sure the tx has at least one input."
         )
     return message
+
+
+def start_and_stop(
+    command: list[str], datadir: Path, *, server: bool = False
+) -> tuple[bool, int, str]:
+    """Start `command` on `datadir`, then stop it with `SIGTERM`.
+
+    `server` is the `-server` it is given. Return whether it was still
+    running once started, its exit status, and its stderr. Both programs
+    write `banlist.json` while loading, past the point where a start with
+    `-server` reads its RPC options, so the wait ends once the start is
+    past those reads or the process has exited.
+    """
+    banlist = datadir / "regtest" / "banlist.json"
+    stderr = datadir.parent / f"{datadir.name}.stderr"
+    with stderr.open("w", encoding="utf-8") as sink:
+        process = subprocess.Popen(  # noqa: S603
+            [
+                *command,
+                f"-datadir={datadir}",
+                "-regtest",
+                "-listen=0",
+                f"-server={int(server)}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=sink,
+        )
+        try:
+            wait_until(lambda: banlist.exists() or process.poll() is not None)
+            started = process.poll() is None
+            process.terminate()
+            returncode = process.wait(timeout=60)
+        finally:
+            # a no-op on a process that has exited
+            process.kill()
+            process.wait(timeout=30)
+    return started, returncode, stderr.read_text(encoding="utf-8")

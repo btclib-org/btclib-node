@@ -44,8 +44,8 @@ __all__ = [
 ]
 
 # Core's `MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK` and
-# `DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN` (`src/net_processing.h`, at
-# bitcoin/bitcoin@f0de87f040, the v32.1 tag): how many peers one block is
+# `DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN` (`src/net_processing.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): how many peers one block is
 # asked of through `cmpctblock`, and how many refused transactions are kept
 # to rebuild one with. Core's `-blockreconstructionextratxn` sets the
 # second, and this tree has no such option.
