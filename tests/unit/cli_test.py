@@ -1453,6 +1453,12 @@ def test_log_args_escapes_a_backslash_in_a_value() -> None:
     assert cli._log_args(settings) == ('Command-line arg: chain="a\\\\b"',)
 
 
+def test_log_args_escapes_del_as_core_writes_it() -> None:
+    r"""ISS 2523: DEL is logged as `\u007f`, as in Core's `json_escape`."""
+    settings = cli._Settings(command_line={"chain": ["a\x7fbé"]}, ro_config={})
+    assert cli._log_args(settings) == ('Command-line arg: chain="a\\u007fbé"',)
+
+
 _ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
 _I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
 # a fixed random key's spellings, and the numbers macOS's numeric lookup

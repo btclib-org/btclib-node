@@ -190,7 +190,6 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import io
-import json
 import os
 import re
 import sys
@@ -1675,9 +1674,7 @@ def _setting_to_write_str(value: _Value) -> str:
     above, which is `GetArg`'s own `SettingToString`, a different Core
     function reached by a different reader.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return json.dumps(value, ensure_ascii=False)
+    return write_json(value)
 
 
 def _logged(option: _Option | None, value: Json, whole: str) -> str:
