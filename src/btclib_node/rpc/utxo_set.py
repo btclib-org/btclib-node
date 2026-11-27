@@ -730,6 +730,52 @@ def _invalid_key_refusal(text: str, network: str) -> str | None:
     return None
 
 
+# the start of each message bip32_descriptors refuses a threshold of one of
+# `_MULTI_FUNCTIONS` with, where it is not digits alone or is past
+# 2**32 - 1, naming the function
+_THRESHOLD_REFUSAL = re.compile(
+    r"invalid (?P<name>(?:sorted)?multi(?:_a)?)\(\) threshold: "
+)
+
+# the digits of 2**32 - 1, the largest threshold Core reads
+_THRESHOLD_DIGITS = 10
+
+
+def _is_threshold(text: str) -> bool:
+    """Say whether Core reads `text` as a threshold: `ToIntegral<uint32_t>`.
+
+    That is one or more digits, leading zeros allowed, of a value below
+    2**32. As in `_fits`, at most `_THRESHOLD_DIGITS` of them are converted.
+    """
+    digits = text.lstrip("0")
+    return (
+        re.fullmatch("[0-9]+", text) is not None
+        and len(digits) <= _THRESHOLD_DIGITS
+        and not int(digits or "0") >> 32
+    )
+
+
+def _threshold_refusal(text: str, name: str) -> str:
+    """Return Core's message for the first threshold of a `name()` it refuses.
+
+    `name` is the one of `_MULTI_FUNCTIONS` that bip32_descriptors names in
+    its refusal of `text`. `ParseScript` reads the threshold with `Expr`,
+    as `_expr` does, and refuses one `_is_threshold` refuses, in
+    `src/script/descriptor.cpp` at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag. bip32_descriptors reads `text` in order, as Core does, and a
+    `name()` it reads before the one it refuses has a threshold Core reads,
+    so the one refused is the first in `text` that `_is_threshold` refuses.
+
+    Core quotes the threshold whole, and a key may be given in its place.
+    This quotes it through `quoted_name` (SECURITY.md, "Where this node
+    departs from Bitcoin Core").
+    """
+    calls = re.finditer(rf"(?<!\w){name}\(", text)
+    thresholds = (_expr(text[call.end() :])[0] for call in calls)
+    threshold = next(each for each in thresholds if not _is_threshold(each))
+    return f"Multi threshold '{quoted_name(threshold)}' is not valid"
+
+
 # Core's `DescriptorChecksum` character set (`src/script/descriptor.cpp:139`,
 # at bitcoin/bitcoin@f0de87f040, the v32.1 tag). `_parse` says where Core
 # refuses a payload holding any other character
@@ -762,8 +808,14 @@ def _parse(node: Node, text: str) -> list[_Source]:
     does not reach. bip32_descriptors checks a key's network only once it
     has read the whole descriptor, so a later refusal it raises comes first,
     where Core refuses the key. Unless `_invalid_key_refusal` or
-    `_tree_refusal` reads that key, the message is then bip32_descriptors'
-    or `_core_refusal`'s, not Core's (btclib-org/btclib-node#2555).
+    `_tree_refusal` reads that key, the message is then the later
+    refusal's, not Core's (btclib-org/btclib-node#2555).
+
+    Where bip32_descriptors refuses a threshold of one of
+    `_MULTI_FUNCTIONS`, the message is `_threshold_refusal`'s. Where a leaf
+    of `tr()` before the threshold's leaf holds a function of
+    `_DRAFT_NAMES`, Core refuses that function first, with
+    `_core_refusal`'s message, which this does not give.
     """
     prv_keys: dict[str, str] = {}
     stripped: str | None = None
@@ -792,14 +844,17 @@ def _parse(node: Node, text: str) -> list[_Source]:
     except (BTClibException, EccException) as err:
         message = str(err)
         network = node.chain.name
-        if stripped is not None and _refuses_key(err):
-            message = (
-                _invalid_key_refusal(stripped, network)
-                or _core_refusal(stripped, _TOP, network)
-                or message
-            )
-        elif stripped is not None and message.endswith(_NOT_A_FUNCTION):
-            message = _core_refusal(stripped, _TOP, network) or message
+        if stripped is not None:
+            if refused := _THRESHOLD_REFUSAL.match(message):
+                message = _threshold_refusal(stripped, refused["name"])
+            elif _refuses_key(err):
+                message = (
+                    _invalid_key_refusal(stripped, network)
+                    or _core_refusal(stripped, _TOP, network)
+                    or message
+                )
+            elif message.endswith(_NOT_A_FUNCTION):
+                message = _core_refusal(stripped, _TOP, network) or message
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, message) from err
     if refusal := _core_refusal(stripped, _TOP):
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, refusal)

@@ -1204,6 +1204,65 @@ def test_the_key_walk_prints_no_key_in_its_repr_or_str() -> None:
     assert_secret_free(ValueError(repr(walk), str(walk)), [TPRV])
 
 
+# Each with the threshold `bitcoind` refuses in it, which its message quotes
+@pytest.mark.parametrize(
+    ("text", "threshold"),
+    [
+        (f"wsh(multi( 1,{KEY}))", " 1"),
+        (f"wsh(multi(a,{KEY}))", "a"),
+        # `Expr` ends the threshold at a `)` or a `,` outside brackets
+        ("wsh(multi(a))", "a"),
+        ("multi(a)", "a"),
+        (f"wsh(multi((1,2),{KEY}))", "(1,2)"),
+        (f"wsh(sortedmulti( 1,{KEY}))", " 1"),
+        (f"sh(sortedmulti(a,{KEY}))", "a"),
+        (f"tr({X_ONLY},multi_a( 1,{X_ONLY}))", " 1"),
+        (f"tr({X_ONLY},sortedmulti_a(a,{X_ONLY}))", "a"),
+        # the threshold refused, not the first the text holds
+        (f"tr({X_ONLY},{{multi_a(1,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{multi_a(x,{X_ONLY}),sortedmulti_a(1,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{sortedmulti_a(1,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        (f"tr({X_ONLY},{{multi_a(001,{X_ONLY}),multi_a(x,{X_ONLY})}})", "x"),
+        # numbers `ToIntegral<uint32_t>` does not read
+        (f"wsh(multi(4294967296,{KEY}))", "4294967296"),
+        (f"wsh(multi(11111111111,{KEY}))", "11111111111"),
+        (f"wsh(multi(+1,{KEY}))", "+1"),
+        (f"wsh(multi(-1,{KEY}))", "-1"),
+    ],
+)
+def test_a_threshold_core_does_not_read_is_refused_with_its_message(
+    node: Node, text: str, threshold: str
+) -> None:
+    """ISS 2553: Core's `ParseScript` quotes the threshold it refuses."""
+    assert refusal(node, "start", [text]) == (
+        -5,
+        f"Multi threshold '{threshold}' is not valid",
+    )
+
+
+@pytest.mark.parametrize("key", [TPRV, LEAK_WIF, LEAK, str(int(LEAK, 16))])
+def test_a_key_given_as_a_threshold_is_given_by_its_length(
+    node: Node, key: str
+) -> None:
+    """Core quotes the threshold whole; this gives a long one by its length."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"wsh(multi({key},{KEY}))")
+    assert (int(caught.value.code), caught.value.message) == (
+        -5,
+        f"Multi threshold '<{len(key)} characters>' is not valid",
+    )
+    assert_secret_free(caught.value, [key])
+
+
+def test_a_threshold_of_any_length_is_refused_with_its_length(node: Node) -> None:
+    """A threshold of more digits than `int` converts is given by its length."""
+    for threshold in (LONG_STEP, f"{ZEROS}4294967296"):
+        assert refusal(node, "start", [f"wsh(multi({threshold},{KEY}))"]) == (
+            -5,
+            f"Multi threshold '<{len(threshold)} characters>' is not valid",
+        )
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -1262,9 +1321,9 @@ def test_where_core_refuses_no_payload_character_the_message_is_the_parser_s(
 
 
 # Each where Core first refuses what `_parse` gives no message of its own
-# for: an expression no function reads, before a key or not, a threshold,
-# a key origin or a key path, or a miniscript outside wsh() and tr(),
-# which both refuse in the same words.
+# for: an expression no function reads, before a key or not, a key origin
+# or a key path, or a miniscript outside wsh() and tr(), which both refuse
+# in the same words.
 @pytest.mark.parametrize(
     "text",
     [
@@ -1274,7 +1333,6 @@ def test_where_core_refuses_no_payload_character_the_message_is_the_parser_s(
         f"foo(pk({NOT_A_POINT}))",
         f"tr({X_ONLY},{NOT_A_POINT})",
         f"tr({X_ONLY},foo)",
-        f"wsh(multi( 1,{KEY}))",
         f"wpkh( [deadbeef]{KEY})",
         f"wpkh({TPUB}/0/* )",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
