@@ -141,8 +141,7 @@ def _fee_rate_text(fee: int, vsize: int) -> str:
 
     `GetFeePerK` rounds down, and C++'s `/` and `%` then split it toward
     zero, the sign written once (`src/policy/feerate.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag, from
-    bitcoin/bitcoin@4200f8163a).
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     per_k = fee * 1000 // vsize
     sign = "-" if per_k < 0 else ""
