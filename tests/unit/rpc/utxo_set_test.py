@@ -13,6 +13,7 @@ and the descriptors are what `bitcoind` answers for the same call
 """
 
 from collections.abc import Generator
+from string import ascii_lowercase
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -29,6 +30,7 @@ from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
 from ecc.exceptions import EccException
 
+from btclib_node.constants import MAX_QUOTED_NAME
 from btclib_node.rpc import utxo_set
 from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
@@ -1474,7 +1476,8 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
 # Each where Core first refuses what `_parse` gives no message of its own
 # for: an expression no function reads, before a key or not, a key origin,
 # or a miniscript outside wsh() and tr(), which both refuse in the same
-# words.
+# words. `_parse` has a message of its own for a `tr()` leaf too long for
+# bip32_descriptors to quote, so no such leaf is here.
 @pytest.mark.parametrize(
     "text",
     [
@@ -1482,7 +1485,6 @@ def test_a_character_before_a_key_origin_is_core_s_refusal(node: Node) -> None:
         f"tr({X_ONLY},{{foo(1),pk({NOT_A_POINT_X})}})",
         f"tr({X_ONLY},{{foo(1),pk({LEAK_WIF})}})",
         f"foo(pk({NOT_A_POINT}))",
-        f"tr({X_ONLY},{NOT_A_POINT})",
         f"tr({X_ONLY},foo)",
         f"wsh(multi(1,[deadbeef/2147483648]{KEY},{H160}))",
         f"wpkh([deadbeef]]{H160})",
@@ -1594,3 +1596,81 @@ def test_a_scan_goes_on_between_steps(
     )
     assert result["success"] is True
     assert len(result["unspents"]) == 6
+
+
+REGTEST_WIF = wif_from_prv_key(LEAK_HEX, "regtest", compressed=True)
+LONG_LEAF = "'...' is not a valid descriptor function"
+
+
+# Each a `tr()` leaf no function reads, bip32_descriptors' refusal of which
+# is `_TR_LEAF_REFUSAL`, with `bitcoind`'s message where it quotes nothing
+# that may be a key
+@pytest.mark.parametrize(
+    ("leaf", "message"),
+    [
+        (KEY, LONG_LEAF),
+        (NOT_A_POINT, LONG_LEAF),
+        (X_ONLY, LONG_LEAF),
+        (f"[deadbeef]{KEY}", LONG_LEAF),
+        (f"{KEY}/0/*", LONG_LEAF),
+        (f" {KEY}", LONG_LEAF),
+        (WIF, LONG_LEAF),
+        (f"{TPUB}/0/*", LONG_LEAF),
+        (ascii_lowercase[: MAX_QUOTED_NAME + 1], LONG_LEAF),
+        ("foo(1)/0/0/0/0/0/0/0", LONG_LEAF),
+        (f"{{rawpkh({H160}),{KEY}}}", NOT_A_FUNCTION.format("rawpkh")),
+        (f"{{rawleaf(51),{KEY}}}", NOT_A_FUNCTION.format("rawleaf")),
+        (f"{{raw(51),{KEY}}}", "Can only have raw() at top level"),
+    ],
+)
+def test_a_tr_leaf_too_long_to_quote_is_written_short(
+    node: Node, leaf: str, message: str
+) -> None:
+    """ISS 2554: Core quotes the leaf whole, which may be a key."""
+    with pytest.raises(BTClibValueError) as parsed:
+        parse(f"tr({X_ONLY},{leaf})", "regtest", {})
+    assert str(parsed.value) == utxo_set._TR_LEAF_REFUSAL
+    assert refusal(node, "start", [f"tr({X_ONLY},{leaf})"]) == (-5, message)
+
+
+# the control: a leaf short enough to quote, its arguments written `(...)`,
+# keeps bip32_descriptors' message, which is `bitcoind`'s where it has no
+# arguments
+@pytest.mark.parametrize(
+    ("leaf", "quoted"),
+    [
+        ("foo", "foo"),
+        (ascii_lowercase[:MAX_QUOTED_NAME], ascii_lowercase[:MAX_QUOTED_NAME]),
+        ("foo(1)", "foo(...)"),
+    ],
+)
+def test_a_tr_leaf_short_enough_to_quote_is_quoted(
+    node: Node, leaf: str, quoted: str
+) -> None:
+    """The message is bip32_descriptors' quote of the leaf."""
+    assert refusal(node, "start", [f"tr({X_ONLY},{leaf})"]) == (
+        -5,
+        f"'{quoted}' is not a valid descriptor function",
+    )
+
+
+# Each a private key given as a `tr()` leaf, or as a second leaf, beside
+# each spelling of it
+@pytest.mark.parametrize(
+    ("leaf", "secrets"),
+    [
+        (TPRV, [TPRV]),
+        (LEAK, [LEAK]),
+        (LEAK_WIF, [LEAK_WIF, LEAK_HEX]),
+        (REGTEST_WIF, [REGTEST_WIF, LEAK_HEX]),
+        (f"{{pk({X_ONLY}),{REGTEST_WIF}}}", [REGTEST_WIF, LEAK_HEX]),
+    ],
+)
+def test_a_tr_leaf_refusal_carries_no_private_key(
+    node: Node, leaf: str, secrets: list[str]
+) -> None:
+    """Section 7's *A refusal carries no secret*: the leaf is `...`."""
+    with pytest.raises(RpcError) as caught:
+        scan(node, f"tr({X_ONLY},{leaf})")
+    assert (int(caught.value.code), caught.value.message) == (-5, LONG_LEAF)
+    assert_secret_free(caught.value, secrets)

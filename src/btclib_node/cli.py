@@ -2946,6 +2946,50 @@ def _make_blocks_dir(base_dir: Path, chain_name: str, blocksdir: str | None) -> 
         raise CreateDirectoriesError(err_msg)
 
 
+def _get_max_connections(
+    settings: _Settings, connect: Sequence[str], *, connect_negated: bool
+) -> tuple[int, JsonIntegerOutOfRangeError | JsonTypeError | None]:
+    """Return `-maxconnections` as `GetIntArg` reads it, and its refusal.
+
+    Core reads it with `GetIntArg` only where `-connect` is neither given
+    nor negated: the `||` at `src/init.cpp:807`, at
+    bitcoin/bitcoin@f0de87f040, short-circuits. Otherwise its first read
+    is `GetArg<int>` at `:1063`, so a value it refuses is returned beside
+    the default, for `Config` to refuse there (ISS 2381).
+    """
+    try:
+        value = _get_int(settings, "maxconnections")
+    except (JsonIntegerOutOfRangeError, JsonTypeError) as error:
+        if not connect and not connect_negated:
+            raise
+        return DEFAULT_MAX_PEER_CONNECTIONS, error
+    return (DEFAULT_MAX_PEER_CONNECTIONS if value is None else value), None
+
+
+def _get_rpc_options(
+    settings: _Settings, refusal: AppInitExceptionError | None
+) -> tuple[float, list[str], bool]:
+    """Return `-rpcmaxconnections`, `-rpcbind` and `-server` for `Config`.
+
+    Core reads them at `src/init.cpp:1078-1084`, at
+    bitcoin/bitcoin@f0de87f040, after `GetArg<int>` reads `-maxconnections`
+    at `:1063`. So where `refusal`, that read's, goes to `Config`, a
+    refusal of theirs gives way to their defaults, which `Config` never
+    reads: it raises `refusal` first. Otherwise theirs is raised here,
+    ahead of the refusals `Config` makes, which Core makes first
+    (ISS 2653, ISS 2654).
+    """
+    try:
+        rpcmaxconnections = _get_rpcmaxconnections(settings)
+        rpcbind = _get_args(settings, "rpcbind")
+        server = _get_bool(settings, "server")
+    except JsonTypeError:
+        if refusal is None:
+            raise
+        return DEFAULT_MAX_HTTP_CONNECTIONS, [], True
+    return rpcmaxconnections, rpcbind, server is not False
+
+
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
@@ -2975,11 +3019,11 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
     _make_blocks_dir(base_dir, chain_name, blocksdir)
-    max_connections_arg = _get_int(settings, "maxconnections")
-    if max_connections_arg is None:
-        max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
     connect = _get_args(settings, "connect")
     connect_negated = _is_negated(settings, "connect")
+    max_connections_arg, max_connections_refusal = _get_max_connections(
+        settings, connect, connect_negated=connect_negated
+    )
     # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
     # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
     # own soft-set does -- but only where `-dnsseed` was not given a
@@ -3001,17 +3045,23 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         dnsseed = None
     if dnsseed is None:
         dnsseed = not connect and not connect_negated and max_connections_arg > 0
+    rpcmaxconnections, rpcbind, allow_rpc = _get_rpc_options(
+        settings, max_connections_refusal
+    )
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
-        max_connections=_get_int32(
-            settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS
+        max_connections=(
+            DEFAULT_MAX_PEER_CONNECTIONS
+            if max_connections_refusal is not None
+            else _get_int32(settings, "maxconnections", DEFAULT_MAX_PEER_CONNECTIONS)
         ),
-        rpcmaxconnections=_get_rpcmaxconnections(settings),
+        max_connections_refusal=max_connections_refusal,
+        rpcmaxconnections=rpcmaxconnections,
         # what the file descriptors `Config.__init__` reserves count
-        rpcbind=_get_args(settings, "rpcbind"),
-        allow_rpc=_get_bool(settings, "server") is not False,
+        rpcbind=rpcbind,
+        allow_rpc=allow_rpc,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
