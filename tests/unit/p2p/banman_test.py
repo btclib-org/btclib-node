@@ -527,8 +527,8 @@ def test_a_banlist_holding_a_json_constant_is_recreated_empty(
 ) -> None:
     """`UniValue::read` refuses `NaN` and the infinities; the file is remade.
 
-    Measured on bitcoind v32.1.0: each answer leaves `listbanned` empty and
-    the log reading `Cannot load banlist ... does not contain valid JSON`.
+    Measured on bitcoind v32.1.0: each of the three leaves `listbanned` empty
+    and the log reading `Cannot load banlist ... does not contain valid JSON`.
     """
     path = tmp_path / "banlist.json"
     path.write_text(
@@ -537,7 +537,7 @@ def test_a_banlist_holding_a_json_constant_is_recreated_empty(
         encoding="utf-8",
     )
 
-    assert list(BanMan(path, _LOGGER).banned()) == []
+    assert not list(BanMan(path, _LOGGER).banned())
     assert read(path)["banned_nets"] == []
 
 
