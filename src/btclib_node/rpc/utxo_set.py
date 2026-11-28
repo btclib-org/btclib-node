@@ -989,6 +989,19 @@ _DESCRIPTOR_CHARACTERS = frozenset(
 _CHECKSUM_LENGTH = 8
 
 
+def _refuse_a_second_hash_or_a_checksum_not_8_bytes(
+    separator: str, checksum: str, size: int
+) -> None:
+    """Core's `CheckChecksum` refuses the `#` before the payload (ISS 2649)."""
+    if "#" in checksum:
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Multiple '#' symbols")
+    if separator and size != _CHECKSUM_LENGTH:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY,
+            f"Expected 8 character checksum, not {size} characters",
+        )
+
+
 def _parse(node: Node, text: str) -> list[_Source]:
     """Parse `text`, which is one descriptor or a multipath one's several.
 
@@ -996,7 +1009,8 @@ def _parse(node: Node, text: str) -> list[_Source]:
     bip32_descriptors' here, which words it differently, except where it is
     Core's: for a payload holding a character outside
     `_DESCRIPTOR_CHARACTERS`, where `CheckChecksum` reaches that check, for
-    a `rawtr()` of more than one argument, for what `_core_refusal` refuses,
+    a second `#` or a checksum that is not 8 bytes, for a `rawtr()` of more
+    than one argument, for what `_core_refusal` refuses,
     shortened where Core quotes the expression, and where the last two
     paragraphs say. Where ecc refuses a hex key as no point, or
     bip32_descriptors refuses as `_BTCLIB_KEY_REFUSALS` says, the message is
@@ -1026,11 +1040,12 @@ def _parse(node: Node, text: str) -> list[_Source]:
     # `CheckChecksum` splits at `#`, refuses more than one `#`, then a
     # checksum that is not 8 bytes, and only then a payload holding a
     # character outside `_DESCRIPTOR_CHARACTERS` (ISS 2551). The first two
-    # keep bip32_descriptors' message here (ISS 2649)
+    # get Core's own messages here (ISS 2649)
     body, separator, checksum = text.partition("#")
     # Core counts the checksum's UTF-8 bytes. `jsonrpc.decode` refuses a
     # lone surrogate, and "surrogatepass" keeps one from raising here
     size = len(checksum.encode("utf-8", "surrogatepass"))
+    _refuse_a_second_hash_or_a_checksum_not_8_bytes(separator, checksum, size)
     if (
         "#" not in checksum
         and (not separator or size == _CHECKSUM_LENGTH)

@@ -1447,16 +1447,54 @@ def test_a_character_outside_the_descriptor_set_quotes_no_key(
     assert_secret_free(caught.value, [key])
 
 
-# Each where Core's `CheckChecksum` does not refuse the payload's characters:
-# it refuses a second `#` or a checksum that is not 8 bytes first, or the
-# payload is in the set. Core's own messages for those two are ISS 2649's
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (f"wpkh({KEY})#a#b", "Multiple '#' symbols"),
+        (f"wpkh({KEY})#abc", "Expected 8 character checksum, not 3 characters"),
+        (f"wpkh({KEY})#", "Expected 8 character checksum, not 0 characters"),
+    ],
+    ids=["two-hashes", "short-checksum", "empty-checksum"],
+)
+def test_a_second_hash_or_a_checksum_not_8_bytes_gets_core_s_message(
+    node: Node, text: str, message: str
+) -> None:
+    """ISS 2649: Core's `CheckChecksum` refuses the `#` before the payload."""
+    assert refusal(node, "start", [text]) == (-5, message)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (f"wpkh(\t{KEY})#a#b", "Multiple '#' symbols"),
+        (f"wpkh(\t{KEY})#abcd#efg", "Multiple '#' symbols"),
+        (f"wpkh(\t{KEY})#abc", "Expected 8 character checksum, not 3 characters"),
+        (
+            f"wpkh(\t{KEY})#" + "é" * 8,
+            "Expected 8 character checksum, not 16 characters",
+        ),
+    ],
+    ids=[
+        "two-hashes",
+        "two-hashes-8-bytes-after-one",
+        "short-checksum",
+        "checksum-of-16-bytes",
+    ],
+)
+def test_where_core_refuses_the_hash_before_the_payload_character(
+    node: Node, text: str, message: str
+) -> None:
+    """ISS 2649: the `#` refusal comes before the character-set check."""
+    assert refusal(node, "start", [text]) == (-5, message)
+
+
+# The one case where Core's `CheckChecksum` does not refuse the payload's
+# characters and does not refuse the `#` either: the checksum is 8 tabs,
+# so 8 bytes, and the payload is in the set, so the message stays
+# bip32_descriptors' via `strip_checksum`.
 @pytest.mark.parametrize(
     "text",
     [
-        pytest.param(f"wpkh(\t{KEY})#a#b", id="two-hashes"),
-        pytest.param(f"wpkh(\t{KEY})#abcd#efg", id="two-hashes-8-bytes-after-one"),
-        pytest.param(f"wpkh(\t{KEY})#abc", id="short-checksum"),
-        pytest.param(f"wpkh(\t{KEY})#" + "é" * 8, id="checksum-of-16-bytes"),
         pytest.param(f"wpkh({KEY})#" + "\t" * 8, id="tabs-as-checksum"),
     ],
 )
